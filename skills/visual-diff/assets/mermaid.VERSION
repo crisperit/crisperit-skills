@@ -1,0 +1,1 @@
+mermaid 11.15.0, vendored from https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js on 2026-09-10. MIT licence. Exposes globalThis.mermaid via a classic script tag. Vendored so review pages render with no network.
