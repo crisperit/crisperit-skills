@@ -1,9 +1,7 @@
 # crisperit-skills
 
-Skills I want to share with you. Agent skills I use on real work, packaged so
-you can install them.
-
-One skill lives here today: **visual-diff**.
+Agent skills I use on real work, packaged so you can install them. One so far,
+visual-diff.
 
 ## visual-diff
 
@@ -20,23 +18,15 @@ open locally.
 
 ### Why
 
-The point is not prettier output. The point is making a human review faster and
-more thorough, because that is still where real defects get caught.
+It exists to make human review faster and more thorough, because that is where
+real defects still get caught. When I review a PR by hand I do the same three
+things every time, and the diff helps with none of them:
 
-When I review a PR by hand I do the same three things every time, and all three
-are manual work the diff does nothing to help with:
-
-**1. I group the changed files by feature and read them in that order.** A
-GitHub file list is alphabetical, which is never the order the change makes
-sense in. So visual-diff groups the files into themes, puts the theme a reviewer
-needs first at the top, and orders files inside a group caller before callee.
-
-![Walkthrough grouped by feature](docs/images/reading-order.png)
-
-**2. I estimate coupling by reading what imports what.** That is how you find
+**1. I estimate coupling by reading what imports what.** That is how you find
 the blast radius of a change, and doing it by hand across seven files is slow
-and easy to get wrong. visual-diff derives the import and call graph from the
-code, not from prose, and draws it at two levels. Packages first:
+and easy to get wrong. visual-diff derives the import and call graph by parsing
+the code itself, not by asking a model to guess it from the diff text, and draws
+it at two levels. Packages first:
 
 ![Package level relations](docs/images/coupling-packages.png)
 
@@ -45,15 +35,22 @@ has fan-out and which are leaves:
 
 ![Symbol level relations](docs/images/coupling-symbols.png)
 
+**2. I group the changed files by feature and read them in that order.** A
+GitHub file list is alphabetical, which is never the order the change makes
+sense in. So visual-diff groups the files into themes, puts the theme a reviewer
+needs first at the top, and orders files inside a group caller before callee.
+
+![Walkthrough grouped by feature](docs/images/reading-order.png)
+
 **3. I take notes per line, then turn them into review comments.** The page lets
 you comment on any diff line and copy the whole set back out, ready to post on
 the PR.
 
 ![Commenting on a diff line](docs/images/line-comment.png)
 
-Anything else a reviewer does in their head is a candidate for being
-materialized on the page. If you have a habit like these three, open an issue; a
-review aid that saves a human ten minutes per PR is worth building.
+Anything else a reviewer works out in their head could go on the page instead.
+If you have a habit like these three, open an issue. A review aid that saves ten
+minutes per PR is worth building.
 
 ### The rest of the page
 
@@ -92,22 +89,17 @@ for it to be hosted.
 
 ### Language support
 
-The parts built from the diff itself work on any repo, whatever the language:
-the grouping and reading order, the annotated walkthrough, per-line comments,
-the markdown recap and the flow diagram.
+Everything built from the diff itself works in any language: the grouping and
+reading order, the annotated walkthrough, per-line comments, the markdown recap
+and the flow diagram.
 
-The graphs have to parse the code, so they are per language:
-
-| Graph | Languages | Needs |
-|---|---|---|
-| module map, file import graph | Python, JavaScript, TypeScript, Go | nothing |
-| symbol graph and complexity in the recap | Python | nothing |
-| symbol graph and complexity in the recap | TypeScript, TSX, JavaScript, Go, Rust, Java, Ruby, Kotlin, Swift, Scala, C, C++, C#, PHP, Lua, Elixir, Julia | `pip install tree-sitter-language-pack` |
-| interactive symbol level graph on the page | Go | `go` on PATH |
-| interactive symbol level graph on the page | Python, TypeScript, TSX, Rust | `pyright-langserver`, `typescript-language-server` or `rust-analyzer` |
-
-On a language that is not in the table, or with the tooling missing, the graph
-sections are skipped and the page says so. Nothing else changes.
+The graphs have to parse the code. Python, Go, JavaScript and TypeScript need
+nothing installed. `pip install tree-sitter-language-pack` adds the symbol graph
+for Rust, Java, Ruby, Kotlin, Swift, Scala, C, C++, C#, PHP, Lua, Elixir and
+Julia. The interactive symbol level graph on the page needs more: `go` on
+PATH for Go, or `pyright-langserver`, `typescript-language-server` or
+`rust-analyzer` for Python, TypeScript and Rust. Where a parser is missing the
+graph sections are skipped and the page says so, nothing else changes.
 
 ## Install
 
