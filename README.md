@@ -66,6 +66,9 @@ the diff itself:
 
 ![Annotated file in the walkthrough](docs/images/annotated-file.png)
 
+The screenshots above come from a small demo Python service, on a branch adding
+recurring expenses and a budget forecast.
+
 Nothing is published. The page stays a local file unless you pass `--pr` or ask
 for it to be hosted.
 
@@ -84,13 +87,27 @@ for it to be hosted.
 - `python3`, standard library only, nothing to install
 - `git`
 - `gh`, only to target a PR or post comments
-- optional: `go` for the Go symbol extractor, and any language server you
-  already run (`pyright-langserver`, `typescript-language-server`,
-  `rust-analyzer`) for the symbol level graph. Without them it falls back to
-  plain diff parsing.
+- optional, for the graphs: `tree-sitter-language-pack`, `go`, or a language
+  server, depending on the language. See below.
 
-The screenshots above come from a small demo Python service, on a branch adding
-recurring expenses and a budget forecast.
+### Language support
+
+The parts built from the diff itself work on any repo, whatever the language:
+the grouping and reading order, the annotated walkthrough, per-line comments,
+the markdown recap and the flow diagram.
+
+The graphs have to parse the code, so they are per language:
+
+| Graph | Languages | Needs |
+|---|---|---|
+| module map, file import graph | Python, JavaScript, TypeScript, Go | nothing |
+| symbol graph and complexity in the recap | Python | nothing |
+| symbol graph and complexity in the recap | TypeScript, TSX, JavaScript, Go, Rust, Java, Ruby, Kotlin, Swift, Scala, C, C++, C#, PHP, Lua, Elixir, Julia | `pip install tree-sitter-language-pack` |
+| interactive symbol level graph on the page | Go | `go` on PATH |
+| interactive symbol level graph on the page | Python, TypeScript, TSX, Rust | `pyright-langserver`, `typescript-language-server` or `rust-analyzer` |
+
+On a language that is not in the table, or with the tooling missing, the graph
+sections are skipped and the page says so. Nothing else changes.
 
 ## Install
 
