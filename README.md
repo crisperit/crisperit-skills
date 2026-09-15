@@ -31,7 +31,7 @@ Invoke it with `/visual-diff`, or just ask for a visual diff of your changes.
 ### Claude Code
 
 ```
-/plugin marketplace add crisperit/skills
+/plugin marketplace add crisperit/crisperit-skills
 /plugin install crisperit-skills
 ```
 
@@ -40,8 +40,8 @@ Invoke it with `/visual-diff`, or just ask for a visual diff of your changes.
 Clone the repo and symlink the skills into wherever your harness reads them from:
 
 ```
-git clone https://github.com/crisperit/skills.git
-cd skills
+git clone https://github.com/crisperit/crisperit-skills.git
+cd crisperit-skills
 ./install.sh ~/.claude/skills        # default if you pass nothing
 ./install.sh ~/.config/some-harness/skills
 ```
