@@ -16,7 +16,7 @@ Deliberately not built, with the reason: a client-side diff renderer (the JS wou
 - `skills/human-review/SKILL.md:2` (`name: visual-diff` -> `name: human-review`), `:3` (description; keep every existing trigger phrase including "visual diff", "/visual-diff", both -ize and -ise spellings, and add "human review", "review this with me", "/human-review"), `:6` (`# Visual Diff` heading), `:384`, `:392` (example scratchpad filenames `visual-diff-<slug>.{html,md}` -> `human-review-<slug>.{html,md}`)
 - `README.md:4,6,13,14,15,16,27,40`
 - `.claude-plugin/marketplace.json:10` (the description string starts with the literal `visual-diff:`, state.md:40,48-51)
-- New: `skills/visual-diff/SKILL.md`, a six-line stub, frontmatter `name: visual-diff`, description "Renamed to human-review. Invoke the human-review skill with the same arguments.", body one sentence. `install.sh` symlinks it alongside, so a literal `/visual-diff` still resolves.
+- New: `skills/visual-diff/SKILL.md`, a six-line stub, frontmatter `name: visual-diff`, description "Renamed to human-review. Invoke the human-review skill with the same arguments.", body one sentence. `install.sh` symlinks it alongside, so a literal `/visual-diff` still resolves. **Superseded 2026-09-18: the stub was removed, `/visual-diff` no longer resolves as a command; the word triggers "visual diff"/"visualize diff" stay in the `human-review` description.**
 
 **Not renamed, and why**
 
@@ -190,7 +190,7 @@ The security work is not duplicated, which is the one piece of good news: MCP's 
 | Acceptance criterion | Mechanism | Phase |
 |---|---|---|
 | Skill is named `human-review` | dir rename + `SKILL.md:2,3,6`, `README.md`, `.claude-plugin/marketplace.json:10` | 1 |
-| `/visual-diff` still works | six-line stub `skills/visual-diff/SKILL.md`, plus every old trigger phrase retained in the new description | 1 |
+| ~~`/visual-diff` still works~~ (dropped 2026-09-18) | the stub skill was deleted; only the word triggers in the `human-review` description remain | 1 |
 | Nothing breaks in the rename | markers and the `~/.cache/visual-diff` dir keep their literal names; all 14 suites pass unedited | 1 |
 | Page renders from a state JSON document | `state.py` builds it, `render.py --state` inlines it behind `<!-- HR_STATE -->`, template JS is the single renderer for notes, threads, staleness | 2 |
 | Static, dependency-free page inlines the JSON | `<script type="application/json" id="hr-state">` with `<` escaped to `&lt;`; the output is one file, python3 stdlib only, and drafts survive reload via `localStorage` | 2 |
