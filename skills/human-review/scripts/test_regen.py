@@ -202,6 +202,27 @@ def test_fill_seeds_leaves_an_unmatched_hunk_blank_and_does_not_skip_the_batch()
         assert rewritten["files"][1]["hunks"][0]["note"] == ""
 
 
+def test_fill_seeds_skips_the_batch_when_a_zero_hunk_file_carries_by_role():
+    hunk_plan = {
+        regen.hunk_id("a.py", "@@ -10,3 +10,4 @@"): {"carry": True, "note": "carried note"},
+    }
+    prior_roles = {"a.py": "carried role", "b.bin": "binary role"}
+    seed = {"files": [
+        {"path": "a.py", "role": "",
+         "hunks": [{"header": "@@ -10,3 +10,4 @@", "note": ""}]},
+        {"path": "b.bin", "role": "", "hunks": []},
+    ]}
+    with tempfile.TemporaryDirectory() as tmp:
+        seed_path = Path(tmp) / "fragment-3.seed.json"
+        seed_path.write_text(json.dumps(seed))
+
+        skip = regen.fill_seeds(str(seed_path), hunk_plan, prior_roles)
+
+        assert skip is True
+        rewritten = json.loads(seed_path.read_text())
+        assert rewritten["files"][1]["role"] == "binary role"
+
+
 def test_dirty_reads_the_head_file_and_compares_to_the_built_sha():
     with tempfile.TemporaryDirectory() as tmp:
         head_file = Path(tmp) / "HEAD"
@@ -213,6 +234,39 @@ def test_dirty_reads_the_head_file_and_compares_to_the_built_sha():
         assert regen.dirty(str(head_file), None) is False
         # A head file that does not exist yet (no build has happened) reads as not dirty.
         assert regen.dirty(str(Path(tmp) / "missing"), "abc123") is False
+
+
+def test_dirty_follows_a_symbolic_ref_to_the_branchs_sha():
+    with tempfile.TemporaryDirectory() as tmp:
+        git_dir = Path(tmp)
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        head_file = git_dir / "HEAD"
+        head_file.write_text("ref: refs/heads/dev\n")
+        (git_dir / "refs" / "heads" / "dev").write_text("abc123\n")
+
+        assert regen.dirty(str(head_file), "abc123") is False
+        assert regen.dirty(str(head_file), "def456") is True
+
+        # A ref with no loose file (packed) has no sha to compare: not dirty, not guessed.
+        packed_head = git_dir / "HEAD"
+        packed_head.write_text("ref: refs/heads/packed-only\n")
+        assert regen.dirty(str(packed_head), "abc123") is False
+
+
+def test_dirty_follows_a_linked_worktrees_commondir_to_the_common_repos_refs():
+    with tempfile.TemporaryDirectory() as tmp:
+        git_dir = Path(tmp)
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "refs" / "heads" / "dev").write_text("abc123\n")
+
+        worktree_dir = git_dir / "worktrees" / "wt"
+        worktree_dir.mkdir(parents=True)
+        head_file = worktree_dir / "HEAD"
+        head_file.write_text("ref: refs/heads/dev\n")
+        (worktree_dir / "commondir").write_text("../..\n")
+
+        assert regen.dirty(str(head_file), "abc123") is False
+        assert regen.dirty(str(head_file), "def456") is True
 
 
 if __name__ == "__main__":
@@ -227,7 +281,10 @@ if __name__ == "__main__":
         test_bumping_script_version_invalidates_the_ref_based_cache,
         test_fill_seeds_prefills_role_and_note_and_flags_a_fully_carried_batch,
         test_fill_seeds_leaves_an_unmatched_hunk_blank_and_does_not_skip_the_batch,
+        test_fill_seeds_skips_the_batch_when_a_zero_hunk_file_carries_by_role,
         test_dirty_reads_the_head_file_and_compares_to_the_built_sha,
+        test_dirty_follows_a_symbolic_ref_to_the_branchs_sha,
+        test_dirty_follows_a_linked_worktrees_commondir_to_the_common_repos_refs,
     ]
     for test in tests:
         test()

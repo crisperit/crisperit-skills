@@ -26,7 +26,7 @@ modules_for_ref for the one extra hop fetched for that case, marked "context" ra
 "unchanged" so a reader doesn't read it as edited.
 
 Stdlib only at import time; tree-sitter is an optional runtime dependency loaded lazily, with
-a fallback path if it's missing (see _get_parser). No network. See visual-diff/SKILL.md for
+a fallback path if it's missing (see _get_parser). No network. See human-review/SKILL.md for
 how this fits the recap flow.
 """
 

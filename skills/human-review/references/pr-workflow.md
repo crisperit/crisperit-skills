@@ -33,25 +33,18 @@ refresh of a region this skill already wrote does not need re-confirming.
    `--body-file`, never `--body` with an inline string: the recap contains backticks, newlines
    and quotes that shell quoting mangles.
 
-## Posting line comments, when the user asks
+## Posting comments and submitting the review, when the user asks
 
-The notes live in `state.json`, and `notes.py payloads` writes one JSON file per note ready to
-post -- every non-stale local draft. Post only those, and only what the user confirms.
+The live flow -- `notes.py import` then `deliver` then `submit`, one GraphQL pending review --
+is SKILL.md step 8. `payloads` and `promote`, the one-REST-call-per-comment pair this replaced,
+are superseded and kept working for one release.
 
-- One comment per note, on the file and line it names, is the useful shape: `gh api
-  repos/<owner>/<repo>/pulls/<n>/comments --input <payload>`, where the payload carries `path`,
-  `line` and `side` copied from the note and `commit_id` set to the head sha from `links.json`.
-  `side: "LEFT"` on a removed line is not decoration: posting a `LEFT` line as `RIGHT`, or the
-  reverse, lands the comment on unrelated code, so the note's own `side` is authoritative and
-  never second-guessed.
-- One general `gh pr comment <n> --body-file` is a deliberate choice, not a fallback, and the
-  right one when the notes read as one train of thought rather than separate points.
-- Show the exact comment text and where each one lands, then ask once. Posting is outward facing
-  and other people get notified, so it is never automatic, and it is not covered by any earlier
-  confirmation in the session.
-- The authorship guard above does not apply here. A review comment on a colleague's PR is the
-  normal case, unlike editing their description. Confirm it is deliberate all the same.
-- Rewrite nothing. The note is the user's words; tighten only if they ask.
+Still true either way: show the exact comment text and where each one lands, then ask once.
+Posting is outward facing and other people get notified, so it is never automatic and not
+covered by any earlier confirmation in the session. The authorship guard from the PR-description
+section above does not apply here -- a review comment on a colleague's PR is the normal case --
+but confirm it is deliberate all the same. Rewrite nothing: the note is the user's words, tighten
+only if they ask.
 
 ## Syncing in comments already on the PR
 
@@ -76,20 +69,3 @@ parent's `line` and `side` rather than anchoring independently.
 
 Rate limits: this is one `--paginate` call per sync, run when the agent decides to, never on a
 poll loop against GitHub.
-
-## Promoting a draft to posted
-
-After a successful post (`gh api ... --input <file>`, above), record the result on that one note
-before moving to the next:
-
-```bash
-python3 <skill>/scripts/notes.py promote --state <scratchpad>/state.json \
-  --id <the note's local id> --gh-id <the new comment's id> --gh-url <its html_url>
-```
-
-This sets `state: "posted"`, `gh_id` and `gh_url` on the existing record and changes nothing
-else; the note is never deleted and never rewritten in place by any other step. Promote one note
-at a time, right after its own post succeeds, so a failure partway through a batch leaves the
-already-posted notes marked and the rest still drafts rather than losing track of which is
-which. A draft whose `(path, line, side, body)` already matches a `github`-origin comment by
-this user, after a sync, is already posted in substance; promote it instead of posting it again.

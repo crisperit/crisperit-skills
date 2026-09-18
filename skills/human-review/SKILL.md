@@ -1,6 +1,6 @@
 ---
 name: human-review
-description: Turns a git diff, commit range, branch, or GitHub PR that already exists into a markdown recap for the PR description plus a self-contained local HTML review page, with a mermaid flow diagram, an interactive relations graph the reader expands from modules down to files and classes, an annotated diff walkthrough, and per-line commenting that posts straight back as PR review comments. Nothing is published by default: the page stays a local file unless the user passes --pr or asks in words for it to be hosted. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the coupling in this PR", "human review", "review this with me", or /human-review; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
+description: Turns a git diff, commit range, branch, or GitHub PR that already exists into a markdown recap for the PR description plus a self-contained local HTML review page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line commenting that posts straight back as PR review comments. Nothing is published by default: the page stays a local file unless the user passes --pr or asks in words for it to be hosted. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the coupling in this PR", "human review", "review this with me", or /human-review; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
 ---
 
 # Human Review
@@ -121,7 +121,6 @@ concurrently with the annotation agents keeps it off the critical path (`referen
   "how_it_works": "machinery a cold reader needs, or \"\" when nothing needs it",
   "flow_mermaid": "flowchart LR ..., or \"\" when there is no flow worth drawing",
   "section_notes": {
-    "explorer": "one or two sentences above the HTML relations box: which level to start at",
     "layers": "one line above the markdown module map",
     "coupling": "one line above the markdown file graph",
     "structure": "one line above the markdown symbol graph"
@@ -464,7 +463,7 @@ python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
   --walkthrough <scratchpad>/section-walkthrough.html \
   --state <scratchpad>/state.json \
   [--symbols <scratchpad>/section-symbols.html] \
-  [--links <scratchpad>/links.json] [--title "Visual diff: <slug>"] \
+  [--links <scratchpad>/links.json] [--title "Human review: <slug>"] \
   > <scratchpad>/human-review-<slug>.html
 
 python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \

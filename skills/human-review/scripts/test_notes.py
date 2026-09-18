@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import notes  # noqa: E402
 from notes import (  # noqa: E402
     deliver_note,
     diff_anchors,
@@ -18,6 +19,7 @@ from notes import (  # noqa: E402
     do_payloads,
     do_promote,
     do_reanchor,
+    do_submit,
     do_sync,
     do_sync_threads,
     is_trivial_anchor,
@@ -754,6 +756,34 @@ def test_submit_review_returns_none_when_the_submit_field_is_outright_null():
     assert submit_review(state, "COMMENT", "lgtm", gh_run) is None
 
 
+def test_do_submit_raises_instead_of_reporting_success_when_the_submit_is_rejected():
+    # Regression: do_submit used to discard submit_review's return value and always print
+    # "submitted", even on the null-review case proven reachable above.
+    real_gh_graphql = notes._gh_graphql
+
+    def fake_gh_graphql(query, _variables):
+        if "PendingReview" in query:
+            return _pending_review_response()
+        if "SubmitReview" in query:
+            return {"data": {"submitPullRequestReview": None}}
+        raise AssertionError(query)
+
+    notes._gh_graphql = fake_gh_graphql
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = _write_state(tmp, {"meta": {"repo": "o/r", "pr": 1}, "notes": []})
+            body_path = Path(tmp) / "body.txt"
+            body_path.write_text("lgtm")
+            try:
+                do_submit(_Args(state=state_path, event="COMMENT", body_file=str(body_path)))
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("expected a RuntimeError")
+    finally:
+        notes._gh_graphql = real_gh_graphql
+
+
 def test_deliver_sends_the_relocated_line_to_the_mutation_when_the_anchor_has_shifted():
     # notes.py:592's variables, not just its argv, are what deliver actually sends -- this
     # checks the resolved (shifted) line reaches the mutation, not the note's stale original.
@@ -778,6 +808,30 @@ def test_deliver_sends_the_relocated_line_to_the_mutation_when_the_anchor_has_sh
     assert thread_call["line"] == 3
     assert thread_call["side"] == "RIGHT"
     assert "originally line 13" in thread_call["body"]
+
+
+def test_do_deliver_skips_a_note_already_posted_and_does_not_double_post():
+    # The natural response to a gh timeout is "run deliver again" -- that must not re-post a
+    # note whose first attempt actually landed.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        diff = _hunk_diff("a.py", "@@ -1,2 +1,3 @@", [" context", "+added", " more"])
+        (tmp_path / "raw.diff").write_text(diff)
+        note = _note(id="n-1", path="a.py", line=1, side="RIGHT", body="first")
+        state_path = _write_state(tmp, {
+            "meta": {"repo": "o/r", "pr": 1}, "notes": [note], "requests": [],
+        })
+
+        with _fake_gh_on_path(tmp_path) as (log_path, _gh_state_path):
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert do_deliver(_Args(state=state_path, id="n-1", diff=None)) == 0
+            calls_after_first = log_path.read_text()
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                assert do_deliver(_Args(state=state_path, id="n-1", diff=None)) == 0
+            calls_after_second = log_path.read_text()
+
+    assert calls_after_first == calls_after_second  # no gh call at all on the retry
+    assert "already posted" in out.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -805,7 +859,8 @@ def test_merge_state_upserts_notes_merges_meta_replaces_lists():
 
 def test_merge_state_page_created_note_gets_schema_defaults():
     current = {"notes": []}
-    partial = {"notes": [{"id": "n-new", "body": "hi"}]}
+    partial = {"notes": [{"id": "n-new", "body": "hi", "path": "a.py", "line": 5,
+                          "side": "RIGHT"}]}
 
     merged = merge_state(current, partial, is_page_origin=True)
 
@@ -890,6 +945,49 @@ def test_partial_note_write_preserves_stored_origin_and_gh_fields():
     assert note["gh_url"] == "https://x"
 
 
+def test_page_origin_write_drops_a_new_note_missing_path():
+    current = {"notes": []}
+    partial = {"notes": [{"id": "n-new", "body": "hi", "state": "draft"}]}
+
+    merged = merge_state(current, partial, is_page_origin=True)
+
+    assert merged["notes"] == []
+
+
+def test_page_origin_write_drops_a_new_note_with_a_null_line():
+    current = {"notes": []}
+    partial = {"notes": [{"id": "n-new", "body": "hi", "path": "a.py", "line": None,
+                          "side": "RIGHT"}]}
+
+    merged = merge_state(current, partial, is_page_origin=True)
+
+    assert merged["notes"] == []
+
+
+def test_page_origin_write_drops_a_new_note_with_a_string_line():
+    current = {"notes": []}
+    partial = {"notes": [{"id": "n-new", "body": "hi", "path": "a.py", "line": "5",
+                          "side": "RIGHT"}]}
+
+    merged = merge_state(current, partial, is_page_origin=True)
+
+    assert merged["notes"] == []
+
+
+def test_page_origin_partial_write_onto_an_existing_note_still_merges_body_only():
+    current = {"notes": [
+        {"id": "n-1", "body": "first", "path": "a.py", "line": 5, "side": "RIGHT",
+         "origin": "local", "state": "draft"},
+    ]}
+    partial = {"notes": [{"id": "n-1", "body": "edited"}]}
+
+    merged = merge_state(current, partial, is_page_origin=True)
+
+    note = merged["notes"][0]
+    assert note["body"] == "edited"
+    assert note["path"] == "a.py" and note["line"] == 5 and note["side"] == "RIGHT"
+
+
 # ---------------------------------------------------------------------------
 # import (copy-for-agent payload)
 # ---------------------------------------------------------------------------
@@ -972,6 +1070,30 @@ def test_import_of_a_posted_note_does_not_flip_it_back_to_draft():
     assert note["gh_url"] == "https://x/1"
 
 
+def test_import_of_a_malformed_page_note_does_not_brick_a_later_import():
+    # Regression: a pasted note missing path/line/side used to be merged and written to
+    # state.json, then pending_publish_ids (which do_import calls on every import, not just
+    # this one) raised KeyError reading note["path"] on every import from then on.
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": []})
+        bad_payload_path = Path(tmp) / "bad.json"
+        bad_payload_path.write_text(json.dumps(
+            {"notes": [{"id": "n-bad", "body": "hi", "state": "draft"}]}
+        ))
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_import(_Args(state=state_path, file=str(bad_payload_path)))
+
+        good_note = _note(id="n-good", state="draft", path="a.py", line=5, side="RIGHT")
+        good_payload_path = Path(tmp) / "good.json"
+        good_payload_path.write_text(json.dumps({"notes": [good_note]}))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            do_import(_Args(state=state_path, file=str(good_payload_path)))
+        result = json.loads(Path(state_path).read_text())
+
+    assert [n["id"] for n in result["notes"]] == ["n-good"]
+    assert "ready to post: n-good" in out.getvalue()
+
+
 def test_import_reads_from_stdin():
     new_note = _note(id="n-stdin", state="draft")
     payload = json.dumps({"notes": [new_note]})
@@ -1050,7 +1172,9 @@ if __name__ == "__main__":
         test_deliver_reply_falls_back_to_a_new_thread_when_the_comment_field_is_outright_null,
         test_deliver_raises_cleanly_when_the_new_thread_field_is_outright_null,
         test_submit_review_returns_none_when_the_submit_field_is_outright_null,
+        test_do_submit_raises_instead_of_reporting_success_when_the_submit_is_rejected,
         test_deliver_sends_the_relocated_line_to_the_mutation_when_the_anchor_has_shifted,
+        test_do_deliver_skips_a_note_already_posted_and_does_not_double_post,
         test_merge_state_upserts_notes_merges_meta_replaces_lists,
         test_merge_state_page_created_note_gets_schema_defaults,
         test_merge_state_agent_created_note_state_is_not_overridden_by_default,
@@ -1059,9 +1183,14 @@ if __name__ == "__main__":
         test_page_origin_write_cannot_touch_a_github_origin_note,
         test_agent_origin_write_can_set_state_and_gh_id,
         test_partial_note_write_preserves_stored_origin_and_gh_fields,
+        test_page_origin_write_drops_a_new_note_missing_path,
+        test_page_origin_write_drops_a_new_note_with_a_null_line,
+        test_page_origin_write_drops_a_new_note_with_a_string_line,
+        test_page_origin_partial_write_onto_an_existing_note_still_merges_body_only,
         test_import_merges_new_notes_into_a_state_without_them,
         test_a_brand_new_imported_note_is_visible_to_pending_publish_ids_and_payloads_for,
         test_import_of_a_posted_note_does_not_flip_it_back_to_draft,
+        test_import_of_a_malformed_page_note_does_not_brick_a_later_import,
         test_import_reads_from_stdin,
         test_import_rejects_a_note_id_failing_valid_id_re,
     ]

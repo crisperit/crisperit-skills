@@ -58,9 +58,11 @@ same deny-list a page write is always subject to (PAGE_DENIED_NOTE_FIELDS and VA
 pasted payload is a snapshot of localStorage and can be stale, and without that deny-list a
 note state.json already has as posted would flip back to draft, sending the next deliver to
 open a second thread on the same line. A note brand new to state.json gets the deny-list's
-fields defaulted by merge_state itself (state "draft", origin "local", etc). Its "ready to
-post" list is exactly pending_publish_ids restricted to the notes this call touched, not a
-second definition of ready.
+fields defaulted by merge_state itself (state "draft", origin "local", etc), but only once
+merge_state has confirmed it carries a path/line/side -- a malformed paste is dropped instead
+of being written to state.json half-formed, since pending_publish_ids would otherwise raise on
+it on every later import. Its "ready to post" list is exactly pending_publish_ids restricted
+to the notes this call touched, not a second definition of ready.
 
 GitHub delivery (deliver/submit) goes through a GraphQL pending review instead of the old
 REST payloads/promote pair, because REST has no way to append a comment to an
@@ -73,8 +75,12 @@ opens a new one (`addPullRequestReviewThread`, after resolving the anchor -- see
 `postable_ranges`/`resolve` below). A null thread/comment back from a reply attempt means the
 web UI deleted that thread mid-session, not an error: `deliver` falls back to opening a fresh
 thread instead. The GitHub post and the local state update happen in the same call, so a
-crash between the two can never lose the record of a comment that landed. `submit` publishes
-the pending review with `submitPullRequestReview`. Every `gh` call sends its query and
+crash between the two can never lose the record of a comment that landed. `do_deliver` also
+refuses to re-deliver a note already `state == "posted"`, so retrying `deliver` after a `gh`
+timeout (the natural response to it) can't double-post a thread whose first attempt actually
+landed -- see GH_TIMEOUT above. `submit` publishes the pending review with
+`submitPullRequestReview`, and `do_submit` raises if that comes back null (a silently rejected
+submission) rather than reporting success. Every `gh` call sends its query and
 variables as one JSON document on stdin via `gh api graphql --input -`: a note body is
 authored by a browser page, and interpolating that text into a command line would be shell
 injection with an extra step. Notes carry `gh_thread_id` and `gh_node_id` beside the existing
@@ -242,6 +248,18 @@ def _index_by_gh_id(notes):
     return {note["gh_id"]: note for note in notes if note.get("gh_id") is not None}
 
 
+def _has_postable_fields(note):
+    """True when `note` carries what payloads_for/resolve read unconditionally: a str path,
+    a non-bool int line, and a LEFT/RIGHT side. Guards a page-origin note brand new to state,
+    since pending_publish_ids walks every note and a missing field there raises on every
+    later import, not just this one."""
+    return (
+        isinstance(note.get("path"), str)
+        and isinstance(note.get("line"), int) and not isinstance(note.get("line"), bool)
+        and note.get("side") in ("LEFT", "RIGHT")
+    )
+
+
 def merge_state(current, partial, is_page_origin=False):
     """Keyed merge, not whole-document replace: every field in the schema has exactly one
     writer, so two writes to different notes always commute. meta is merged key by key,
@@ -254,7 +272,9 @@ def merge_state(current, partial, is_page_origin=False):
     defaults (state "draft", origin "local", gh_id/gh_url/reply_to None) via setdefault. The
     one real conflict left, two edits to the same field, is last-write-wins by design. A note
     whose id fails VALID_ID_RE is dropped rather than merged, and never raises -- the id is
-    unvalidated browser input.
+    unvalidated browser input. A page-origin note brand new to state is dropped the same way
+    when it fails _has_postable_fields (missing/wrong-typed path, line, or side) -- an existing
+    note is exempt, so a partial write (e.g. body only) still merges onto it.
     """
     merged = dict(current)
     if "meta" in partial:
@@ -275,7 +295,10 @@ def merge_state(current, partial, is_page_origin=False):
             stored = by_id.get(note_id)
             if is_page_origin and stored is not None and stored.get("origin") == "github":
                 continue
-            if stored is None:
+            is_new = stored is None
+            if is_page_origin and is_new and not _has_postable_fields(note):
+                continue  # malformed paste: drop it rather than brick every later import
+            if is_new:
                 stored = {}
                 order.append(note_id)
             for field, value in note.items():
@@ -793,7 +816,9 @@ def do_import(args):
     for note in partial.get("notes", []):
         note_id = note.get("id")
         if not isinstance(note_id, str) or note_id not in merged_by_id:
-            continue  # merge_state dropped it: a bad id, or a locked github-origin note
+            # merge_state dropped it: a bad id, a locked github-origin note, or a malformed
+            # new note missing path/line/side
+            continue
         if note_id not in before:
             added.append(note_id)
         elif merged_by_id[note_id] != before[note_id]:
@@ -844,6 +869,9 @@ def do_deliver(args):
     if note is None:
         print(f"no note with id {args.id}", file=sys.stderr)
         return 1
+    if note.get("state") == "posted":
+        print(f"{args.id} already posted")
+        return 0
     diff_path = Path(args.diff) if args.diff else Path(args.state).parent / "raw.diff"
     diff_text = diff_path.read_text(errors="replace") if diff_path.exists() else ""
     deliver_note(state, note, diff_text, _gh_graphql)
@@ -858,7 +886,9 @@ def do_deliver(args):
 def do_submit(args):
     state = _load_state(args.state)
     body = Path(args.body_file).read_text()
-    submit_review(state, args.event, body, _gh_graphql)
+    review = submit_review(state, args.event, body, _gh_graphql)
+    if review is None:
+        raise RuntimeError("GitHub rejected the submission: submitPullRequestReview returned null")
     print("submitted")
     return 0
 

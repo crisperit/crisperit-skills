@@ -33,14 +33,11 @@ a smarter identity key.
 import argparse
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from validate_analysis import DIFF_GIT, HUNK_PREFIX, parse_hunks  # noqa: E402
-
-INDEX_LINE = re.compile(r"^index [0-9a-fA-F]+\.\.([0-9a-fA-F]+)")
+from validate_analysis import HUNK_PREFIX, parse_hunks  # noqa: E402
 
 # Bumped by hand when a script's own behaviour changes, so a cache entry keyed on git refs
 # alone (which say nothing about the script that produced it) doesn't survive the edit.
@@ -57,43 +54,12 @@ SCRIPT_VERSION = {
 REF_BASED = ("coupling", "structure", "symdelta")
 
 
-def file_blobs(diff_text):
-    """path -> new-side git blob sha, or None when the diff has no `index` line for it.
-
-    Mirrors parse_hunks's own path resolution (the a_path/current dance for a delete's
-    `+++ /dev/null`) so a path here always matches the path parse_hunks returns for the
-    same diff, without touching that function.
-    """
-    blobs = {}
-    a_path = current = None
-    prev = ""
-    for line in diff_text.splitlines():
-        match = DIFF_GIT.match(line)
-        if match:
-            a_path = match.group(1) or match.group(2)
-            current = match.group(3) or match.group(4)
-            blobs.setdefault(current, None)
-            prev = line
-            continue
-        if line.startswith("+++ ") and prev.startswith("--- ") and current is not None:
-            if line[4:].strip() == "/dev/null" and a_path and a_path != current:
-                blobs[a_path] = blobs.pop(current, None)
-                current = a_path
-            prev = line
-            continue
-        idx = INDEX_LINE.match(line)
-        if idx and current is not None:
-            blobs[current] = idx.group(1)
-        prev = line
-    return blobs
-
-
 def hunk_id(path, prefix):
     return f"{path}\t{prefix}"
 
 
 def hunk_hash(hunk, blob):
-    """sha256(body lines + "\\n" + blob)[:16]. `blob` is None for the always-stale
+    """sha256(body lines + "\\n" + blob)[:16]. `blob` is "" for the always-stale
     degradation case; callers must not treat a matching fallback hash as a real match."""
     body = "\n".join(raw for _, raw in hunk["lines"])
     return hashlib.sha256(f"{body}\n{blob or ''}".encode()).hexdigest()[:16]
@@ -102,17 +68,16 @@ def hunk_hash(hunk, blob):
 def hunk_records(diff_text):
     """[{"id", "path", "prefix", "hash", "always_stale"}], one per hunk, in diff order."""
     order, files = parse_hunks(diff_text)
-    blobs = file_blobs(diff_text)
     records = []
     for path in order:
-        blob = blobs.get(path)
+        blob = files[path]["blob"]
         for hunk in files[path]["hunks"]:
             records.append({
                 "id": hunk_id(path, hunk["prefix"]),
                 "path": path,
                 "prefix": hunk["prefix"],
                 "hash": hunk_hash(hunk, blob),
-                "always_stale": blob is None,
+                "always_stale": not blob,
             })
     return records
 
@@ -200,7 +165,7 @@ def fill_seeds(seed_path, hunk_plan, prior_roles):
     for file_entry in seed["files"]:
         path = file_entry["path"]
         hunks = file_entry.get("hunks") or []
-        file_all_carry = bool(hunks)
+        file_all_carry = True
         for h in hunks:
             match = HUNK_PREFIX.match(h["header"].strip())
             prefix = match.group(1) if match else h["header"]
@@ -218,14 +183,23 @@ def fill_seeds(seed_path, hunk_plan, prior_roles):
 
 
 def dirty(head_file, prior_head_sha):
-    """Read the ref file at `head_file` (a plain file read, no git call -- `head_file` is
-    expected to already be resolved with `git rev-parse --git-path HEAD`, which is
-    worktree-correct) and report whether it disagrees with the sha the page was built
-    against."""
+    """Read `head_file` (no git call -- expected already resolved via `git rev-parse
+    --git-path HEAD`), follow a symbolic ref one step to the real sha via `<head_file's
+    dir>/<ref path>`, or through a linked worktree's `commondir` file when present, and
+    report whether that disagrees with the sha the page was built against. A packed ref (no
+    loose file) reports not dirty rather than guessing."""
     try:
         current = Path(head_file).read_text().strip()
     except OSError:
         return False
+    if current.startswith("ref: "):
+        head_dir = Path(head_file).parent
+        commondir = head_dir / "commondir"
+        base_dir = (head_dir / commondir.read_text().strip()) if commondir.exists() else head_dir
+        try:
+            current = (base_dir / current[5:].strip()).read_text().strip()
+        except OSError:
+            return False
     return bool(prior_head_sha) and current != prior_head_sha
 
 

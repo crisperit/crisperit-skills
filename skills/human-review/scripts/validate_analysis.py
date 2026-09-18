@@ -20,7 +20,7 @@ all: it skips every per-file and per-hunk check and instead requires "groups" to
 every path in the diff exactly once, since groups is the only thing carrying per-file
 coverage on that path.
 
-Schema (see visual-diff/SKILL.md step 2):
+Schema (see human-review/SKILL.md step 2):
 
   {
     "target": "master...HEAD",

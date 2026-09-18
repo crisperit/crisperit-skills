@@ -57,7 +57,6 @@ arithmetic, a string from `analysis.json`, or a section file pasted byte for byt
 | WHAT CHANGED | `h2` + one `p` per paragraph | `what_changed`, omitted when blank |
 | FLOW | `h2` + `.panel.svgbox` wrapping `pre.mermaid` | `flow_mermaid`, omitted when blank |
 | HOW IT WORKS | `h2` + one `p` per paragraph | `how_it_works`, omitted when blank |
-| RELATIONS | one `p`, then `section-explorer.html` | `section_notes.explorer`, then the file |
 | WALKTHROUGH | `h2` + `section-walkthrough.html` | `walkthrough.py` |
 | Footer | `.foot` | target, timestamp, PR link from `links.json` |
 
@@ -65,13 +64,6 @@ Notes on the rows that look arbitrary:
 
 - **No FILE MAP section.** A panel listing the same paths directly above the same paths is one
   section too many, so the walkthrough `summary` carries the inventory.
-- **RELATIONS gets no `h2` from the renderer.** `section-explorer.html` opens with its own
-  `<h2>RELATIONS</h2>`, and adding one produced two headings in a row on a real page. The note
-  therefore lands above that heading, which is where the spec always put it; move it below by
-  splitting the paste if that ever reads wrong.
-- **One relations box, not three graphs.** It carries level buttons for modules, files and
-  symbols plus a focus select, so the reader switches level and drills down in place instead of
-  scrolling past three diagrams. Markdown still stacks three, because GitHub cannot run the JS.
 - **Section files are pasted, never regenerated.** Their escaping is already correct, so
   escaping again renders `&amp;lt;` on the page, and retyping a diagram is how a legend drifts
   from its arrows. `validate_analysis.py --sections` checks each one's marker survived.
