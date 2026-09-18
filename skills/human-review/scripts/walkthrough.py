@@ -371,6 +371,9 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
                 name = (f'<a href="{escape(file_urls[path])}" target="_blank"'
                         f' rel="noopener noreferrer" title="Open in PR">{name}</a>')
             out.append(f'      <span class="hunk-path">{name}</span>')
+            # Filled in client-side (renderNotes) once notes exist for this path; empty here
+            # so :empty hides it and a hunk with no comments shows nothing.
+            out.append('      <span class="hunk-count"></span>')
             out.append(f'      <span class="hunk-stat"><span class="add">+{file["added"]}'
                        f'</span> <span class="del">-{file["removed"]}</span></span>')
             if old_path:

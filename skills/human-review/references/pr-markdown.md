@@ -52,7 +52,7 @@ holds.
 
 The recap never names a local filesystem path, a scratch directory, or a temp file. Every
 reader of a pull request description is on someone else's machine, so a path like
-`/tmp/claude-.../visual-diff-AO-4.html` means nothing to them and exposes a local directory
+`/tmp/claude-.../human-review-AO-4.html` means nothing to them and exposes a local directory
 layout besides. Point at the PR's own Files changed tab instead, the same place the links
 above already point.
 
