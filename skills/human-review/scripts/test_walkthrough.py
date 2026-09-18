@@ -787,6 +787,19 @@ def test_the_stat_stays_in_the_summary_and_the_bar_is_gone_from_html():
     assert 'class="bar"' not in out
 
 
+def test_hunk_count_badge_placeholder_sits_in_hunk_lines_between_path_and_stat():
+    """Empty here -- the page's renderNotes() fills it in client-side once notes exist for
+    this path. Must live inside .hunk-lines, after .hunk-path and before .hunk-stat, so the
+    stat's margin-left:auto still pins it to the row's right edge."""
+    order, files = parsed()
+    out = render_html(flat(order, files), files, {})
+
+    lines = out.split('<span class="hunk-lines">')[1].split("</span>\n  </summary>")[0]
+    assert '<span class="hunk-count"></span>' in lines
+    assert lines.index('<span class="hunk-path">') < lines.index('<span class="hunk-count">') \
+        < lines.index('<span class="hunk-stat">')
+
+
 def test_the_meta_row_is_skipped_when_it_would_be_empty():
     # It carries a top padding, so an empty one leaves a visible gap under the summary.
     order, files = parsed()

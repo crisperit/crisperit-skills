@@ -3,7 +3,7 @@
 
 Usage: python3 coupling.py --repo <path> --base <ref> --head <ref> [--files <p1> <p2> ...]
 
-Stdlib only, no network, no third-party imports. See visual-diff/SKILL.md for
+Stdlib only, no network, no third-party imports. See human-review/SKILL.md for
 how this fits into the recap flow.
 """
 

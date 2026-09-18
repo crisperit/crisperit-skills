@@ -18,7 +18,9 @@ most 8 batches, so a huge diff widens each batch instead of spawning 60 agents.
 
 ## The batch subagent brief
 
-One subagent per batch, `model="haiku"`, all spawned in a single message so they run
+One subagent per batch, each on a small fast model (haiku class): the job is per-hunk noticing
+inside one slice, and the gate checks every answer, so delegate down when a validator can catch
+the mistake and keep it up when it cannot. All spawned in a single message so they run
 concurrently. Each reads only its own `batch-N.diff` and its manifest-listed
 `fragment-N.seed.json`, a skeleton with every `files[]` and `hunks[]` entry already pre-filled
 and only `role` and `note` left blank. It copies the seed to `fragment-N.json` and fills those
@@ -34,6 +36,11 @@ Tell it to build the fragment as a Python data structure and write it with `json
 typing the JSON text by hand: a note quoting code routinely contains a double quote, and
 hand-typed JSON gets that escaping wrong often enough to cost a retry on half the batches. Tell
 it to verify its own fragment parses with `json.load` before it finishes.
+
+Tell it to reply with the fragment's path and a count of hunks filled, never the fragment's
+content. A batch agent that pastes its role and note text back into its own report is exactly
+how that text ends up in the main thread's context a second time; the fragment file is the
+deliverable, the reply is a receipt.
 
 ## Role rules
 
@@ -83,10 +90,23 @@ everything.
 
 ## The prose subagent
 
-One subagent, `model="sonnet"`, reads the fragments and the numstat, never `raw.diff`, and
-writes `<scratchpad>/prose.json` with `target`, `what_changed`, `how_it_works` and
-`flow_mermaid`. It may open specific files in the repo when a fragment note is not enough to
-explain the machinery.
+One subagent, on a stronger model (sonnet class) since it needs the whole change in view and
+nothing downstream can check its judgment, writes `<scratchpad>/prose.json` with `target`,
+`what_changed`, `how_it_works` and `flow_mermaid`, from the fragments and the numstat. Under
+about 2000 lines, hand it `<scratchpad>/raw.diff` too and tell it to read it, since that removes
+the guessing; above that, fragments and the numstat only, never `raw.diff`, the size this split
+exists to protect. Either way it may open specific files in the repo when a fragment note is not
+enough to explain the machinery.
+
+Tell it, on either brief: every identifier in the prose is copied from the source, never
+reconstructed from what a name in that language usually looks like, so an exported
+`UIDFromOzoneCookie` is never softened into "a helper" because unexported names are usually
+lowercase. A signature change is claimed only when it is visibly in the diff, never because a
+function of that name plausibly gained a parameter elsewhere.
+
+Tell it to reply with `prose.json`'s path and a count of fields filled, never their content. An
+agent that pastes `what_changed` back into its own report is exactly how that prose ends up in
+the main thread's context a second time; the file is the deliverable, the reply is a receipt.
 
 ## Merging
 
@@ -101,9 +121,10 @@ step exists: `references/rationale.md`.
 
 ## Gating the merged analysis
 
-After the merge, one subagent, `model="sonnet"`, gets the `(path, role)` pairs from the merged
-analysis, plus `layers.note`/`layers.touched`, `coupling.note`/`coupling.changed_nodes`, and
-`symdelta.counts`/`symdelta.moved`. It returns `groups`, `verdict` and `section_notes`; write
+After the merge, one subagent, on a stronger model (sonnet class) since it needs the whole change
+in view and nothing downstream can check its judgment, gets the `(path, role)` pairs from the
+merged analysis, plus `layers.note`/`layers.touched`, `coupling.note`/`coupling.changed_nodes`,
+and `symdelta.counts`/`symdelta.moved`. It returns `groups`, `verdict` and `section_notes`; write
 what it returns into `analysis.json` before the gate, and review it rather than author it
 yourself. This is a deliberate tradeoff: `groups` is the reading order a human follows and is
 the least safe field here to hand off, but a `(path, role)` list plus the graph summaries is
@@ -135,20 +156,21 @@ analysis that has not passed.
 
 ### Gate-failure routing
 
-Count the problem lines before deciding how to fix them.
+Count the problem lines before deciding how to fix them. Either way a subagent does the fixing,
+never the main thread: the gate's own lines already name the path and the field, so nothing else
+needs to travel.
 
-- **Under about ten**: patch `analysis.json` in the main thread. You already know the diff's
-  shape by this point, and one `json.load`, assign, `json.dump` script beats a round trip
-  through an agent that has to re-read its batch to write one sentence. Six gaps on a 45-file
-  diff took one patch script and under a minute. Patch by looking at just those spots,
-  `git diff <base>...<head> -- <path>`, not by re-reading `raw.diff`.
+- **Under about ten**: send them to one subagent to patch `analysis.json` directly with a
+  `json.load`, assign, `json.dump` script; the gate's lines are enough context on their own, so
+  this beats a round trip through the batch that produced them to fix one sentence. Six gaps on a
+  45-file diff took one patch script and under a minute.
 - **Above that, or a whole file entry missing rather than a field**: send the exact problem
   lines back to whoever produced that part. The fan-out manifest maps each file to its batch and
   fragment, so a complaint about one file goes to that batch's subagent alone, not to all of
   them. Re-run the gate after each fix.
-- **Same batch fails twice**: respawn that batch with `model="sonnet"` rather than pushing a
-  third time. The fan-out is a speed optimisation, and a batch the cheap model cannot cover is
-  exactly where it stops paying off.
+- **Same batch fails twice**: respawn that batch on a stronger model (sonnet class) rather than
+  pushing a third time. The fan-out is a speed optimisation, and a batch the cheap model cannot
+  cover is exactly where it stops paying off.
 
 Two things the gate does not check, so check them yourself: a hunk whose entry the fragment
 appended with an empty `hunks` list for a deleted file (append the entry, do not assume it is

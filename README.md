@@ -1,19 +1,19 @@
 # crisperit-skills
 
 Agent skills I use on real work, packaged so you can install them. One so far,
-visual-diff.
+human-review.
 
-## visual-diff
+## human-review
 
 Point it at a git diff, a commit range, a branch or a GitHub PR. It produces a
 markdown recap for the PR description and a self-contained HTML review page you
 open locally.
 
 ```
-/visual-diff                 # working tree plus staged changes
-/visual-diff this branch     # main...HEAD
-/visual-diff 123             # that PR
-/visual-diff HEAD~3..HEAD
+/human-review                 # working tree plus staged changes
+/human-review this branch     # main...HEAD
+/human-review 123             # that PR
+/human-review HEAD~3..HEAD
 ```
 
 ### Why
@@ -24,7 +24,7 @@ things every time, and the diff helps with none of them:
 
 **1. I estimate coupling by reading what imports what.** That is how you find
 the blast radius of a change, and doing it by hand across seven files is slow
-and easy to get wrong. visual-diff derives the import and call graph by parsing
+and easy to get wrong. human-review derives the import and call graph by parsing
 the code itself, not by asking a model to guess it from the diff text, and draws
 it at two levels. Packages first:
 
@@ -37,14 +37,14 @@ has fan-out and which are leaves:
 
 **2. I group the changed files by feature and read them in that order.** A
 GitHub file list is alphabetical, which is never the order the change makes
-sense in. So visual-diff groups the files into themes, puts the theme a reviewer
+sense in. So human-review groups the files into themes, puts the theme a reviewer
 needs first at the top, and orders files inside a group caller before callee.
 
 ![Walkthrough grouped by feature](docs/images/reading-order.png)
 
-**3. I take notes per line, then turn them into review comments.** The page lets
-you comment on any diff line and copy the whole set back out, ready to post on
-the PR.
+**3. I take notes per line, then turn them into review comments.** Comments sit
+on the diff lines they are about, and each one has a button that posts it to the
+PR. Nothing leaves the page unless you click it.
 
 ![Commenting on a diff line](docs/images/line-comment.png)
 

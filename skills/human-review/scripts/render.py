@@ -46,6 +46,7 @@ from validate_analysis import parse_hunks  # noqa: E402  one owner for diff pars
 
 TITLE_PLACEHOLDER = "<!-- DIFF_TITLE -->"
 CONTENT_PLACEHOLDER = "<!-- DIFF_CONTENT -->"
+STATE_PLACEHOLDER = "<!-- HR_STATE -->"
 # Order runs orientation, then concepts, then structure, then detail. Markdown stacks the three
 # graphs widest first, because which modules exist and which way they depend is the context that
 # makes the narrower two mean anything.
@@ -133,7 +134,7 @@ def _wrap_flow_labels(mermaid):
 
 
 def render_html(analysis, files, template, explorer="", walkthrough="", links=None, title=None,
-                now=None, symbols="", complexity=None):
+                now=None, symbols="", complexity=None, state=None):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
@@ -163,8 +164,9 @@ def render_html(analysis, files, template, explorer="", walkthrough="", links=No
         body.append("<h2>Flow</h2>")
         # tabindex and role give the zoom modal keyboard access before its JS has run; wire()
         # sets them again on the live element, which is a harmless no-op.
-        # svgbox-flow: FLOW is prose-scale (~13 nodes) and renders at full size, unlike the
-        # bigger stacked diagrams sections.py pastes in below, which stay capped and scaled.
+        # svgbox-flow: tells panZoom() and the CSS to size FLOW from its own viewBox (fit,
+        # never upscale) instead of stretching to the panel like the bigger stacked diagrams
+        # sections.py pastes in below.
         body.append('<div class="panel svgbox svgbox-flow" tabindex="0" role="button"'
                     ' aria-label="Expand diagram to full size">'
                     f'<pre class="mermaid">{escape(flow)}</pre></div>')
@@ -193,6 +195,9 @@ def render_html(analysis, files, template, explorer="", walkthrough="", links=No
         # there would be nothing for it to hide. It names the state it is in, not the one it
         # switches to, and explanations start on, so the label here is the on label.
         body.append('<h2 class="h2-row"><span>Walkthrough</span><span class="ctl">'
+                    # The page has no other keyboard-help affordance since #fb-toggle was
+                    # unwired, so the n/N comment-nav shortcut is announced here.
+                    '<span class="ctl-hint">n / N: next, previous comment</span>'
                     '<button type="button" id="wt-notes-toggle"'
                     ' aria-label="Explanations shown. Activate to hide them."'
                     '>explanations</button></span></h2>')
@@ -207,7 +212,16 @@ def render_html(analysis, files, template, explorer="", walkthrough="", links=No
 
     heading = title or (f"Visual diff: {target}" if target else "Visual diff")
     page = template.replace(TITLE_PLACEHOLDER, escape(heading))
-    return page.replace(CONTENT_PLACEHOLDER, "\n".join(body))
+    page = page.replace(CONTENT_PLACEHOLDER, "\n".join(body))
+    if state is not None:
+        # \u003c is a JSON string escape, not an HTML entity -- script content is
+        # never HTML-entity-decoded, and JSON.parse decodes \u003c natively, so
+        # nothing has to reverse it client-side (an &lt; entity would, and would
+        # also mangle a note body that already contained the literal text "&lt;").
+        blob = json.dumps(state).replace("<", "\\u003c")
+        page = page.replace(STATE_PLACEHOLDER,
+                             f'<script type="application/json" id="hr-state">{blob}</script>')
+    return page
 
 
 def _reading_order_md(groups):
@@ -327,6 +341,7 @@ def main():
     parser.add_argument("--template", help="html only: the page template")
     parser.add_argument("--explorer", help="html only: section-explorer.html")
     parser.add_argument("--symbols", help="html only: section-symbols.html")
+    parser.add_argument("--state", help="html only: state.json, inlined behind HR_STATE")
     parser.add_argument("--title", help="html only")
     for kind in MD_SECTION_ORDER:
         parser.add_argument(f"--{kind}", help=f"md only: section-{kind}.md")
@@ -336,6 +351,7 @@ def main():
     _order, files = parse_hunks(Path(args.diff).read_text(errors="replace"))
     links = json.loads(Path(args.links).read_text()) if args.links else None
     complexity = json.loads(Path(args.complexity).read_text()) if args.complexity else None
+    state = json.loads(Path(args.state).read_text()) if args.state else None
 
     if args.format == "html":
         if not args.template:
@@ -343,7 +359,7 @@ def main():
         sys.stdout.write(render_html(
             analysis, files, _read(args.template), _read(args.explorer),
             _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
-            complexity=complexity,
+            complexity=complexity, state=state,
         ))
     else:
         sections = {kind: _read(getattr(args, kind)) for kind in MD_SECTION_ORDER}

@@ -20,7 +20,7 @@ all: it skips every per-file and per-hunk check and instead requires "groups" to
 every path in the diff exactly once, since groups is the only thing carrying per-file
 coverage on that path.
 
-Schema (see visual-diff/SKILL.md step 2):
+Schema (see human-review/SKILL.md step 2):
 
   {
     "target": "master...HEAD",
@@ -62,6 +62,9 @@ import sys
 
 DIFF_GIT = re.compile(r'^diff --git (?:"a/(.+)"|a/(\S+)) (?:"b/(.+)"|b/(\S+))$')
 HUNK_PREFIX = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)")
+# The post-image blob sha, used by state.py to invalidate a file's hunk hashes when anything
+# in the file changes, not just the edited hunk.
+INDEX_LINE = re.compile(r"^index [0-9a-fA-F]+\.\.([0-9a-fA-F]+)")
 REQUIRED_KEYS = ("target", "what_changed", "how_it_works", "flow_mermaid", "files")
 # --recap has no files[] at all (see module docstring), so it only owes the prose keys.
 PROSE_KEYS = tuple(key for key in REQUIRED_KEYS if key != "files")
@@ -99,10 +102,11 @@ def parse_hunks(text):
     walkthrough covered every file.
 
     A file dict is {"hunks": [{"prefix", "header", "lines": [(kind, raw line)]}],
-    "added", "removed"}, where kind is "a", "d" or "c" and the raw line keeps its leading
-    marker. A `\\ No newline at end of file` marker is dropped: it advances neither side of the
-    diff, so emitting it as one of those three would put every line comment below it on the
-    wrong line.
+    "added", "removed", "blob"}, where kind is "a", "d" or "c" and the raw line keeps its
+    leading marker, and "blob" is the post-image sha from the `index` line, "" when absent
+    (binary/rename-only entries). A `\\ No newline at end of file` marker is dropped: it
+    advances neither side of the diff, so emitting it as one of those three would put every
+    line comment below it on the wrong line.
     """
     order = []
     files = {}
@@ -117,7 +121,7 @@ def parse_hunks(text):
             current = match.group(3) or match.group(4)
             if current not in files:
                 order.append(current)
-                files[current] = {"hunks": [], "added": 0, "removed": 0}
+                files[current] = {"hunks": [], "added": 0, "removed": 0, "blob": ""}
             prev = line
             in_hunk = False
             continue
@@ -131,6 +135,13 @@ def parse_hunks(text):
                 current = a_path
             prev = line
             continue
+
+        if current is not None and not in_hunk:
+            match = INDEX_LINE.match(line)
+            if match:
+                files[current]["blob"] = match.group(1)
+                prev = line
+                continue
 
         if current is not None:
             match = HUNK_PREFIX.match(line)
