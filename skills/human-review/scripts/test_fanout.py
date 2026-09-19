@@ -199,7 +199,7 @@ def test_merge_defaults_verdict_and_section_notes_when_prose_omits_them():
         result = merge(DIFF, [str(frag)], {})
 
         assert result["verdict"] == ""
-        # A dict, not a string: render.py calls .get() on section_notes.
+        # A dict, not a string, matching PROSE_DEFAULTS's falsy shape for this key.
         assert result["section_notes"] == {}
 
 

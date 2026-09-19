@@ -12,6 +12,7 @@ from validate_analysis import (  # noqa: E402
     _empty_note_floor,
     check_rendered,
     check_sections,
+    is_test_path,
     parse_diff,
     validate,
 )
@@ -58,6 +59,38 @@ GOOD = {
         {"path": "logo.png", "role": "binary, replaced artwork", "hunks": []},
     ],
 }
+
+
+def test_is_test_path_classifies_across_ecosystems():
+    hits = [
+        "internal/ratelimit/ratelimit_request_test.go",
+        "corelib/macros/macros_test.go",
+        "app/foo_test.py",
+        "src/main/java/FooTest.java",
+        "pkg/a/b_test.go",
+        "lib/foo_spec.rb",
+        "lib/foo_test.rb",
+        "Services/FooTests.cs",
+        "Sources/FooTests.swift",
+        "conftest.py",
+        "src/foo.test.ts",
+        "src/foo.spec.ts",
+        "tests/x.py",
+        "spec/y.rb",
+    ]
+    for path in hits:
+        assert is_test_path(path), f"expected test path: {path}"
+
+    non_test = [
+        "latest/x.py",
+        "src/contest.py",
+        "src/greatest/x.py",
+        "greatest.cs",
+        "contest.java",
+        "manifest.py",
+    ]
+    for path in non_test:
+        assert not is_test_path(path), f"expected non-test path: {path}"
 
 
 def test_parse_diff_finds_files_hunks_and_the_deleted_side():

@@ -31,11 +31,11 @@ which is the same fact without the per-line noise.
 
 ## Why the markdown budget retry uses the printed number, not a guess
 
-`walkthrough.py --format md`'s default `--max-chars 12000` is sized against a measured case
-where the graph sections came to 6250 characters, and it overflows when they come out fatter.
-`render.py` names the exact value to retry with on an over-budget warning. Converging by hand
-instead cost three render cycles on a 45-file diff: 12000, then 9800, then 9600 characters before
-it fit. Take the printed number.
+`walkthrough.py --format md`'s default `--max-chars` is 32000, sized against a typical case, and
+it overflows when the graph sections come out fatter than that. `render.py` names the exact
+value to retry with on an over-budget warning. Converging by hand instead cost three render
+cycles on a 45-file diff, back when the default was still 12000: 12000, then 9800, then 9600
+characters before it fit. Take the printed number.
 
 ## Why `symdelta.py` resolves calls instead of matching names
 

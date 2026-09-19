@@ -33,63 +33,14 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter, defaultdict
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from links import resolve_base, run_git  # noqa: E402  one owner for git helpers (subprocess + merge-base)
+from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
+
 EXTRACTOR_DIR = SCRIPT_DIR / "extractors" / "go"
-
-# Ported from coupling.py (deleted with the file-coupling graph): the shared owner is gone, and
-# this is the only remaining importer, so a private copy beats reviving a module for one
-# consumer.
-_TEST_DIR_SEGMENTS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
-_TEST_FILENAME_PATTERNS = (
-    re.compile(r"^test_.*", re.IGNORECASE),  # pytest / unittest
-    re.compile(r".*_test\..+$", re.IGNORECASE),  # Go / Ruby / Python suffix
-    re.compile(r".*\.test\..+$", re.IGNORECASE),  # JS/TS (jest, vitest)
-    re.compile(r".*\.spec\..+$", re.IGNORECASE),  # JS/TS (jasmine, karma)
-    re.compile(r".*_spec\..+$", re.IGNORECASE),  # RSpec
-    re.compile(r".*\.e2e-spec\..+$", re.IGNORECASE),  # e.g. mcp-auth.e2e-spec.ts
-    re.compile(r".*\.tests\.ps1$", re.IGNORECASE),  # PowerShell Pester
-    re.compile(r"^conftest\.py$", re.IGNORECASE),  # pytest fixtures
-    # Java/C#/Swift: an uppercase-led Test(s) right before the extension, so lowercase
-    # mid-word hits like "greatest.cs"/"contest.java" do not match.
-    re.compile(r".*Test\.java$"),
-    re.compile(r".*Tests\.java$"),
-    re.compile(r".*Tests\.cs$"),
-    re.compile(r".*Tests\.swift$"),
-)
-
-
-def is_test_path(path):
-    """Classify a path as a test path: segment-aware and suffix-aware, never
-    substring-aware, so "latest/x.py", "src/contest.py" and "src/greatest/x.py" stay
-    non-test."""
-    if not path:
-        return False
-    norm = str(path).replace("\\", "/")
-    if any(segment.lower() in _TEST_DIR_SEGMENTS for segment in PurePosixPath(norm).parts):
-        return True
-    filename = PurePosixPath(norm).name
-    return any(pattern.match(filename) for pattern in _TEST_FILENAME_PATTERNS)
-
-
-def run_git(repo, args):
-    return subprocess.run(
-        ["git", "-C", repo, *args], capture_output=True, text=True, errors="replace"
-    )
-
-
-def resolve_base(repo, base, head):
-    """The merge base of base and head, matching what `git diff base...head` compares.
-
-    Reading base's own tip instead would attribute anything that landed on the base branch
-    since the fork to this change, and hide anything the fork point still had. For a plain
-    range like HEAD~3..HEAD the merge base is HEAD~3, so this is a no-op there.
-    """
-    result = run_git(repo, ["merge-base", base, head])
-    if result.returncode != 0:
-        return base
-    return result.stdout.strip() or base
 
 
 def _resolve_cache_dir(environ, home):

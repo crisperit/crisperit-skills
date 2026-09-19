@@ -45,6 +45,19 @@ def run_git(repo, args):
     )
 
 
+def resolve_base(repo, base, head):
+    """The merge base of base and head, matching what `git diff base...head` compares.
+
+    Reading base's own tip instead would attribute anything that landed on the base branch
+    since the fork to this change, and hide anything the fork point still had. For a plain
+    range like HEAD~3..HEAD the merge base is HEAD~3, so this is a no-op there.
+    """
+    result = run_git(repo, ["merge-base", base, head])
+    if result.returncode != 0:
+        return base
+    return result.stdout.strip() or base
+
+
 def repo_web_url(repo):
     """https base URL for the origin remote, or "" when it is not a web host we can shape."""
     result = run_git(repo, ["remote", "get-url", "origin"])

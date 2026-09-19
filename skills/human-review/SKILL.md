@@ -120,7 +120,6 @@ concurrently with the annotation agents keeps it off the critical path (`referen
   "what_changed": "2 to 4 sentences on what the change accomplishes and why",
   "how_it_works": "machinery a cold reader needs, or \"\" when nothing needs it",
   "flow_mermaid": "flowchart LR ..., or \"\" when there is no flow worth drawing",
-  "section_notes": {},
   "files": [
     {
       "path": "pkg/thing.py",
@@ -161,13 +160,9 @@ forget still renders in a trailing "Everything else" group, so a partial groupin
 ship. The gate rejects a group with no title, a path not in the diff, or a file in two groups.
 
 **Mark identifiers with backticks** in `verdict`, `what_changed`, `how_it_works`,
-`section_notes`, every `role` and every `note`: paths, function/method/type/class names, config
+every `role` and every `note`: paths, function/method/type/class names, config
 keys, metric names, literal values. Markdown passes them through as inline code; the HTML
 renderer promotes them to `<code>` after escaping.
-
-`section_notes` may carry a short opinion above a section that supports one (currently only
-`explorer`): anchor it in something visible in the diagram, no severity or blocking language,
-structure only. Omit a key when its section has nothing worth pointing at.
 
 **`flow_mermaid` node labels are 2 to 6 words naming the step**, not a sentence explaining it;
 the reasoning belongs in `how_it_works`. **An edge carries a label only when the arrow itself is
@@ -178,12 +173,12 @@ non-blank. A hunk's `note` explains the code, not the diff, and is often correct
 when the lines say it on their face. Full note-writing rules and bad/good pairs:
 `references/fanout.md`.
 
-`verdict` and `section_notes` are yours, not a subagent's, by default: a batch agent sees one
-slice and cannot write the verdict, and the prose agent never sees the graphs. On the fan-out
-route `fanout.py merge` carries them through from `prose.json` when present, so write them into
-`analysis.json` yourself after merging and before the gate; neither missing one fails the gate,
-but a missing `verdict` costs the facts strip. Step 2b's grouping subagent is the one
-exception: it writes both, with the main thread reviewing rather than authoring them.
+`verdict` is yours, not a subagent's, by default: a batch agent sees one slice and cannot write
+it, and the prose agent never sees the graphs. On the fan-out route `fanout.py merge` carries it
+through from `prose.json` when present, so write it into `analysis.json` yourself after merging
+and before the gate; missing it does not fail the gate, but it costs the facts strip. Step 2b's
+grouping subagent is the one exception: it writes it too, with the main thread reviewing rather
+than authoring it.
 
 ## 2a-recap. `--recap-only`, the cheap route
 
@@ -248,7 +243,7 @@ python3 <skill>/scripts/regen.py --diff <scratchpad>/raw.diff --repo <repo> --ba
 it still works from a linked worktree; no hook is installed and nothing is written into the repo.
 The printed plan says what to skip: a batch under `fanout[].skip_subagent: true` had every hunk
 carry forward and needs no subagent spawned at all; `hunks.carry_forward`/`re_annotate` are the
-same per-hunk decision, already applied to the batches' seed files. Each of the six analysers
+same per-hunk decision, already applied to the batches' seed files. Each of the three analysers
 under `analysers.<script>` (steps 2b2, 2b3 and 2c) reports `"hit"` or `"miss"`: on a hit, copy
 `cache_path` to that script's usual output path instead of running it; on a miss, run it as
 normal and also copy the fresh output to `cache_path`, so the next run gets the hit.
@@ -259,7 +254,7 @@ step and regenerate from scratch instead.
 
 After step 2a's merge, spawn one subagent on a stronger model (sonnet class), since it needs the
 whole change in view and nothing downstream can check its judgment, with the merged `(path,
-role)` pairs plus the graph summaries; it returns `groups`, `verdict` and `section_notes` for you
+role)` pairs plus the graph summaries; it returns `groups` and `verdict` for you
 to write into `analysis.json` and review rather than author.
 
 ```bash
@@ -282,7 +277,7 @@ batch on a stronger model (sonnet class) if it fails twice. Full routing, the id
 check, and the empty-note floor's reasoning: `references/fanout.md`.
 
 Two things the gate does not check, so check them yourself: a hunk entry the fragment appended
-for a deleted file's `hunks` list, and the `verdict`/`section_notes` keys.
+for a deleted file's `hunks` list, and the `verdict` key.
 
 ## 2b2. Build the complexity chart, only when the target names two refs
 
@@ -375,7 +370,7 @@ optional; pass them when the files exist. HTML carries every hunk body (no size 
 per-line commenting needs the lines); markdown carries notes only, since GitHub renders the real
 diff below the recap. Neither format can omit a file even when `analysis.json` did.
 
-Markdown's default budget is `--max-chars 12000`. Over it, markdown demotes lockfiles and
+Markdown's default budget is `--max-chars 32000`. Over it, markdown demotes lockfiles and
 generated output first, then tests, to one line each. On an over-budget warning in step 3, rerun
 `walkthrough.py --format md` with the number `render.py` prints, once. Why to take that number
 rather than guess, and why there is no per-line moved-block marker: `references/rationale.md`.

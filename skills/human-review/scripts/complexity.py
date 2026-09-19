@@ -28,13 +28,13 @@ import json
 import os
 import posixpath
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
+from links import resolve_base, run_git  # noqa: E402  one owner for git helpers (subprocess + merge-base)
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 
 # Formerly coupling.py's; moved here when that script was removed. Generic git helpers with
@@ -51,25 +51,6 @@ def is_noise_file(path):
     if basename.startswith("."):
         return True
     return posixpath.splitext(basename)[1].lower() in NOISE_EXTENSIONS
-
-
-def run_git(repo, args):
-    return subprocess.run(
-        ["git", "-C", repo, *args], capture_output=True, text=True, errors="replace"
-    )
-
-
-def resolve_base(repo, base, head):
-    """The merge base of base and head, matching what `git diff base...head` compares.
-
-    Reading base's own tip instead would attribute anything that landed on the base branch
-    since the fork to this change, and hide anything the fork point still had. For a plain
-    range like HEAD~3..HEAD the merge base is HEAD~3, so this is a no-op there.
-    """
-    result = run_git(repo, ["merge-base", base, head])
-    if result.returncode != 0:
-        return base
-    return result.stdout.strip() or base
 
 
 def git_show(repo, ref, path):

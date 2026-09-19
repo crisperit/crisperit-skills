@@ -24,16 +24,16 @@ Stdlib only, no network.
 
 import argparse
 import json
-import re
 import sys
 from html import escape
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import NOTEWORTHY_DEPTH  # noqa: E402  one owner for "how deep is too deep"
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
 from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> conversion
+from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 
 # Same scaling rule in both formats, so the HTML page and the PR description agree about which
@@ -59,40 +59,6 @@ _LOCKFILES = frozenset({
     "Cargo.lock", "composer.lock", "Gemfile.lock", "go.sum", "requirements.txt",
 })
 _GENERATED_SEGMENTS = frozenset({"vendor", "node_modules", "generated", "__generated__", "dist"})
-
-# Ported from coupling.py (deleted with the file-coupling graph): the shared owner is gone, and
-# this is the only file in this change that still needs it, so a private copy beats reviving a
-# whole module for one function.
-_TEST_DIR_SEGMENTS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
-_TEST_FILENAME_PATTERNS = (
-    re.compile(r"^test_.*", re.IGNORECASE),  # pytest / unittest
-    re.compile(r".*_test\..+$", re.IGNORECASE),  # Go / Ruby / Python suffix
-    re.compile(r".*\.test\..+$", re.IGNORECASE),  # JS/TS (jest, vitest)
-    re.compile(r".*\.spec\..+$", re.IGNORECASE),  # JS/TS (jasmine, karma)
-    re.compile(r".*_spec\..+$", re.IGNORECASE),  # RSpec
-    re.compile(r".*\.e2e-spec\..+$", re.IGNORECASE),  # e.g. mcp-auth.e2e-spec.ts
-    re.compile(r".*\.tests\.ps1$", re.IGNORECASE),  # PowerShell Pester
-    re.compile(r"^conftest\.py$", re.IGNORECASE),  # pytest fixtures
-    # Java/C#/Swift: an uppercase-led Test(s) right before the extension, so lowercase
-    # mid-word hits like "greatest.cs"/"contest.java" do not match.
-    re.compile(r".*Test\.java$"),
-    re.compile(r".*Tests\.java$"),
-    re.compile(r".*Tests\.cs$"),
-    re.compile(r".*Tests\.swift$"),
-)
-
-
-def is_test_path(path):
-    """Classify a path as a test path: segment-aware and suffix-aware, never
-    substring-aware, so "latest/x.py", "src/contest.py" and "src/greatest/x.py" stay
-    non-test."""
-    if not path:
-        return False
-    norm = str(path).replace("\\", "/")
-    if any(segment.lower() in _TEST_DIR_SEGMENTS for segment in PurePosixPath(norm).parts):
-        return True
-    filename = PurePosixPath(norm).name
-    return any(pattern.match(filename) for pattern in _TEST_FILENAME_PATTERNS)
 
 
 def interest_rank(path):

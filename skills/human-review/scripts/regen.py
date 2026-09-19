@@ -140,6 +140,8 @@ def plan_analysers(cache_dir, repo, base_sha, head_sha, diff_path, set_hash_valu
     for script in ("complexity", "links"):
         key = analyser_key(script, set_hash_value)
         cmd = f"python3 {script}.py --repo {repo} --diff {diff_path} --head {head_sha}"
+        if script == "complexity":
+            cmd += f" --base {base_sha}"
         plans[script] = plan_analyser(cache_dir, script, key, cmd)
     return plans
 

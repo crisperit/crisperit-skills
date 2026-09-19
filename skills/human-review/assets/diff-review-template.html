@@ -310,15 +310,17 @@
   svg.vd-nav .node[data-path]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Badge lives inside the svg so pan and zoom carry it for free, and cloneNode(true) in
      openZoom() copies it onto the fullscreen clone along with the rest of the tagged node. */
-  .vd-badge{opacity:0;transition:opacity .18s ease}
+  .vd-badge{opacity:0;pointer-events:none;transition:opacity .18s ease}
   .vd-badge circle{fill:var(--panel);stroke:var(--accent);stroke-width:1.2}
   .vd-badge path{stroke:var(--accent);stroke-width:1.6;fill:none;stroke-linecap:round}
   /* Touch keeps :hover stuck after a tap, so the badge is pointer-gated: on a phone the
-     long-press is the whole affordance, same rule as any other hover-only control here. */
+     long-press is the whole affordance, same rule as any other hover-only control here.
+     pointer-events stays none outside this block so an invisible badge can't swallow the
+     tap that should reach the fullscreen-zoom handler underneath it. */
   @media (hover:hover) and (pointer:fine){
     svg.vd-nav .node:hover .vd-badge,
     svg.vd-nav .node.vd-menu-open .vd-badge,
-    svg.vd-nav .node[data-path]:focus-visible .vd-badge{opacity:1}
+    svg.vd-nav .node[data-path]:focus-visible .vd-badge{opacity:1;pointer-events:auto}
   }
   /* Mermaid writes an ID-scoped .node rule per render that outranks a plain rect selector,
      same reason .node.new/.node.gone above need !important. */
@@ -823,6 +825,10 @@
       tagged[mermaidId]=node;
     });
     svg.querySelectorAll('path[data-id]').forEach(edge=>{
+      // Layout-only ~~~ chain links (sections.py::_chain_components_lines, stacking disconnected
+      // components) get an id matching the regex below too; skip them or focus-downstream walks
+      // into an unrelated component.
+      if(edge.classList.contains('edge-thickness-invisible')) return;
       // Edge id's endpoints share whichever prefix that level's nodes use (S for symbols, P
       // for packages); only the trailing per-edge index is a fixed \d+.
       const m=/^L_([A-Za-z]\d+)_([A-Za-z]\d+)_\d+$/.exec(edge.dataset.id||'');
@@ -856,13 +862,20 @@
     navSayTimer=setTimeout(()=>t.classList.remove('on'),1900);
   }
 
-  function closeNavMenu(){
+  function closeNavMenu(returnFocus=false){
     if(navMenu){ navMenu.remove(); navMenu=null; }
-    if(navMenuFor){ navMenuFor.classList.remove('vd-menu-open'); navMenuFor=null; }
+    if(navMenuFor){
+      navMenuFor.classList.remove('vd-menu-open');
+      if(returnFocus) navMenuFor.focus();
+      navMenuFor=null;
+    }
   }
   function clearNavFocus(root){
     root.classList.remove('vd-focusing');
     root.querySelectorAll('.node,.vd-edge').forEach(n=>n.classList.remove('vd-reach','vd-sel'));
+    // __navSource (set in openZoom) points a fullscreen clone back at its inline graph; mirror
+    // the clear there too, or closing the dialog leaves the inline graph stuck dimmed.
+    if(root.__navSource) clearNavFocus(root.__navSource);
   }
   function navDownstream(root,id){
     const adj={};
@@ -880,6 +893,7 @@
   function focusNavNode(root,node){
     clearNavFocus(root);
     const id=navMermaidId(node), seen=navDownstream(root,id);
+    const downCount=seen.size; // pre-mutation: true downstream count, excluding the focused node
     seen.add(id);
     root.querySelectorAll('.node').forEach(n=>{ if(seen.has(navMermaidId(n))) n.classList.add('vd-reach'); });
     root.querySelectorAll('.vd-edge').forEach(e=>{
@@ -887,7 +901,23 @@
     });
     node.classList.add('vd-sel');
     root.classList.add('vd-focusing');
-    navSay((seen.size-1)+(seen.size===2?' file':' files')+' downstream of '+node.dataset.path);
+    // A node is a symbol at the symbols level, not a file, so count distinct dataset.path
+    // values downstream (excluding the focused node's own path) rather than nodes. A
+    // same-file-only downstream set makes paths.size 0 despite a real dimmed graph, so that
+    // case reports a symbol count instead of "0 files"; a genuinely empty set gets its own
+    // message.
+    const paths=new Set();
+    root.querySelectorAll('.node.vd-reach').forEach(n=>{ if(n.dataset.path&&n.dataset.path!==node.dataset.path) paths.add(n.dataset.path); });
+    const msg=downCount===0?'nothing downstream of '+node.dataset.path
+      :paths.size===0?downCount+(downCount===1?' symbol':' symbols')+' downstream of '+node.dataset.path
+      :paths.size+(paths.size===1?' file':' files')+' downstream of '+node.dataset.path;
+    navSay(msg);
+    // Same __navSource mirror as clearNavFocus above, matched by mermaid id since clone and
+    // inline svg share ids.
+    if(root.__navSource){
+      const srcNode=[...root.__navSource.querySelectorAll('.node')].find(n=>navMermaidId(n)===id);
+      if(srcNode) focusNavNode(root.__navSource,srcNode);
+    }
   }
   // The walkthrough carries no per-file anchor id (see scripts/walkthrough.py), so a path is
   // resolved to its <details class="hunk"> at click time by matching .hunk-path's own text.
@@ -908,8 +938,10 @@
     closeNavMenu();
     navMenuFor=node; node.classList.add('vd-menu-open');
     const path=node.dataset.path, hasFile=!!navFindHunk(path);
+    // A plain container, not role="menu": its buttons are already tabbable, and a real ARIA
+    // menu needs arrow-key roving focus and containment this doesn't implement.
     const menu=document.createElement('div');
-    menu.className='vd-menu'; menu.setAttribute('role','menu');
+    menu.className='vd-menu';
     let markup='<div class="vd-menu-path">'+navEscapeHtml(path)+'</div>';
     if(hasFile) markup+='<button type="button" data-a="file"><span class="vd-menu-ic">&#8594;</span>Go to file</button>';
     markup+='<button type="button" data-a="focus"><span class="vd-menu-ic">&#9678;</span>Focus downstream</button>';
@@ -924,19 +956,47 @@
     menu.style.left=left+'px'; menu.style.top=top+'px';
     navMenu=menu;
     menu.querySelector('button').focus();
+    // Menu sits inside container (== box, see wire() below): left alone, a click here reopens
+    // the fullscreen dialog, and box's unconditional Enter/Space keydown preventDefault()s a
+    // menu button's own native activation before it can fire a click. Stop both from bubbling.
     menu.addEventListener('click',e=>{
+      e.stopPropagation();
       const b=e.target.closest('button'); if(!b) return;
       const a=b.dataset.a; closeNavMenu();
       if(a==='file') navGoToFile(path);
       else if(a==='focus') focusNavNode(root,node);
       else clearNavFocus(root);
     });
+    menu.addEventListener('keydown',e=>{
+      if(e.key==='Enter'||e.key===' ') e.stopPropagation();
+    });
   }
-  dlg.addEventListener('close',closeNavMenu);
+  dlg.addEventListener('close',()=>closeNavMenu());
+  // Every opener stopPropagation()s or never fires a 'click' at all (panZoom's own
+  // suppressClick already swallows a pan-ending click), so this never eats the click that
+  // opened the menu.
+  document.addEventListener('click',e=>{
+    if(navMenu&&!navMenu.contains(e.target)) closeNavMenu();
+  });
+  // Switching detail level hides the level's box while navMenu/navMenuFor stay set, so the
+  // stale menu would otherwise re-appear when that level comes back into view.
+  const levelToggle=document.getElementById('vd-level-toggle');
+  if(levelToggle) levelToggle.addEventListener('click',()=>closeNavMenu());
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape') return;
-    closeNavMenu();
-    document.querySelectorAll('svg.vd-nav.vd-focusing').forEach(clearNavFocus);
+    // Peel one layer per Escape: menu, then focus dimming, then let the dialog's own native
+    // cancel close it -- otherwise a single Escape wipes all three at once.
+    if(navMenu){ e.preventDefault(); closeNavMenu(true); return; }
+    // Scoped to the graph on screen: an off-screen dimmed inline graph (behind an open
+    // dialog, or the other symbol-delta level) would otherwise eat this Escape too.
+    // dialog:not([open]) also excludes a *closed* dialog's stale zbody clone -- it's hidden by
+    // the UA stylesheet's display:none, not by the `hidden` attribute, so [hidden] alone still
+    // matches it and swallows this Escape with no visible effect.
+    const focusing=dlg.open
+      ?[...zbody.querySelectorAll('svg.vd-nav.vd-focusing')]
+      :[...document.querySelectorAll('svg.vd-nav.vd-focusing')]
+        .filter(el=>!el.closest('[hidden]')&&!el.closest('dialog:not([open])'));
+    if(focusing.length){ e.preventDefault(); focusing.forEach(clearNavFocus); }
   });
 
   // Pan and zoom by rewriting the svg's viewBox: it already carries one, so scaling it needs
@@ -1095,7 +1155,9 @@
       const node=e.target.closest('.node[data-path]');
       if(!node) return;
       e.preventDefault(); e.stopPropagation();
-      const r=node.querySelector('rect').getBoundingClientRect();
+      const rect=node.querySelector('rect');
+      if(!rect) return;
+      const r=rect.getBoundingClientRect();
       openNavMenu(svg,navContainer(),node,r.right,r.top);
     });
     svg.style.cursor='grab';
@@ -1114,6 +1176,7 @@
     if(!svg) return;
     const clone=svg.cloneNode(true);
     delete clone.dataset.pzWired; // cloneNode copies the inline svg's own wiring flag too
+    clone.__navSource=svg; // focusNavNode/clearNavFocus mirror onto this, so fullscreen focus changes survive the dialog closing
     zbody.replaceChildren(clone);
     const api=panZoom(clone,'modal');
     zctl.hidden=!api;

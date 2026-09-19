@@ -114,10 +114,10 @@ is one section too many, so each file's `<summary>` is the inventory. A file sil
 reads as a file not touched, and the script cannot miss one, it reads the diff rather than the
 analysis. `validate_analysis.py --rendered` re-checks the assembled result.
 
-Two budgets, and they have to add up. `render.MAX_BODY_CHARS` (20000) is the readable ceiling for
+Two budgets, and they have to add up. `render.MAX_BODY_CHARS` (45000) is the readable ceiling for
 the whole recap; GitHub's hard limit is 65536 and it refuses a longer body outright.
-`walkthrough.DEFAULT_MAX_CHARS` (12000) is the walkthrough's share, sized so the prose and the
-symbols graph fit in the rest. Both at 20000 produced a 25437-character recap.
+`walkthrough.DEFAULT_MAX_CHARS` (32000) is the walkthrough's share, sized so the prose and the
+symbols graph fit in the rest.
 
 The walkthrough is the part that gives, because it is the only part that scales with file count.
 Over budget it ranks files least-interesting-last, lockfiles and generated output first, then

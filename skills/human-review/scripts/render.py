@@ -3,7 +3,7 @@
 
   python3 render.py --analysis analysis.json --diff raw.diff --format html \
       --template ../assets/diff-review-template.html \
-      --explorer section-explorer.html --walkthrough section-walkthrough.html \
+      --walkthrough section-walkthrough.html \
       [--symbols section-symbols.html] [--links links.json] [--title "..."] > out.html
 
   python3 render.py --analysis analysis.json --diff raw.diff --format md \
@@ -20,8 +20,8 @@ instructions a model had to remember every time, and getting one wrong meant eit
 `<img onerror=...>` from a branch name in someone else's PR, or a diagram replaced by a raw
 mermaid error box. They are now one function with a test.
 
-The judgment stays in analysis.json: `what_changed`, `how_it_works`, `flow_mermaid`, `verdict`,
-`section_notes` and the per-file `role` and per-hunk `note` that walkthrough.py places.
+The judgment stays in analysis.json: `what_changed`, `how_it_works`, `flow_mermaid`, `verdict`
+and the per-file `role` and per-hunk `note` that walkthrough.py places.
 
 Prose fields mark identifiers with backticks. Markdown passes those through, since GitHub
 renders them as inline code; HTML promotes them to `<code>` after escaping, so a tag is only
@@ -128,12 +128,11 @@ def _wrap_flow_labels(mermaid):
     return _MERMAID_EDGE_LABEL_RE.sub(_wrap_edge_label, mermaid)
 
 
-def render_html(analysis, files, template, explorer="", walkthrough="", links=None, title=None,
+def render_html(analysis, files, template, walkthrough="", links=None, title=None,
                 now=None, symbols="", complexity=None, state=None):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
-    notes = analysis.get("section_notes") or {}
 
     body = [
         '<div class="facts">',
@@ -171,16 +170,8 @@ def render_html(analysis, files, template, explorer="", walkthrough="", links=No
         body.append("<h2>How it works</h2>")
         body += [f"<p>{_html_prose(p)}</p>" for p in how]
 
-    # No heading of our own here: section-explorer.html opens with its own <h2>RELATIONS</h2>,
-    # and adding one produced two headings in a row on a real page. The note goes above the
-    # section, so it has to come before the paste rather than after it.
-    if explorer.strip():
-        if notes.get("explorer"):
-            body.append(f"<p>{_html_prose(notes['explorer'])}</p>")
-        body.append(explorer.rstrip("\n"))
-
-    # Same paste-verbatim rule as explorer above: section-symbols.html opens with its own
-    # <h2>CHANGES VISUALIZATION</h2> and caption, both written by sections.py, so nothing is added here.
+    # section-symbols.html opens with its own <h2>CHANGES VISUALIZATION</h2> and caption, both
+    # written by sections.py, so nothing is added here.
     if symbols.strip():
         body.append(symbols.rstrip("\n"))
 
@@ -325,7 +316,6 @@ def main():
     parser.add_argument("--links")
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
     parser.add_argument("--template", help="html only: the page template")
-    parser.add_argument("--explorer", help="html only: section-explorer.html")
     parser.add_argument("--symbols", help="section-symbols.{html,md}")
     parser.add_argument("--state", help="html only: state.json, inlined behind HR_STATE")
     parser.add_argument("--title", help="html only")
@@ -341,7 +331,7 @@ def main():
         if not args.template:
             parser.error("--template is required for --format html")
         sys.stdout.write(render_html(
-            analysis, files, _read(args.template), _read(args.explorer),
+            analysis, files, _read(args.template),
             _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
             complexity=complexity, state=state,
         ))

@@ -56,12 +56,14 @@ _MM_UNSAFE_RE = re.compile(r'[()"`]')
 # made a slider feel arbitrary. Callers are always in now.
 LEVEL_NAMES = ["Packages", "Symbols"]
 
-# Mermaid's own parser doesn't reliably resolve a CSS var() inside classDef/linkStyle, so node
-# colour goes through `class S0,S1 new` plus page CSS instead (see diff-review-template.html).
-# Edges have no per-edge classDef though, only `linkStyle <idx> stroke:...`, so their colour has
-# to be a literal; these mirror the page's default (dark-theme) --accent/--muted. The
-# colour-semantics table lives once in diff-review-template.html next to :root -- these hexes
-# must match it by hand.
+# Mermaid can't resolve a CSS var() inside classDef/linkStyle, so both carry a literal hex
+# mirroring the page's default (dark-theme) --accent/--muted. Edge linkStyle is emitted in both
+# formats -- there's no page CSS for edges either way. Node classDef is markdown-only: mermaid
+# compiles it to an id-scoped `#<renderId> .new > *{...!important}` rule that outranks the page's
+# own `.node.new`/`.node.gone` CSS (also !important, but by class), so emitting it into the HTML
+# page overrides the page's light/dark theming instead of losing to it. The colour-semantics
+# table lives once in diff-review-template.html next to :root -- these hexes must match it by
+# hand.
 LINK_COLOR_NEW = "#7aa2f7"
 LINK_COLOR_GONE = "#9aa3b2"
 
@@ -365,14 +367,16 @@ def _edge_endpoint_ids(edges):
     return ids
 
 
-def _mermaid_symbols(nodes, symbol_ids, kept_edges):
+def _mermaid_symbols(nodes, symbol_ids, kept_edges, emit_classdef=False):
     """Levels 2 and 3 share this: symbol_ids grouped by package, nested the same way level 1 is
     -- a package that owns an in-scope symbol gets a box, and so does every ancestor needed to
     contain it, so `corelib/ratelimit` sits inside one `corelib` box rather than beside it. A
     package with both an in-scope symbol of its own and child packages gets that symbol listed
-    directly inside its box, alongside the nested child boxes. Styling is `class ... new/gone`,
-    not classDef (see LINK_COLOR_NEW); mermaid has no per-edge classDef at all, only
-    `linkStyle <index>`, so edges are styled by their position in the diagram instead.
+    directly inside its box, alongside the nested child boxes. Nodes always get `class ...
+    new/gone`, for the legend's new/gone check; the backing literal-hex `classDef` is
+    markdown-only (`emit_classdef`) -- see the comment above LINK_COLOR_NEW/GONE for why it can't
+    also apply to the HTML page. Edges have no per-edge classDef at all, only `linkStyle
+    <index>`, so they're styled by their position in the diagram instead.
 
     Returns `(mermaid_text, id_to_file)`: the second is the mermaid `S<n>` id of every symbol
     node mapped to its file path, for the page's node menu to resolve a click to a file. A
@@ -439,8 +443,12 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
     new_ids = [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "new"]
     gone_ids = [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "gone"]
     if new_ids:
+        if emit_classdef:
+            lines.append(f'  classDef new stroke:{LINK_COLOR_NEW},stroke-width:2px;')
         lines.append(f'  class {",".join(new_ids)} new')
     if gone_ids:
+        if emit_classdef:
+            lines.append(f'  classDef gone stroke:{LINK_COLOR_GONE},stroke-dasharray:4 4,opacity:0.7;')
         lines.append(f'  class {",".join(gone_ids)} gone')
 
     new_links, gone_links = [], []
@@ -521,7 +529,7 @@ def _symbols_orphans_md(nodes, orphan_ids):
 _EMPTY_LEVEL_LABEL = "Nothing to draw at this detail level"
 
 
-def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges):
+def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges, emit_classdef=False):
     """_mermaid_symbols, except when filtering to edge-having symbols leaves nothing at all: a
     bare `flowchart LR` renders at a near-zero viewBox, which the page's own `degenerate()`
     check (diff-review-template.html) mistakes for a real render failure rather than a level
@@ -529,7 +537,7 @@ def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges):
     no id to map since it draws nothing real."""
     if not symbol_ids:
         return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]', {}
-    return _mermaid_symbols(nodes, symbol_ids, kept_edges)
+    return _mermaid_symbols(nodes, symbol_ids, kept_edges, emit_classdef)
 
 
 def _moved_lines(moved):
@@ -630,7 +638,7 @@ def render_symbols_md(data):
     level1, undrawn_count = _mermaid_packages(nodes, edges)
     ids2, edges2 = _symbols_scope(nodes, edges)
     drawn2 = _edge_endpoint_ids(edges2)
-    level2, _file_map2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2)
+    level2, _file_map2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2, emit_classdef=True)
 
     changed_ids = _changed_symbol_ids(nodes)
     orphan_ids = changed_ids - drawn2
@@ -649,14 +657,24 @@ def render_symbols_md(data):
     if orphans_md:
         out += ["", orphans_md.rstrip("\n")]
     if moved:
-        out += ["", "\n".join(f"- {line}" for line in _moved_lines(moved))]
+        # A different bullet marker than the orphans list above: a blank line alone doesn't
+        # start a new CommonMark list, only a marker change does, and these need to render as
+        # two lists, matching the two separate `<ul class="vd-moved">` blocks the HTML path uses
+        # for the same reason -- an orphaned symbol and a moved one mean different things.
+        out += ["", "\n".join(f"* {line}" for line in _moved_lines(moved))]
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+_LEGEND_STATE_RE = re.compile(r"^  class \S+ (new|gone)$", re.MULTILINE)
+
+
 def _symbols_legend_states(mermaid_source):
-    """Which of new/gone this level's diagram actually marks -- both format legends key off
-    the same `class ... new`/`gone` test _mermaid_symbols emits."""
-    return " new" in mermaid_source, " gone" in mermaid_source
+    """Which of new/gone this level's diagram actually marks. Matches the literal `  class
+    <ids> new/gone` line _mermaid_symbols emits, not a plain substring scan -- a node label
+    can contain the word `new` or `gone` as prose (e.g. a `was` line) without the diagram
+    marking that state at all."""
+    states = set(_LEGEND_STATE_RE.findall(mermaid_source))
+    return "new" in states, "gone" in states
 
 
 def _symbols_legend(mermaid_source):

@@ -91,11 +91,11 @@ emits, kept so a reviewer can see the shape without running it.
 
 ## Describe, not judge
 
-One exception: `section_notes` is deliberately a view, labelled as one. Everything else in
-`analysis.json` states what the code does and why it is shaped that way, never whether it is
-correct or should change. Do not assert defects, rank severity, or recommend changes, and drop
-"should", "consider", "worth confirming" and "make sure" from the wording, those phrases turn a
-description into a review verdict. When something in the diff genuinely looks broken, say so to
+Every field in `analysis.json` states what the code does and why it is shaped that way, never
+whether it is correct or should change. Do not assert defects, rank severity, or recommend
+changes, and drop "should", "consider", "worth confirming" and "make sure" from the wording,
+those phrases turn a description into a review verdict. When something in the diff genuinely
+looks broken, say so to
 the user in the conversation, not inside the page: a judgment baked into a static HTML file
 outlives the conversation and reads as a review that already happened, duplicating what
 `core:code-review` exists to do.
