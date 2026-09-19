@@ -1,6 +1,6 @@
 ---
 name: human-review
-description: Turns a git diff, commit range, branch, or GitHub PR that already exists into a markdown recap for the PR description plus a self-contained local HTML review page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line commenting that posts straight back as PR review comments. Nothing is published by default: the page stays a local file unless the user passes --pr or asks in words for it to be hosted. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the coupling in this PR", "human review", "review this with me", or /human-review; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
+description: Turns a git diff, commit range, branch, or GitHub PR that already exists into a markdown recap for the PR description plus a self-contained local HTML review page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line commenting that posts straight back as PR review comments. Nothing is published by default: the page stays a local file unless the user passes --pr or asks in words for it to be hosted. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "human review", "review this with me", or /human-review; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
 ---
 
 # Human Review
@@ -51,9 +51,9 @@ gh pr view --json number,baseRefName,headRefName --jq '[.number,.baseRefName,.he
 ```
 
 Prefer diffing `<baseRefName>...HEAD` locally over `gh pr diff <n>`: it gives the local repo
-path, base and head that `coupling.py`, `structure.py` and `links.py` all need, and it is the
+path, base and head that `complexity.py`, `symdelta.py` and `links.py` all need, and it is the
 same three-dot comparison GitHub shows. Fall back to `gh pr diff <n>` when the branch is not
-checked out locally, and say in one line that the coupling graphs are skipped in that case. Bail
+checked out locally, and say in one line that the symbol-delta graph is skipped in that case. Bail
 with one clear line when the branch has no PR yet, naming `--pr` as the way to say which one.
 Always prefer three-dot over two-dot: two-dot also shows commits that landed on the base branch
 meanwhile, attributing other people's work to this change.
@@ -108,9 +108,9 @@ Delegating below the fan-out threshold costs no wall clock over doing it in the 
 it costs the main context nothing; splitting it further into batches is where the cost shows up,
 since a single pass finishes before parallel spawns have even started.
 
-Start steps 2b2 and 2b3's five graph scripts the moment `raw.diff` exists, in the same message
+Start steps 2b2 and 2b3's two graph scripts the moment `raw.diff` exists, in the same message
 that spawns the fan-out: two Bash calls alongside the spawns, not one per script. They read git
-and the diff, never `analysis.json`. `layers.py` is the slow one on a large repo; running it
+and the diff, never `analysis.json`. `symdelta.py` is the slow one on a large repo; running it
 concurrently with the annotation agents keeps it off the critical path (`references/graphs.md`).
 
 ```json
@@ -120,11 +120,7 @@ concurrently with the annotation agents keeps it off the critical path (`referen
   "what_changed": "2 to 4 sentences on what the change accomplishes and why",
   "how_it_works": "machinery a cold reader needs, or \"\" when nothing needs it",
   "flow_mermaid": "flowchart LR ..., or \"\" when there is no flow worth drawing",
-  "section_notes": {
-    "layers": "one line above the markdown module map",
-    "coupling": "one line above the markdown file graph",
-    "structure": "one line above the markdown symbol graph"
-  },
+  "section_notes": {},
   "files": [
     {
       "path": "pkg/thing.py",
@@ -159,7 +155,7 @@ belongs merged into the neighbour it feeds, and a test file belongs with the cod
 never in a group of its own. Under about five changed files, one group is the right answer.
 
 You do **not** decide the order inside a group; `walkthrough.py`
-derives that from `coupling.json`, caller before callee, then by size, tests and generated files
+derives that from `symdelta.json`, caller before callee, then by size, tests and generated files
 last. Leave `groups` out entirely and the whole walkthrough becomes one such group. A file you
 forget still renders in a trailing "Everything else" group, so a partial grouping is safe to
 ship. The gate rejects a group with no title, a path not in the diff, or a file in two groups.
@@ -169,9 +165,9 @@ ship. The gate rejects a group with no title, a path not in the diff, or a file 
 keys, metric names, literal values. Markdown passes them through as inline code; the HTML
 renderer promotes them to `<code>` after escaping.
 
-`section_notes` is where an opinion belongs, and the only place: anchor it in something visible
-in the diagram or its `Numbers:` line, no severity or blocking language, structure only. See
-`references/pr-markdown.md`. Omit a key when its section has nothing worth pointing at.
+`section_notes` may carry a short opinion above a section that supports one (currently only
+`explorer`): anchor it in something visible in the diagram, no severity or blocking language,
+structure only. Omit a key when its section has nothing worth pointing at.
 
 **`flow_mermaid` node labels are 2 to 6 words naming the step**, not a sentence explaining it;
 the reasoning belongs in `how_it_works`. **An edge carries a label only when the arrow itself is
@@ -186,15 +182,15 @@ when the lines say it on their face. Full note-writing rules and bad/good pairs:
 slice and cannot write the verdict, and the prose agent never sees the graphs. On the fan-out
 route `fanout.py merge` carries them through from `prose.json` when present, so write them into
 `analysis.json` yourself after merging and before the gate; neither missing one fails the gate,
-but a missing `verdict` costs the facts strip and a missing `section_notes` drops every caption.
-Step 2b's grouping subagent is the one exception: it writes both, with the main thread reviewing
-rather than authoring them.
+but a missing `verdict` costs the facts strip. Step 2b's grouping subagent is the one
+exception: it writes both, with the main thread reviewing rather than authoring them.
 
 ## 2a-recap. `--recap-only`, the cheap route
 
-Skip the fan-out. Build step 2b2's four graph JSONs, spawn one `general-purpose` subagent on a
-stronger model (sonnet class) to write a lighter `analysis.json` from `git diff --numstat` and
-the graph summaries only, then gate and render without a walkthrough.
+Skip the fan-out. Build step 2b2's complexity JSON and step 2b3's symbol-delta graph, spawn one
+`general-purpose` subagent on a stronger model (sonnet class) to write a lighter `analysis.json`
+from `git diff --numstat` and the graph summaries only, then gate and render without a
+walkthrough.
 
 ```bash
 python3 <skill>/scripts/validate_analysis.py --diff <scratchpad>/raw.diff \
@@ -288,46 +284,21 @@ check, and the empty-note floor's reasoning: `references/fanout.md`.
 Two things the gate does not check, so check them yourself: a hunk entry the fragment appended
 for a deleted file's `hunks` list, and the `verdict`/`section_notes` keys.
 
-## 2b2. Build the coupling sections, only when the target names two refs
-
-Three graphs, generated by code so none can go missing or get paraphrased. `layers.py` folds the
-whole repo into modules (the only one that sees untouched files too), `coupling.py` covers the
-files this change moved, `structure.py` the classes and functions inside them. A module is a
-directory, at full depth, no architecture-layer vocabulary.
-
-Run the four sequentially, in one sandboxed Bash call. **Never background them with `&` and
-`wait`** (`references/graphs.md` has the measurement).
+## 2b2. Build the complexity chart, only when the target names two refs
 
 ```bash
-cd <repo>
-python3 <skill>/scripts/structure.py  --repo . --base <base> --head <head> > <scratchpad>/structure.json
 python3 <skill>/scripts/complexity.py --repo . --base <base> --head <head> \
   --diff <scratchpad>/raw.diff > <scratchpad>/complexity.json
-python3 <skill>/scripts/coupling.py --repo . --base <base> --head <head> > <scratchpad>/coupling.json
-python3 <skill>/scripts/layers.py --repo . --head <head> \
-  --coupling <scratchpad>/coupling.json > <scratchpad>/layers.json
 ```
 
-`layers.py` has to run after `coupling.py`, whose output it reads. The other two have no
-ordering constraint. `complexity.py` reports where the worst touched function now stands, not a
-per-file total; see `references/graphs.md` for why. Both `structure.py` and `coupling.py` treat
-`--base` as the merge base of the two refs.
-
-```bash
-for kind in layers coupling structure; do
-  python3 <skill>/scripts/sections.py --kind $kind --data <scratchpad>/$kind.json \
-    --format md > <scratchpad>/section-$kind.md
-done
-```
-
-The HTML page does not get its own build of these three: step 2b3's `symdelta.py` result feeds
-the HTML page's own graph instead.
+Reports where the worst touched function now stands, not a per-file total; see
+`references/graphs.md` for why.
 
 ## 2b3. Build the symbol-delta graph, only when the target names two refs
 
-Same condition as 2b2: a working-tree diff has no second ref. Skip on `--md-only` too, since only
-`render.py`'s `--symbols` flag on the HTML call consumes it. Issue this as its own Bash call,
-`dangerouslyDisableSandbox: true`, in the same message as the fan-out spawns and 2b2's call.
+The only graph either output carries besides the flow diagram. Same condition as 2b2: a
+working-tree diff has no second ref. Issue this as its own Bash call, `dangerouslyDisableSandbox:
+true`, in the same message as the fan-out spawns and 2b2's call.
 
 ```bash
 python3 <skill>/scripts/symdelta.py --repo . --base <base> --head <head> > <scratchpad>/symdelta.json
@@ -342,11 +313,15 @@ this graph exists to avoid.
 ```bash
 python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
   --format html > <scratchpad>/section-symbols.html
+python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
+  --format md > <scratchpad>/section-symbols.md
 ```
 
-`--kind symbols` only supports `--format html`. Pass the file to `render.py`'s html call as
-`--symbols <scratchpad>/section-symbols.html`; it inserts nothing when the file is empty or the
-flag is omitted.
+Both formats show the same two pre-rendered levels, packages then symbols; html swaps between
+them with a toggle, md ships them as two fenced blocks since GitHub has no way to run a
+toggle. Pass the html file to `render.py`'s html call and the md file to its md call, both as
+`--symbols <path>`; it inserts nothing when the file is empty or the flag is omitted. Skip
+building either when it is not needed: html when `--md-only`, md when `--html-only`.
 
 Supported: Go (`.go`, native `go/packages`), TypeScript (`.ts`, `.tsx`), Python (`.py`) and Rust
 (`.rs`), the last three over LSP and each needing its server on PATH
@@ -385,16 +360,16 @@ fences, escaping, and the order inside each group.
 
 ```bash
 python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
-  --diff <scratchpad>/raw.diff --format html --coupling <scratchpad>/coupling.json \
+  --diff <scratchpad>/raw.diff --format html --symdelta <scratchpad>/symdelta.json \
   --complexity <scratchpad>/complexity.json \
   > <scratchpad>/section-walkthrough.html
 python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
   --diff <scratchpad>/raw.diff --format md --links <scratchpad>/links.json \
-  --coupling <scratchpad>/coupling.json --complexity <scratchpad>/complexity.json \
+  --symdelta <scratchpad>/symdelta.json --complexity <scratchpad>/complexity.json \
   > <scratchpad>/section-walkthrough.md
 ```
 
-`--coupling` orders each group caller-first, `--complexity` adds the complexity chip, `--diff`'s
+`--symdelta` orders each group caller-first, `--complexity` adds the complexity chip, `--diff`'s
 rename headers let a moved file show its old path instead of reading as a new addition. All
 optional; pass them when the files exist. HTML carries every hunk body (no size budget, and
 per-line commenting needs the lines); markdown carries notes only, since GitHub renders the real
@@ -468,16 +443,15 @@ python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
 
 python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
   --diff <scratchpad>/raw.diff --format md \
-  --layers <scratchpad>/section-layers.md --coupling <scratchpad>/section-coupling.md \
-  --structure <scratchpad>/section-structure.md \
   --walkthrough <scratchpad>/section-walkthrough.md \
+  [--symbols <scratchpad>/section-symbols.md] \
   [--links <scratchpad>/links.json] [--complexity <scratchpad>/complexity.json] \
   > <scratchpad>/human-review-<slug>.md
 ```
 
-Omit `--layers`/`--coupling`/`--structure` when 2b2 did not run, `--symbols` when 2b3 did not run
-or returned `language: null`, `--links` when 2c did not run, `--complexity` when that script did
-not run. An empty section file inserts nothing, not even its heading.
+Omit `--symbols` when 2b3 did not run or returned `language: null`, `--links` when 2c did not
+run, `--complexity` when that script did not run. An empty section file inserts nothing, not
+even its heading.
 
 `references/builder.md` and `references/pr-markdown.md` are background on why the output is
 shaped the way it is, not instructions to follow.

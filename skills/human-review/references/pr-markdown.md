@@ -71,8 +71,8 @@ above already point.
 ## What the recap contains
 
 A long PR description is worse than none, reviewers scroll past it to reach Files changed. Order
-runs orientation, then concepts, then structure, then detail. Every row is either arithmetic, a
-string from `analysis.json`, or a section file pasted byte for byte.
+runs orientation, then concepts, then detail. Every row is either arithmetic, a string from
+`analysis.json`, or a section file pasted byte for byte.
 
 | Part | Source |
 |---|---|
@@ -81,7 +81,7 @@ string from `analysis.json`, or a section file pasted byte for byte.
 | Prose, one paragraph per blank-line-separated block | `what_changed` |
 | ` ```mermaid ` fence, never inside a `<details>` so it renders on sight | `flow_mermaid` |
 | `### How it works` | `how_it_works` |
-| Three graphs, widest first, each under one line of prose | `section_notes.{layers,coupling,structure}` then the section files |
+| Symbol delta, two fenced diagrams, packages then symbols | `section-symbols.md` |
 | Walkthrough | `walkthrough.py --format md` |
 | `[Files changed]` link | `links.json` |
 
@@ -89,51 +89,18 @@ Any blank source omits its part, heading and all, rather than leaving a placehol
 
 Notes on the rows that look arbitrary:
 
-- **Three stacked graphs here, one interactive box in HTML.** GitHub cannot run the page's
-  level switcher, so markdown gets `section-layers.md` (the repo folded into modules and layers),
-  `section-coupling.md` (the files this change touched) and `section-structure.md` (the classes
-  and functions inside them). Widest first: which modules exist and which way they depend is the
-  context that makes the narrower two mean anything.
-- **Section files are pasted, never regenerated.** Each already carries its `###` heading, its
-  fence and its caption from `sections.py`. Retyping a diagram is how a legend drifts from its
-  arrows. `validate_analysis.py --sections` checks each marker survived.
+- **Two fenced blocks here, one interactive toggle in HTML.** GitHub cannot run the page's
+  level switcher, so markdown gets both pre-rendered levels back to back instead, packages
+  first: which packages and symbols exist is the context that makes the narrower symbols view
+  mean anything.
+- **The section file is pasted, never regenerated.** It already carries its own heading, fences
+  and caption from `sections.py`. Retyping a diagram is how a legend drifts from its arrows.
+  `validate_analysis.py --sections` checks its marker survived.
 - **The recap never names a local path.** Every reader of a PR description is on someone else's
   machine, so a scratch directory means nothing to them and leaks a directory layout besides.
 - **No local `raw.diff` path in a footer either**, unlike the HTML page, which is local by
   definition.
 
-## The opinion lines, `section_notes`
-
-One short line above each graph, the way a hunk note sits above a hunk: what this graph shows and
-the one thing worth noticing. That is where an opinion goes, so there is no separate opinion block
-and nothing in small print. One or two sentences, plain text, no heading. For example:
-
-   ```markdown
-   Everything new lands in the mcp adapter, and only the composition root reaches into auth,
-   so the change sits at one edge of the graph. `configureMcpAuth` is the one thing three
-   callers share, which makes it the piece worth reading first.
-   ```
-
-   Say what you actually think about the shape: where the change concentrates, whether the
-   dependency direction reads the way the layout implies, whether something is becoming a hub,
-   whether a module boundary is doing any work. Ordinary coupling vocabulary is fine, hub,
-   fan-in, cycle, module seam, and so is a preference, "I would read X first". Not layering:
-   the module map folds directories and makes no architectural claim, so there is no layer in
-   any diagram to hold or break.
-
-   Three rules keep it an opinion rather than a verdict:
-
-   - **Anchor it.** Lead with something visible in the diagram or in the `Numbers:` line the
-     section prints. "Three things point at `configureMcpAuth`, so that is the hub here" beats
-     an unanchored "this is tightly coupled".
-   - **No severity and no blocking language.** No "should", "must", "issue", "problem",
-     "violation", no ranking. A reviewer decides what matters; this only offers a reading.
-   - **Stay on structure.** Shape, direction and concentration of relations. Not whether the
-     behaviour is right, which is `core:code-review`'s job and a different artifact.
-
-   Prefer honesty over filler. "Nothing surprising in the shape, one helper and its tests" is
-   a fine line when that is true. A cycle is always worth naming, since it is the kind of thing
-   a diagram shows and a diff does not, and the `Numbers:` line reports it for you.
 ## The walkthrough, and the two budgets
 
 `walkthrough.py --format md` emits **hunk notes and no hunk bodies**. A PR description is the
@@ -150,7 +117,7 @@ analysis. `validate_analysis.py --rendered` re-checks the assembled result.
 Two budgets, and they have to add up. `render.MAX_BODY_CHARS` (20000) is the readable ceiling for
 the whole recap; GitHub's hard limit is 65536 and it refuses a longer body outright.
 `walkthrough.DEFAULT_MAX_CHARS` (12000) is the walkthrough's share, sized so the prose and the
-three graphs fit in the rest. Both at 20000 produced a 25437-character recap.
+symbols graph fit in the rest. Both at 20000 produced a 25437-character recap.
 
 The walkthrough is the part that gives, because it is the only part that scales with file count.
 Over budget it ranks files least-interesting-last, lockfiles and generated output first, then
@@ -164,9 +131,6 @@ Every file still appears by path, so nothing is silently dropped and
 file's path appears somewhere in the output.
 
 ## Describe, not judge
-
-One exception, stated up front: `section_notes` is deliberately a view, labelled as one.
-Everything below applies to every other part of the recap.
 
 This recap says what the code does and why it's shaped that way. It does not grade the
 change: never assert a defect, rank severity, or recommend a fix, and drop "should",

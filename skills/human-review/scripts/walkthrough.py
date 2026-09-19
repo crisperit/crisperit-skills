@@ -3,14 +3,14 @@
 
   python3 walkthrough.py --analysis analysis.json --diff raw.diff --format html
   python3 walkthrough.py --analysis analysis.json --diff raw.diff --format md \
-      [--hunks notes] [--links links.json] [--coupling coupling.json] \
+      [--hunks notes] [--links links.json] [--symdelta symdelta.json] \
       [--complexity complexity.json] [--open 3]
 
 Everything in a walkthrough except the prose is mechanical: the paths, the line counts, the
 bars, the `<details>` nesting, the fences, the escaping and the diff bodies all follow from
 raw.diff. Judgment is `role`, each hunk's `note`, and which files form a group and in what
 order the groups read; all of those come from analysis.json. The order inside a group is
-mechanical again: caller-first from coupling.json, tests and generated files last.
+mechanical again: caller-first from symdelta.json, tests and generated files last.
 
 Writing the mechanical part by hand is how a file goes missing from the inventory, how a
 fenced block loses the blank line after `</summary>` that GitHub needs to parse it, and how
@@ -24,13 +24,13 @@ Stdlib only, no network.
 
 import argparse
 import json
+import re
 import sys
 from html import escape
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import NOTEWORTHY_DEPTH  # noqa: E402  one owner for "how deep is too deep"
-from coupling import is_test_path  # noqa: E402  one owner for "is this a test file"
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
 from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> conversion
@@ -60,6 +60,40 @@ _LOCKFILES = frozenset({
 })
 _GENERATED_SEGMENTS = frozenset({"vendor", "node_modules", "generated", "__generated__", "dist"})
 
+# Ported from coupling.py (deleted with the file-coupling graph): the shared owner is gone, and
+# this is the only file in this change that still needs it, so a private copy beats reviving a
+# whole module for one function.
+_TEST_DIR_SEGMENTS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
+_TEST_FILENAME_PATTERNS = (
+    re.compile(r"^test_.*", re.IGNORECASE),  # pytest / unittest
+    re.compile(r".*_test\..+$", re.IGNORECASE),  # Go / Ruby / Python suffix
+    re.compile(r".*\.test\..+$", re.IGNORECASE),  # JS/TS (jest, vitest)
+    re.compile(r".*\.spec\..+$", re.IGNORECASE),  # JS/TS (jasmine, karma)
+    re.compile(r".*_spec\..+$", re.IGNORECASE),  # RSpec
+    re.compile(r".*\.e2e-spec\..+$", re.IGNORECASE),  # e.g. mcp-auth.e2e-spec.ts
+    re.compile(r".*\.tests\.ps1$", re.IGNORECASE),  # PowerShell Pester
+    re.compile(r"^conftest\.py$", re.IGNORECASE),  # pytest fixtures
+    # Java/C#/Swift: an uppercase-led Test(s) right before the extension, so lowercase
+    # mid-word hits like "greatest.cs"/"contest.java" do not match.
+    re.compile(r".*Test\.java$"),
+    re.compile(r".*Tests\.java$"),
+    re.compile(r".*Tests\.cs$"),
+    re.compile(r".*Tests\.swift$"),
+)
+
+
+def is_test_path(path):
+    """Classify a path as a test path: segment-aware and suffix-aware, never
+    substring-aware, so "latest/x.py", "src/contest.py" and "src/greatest/x.py" stay
+    non-test."""
+    if not path:
+        return False
+    norm = str(path).replace("\\", "/")
+    if any(segment.lower() in _TEST_DIR_SEGMENTS for segment in PurePosixPath(norm).parts):
+        return True
+    filename = PurePosixPath(norm).name
+    return any(pattern.match(filename) for pattern in _TEST_FILENAME_PATTERNS)
+
 
 def interest_rank(path):
     """0 for code a reviewer came to read, 2 for what they never do: a lockfile refresh and a
@@ -73,40 +107,35 @@ def interest_rank(path):
     return 1 if is_test_path(path) else 0
 
 
-def _unit_of(path, endpoints):
-    """The coupling graph's node for a file. Go's graph carries one node per package directory
-    and TS/Python one per file, and a mixed diff carries both, so this resolves by longest
-    matching prefix rather than by asking what language the file is."""
-    if path in endpoints:
-        return path
-    parts = path.split("/")
-    for cut in range(len(parts) - 1, 0, -1):
-        candidate = "/".join(parts[:cut])
-        if candidate in endpoints:
-            return candidate
-    return "(root)" if "(root)" in endpoints else None
+def caller_depth(symdelta, paths):
+    """{path: depth}, 0 for a file nothing else in the diff calls into.
 
+    Kahn over symdelta's caller -> callee symbol edges, lifted to the file each symbol lives in
+    (a `pkg` node carries no `file` and drops out, same as an edge whose other end isn't in this
+    diff) so the reviewer meets an entry point before the thing it calls. A cycle breaks at the
+    least-called node, so the walk terminates and lands on the same order every run.
 
-def caller_depth(coupling, paths):
-    """{path: depth}, 0 for a file nothing else in the diff imports.
-
-    Kahn over the coupling graph's importer -> imported edges, restricted to the units the diff
-    touches, so the reviewer meets an entry point before the thing it calls. Imports are only a
-    proxy for calls, but they are the same edges the graph section already draws, so the reading
-    order matches the picture the reader just looked at. A file the graph has no node for is
-    absent from the result and the caller sorts it last.
+    A file absent from the result sorts last: no symdelta.json, `language: null` (an
+    unsupported language, or the extractor tool missing), and a diff with no edge landing
+    inside it all take this same path, degrading to the pre-coupling ordering rather than
+    falling back to import parsing -- a real coverage loss versus that, accepted deliberately.
     """
-    edges = [tuple(edge) for key in ("added", "removed", "unchanged")
-             for edge in (coupling.get(key) or [])
-             if isinstance(edge, (list, tuple)) and len(edge) == 2]
-    endpoints = {node for edge in edges for node in edge}
-    units = {path: _unit_of(path, endpoints) for path in paths}
-    touched = {unit for unit in units.values() if unit is not None}
+    file_of = {node.get("id"): node.get("file") for node in (symdelta or {}).get("nodes") or []
+               if isinstance(node, dict)}
+    touched_paths = set(paths)
+    edges = []
+    for edge in (symdelta or {}).get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        src, dst = file_of.get(edge.get("source")), file_of.get(edge.get("target"))
+        if src and dst and src != dst and src in touched_paths and dst in touched_paths:
+            edges.append((src, dst))
 
+    touched = {node for edge in edges for node in edge}
     outgoing = {unit: set() for unit in touched}
     indegree = dict.fromkeys(touched, 0)
     for src, dst in edges:
-        if src in touched and dst in touched and src != dst and dst not in outgoing[src]:
+        if dst not in outgoing[src]:
             outgoing[src].add(dst)
             indegree[dst] += 1
 
@@ -114,8 +143,8 @@ def caller_depth(coupling, paths):
     while remaining:
         ready = sorted(unit for unit in remaining if indegree[unit] == 0)
         if not ready:
-            # An import cycle. Break it at the least depended-on node, so the walk terminates
-            # and lands on the same order every run.
+            # A call cycle. Break it at the least-called node, so the walk terminates and
+            # lands on the same order every run.
             ready = [min(remaining, key=lambda unit: (indegree[unit], unit))]
         for unit in ready:
             depth[unit] = level
@@ -124,10 +153,10 @@ def caller_depth(coupling, paths):
                 if successor in remaining:
                     indegree[successor] -= 1
         level += 1
-    return {path: depth[unit] for path, unit in units.items() if unit in depth}
+    return depth
 
 
-def story(order, files, groups, coupling):
+def story(order, files, groups, symdelta):
     """[(title, why, [paths])] in the order a reviewer should read them.
 
     Which files belong together, and which theme comes first, is judgment and comes from
@@ -138,7 +167,7 @@ def story(order, files, groups, coupling):
     A file the groups missed is swept into a trailing catch-all rather than dropped: a stale
     analysis.json must not be able to hide a file from the reader.
     """
-    depth = caller_depth(coupling or {}, order)
+    depth = caller_depth(symdelta or {}, order)
     unplaced = max(depth.values(), default=0) + 1
 
     def reading_key(path):
@@ -572,7 +601,7 @@ def main():
     parser.add_argument("--hunks", default="notes", choices=("full", "notes"),
                         help="md only: 'full' adds the hunk bodies, well past the size budget")
     parser.add_argument("--links", help="links.json, to link each file and hunk into the PR")
-    parser.add_argument("--coupling", help="coupling.json, to order each group caller-first")
+    parser.add_argument("--symdelta", help="symdelta.json, to order each group caller-first")
     parser.add_argument("--complexity", help="complexity.json, for the per-file cx deltas")
     parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                         help="md only: demote the least interesting files to one line each "
@@ -589,13 +618,13 @@ def main():
     renames = rename_index(diff_text)
 
     def optional(path):
-        # Both inputs are best-effort upstream: coupling can bail out on an unsupported
+        # Both inputs are best-effort upstream: symdelta can bail out on an unsupported
         # language and complexity is not produced for every run. Reading them as absent keeps
         # the walkthrough renderable rather than failing the whole recap over a missing extra.
         return json.loads(Path(path).read_text()) if path else None
 
     links = optional(args.links)
-    groups = story(order, files, analysis.get("groups"), optional(args.coupling))
+    groups = story(order, files, analysis.get("groups"), optional(args.symdelta))
     complexity = optional(args.complexity)
     if args.format == "html":
         sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity,

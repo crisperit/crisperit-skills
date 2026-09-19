@@ -214,7 +214,6 @@
      heading's bottom border stays under both. */
   h2.h2-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
   h2.h2-row .ctl{display:flex;align-items:center;gap:10px}
-  .ctl-hint{color:var(--muted);font-size:var(--fs-xs);text-transform:none;letter-spacing:0}
   /* One appearance, both states. Each toggle's label names the state you are in, so tinting
      the default state grey said it twice and read as switched off; --accent is this page's
      interactive colour, so the control wears it whatever it says, and hover/press move the
@@ -292,7 +291,9 @@
   #mermaid-zoom::backdrop{background:rgba(0,0,0,.6)}
   #mermaid-zoom-controls{position:absolute;top:10px;left:10px;z-index:2;display:flex;
     gap:6px;align-items:center;font-size:var(--fs-xs);color:var(--muted)}
-  #mermaid-zoom-body{width:100%;height:100%;overflow:hidden;
+  /* position:relative: the node menu positions itself absolutely inside this element for
+     the fullscreen clone, same as .svgbox already does for the inline graph. */
+  #mermaid-zoom-body{width:100%;height:100%;overflow:hidden;position:relative;
     padding:20px;box-sizing:border-box}
   #mermaid-zoom-body svg{max-width:none;margin:0 auto;display:block}
   #mermaid-zoom-close{position:absolute;top:10px;right:10px;z-index:3;
@@ -301,6 +302,52 @@
     line-height:1;transition:background .12s}
   #mermaid-zoom-close:hover{background:var(--border)}
   #mermaid-zoom-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* Node menu on any graph whose box carries a data-ids map: badge, popup and focus-dimming.
+     Scoped to svg.vd-nav, set by tagNavNodes below only when that map is present, so FLOW
+     (no data-ids) stays untouched while both symbol-delta levels are in scope. */
+  svg.vd-nav .node[data-path]{cursor:pointer;-webkit-touch-callout:none}
+  svg.vd-nav .node[data-path]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* Badge lives inside the svg so pan and zoom carry it for free, and cloneNode(true) in
+     openZoom() copies it onto the fullscreen clone along with the rest of the tagged node. */
+  .vd-badge{opacity:0;transition:opacity .18s ease}
+  .vd-badge circle{fill:var(--panel);stroke:var(--accent);stroke-width:1.2}
+  .vd-badge path{stroke:var(--accent);stroke-width:1.6;fill:none;stroke-linecap:round}
+  /* Touch keeps :hover stuck after a tap, so the badge is pointer-gated: on a phone the
+     long-press is the whole affordance, same rule as any other hover-only control here. */
+  @media (hover:hover) and (pointer:fine){
+    svg.vd-nav .node:hover .vd-badge,
+    svg.vd-nav .node.vd-menu-open .vd-badge,
+    svg.vd-nav .node[data-path]:focus-visible .vd-badge{opacity:1}
+  }
+  /* Mermaid writes an ID-scoped .node rule per render that outranks a plain rect selector,
+     same reason .node.new/.node.gone above need !important. */
+  svg.vd-nav .node.vd-sel rect{stroke:var(--accent)!important;stroke-width:2px!important}
+  /* Same !important-outranks-!important reason as .node.vd-sel rect above: a removed node
+     (.node.gone, opacity:.7!important below) or an added one outside the reachable set must
+     still drop to .22, not win on its own !important rule instead. */
+  svg.vd-nav.vd-focusing .node:not(.vd-reach){opacity:.22!important}
+  svg.vd-nav.vd-focusing .vd-edge:not(.vd-reach){opacity:.12}
+  svg.vd-nav .node,svg.vd-nav .vd-edge{transition:opacity .22s ease}
+  .vd-menu{position:absolute;z-index:20;min-width:190px;background:var(--panel);
+    border:1px solid var(--border);border-radius:9px;padding:5px;
+    box-shadow:0 10px 26px rgba(8,10,16,.45);font-size:var(--fs-sm)}
+  .vd-menu-path{font-family:var(--mono);font-size:var(--fs-xs);color:var(--muted);
+    padding:5px 8px 7px;border-bottom:1px solid var(--border);margin-bottom:4px;
+    overflow-wrap:anywhere}
+  .vd-menu button{display:flex;gap:9px;align-items:center;width:100%;text-align:left;
+    background:none;border:0;color:var(--text);font:inherit;padding:9px 8px;
+    border-radius:6px;cursor:pointer}
+  .vd-menu button:hover,.vd-menu button:focus-visible{background:var(--panel2);outline:none}
+  .vd-menu button:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
+  .vd-menu-ic{color:var(--accent);font-family:var(--mono);font-size:13px;width:14px}
+  .vd-nav-toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    padding:8px 13px;font-size:var(--fs-xs);color:var(--muted);opacity:0;
+    transition:opacity .25s ease;pointer-events:none;z-index:30}
+  .vd-nav-toast.on{opacity:1}
+  /* Brief highlight so "Go to file" is visible arriving at the hunk, not just landing on it. */
+  details.hunk.vd-flash{border-color:var(--accent)}
 
   /* The graph's generated key, inline in the heading row beside the level toggle and only
      for a level that actually draws such a node (see _symbols_legend). Sentence case on
@@ -345,7 +392,7 @@
 
   .fb-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
     padding:8px 10px;font-size:var(--fs-xs)}
-  /* n/N keyboard nav (see the keydown handler below) needs a visible landing spot. */
+  /* Visible landing spot for the comments panel's click-to-focus jump (see wireCommentsPanel below). */
   .fb-item:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Same dashed-and-dimmed convention as .sw-gone / .hunk-cx.gone above: a structural fact,
      not a warning. */
@@ -723,6 +770,175 @@
   const zctl=document.getElementById('mermaid-zoom-controls');
   document.getElementById('mermaid-zoom-close').onclick=()=>dlg.close();
   dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
+
+  // Node menu (jump-to-file, focus-downstream) for any graph tagNavNodes tags below. Lives in
+  // this IIFE because it needs panZoom's own moved/suppressClick tracking plus openZoom/wire/dlg
+  // above, rather than duplicating a second click/drag split against the same svg.
+  const SVGNS='http://www.w3.org/2000/svg';
+  let navMenu=null,navMenuFor=null;
+
+  function navEscapeHtml(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function navMermaidId(node){
+    // Mermaid's own id shape, verified against a real render: "<renderId>-flowchart-<id>-<n>".
+    const m=/-flowchart-(.+)-\d+$/.exec(node.id||'');
+    return m&&m[1];
+  }
+  function navBadge(bx,by){
+    const g=document.createElementNS(SVGNS,'g');
+    g.setAttribute('class','vd-badge');
+    g.setAttribute('transform','translate('+bx+','+by+')');
+    const circle=document.createElementNS(SVGNS,'circle');
+    circle.setAttribute('r','9');
+    const path=document.createElementNS(SVGNS,'path');
+    path.setAttribute('d','M-3.2 -3.2 h6.4 M-3.2 0 h6.4 M-3.2 3.2 h6.4');
+    g.append(circle,path);
+    return g;
+  }
+  // Runs on every wire() pass but tags an svg only once, same guard idiom as panZoom's own
+  // dataset.pzWired: mermaid can still mutate the box a few times while it renders.
+  function tagNavNodes(box,svg){
+    if(svg.dataset.vdNavWired) return;
+    if(box.dataset.ids===undefined) return; // no map on this box at all (e.g. FLOW's .svgbox)
+    let ids;
+    try{ ids=JSON.parse(box.dataset.ids); }catch(_){ return; }
+    svg.dataset.vdNavWired='1';
+    svg.classList.add('vd-nav');
+    const tagged={}; // mermaidId -> its <g.node>, so the edge pass below can require both ends tagged
+    svg.querySelectorAll('g.node').forEach(node=>{
+      const mermaidId=navMermaidId(node);
+      const path=mermaidId&&ids[mermaidId];
+      if(!path) return; // folded pseudo-nodes and anything the ids map excludes on purpose (e.g. an empty map at level 1)
+      node.dataset.path=path;
+      node.tabIndex=0;
+      node.setAttribute('role','button');
+      node.setAttribute('aria-label','Open menu for '+path);
+      const rect=node.querySelector('rect');
+      if(rect){
+        const rx=parseFloat(rect.getAttribute('x')||'0'), ry=parseFloat(rect.getAttribute('y')||'0'),
+              rw=parseFloat(rect.getAttribute('width')||'0');
+        node.appendChild(navBadge(rx+rw-8,ry+8));
+      }
+      tagged[mermaidId]=node;
+    });
+    svg.querySelectorAll('path[data-id]').forEach(edge=>{
+      // Edge id's endpoints share whichever prefix that level's nodes use (S for symbols, P
+      // for packages); only the trailing per-edge index is a fixed \d+.
+      const m=/^L_([A-Za-z]\d+)_([A-Za-z]\d+)_\d+$/.exec(edge.dataset.id||'');
+      if(!m||!tagged[m[1]]||!tagged[m[2]]) return;
+      edge.classList.add('vd-edge');
+      edge.dataset.from=m[1]; edge.dataset.to=m[2];
+    });
+  }
+
+  function navToast(){
+    let t=document.getElementById('vd-nav-toast');
+    if(!t){
+      t=document.createElement('div');
+      t.id='vd-nav-toast'; t.className='vd-nav-toast';
+      t.setAttribute('role','status'); t.setAttribute('aria-live','polite');
+    }
+    // Re-checked on every call, not just on creation: while #mermaid-zoom is open, the rest
+    // of the document sits below the dialog's top layer and is inert, so a toast left under
+    // document.body would neither paint nor reach the accessibility tree -- exactly the
+    // surface a phone's fullscreen view is. Moving it back once the dialog closes is the
+    // same check, just the other branch, so a toast fired after close still works.
+    const parent=dlg.open?dlg:document.body;
+    if(t.parentNode!==parent) parent.appendChild(t);
+    return t;
+  }
+  let navSayTimer=null;
+  function navSay(msg){
+    const t=navToast();
+    t.textContent=msg; t.classList.add('on');
+    clearTimeout(navSayTimer);
+    navSayTimer=setTimeout(()=>t.classList.remove('on'),1900);
+  }
+
+  function closeNavMenu(){
+    if(navMenu){ navMenu.remove(); navMenu=null; }
+    if(navMenuFor){ navMenuFor.classList.remove('vd-menu-open'); navMenuFor=null; }
+  }
+  function clearNavFocus(root){
+    root.classList.remove('vd-focusing');
+    root.querySelectorAll('.node,.vd-edge').forEach(n=>n.classList.remove('vd-reach','vd-sel'));
+  }
+  function navDownstream(root,id){
+    const adj={};
+    root.querySelectorAll('.vd-edge').forEach(e=>{
+      (adj[e.dataset.from]=adj[e.dataset.from]||[]).push(e.dataset.to);
+    });
+    const seen=new Set([id]), q=[id];
+    while(q.length){
+      const c=q.shift();
+      (adj[c]||[]).forEach(n=>{ if(!seen.has(n)){ seen.add(n); q.push(n); } });
+    }
+    seen.delete(id);
+    return seen;
+  }
+  function focusNavNode(root,node){
+    clearNavFocus(root);
+    const id=navMermaidId(node), seen=navDownstream(root,id);
+    seen.add(id);
+    root.querySelectorAll('.node').forEach(n=>{ if(seen.has(navMermaidId(n))) n.classList.add('vd-reach'); });
+    root.querySelectorAll('.vd-edge').forEach(e=>{
+      if(seen.has(e.dataset.from)&&seen.has(e.dataset.to)) e.classList.add('vd-reach');
+    });
+    node.classList.add('vd-sel');
+    root.classList.add('vd-focusing');
+    navSay((seen.size-1)+(seen.size===2?' file':' files')+' downstream of '+node.dataset.path);
+  }
+  // The walkthrough carries no per-file anchor id (see scripts/walkthrough.py), so a path is
+  // resolved to its <details class="hunk"> at click time by matching .hunk-path's own text.
+  function navFindHunk(path){
+    return [...document.querySelectorAll('details.hunk')]
+      .find(d=>{ const p=d.querySelector('.hunk-path'); return p&&p.textContent.trim()===path; })||null;
+  }
+  function navGoToFile(path){
+    const target=navFindHunk(path);
+    if(!target) return; // the menu only ever offers this item when a match exists
+    if(dlg.open) dlg.close();
+    target.open=true;
+    target.scrollIntoView({block:'start'});
+    target.classList.add('vd-flash');
+    setTimeout(()=>target.classList.remove('vd-flash'),1400);
+  }
+  function openNavMenu(root,container,node,x,y){
+    closeNavMenu();
+    navMenuFor=node; node.classList.add('vd-menu-open');
+    const path=node.dataset.path, hasFile=!!navFindHunk(path);
+    const menu=document.createElement('div');
+    menu.className='vd-menu'; menu.setAttribute('role','menu');
+    let markup='<div class="vd-menu-path">'+navEscapeHtml(path)+'</div>';
+    if(hasFile) markup+='<button type="button" data-a="file"><span class="vd-menu-ic">&#8594;</span>Go to file</button>';
+    markup+='<button type="button" data-a="focus"><span class="vd-menu-ic">&#9678;</span>Focus downstream</button>';
+    if(root.classList.contains('vd-focusing'))
+      markup+='<button type="button" data-a="clear"><span class="vd-menu-ic">&#215;</span>Clear focus</button>';
+    menu.innerHTML=markup;
+    container.appendChild(menu);
+    const r=container.getBoundingClientRect(), m=menu.getBoundingClientRect();
+    let left=x-r.left+6, top=y-r.top+6;
+    if(left+m.width>r.width-6) left=Math.max(6,r.width-m.width-6);
+    if(top+m.height>r.height-6) top=Math.max(6,y-r.top-m.height-6);
+    menu.style.left=left+'px'; menu.style.top=top+'px';
+    navMenu=menu;
+    menu.querySelector('button').focus();
+    menu.addEventListener('click',e=>{
+      const b=e.target.closest('button'); if(!b) return;
+      const a=b.dataset.a; closeNavMenu();
+      if(a==='file') navGoToFile(path);
+      else if(a==='focus') focusNavNode(root,node);
+      else clearNavFocus(root);
+    });
+  }
+  dlg.addEventListener('close',closeNavMenu);
+  document.addEventListener('keydown',e=>{
+    if(e.key!=='Escape') return;
+    closeNavMenu();
+    document.querySelectorAll('svg.vd-nav.vd-focusing').forEach(clearNavFocus);
+  });
+
   // Pan and zoom by rewriting the svg's viewBox: it already carries one, so scaling it needs
   // no library and never rasterises. mode='modal' sizes a clone to fill the full-screen dialog;
   // mode='inline' is the diagram sitting in the page, which must keep scrolling and stay put.
@@ -781,6 +997,12 @@
     const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
     const mid=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
     const beginDrag=(x,y)=>{ drag={x,y,view:view.slice(),rect:svg.getBoundingClientRect()}; };
+    // Node menu container: the inline graph positions it inside its own .svgbox, or -- for a
+    // symbol-delta level, which has no .svgbox ancestor -- the level's own .mermaid box; both
+    // carry position:relative. The fullscreen clone uses #mermaid-zoom-body instead.
+    const navContainer=()=>mode==='modal'?zbody:svg.closest('.svgbox, .vd-symbols .mermaid');
+    let navPress=null;
+    const cancelNavPress=()=>{ if(navPress){ clearTimeout(navPress); navPress=null; } };
     // A lone touch pointer's type has to survive into endPointer, so a pinch that drops to one
     // finger can tell whether to resume a manual drag or leave it to touch-action:pan-y below.
     svg.addEventListener('pointerdown',e=>{
@@ -793,14 +1015,25 @@
         // inline + a lone touch: leave it to touch-action:pan-y (native page scroll); only
         // mouse/pen drag pans a single pointer here, a second touch still starts a pinch below
         if(mode!=='inline'||e.pointerType!=='touch'){ beginDrag(e.clientX,e.clientY); svg.style.cursor='grabbing'; }
+        // Long-press opens the menu on touch/pen; mouse already has the hover badge and
+        // right-click, so it's excluded the same way the mockup excludes it.
+        const navNode=svg.classList.contains('vd-nav')&&e.target.closest('.node[data-path]');
+        if(navNode&&e.pointerType!=='mouse'){
+          cancelNavPress();
+          navPress=setTimeout(()=>{
+            navPress=null; moved=true; // borrow the drag-suppression flag so the trailing click can't also fire
+            openNavMenu(svg,navContainer(),navNode,e.clientX,e.clientY);
+            if(navigator.vibrate) navigator.vibrate(8);
+          },500);
+        }
       }
-      else if(pts.size===2){ drag=null; const[a,b]=arr(); pinch={d:dist(a,b),mid:mid(a,b)}; }
+      else if(pts.size===2){ drag=null; const[a,b]=arr(); pinch={d:dist(a,b),mid:mid(a,b)}; cancelNavPress(); }
       if(mode==='inline'&&pts.size>=2) e.preventDefault(); // one finger scrolls the page, a pinch must not
     });
     svg.addEventListener('pointermove',e=>{
       if(!pts.has(e.pointerId)) return;
       pts.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
-      if(origin&&Math.hypot(e.clientX-origin.x,e.clientY-origin.y)>4) moved=true;
+      if(origin&&Math.hypot(e.clientX-origin.x,e.clientY-origin.y)>4){ moved=true; cancelNavPress(); }
       if(pts.size>=2&&pinch){
         if(mode==='inline') e.preventDefault();
         const[a,b]=arr(); const d=dist(a,b), m=mid(a,b);
@@ -817,6 +1050,7 @@
       }
     });
     const endPointer=e=>{
+      cancelNavPress();
       pts.delete(e.pointerId);
       if(pts.size===0){
         drag=null; pinch=null; origin=null; svg.style.cursor='grab';
@@ -833,17 +1067,49 @@
     // A drag ending over the box still fires a click; swallow it once so panning an inline
     // diagram doesn't also pop the full-screen dialog open.
     svg.addEventListener('click',e=>{ if(suppressClick){ e.stopPropagation(); suppressClick=false; } },true);
+    // Right-click opens the same menu as the badge/long-press. iOS also fires this on a
+    // long-press, after the timer above has likely already opened it -- navMenuFor guards
+    // the double-open rather than racing the two.
+    svg.addEventListener('contextmenu',e=>{
+      if(!svg.classList.contains('vd-nav')) return;
+      const node=e.target.closest('.node[data-path]');
+      if(!node) return;
+      e.preventDefault();
+      cancelNavPress();
+      if(navMenuFor===node&&navMenu) return;
+      openNavMenu(svg,navContainer(),node,e.clientX,e.clientY);
+    });
+    // Click opens the menu only when it landed on the badge; a click anywhere else on a
+    // tagged node still bubbles to the box's own click handler and opens the fullscreen
+    // dialog, unchanged from a graph with no menu at all.
+    svg.addEventListener('click',e=>{
+      if(!svg.classList.contains('vd-nav')) return;
+      const node=e.target.closest('.vd-badge')&&e.target.closest('.node[data-path]');
+      if(!node) return;
+      e.stopPropagation();
+      openNavMenu(svg,navContainer(),node,e.clientX,e.clientY);
+    });
+    svg.addEventListener('keydown',e=>{
+      if(!svg.classList.contains('vd-nav')) return;
+      if(e.key!=='Enter'&&e.key!==' ') return;
+      const node=e.target.closest('.node[data-path]');
+      if(!node) return;
+      e.preventDefault(); e.stopPropagation();
+      const r=node.querySelector('rect').getBoundingClientRect();
+      openNavMenu(svg,navContainer(),node,r.right,r.top);
+    });
     svg.style.cursor='grab';
     return api;
   }
-  // The svg actually on screen inside `box`: for a FLOW/coupling/structure box that's its one
-  // .mermaid child, for a graph level box (box IS the .mermaid element, one per detail
-  // level, siblings hidden by the level script) it's the box's own svg.
+  // The svg actually on screen inside `box`: for a FLOW box that's its one .mermaid child, for
+  // a graph level box (box IS the .mermaid element, one per detail level, siblings hidden by
+  // the level script) it's the box's own svg.
   function visibleSvg(box){
     return box.matches('.mermaid')?box.querySelector('svg')
       :box.querySelector('.mermaid:not([hidden]) svg');
   }
   function openZoom(box){
+    closeNavMenu(); // otherwise the inline menu is left open, hidden behind the dialog
     const svg=visibleSvg(box);
     if(!svg) return;
     const clone=svg.cloneNode(true);
@@ -868,7 +1134,9 @@
       });
     }
     const svg=visibleSvg(box);
-    if(!svg||svg.dataset.pzWired) return;
+    if(!svg) return;
+    tagNavNodes(box,svg);
+    if(svg.dataset.pzWired) return;
     panZoom(svg,'inline');
   }
   function wireAll(){
@@ -1096,7 +1364,9 @@
     return out;
   }
 
-  const RTF=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'});
+  // Pinned locale: the page's own text is English, so a browser-locale relative/absolute
+  // date (e.g. Polish "2 dni temu") would be the odd one out.
+  const RTF=new Intl.RelativeTimeFormat('en-GB',{numeric:'auto'});
   const REL_UNITS=[['year',31536000],['month',2592000],['week',604800],['day',86400],
                    ['hour',3600],['minute',60],['second',1]];
   function relTime(t){
@@ -1154,7 +1424,7 @@
       // Doubles as the link to the comment on GitHub, GitHub's own idiom.
       const t=document.createElement(n.gh_url?'a':'span'); t.className='fb-time';
       t.textContent=isNaN(when)?'on GitHub':relTime(when);
-      if(!isNaN(when)) t.title=new Date(when).toLocaleString();
+      if(!isNaN(when)) t.title=new Date(when).toLocaleString('en-GB');
       if(n.gh_url){
         t.href=n.gh_url; t.target='_blank'; t.rel='noopener noreferrer';
         t.setAttribute('aria-label','Open comment on GitHub');
@@ -1357,8 +1627,8 @@
   }
 
   // Same collapsed-<details> idiom as the .hr-lo fold below: cache the element per root id,
-  // never tear it down while focus is inside (keyboard nav via n/N can land a row here), and
-  // reconcile its children in place otherwise.
+  // never tear it down while focus is inside (the comments panel's click-to-focus jump can
+  // land a row here), and reconcile its children in place otherwise.
   function resolvedWrapFor(root,rows,confirmed){
     let entry=threadWrapByRoot.get(root.id);
     if(entry&&entry.el.contains(document.activeElement)) return entry.el;
@@ -1653,22 +1923,6 @@
 
     renderList();
   }
-
-  // n/N cycles focus through every comment row, live or stale, in document order.
-  document.addEventListener('keydown',e=>{
-    if(e.metaKey||e.ctrlKey||e.altKey) return;
-    if(e.key!=='n'&&e.key!=='N') return;
-    const t=e.target;
-    if(t&&(t.isContentEditable||['INPUT','TEXTAREA','SELECT'].includes(t.tagName))) return;
-    const rows=[...document.querySelectorAll('.fb-item[role="note"]')];
-    if(!rows.length) return;
-    e.preventDefault();
-    const cur=rows.indexOf(document.activeElement);
-    const dir=e.key==='N'?-1:1;
-    const next=rows[(cur+dir+rows.length)%rows.length];
-    openAncestorDetails(next);
-    next.focus();
-  });
 
   document.querySelectorAll('pre.diff').forEach(wireHunk);
   wireCommentsPanel();

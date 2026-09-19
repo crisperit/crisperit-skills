@@ -451,9 +451,21 @@ def test_floor_marker_is_the_same_number_whether_or_not_this_run_needed_to_demot
 
 # ---- reading order ----
 
-COUPLING = {
-    "added": [["src/api.py", "src/service.py"], ["src/service.py", "src/store.py"]],
-    "unchanged": [["src/store.py", "src/util.py"]],
+# One symbol per file, wired caller -> callee down the chain: api calls service, service calls
+# store, store calls util.
+SYMDELTA = {
+    "language": "python",
+    "nodes": [
+        {"id": "src/api.py:handle", "kind": "symbol", "file": "src/api.py"},
+        {"id": "src/service.py:run", "kind": "symbol", "file": "src/service.py"},
+        {"id": "src/store.py:get", "kind": "symbol", "file": "src/store.py"},
+        {"id": "src/util.py:fmt", "kind": "symbol", "file": "src/util.py"},
+    ],
+    "edges": [
+        {"source": "src/api.py:handle", "target": "src/service.py:run"},
+        {"source": "src/service.py:run", "target": "src/store.py:get"},
+        {"source": "src/store.py:get", "target": "src/util.py:fmt"},
+    ],
 }
 
 
@@ -463,37 +475,72 @@ def _chain_files(*paths):
 
 def test_a_caller_reads_before_the_thing_it_calls():
     paths = ["src/store.py", "src/api.py", "src/service.py"]
-    depth = caller_depth(COUPLING, paths)
+    depth = caller_depth(SYMDELTA, paths)
 
     assert depth["src/api.py"] < depth["src/service.py"] < depth["src/store.py"]
 
 
-def test_a_go_style_package_graph_places_files_by_their_directory():
-    coupling = {"added": [["file/watcher", "corelib/ratelimit"]]}
-    depth = caller_depth(coupling, ["corelib/ratelimit/config.go", "file/watcher/watcher.go"])
+def test_two_symbols_in_the_same_file_do_not_order_it_against_itself():
+    symdelta = {"language": "go", "nodes": [
+        {"id": "pkg/a.go:F", "kind": "symbol", "file": "pkg/a.go"},
+        {"id": "pkg/a.go:G", "kind": "symbol", "file": "pkg/a.go"},
+    ], "edges": [{"source": "pkg/a.go:F", "target": "pkg/a.go:G"}]}
+    depth = caller_depth(symdelta, ["pkg/a.go"])
 
-    assert depth["file/watcher/watcher.go"] < depth["corelib/ratelimit/config.go"]
-
-
-def test_a_bare_file_falls_back_to_the_graphs_root_node():
-    coupling = {"added": [["(root)", "pkg/thing"]]}
-    depth = caller_depth(coupling, ["main.go", "pkg/thing/thing.go"])
-
-    assert depth["main.go"] < depth["pkg/thing/thing.go"]
+    assert depth == {}
 
 
-def test_an_import_cycle_still_terminates_and_places_every_file():
-    coupling = {"added": [["a.py", "b.py"], ["b.py", "a.py"]]}
-    depth = caller_depth(coupling, ["a.py", "b.py"])
+def test_a_pkg_node_carries_no_file_and_drops_its_edge():
+    symdelta = {"language": "go", "nodes": [
+        {"id": "pkg/a", "kind": "pkg", "label": "a", "depth": 0},
+        {"id": "pkg/a.go:F", "kind": "symbol", "file": "pkg/a.go"},
+    ], "edges": [{"source": "pkg/a", "target": "pkg/a.go:F"}]}
+    depth = caller_depth(symdelta, ["pkg/a.go"])
+
+    assert depth == {}
+
+
+def test_a_call_cycle_still_terminates_and_places_every_file():
+    symdelta = {"language": "python", "nodes": [
+        {"id": "a.py:f", "kind": "symbol", "file": "a.py"},
+        {"id": "b.py:g", "kind": "symbol", "file": "b.py"},
+    ], "edges": [{"source": "a.py:f", "target": "b.py:g"},
+                 {"source": "b.py:g", "target": "a.py:f"}]}
+    depth = caller_depth(symdelta, ["a.py", "b.py"])
 
     assert set(depth) == {"a.py", "b.py"}
 
 
-def test_a_file_the_coupling_graph_never_saw_sorts_after_every_placed_one():
+def test_language_null_yields_no_depth_data():
+    symdelta = {"language": None, "reason": "unsupported language: rb"}
+    depth = caller_depth(symdelta, ["a.py", "b.py"])
+
+    assert depth == {}
+
+
+def test_no_edges_yields_no_depth_data():
+    symdelta = {"language": "python",
+                "nodes": [{"id": "a.py:f", "kind": "symbol", "file": "a.py"}], "edges": []}
+    depth = caller_depth(symdelta, ["a.py"])
+
+    assert depth == {}
+
+
+def test_a_file_symdelta_never_saw_sorts_after_every_placed_one():
     files = _chain_files("src/api.py", "src/service.py", "src/store.py", "notes.md")
-    [(_title, _why, ordered)] = story(list(files), files, None, COUPLING)
+    [(_title, _why, ordered)] = story(list(files), files, None, SYMDELTA)
 
     assert ordered[-1] == "notes.md"
+
+
+def test_symdelta_bailing_on_the_language_degrades_to_no_reordering():
+    """No depth data at all falls back to the pre-symdelta tie-break: size, then path -- the
+    same fallback a run with no symdelta.json ever had."""
+    files = _chain_files("b.py", "a.py")
+    symdelta = {"language": None, "reason": "unsupported language: rb"}
+    [(_title, _why, ordered)] = story(list(files), files, None, symdelta)
+
+    assert ordered == ["a.py", "b.py"]
 
 
 def test_tests_sink_inside_their_own_group_not_to_the_bottom_of_the_page():
@@ -501,7 +548,7 @@ def test_tests_sink_inside_their_own_group_not_to_the_bottom_of_the_page():
     groups = story(list(files), files, [
         {"title": "The api", "paths": ["src/api.py", "src/api_test.py"]},
         {"title": "The store", "paths": ["src/store.py"]},
-    ], COUPLING)
+    ], SYMDELTA)
 
     assert [paths for _t, _w, paths in groups] == [["src/api.py", "src/api_test.py"],
                                                   ["src/store.py"]]
