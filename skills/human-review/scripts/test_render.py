@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Self-check for render.py. Assert-based, no framework."""
 
+import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +13,7 @@ from render import (  # noqa: E402
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER, MAX_BODY_CHARS, MIN_USEFUL_MAX_CHARS,
     OVERFLOW_MARGIN_CHARS,
 )
+from sections import render as render_section  # noqa: E402  only this file's coupling test needs it
 from validate_analysis import parse_hunks  # noqa: E402
 
 DIFF = """diff --git a/src/auth.py b/src/auth.py
@@ -200,6 +203,19 @@ def test_explorer_and_symbols_both_appear_on_one_page():
 
     assert explorer in out
     assert symbols in out
+
+
+def test_coupling_box_carries_a_parseable_data_ids_map():
+    # data-path itself is set by browser JS only after mermaid renders, so python can't see
+    # it here; data-ids is the id -> path map that JS reads to set it, so this checks that
+    # map survives sections.py's escaping and render_html's verbatim paste intact.
+    ids = {"N0": "app/api/routes.py", "N1": "app/models.py"}
+    coupling_html = render_section("coupling", {"mermaid": "flowchart LR\n  N0 --> N1", "ids": ids}, "html")
+    out = html(explorer=coupling_html)
+
+    m = re.search(r'data-ids="([^"]*)"', out)
+    assert m
+    assert json.loads(m.group(1).replace("&quot;", '"')) == ids
 
 
 def test_an_empty_flow_drops_the_whole_section():
@@ -587,6 +603,7 @@ if __name__ == "__main__":
         test_relations_note_sits_above_the_explorer_and_no_heading_is_added,
         test_symbols_pastes_verbatim_with_no_heading_added,
         test_explorer_and_symbols_both_appear_on_one_page,
+        test_coupling_box_carries_a_parseable_data_ids_map,
         test_an_empty_flow_drops_the_whole_section,
         test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams,
         test_flow_tb_leaves_a_non_lr_diagram_alone,

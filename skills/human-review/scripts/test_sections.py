@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Self-check for sections.py. Assert-based, no framework."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,45 @@ def test_html_escapes_the_mermaid_source():
     assert "<img" not in out
     assert "&lt;img" in out
     assert "&amp; co" in out
+
+
+def test_coupling_html_carries_data_ids_mapping_for_the_graph_menu():
+    payload = {**COUPLING, "ids": {"N1": "b.py", "N0": "a.py"}}
+
+    out = render("coupling", payload, "html")
+
+    attr = out.split('data-ids="', 1)[1].split('"', 1)[0]
+    assert json.loads(attr.replace("&quot;", '"')) == {"N0": "a.py", "N1": "b.py"}
+
+
+def test_coupling_html_data_ids_survives_a_quote_and_ampersand_in_a_path():
+    payload = {**COUPLING, "ids": {"N0": 'weird"&<>.py'}}
+
+    out = render("coupling", payload, "html")
+
+    attr = out.split('data-ids="', 1)[1].split('"', 1)[0]
+    assert '"' not in attr  # every quote became &quot;, so none can end the attribute early
+    unescaped = (
+        attr.replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    )
+    assert json.loads(unescaped) == {"N0": 'weird"&<>.py'}
+
+
+def test_layers_and_structure_html_do_not_carry_data_ids():
+    # Both kinds' "ids" values are "pkg:symbol"-style tuples, not file paths (see structure.py),
+    # so a "go to file" menu built from them would be wrong -- data-ids is coupling-only.
+    layers = {"mermaid": "flowchart LR", "edges": [{"from": "a", "to": "b", "count": 1}],
+              "ids": {"N0": "pkg:symbol"}}
+    structure = {**STRUCTURE, "ids": {"N0": "a.py:Thing"}}
+
+    assert "data-ids=" not in render("layers", layers, "html")
+    assert "data-ids=" not in render("structure", structure, "html")
+
+
+def test_coupling_md_never_carries_data_ids():
+    payload = {**COUPLING, "ids": {"N0": "a.py"}}
+
+    assert "data-ids" not in render("coupling", payload, "md")
 
 
 def test_markdown_leaves_mermaid_unescaped_because_github_escapes_it():
@@ -865,6 +905,10 @@ if __name__ == "__main__":
         test_markdown_has_marker_fence_legend_and_limitation,
         test_html_has_marker_panel_and_zoomable_svgbox,
         test_html_escapes_the_mermaid_source,
+        test_coupling_html_carries_data_ids_mapping_for_the_graph_menu,
+        test_coupling_html_data_ids_survives_a_quote_and_ampersand_in_a_path,
+        test_layers_and_structure_html_do_not_carry_data_ids,
+        test_coupling_md_never_carries_data_ids,
         test_markdown_leaves_mermaid_unescaped_because_github_escapes_it,
         test_skipped_and_note_lines_are_carried,
         test_empty_mermaid_emits_nothing_at_all,

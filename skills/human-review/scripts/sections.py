@@ -245,11 +245,18 @@ def render(kind, data, fmt):
             "",
         ])
 
+    ids_attr = ""
+    if kind == "coupling" and data.get("ids"):
+        # Only coupling's ids map mermaid id -> file path; layers/structure ids map to
+        # "pkg:symbol" tuples, which a "go to file" menu would resolve wrongly.
+        ids_json = escape(json.dumps(data["ids"], sort_keys=True)).replace('"', "&quot;")
+        ids_attr = f' data-ids="{ids_json}"'
+
     return "\n".join([
         spec["marker"],
         f"<h2>{escape(heading).upper()}</h2>",
         '<div class="panel svgbox" tabindex="0" role="button"'
-        f' aria-label="{escape(aria)}">',
+        f' aria-label="{escape(aria)}"{ids_attr}>',
         f'<pre class="mermaid">{escape(mermaid)}</pre>',
         "</div>",
         f'<p class="note">{_html_note(tail)}</p>',
