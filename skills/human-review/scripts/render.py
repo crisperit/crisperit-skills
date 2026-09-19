@@ -3,13 +3,12 @@
 
   python3 render.py --analysis analysis.json --diff raw.diff --format html \
       --template ../assets/diff-review-template.html \
-      --explorer section-explorer.html --walkthrough section-walkthrough.html \
+      --walkthrough section-walkthrough.html \
       [--symbols section-symbols.html] [--links links.json] [--title "..."] > out.html
 
   python3 render.py --analysis analysis.json --diff raw.diff --format md \
-      --layers section-layers.md --coupling section-coupling.md \
-      --structure section-structure.md --walkthrough section-walkthrough.md \
-      [--links links.json] > out.md
+      --walkthrough section-walkthrough.md \
+      [--symbols section-symbols.md] [--links links.json] > out.md
 
 The page body was the last thing a model still typed out, and almost none of it was judgment.
 Six of its seven sections are either a section file pasted byte for byte or a string that
@@ -21,8 +20,8 @@ instructions a model had to remember every time, and getting one wrong meant eit
 `<img onerror=...>` from a branch name in someone else's PR, or a diagram replaced by a raw
 mermaid error box. They are now one function with a test.
 
-The judgment stays in analysis.json: `what_changed`, `how_it_works`, `flow_mermaid`, `verdict`,
-`section_notes` and the per-file `role` and per-hunk `note` that walkthrough.py places.
+The judgment stays in analysis.json: `what_changed`, `how_it_works`, `flow_mermaid`, `verdict`
+and the per-file `role` and per-hunk `note` that walkthrough.py places.
 
 Prose fields mark identifiers with backticks. Markdown passes those through, since GitHub
 renders them as inline code; HTML promotes them to `<code>` after escaping, so a tag is only
@@ -47,10 +46,6 @@ from validate_analysis import parse_hunks  # noqa: E402  one owner for diff pars
 TITLE_PLACEHOLDER = "<!-- DIFF_TITLE -->"
 CONTENT_PLACEHOLDER = "<!-- DIFF_CONTENT -->"
 STATE_PLACEHOLDER = "<!-- HR_STATE -->"
-# Order runs orientation, then concepts, then structure, then detail. Markdown stacks the three
-# graphs widest first, because which modules exist and which way they depend is the context that
-# makes the narrower two mean anything.
-MD_SECTION_ORDER = ("layers", "coupling", "structure")
 # Readable budget for the whole recap, which is the number walkthrough.DEFAULT_MAX_CHARS is
 # sized against. GitHub's hard ceiling is 65536 and it refuses a longer body outright; 45000
 # leaves headroom for the graph sections and prose while still being a body someone will
@@ -133,12 +128,11 @@ def _wrap_flow_labels(mermaid):
     return _MERMAID_EDGE_LABEL_RE.sub(_wrap_edge_label, mermaid)
 
 
-def render_html(analysis, files, template, explorer="", walkthrough="", links=None, title=None,
+def render_html(analysis, files, template, walkthrough="", links=None, title=None,
                 now=None, symbols="", complexity=None, state=None):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
-    notes = analysis.get("section_notes") or {}
 
     body = [
         '<div class="facts">',
@@ -176,16 +170,8 @@ def render_html(analysis, files, template, explorer="", walkthrough="", links=No
         body.append("<h2>How it works</h2>")
         body += [f"<p>{_html_prose(p)}</p>" for p in how]
 
-    # No heading of our own here: section-explorer.html opens with its own <h2>RELATIONS</h2>,
-    # and adding one produced two headings in a row on a real page. The note goes above the
-    # section, so it has to come before the paste rather than after it.
-    if explorer.strip():
-        if notes.get("explorer"):
-            body.append(f"<p>{_html_prose(notes['explorer'])}</p>")
-        body.append(explorer.rstrip("\n"))
-
-    # Same paste-verbatim rule as explorer above: section-symbols.html opens with its own
-    # <h2>CHANGES VISUALIZATION</h2> and caption, both written by sections.py, so nothing is added here.
+    # section-symbols.html opens with its own <h2>CHANGES VISUALIZATION</h2> and caption, both
+    # written by sections.py, so nothing is added here.
     if symbols.strip():
         body.append(symbols.rstrip("\n"))
 
@@ -195,9 +181,6 @@ def render_html(analysis, files, template, explorer="", walkthrough="", links=No
         # there would be nothing for it to hide. It names the state it is in, not the one it
         # switches to, and explanations start on, so the label here is the on label.
         body.append('<h2 class="h2-row"><span>Walkthrough</span><span class="ctl">'
-                    # The page has no other keyboard-help affordance since #fb-toggle was
-                    # unwired, so the n/N comment-nav shortcut is announced here.
-                    '<span class="ctl-hint">n / N: next, previous comment</span>'
                     '<button type="button" id="wt-notes-toggle"'
                     ' aria-label="Explanations shown. Activate to hide them."'
                     '>explanations</button></span></h2>')
@@ -243,12 +226,10 @@ def _reading_order_md(groups):
     return out
 
 
-def render_md(analysis, files, sections=None, walkthrough="", links=None, complexity=None):
-    sections = sections or {}
+def render_md(analysis, files, walkthrough="", links=None, complexity=None, symbols=""):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
-    notes = analysis.get("section_notes") or {}
 
     # No HTML escaping anywhere below. GitHub's own renderer escapes what it displays, and
     # escaping first produces double-escaped output like "&amp;lt;". Backticks stay backticks,
@@ -279,13 +260,10 @@ def render_md(analysis, files, sections=None, walkthrough="", links=None, comple
         for para in how:
             out += [para, ""]
 
-    for kind in MD_SECTION_ORDER:
-        text = (sections.get(kind) or "").strip()
-        if not text:
-            continue  # that analysis found nothing to draw
-        if notes.get(kind):
-            out += [notes[kind], ""]
-        out += [text, ""]
+    # Same paste-verbatim rule as the html path: section-symbols.md carries its own heading
+    # and caption, both written by sections.py, so nothing is added here.
+    if symbols.strip():
+        out += [symbols.strip(), ""]
 
     if walkthrough.strip():
         out += [walkthrough.strip(), ""]
@@ -318,15 +296,14 @@ def overflow_warning(text, walkthrough_text):
         floor = int(floor_match.group(1))
         if suggested < floor:
             return (prefix + "unsatisfiable by shrinking the walkthrough, its floor for this "
-                    f"diff is {floor} characters; look at the stacked layers, coupling and "
-                    "structure sections instead, which have no size dial")
+                    f"diff is {floor} characters; the symbols graph section has no size dial "
+                    "either, so the excess has nowhere left to shrink from")
         return prefix + f"re-run walkthrough.py with --max-chars {suggested}"
     if suggested < MIN_USEFUL_MAX_CHARS:
         # No floor marker: the walkthrough was already near-empty (or --walkthrough was never
-        # passed), so the excess is upstream in the other sections instead.
+        # passed), so the excess is upstream in the prose or the symbols section instead.
         return (prefix + "the walkthrough section is not where the excess is, so shrinking it "
-                "will not help; look at the stacked layers, coupling and structure sections "
-                "instead, which have no size dial")
+                "will not help; the symbols graph section has no size dial either")
     return prefix + f"re-run walkthrough.py with --max-chars {suggested}"
 
 
@@ -339,12 +316,9 @@ def main():
     parser.add_argument("--links")
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
     parser.add_argument("--template", help="html only: the page template")
-    parser.add_argument("--explorer", help="html only: section-explorer.html")
-    parser.add_argument("--symbols", help="html only: section-symbols.html")
+    parser.add_argument("--symbols", help="section-symbols.{html,md}")
     parser.add_argument("--state", help="html only: state.json, inlined behind HR_STATE")
     parser.add_argument("--title", help="html only")
-    for kind in MD_SECTION_ORDER:
-        parser.add_argument(f"--{kind}", help=f"md only: section-{kind}.md")
     args = parser.parse_args()
 
     analysis = json.loads(Path(args.analysis).read_text())
@@ -357,14 +331,14 @@ def main():
         if not args.template:
             parser.error("--template is required for --format html")
         sys.stdout.write(render_html(
-            analysis, files, _read(args.template), _read(args.explorer),
+            analysis, files, _read(args.template),
             _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
             complexity=complexity, state=state,
         ))
     else:
-        sections = {kind: _read(getattr(args, kind)) for kind in MD_SECTION_ORDER}
         walkthrough_text = _read(args.walkthrough)
-        text = render_md(analysis, files, sections, walkthrough_text, links, complexity)
+        text = render_md(analysis, files, walkthrough_text, links, complexity,
+                          symbols=_read(args.symbols))
         if len(text) > MAX_BODY_CHARS:
             print(overflow_warning(text, walkthrough_text), file=sys.stderr)
         sys.stdout.write(text)

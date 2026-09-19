@@ -9,33 +9,206 @@ matches differ between grammars, so an absolute number is only comparable within
 One function's delta between two refs is the part that holds, and that is all the recap reports.
 
 Python goes through `ast` because the vendored grammar set has no Python parser; everything else
-reuses structure.py's tree-sitter parsers, so the languages covered here are exactly the ones
-the rest of the recap already covers.
+goes through a tree-sitter grammar and a generic node-type heuristic, so the languages covered
+here are exactly the ones the rest of the recap already covers.
 
 A file's total is the sum over its functions. Module-level branching is left out on purpose:
 attributing it needs a synthetic owner that no other section has a node for, and in the
 languages this runs on there is almost none of it.
 
-Stdlib only except for shelling out to `git` and the tree-sitter grammars structure.py loads.
+Stdlib only except for shelling out to `git` and the tree-sitter grammars loaded below.
 """
 
 import argparse
 import ast
+import functools
+import glob
+import importlib
 import json
+import os
+import posixpath
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from coupling import git_show, is_noise_file, resolve_base  # noqa: E402  shared git helpers
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
-from structure import (  # noqa: E402  one owner for parsers and for "what is a function"
-    _kind_of,
-    _label,
-    detect_lang,
-    generic_parser_for,
-)
+from links import resolve_base, run_git  # noqa: E402  one owner for git helpers (subprocess + merge-base)
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
+
+# Formerly coupling.py's; moved here when that script was removed. Generic git helpers with
+# no coupling-graph logic of their own, so this file is a fine sole owner now.
+NOISE_EXTENSIONS = {
+    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".lock", ".cfg", ".ini",
+    ".csv", ".sql", ".sh", ".bash", ".zsh",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp",
+}
+
+
+def is_noise_file(path):
+    basename = path.rsplit("/", 1)[-1]
+    if basename.startswith("."):
+        return True
+    return posixpath.splitext(basename)[1].lower() in NOISE_EXTENSIONS
+
+
+def git_show(repo, ref, path):
+    """Return a file's content at ref, or None if it doesn't exist there."""
+    result = run_git(repo, ["show", f"{ref}:{path}"])
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+# Extension -> (tree_sitter_<module> suffix, language_<variant> suffix or None for a bare
+# language()). Grammars bundled with graphify; see _get_parser for resolution order. Formerly
+# structure.py's, moved here when that script (and its "structure" graph output) was removed --
+# this file is the only remaining consumer of the generic tree-sitter parse path.
+GENERIC_LANG = {
+    ".ts": ("typescript", "typescript"),
+    ".tsx": ("typescript", "tsx"),
+    ".js": ("javascript", None),
+    ".jsx": ("javascript", None),
+    ".mjs": ("javascript", None),
+    ".cjs": ("javascript", None),
+    ".go": ("go", None),
+    ".rs": ("rust", None),
+    ".java": ("java", None),
+    ".rb": ("ruby", None),
+    ".kt": ("kotlin", None),
+    ".kts": ("kotlin", None),
+    ".swift": ("swift", None),
+    ".scala": ("scala", None),
+    ".c": ("c", None),
+    ".h": ("c", None),
+    ".cpp": ("cpp", None),
+    ".cc": ("cpp", None),
+    ".hpp": ("cpp", None),
+    ".cs": ("c_sharp", None),
+    ".php": ("php", "php"),
+    ".lua": ("lua", None),
+    ".ex": ("elixir", None),
+    ".exs": ("elixir", None),
+    ".jl": ("julia", None),
+    # bash deliberately absent: NOISE_EXTENSIONS above claims .sh/.bash first, so a shell
+    # file never reaches this map.
+    ".zig": ("zig", None),
+    ".ps1": ("powershell", None),
+    ".m": ("objc", None),
+}
+
+# tree-sitter node types are near-identical across grammars, so one set of regexes covers
+# all of them. The suffix is optional because some grammars use bare names (Ruby: "class",
+# "method") instead of a "_declaration"/"_definition" tail.
+_NODE_SUFFIX = r"(_(declaration|definition|specifier|item|spec|statement|expression))?$"
+_TYPE_RE = {
+    # Java's method_invocation matches both call and func; check call first or every call
+    # site gets misfiled as a definition.
+    "call": re.compile(r"^(call|method_invocation|invocation)" + _NODE_SUFFIX + r"|_call$"),
+    "func": re.compile(
+        r"^(function|method|func|fn|constructor|subroutine|singleton_method|"
+        r"method_invocation)" + _NODE_SUFFIX
+    ),
+    "class": re.compile(
+        r"^(class|struct|interface|trait|impl|object|enum|module|record|protocol|type)"
+        + _NODE_SUFFIX
+    ),
+}
+_NAME_FIELDS = ("name", "declarator", "function", "type", "pattern")
+
+
+def _kind_of(node_type):
+    if _TYPE_RE["call"].search(node_type):
+        return "call"
+    if _TYPE_RE["func"].search(node_type):
+        return "func"
+    if _TYPE_RE["class"].search(node_type):
+        return "class"
+    return None
+
+
+def _label(node, src):
+    """A node's name, or None. For a dotted callee (`c.upload()`) this keeps only the tail,
+    matching by method name alone since the generic path can't resolve `c` to a type."""
+    for field in _NAME_FIELDS:
+        child = node.child_by_field_name(field)
+        if child is not None:
+            text = src[child.start_byte : child.end_byte].decode(errors="replace")
+            return text.split("(")[0].strip().rsplit(".", 1)[-1]
+    for child in node.children:
+        if "identifier" in child.type or child.type in ("type_identifier", "constant"):
+            return src[child.start_byte : child.end_byte].decode(errors="replace")
+    return None
+
+
+def _graphify_site_packages():
+    matches = sorted(glob.glob(
+        str(Path.home() / ".local/share/uv/tools/graphifyy/lib/python3.*/site-packages")
+    ))
+    return matches[-1] if matches else None
+
+
+def _language_fn(module, variant):
+    """tree_sitter_<lang> modules expose a bare `language()`, except multi-grammar packages
+    (tree_sitter_typescript: language_typescript/language_tsx; tree_sitter_php: language_php/
+    language_php_only), which need the variant-suffixed one."""
+    if hasattr(module, "language"):
+        return module.language
+    if variant and hasattr(module, f"language_{variant}"):
+        return getattr(module, f"language_{variant}")
+    for name in dir(module):
+        if name.startswith("language_") and callable(getattr(module, name)):
+            return getattr(module, name)
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def _get_parser(lang, variant):
+    """A tree-sitter Parser for `lang`, or None. Tries a real install first, then graphify's
+    bundled grammars (in a python 3.12 venv, compatible with this interpreter, but a version
+    bump there could silently stop working), then gives up."""
+    if os.environ.get("VISUAL_DIFF_NO_TREE_SITTER"):  # test seam for the no-parser path
+        return None
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser(variant or lang)
+    except Exception:
+        pass
+
+    try:
+        import tree_sitter
+    except ImportError:
+        site_packages = _graphify_site_packages()
+        if not site_packages:
+            return None
+        sys.path.insert(0, site_packages)
+        try:
+            import tree_sitter
+        except ImportError:
+            return None
+
+    try:
+        module = importlib.import_module(f"tree_sitter_{lang}")
+        language_fn = _language_fn(module, variant)
+        if language_fn is None:
+            return None
+        return tree_sitter.Parser(tree_sitter.Language(language_fn()))
+    except Exception:
+        return None
+
+
+def generic_parser_for(path):
+    info = GENERIC_LANG.get(Path(path).suffix.lower())
+    return _get_parser(*info) if info else None
+
+
+def detect_lang(path):
+    """Which parse path a file takes: "python" (ast), "generic" (tree-sitter), or None."""
+    if path.endswith(".py"):
+        return "python"
+    return "generic" if generic_parser_for(path) else None
+
 
 # Matched by exact node type, not by regex on a suffix: Go spells one loop as both
 # `for_statement` and an inner `for_clause`, and a prefix rule would count it twice.

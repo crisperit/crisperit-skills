@@ -1,13 +1,37 @@
 #!/usr/bin/env python3
 """Self-check for regen.py. Assert-based, no framework, no network."""
 
+import argparse
 import json
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import complexity  # noqa: E402
 import regen  # noqa: E402
+
+
+def _required_flags(main_fn):
+    """Required --flags of the ArgumentParser main_fn builds, without running the rest of
+    main_fn. Reads them off the real parser so this can't drift from the script's argparse."""
+    captured = {}
+    original_parse_args = argparse.ArgumentParser.parse_args
+
+    def fake_parse_args(self, *a, **kw):
+        captured["parser"] = self
+        raise SystemExit(0)
+
+    argparse.ArgumentParser.parse_args = fake_parse_args
+    try:
+        try:
+            main_fn()
+        except SystemExit:
+            pass
+    finally:
+        argparse.ArgumentParser.parse_args = original_parse_args
+
+    return {action.option_strings[0] for action in captured["parser"]._actions if action.required}
 
 
 def _diff(path, index_line, header, body_lines):
@@ -126,34 +150,45 @@ def test_two_identical_hunks_in_one_file_resolve_first_unmatched_wins():
 
 def test_ref_based_analysers_cache_hit_depends_only_on_base_and_head():
     with tempfile.TemporaryDirectory() as tmp:
-        key = regen.analyser_key("coupling", "base1", "head1")
+        key = regen.analyser_key("symdelta", "base1", "head1")
         (Path(tmp) / f"{key}.json").write_text("{}")
 
         light_hunks = regen.plan_analysers(tmp, "/repo", "base1", "head1", "raw.diff", "sethash-1")
         heavy_hunks = regen.plan_analysers(tmp, "/repo", "base1", "head1", "raw.diff", "sethash-2")
 
-        assert light_hunks["coupling"]["status"] == "hit"
-        assert heavy_hunks["coupling"]["status"] == "hit"
-        assert light_hunks["coupling"]["key"] == heavy_hunks["coupling"]["key"]
+        assert light_hunks["symdelta"]["status"] == "hit"
+        assert heavy_hunks["symdelta"]["status"] == "hit"
+        assert light_hunks["symdelta"]["key"] == heavy_hunks["symdelta"]["key"]
         # complexity is keyed on the set hash, so it is the one allowed to differ here.
         assert light_hunks["complexity"]["key"] != heavy_hunks["complexity"]["key"]
 
 
 def test_bumping_script_version_invalidates_the_ref_based_cache():
-    original = regen.SCRIPT_VERSION["coupling"]
+    original = regen.SCRIPT_VERSION["symdelta"]
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            key = regen.analyser_key("coupling", "base1", "head1")
+            key = regen.analyser_key("symdelta", "base1", "head1")
             (Path(tmp) / f"{key}.json").write_text("{}")
             before = regen.plan_analysers(tmp, "/repo", "base1", "head1", "raw.diff", "sethash")
-            assert before["coupling"]["status"] == "hit"
+            assert before["symdelta"]["status"] == "hit"
 
-            regen.SCRIPT_VERSION["coupling"] = original + 1
+            regen.SCRIPT_VERSION["symdelta"] = original + 1
             after = regen.plan_analysers(tmp, "/repo", "base1", "head1", "raw.diff", "sethash")
-            assert after["coupling"]["status"] == "miss"
-            assert after["coupling"]["key"] != before["coupling"]["key"]
+            assert after["symdelta"]["status"] == "miss"
+            assert after["symdelta"]["key"] != before["symdelta"]["key"]
     finally:
-        regen.SCRIPT_VERSION["coupling"] = original
+        regen.SCRIPT_VERSION["symdelta"] = original
+
+
+def test_complexity_command_carries_every_argument_complexity_requires():
+    required_flags = _required_flags(complexity.main)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plans = regen.plan_analysers(tmp, "/repo", "base1", "head1", "raw.diff", "sethash")
+
+    cmd_tokens = plans["complexity"]["action"].split()
+    for flag in required_flags:
+        assert flag in cmd_tokens, f"{flag} missing from: {plans['complexity']['action']}"
 
 
 def test_fill_seeds_prefills_role_and_note_and_flags_a_fully_carried_batch():
@@ -279,6 +314,7 @@ if __name__ == "__main__":
         test_two_identical_hunks_in_one_file_resolve_first_unmatched_wins,
         test_ref_based_analysers_cache_hit_depends_only_on_base_and_head,
         test_bumping_script_version_invalidates_the_ref_based_cache,
+        test_complexity_command_carries_every_argument_complexity_requires,
         test_fill_seeds_prefills_role_and_note_and_flags_a_fully_carried_batch,
         test_fill_seeds_leaves_an_unmatched_hunk_blank_and_does_not_skip_the_batch,
         test_fill_seeds_skips_the_batch_when_a_zero_hunk_file_carries_by_role,

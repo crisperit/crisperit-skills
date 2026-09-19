@@ -35,10 +35,11 @@ import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from coupling import is_test_path, resolve_base, run_git  # noqa: E402  shared git/test helpers
-
 SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from links import resolve_base, run_git  # noqa: E402  one owner for git helpers (subprocess + merge-base)
+from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
+
 EXTRACTOR_DIR = SCRIPT_DIR / "extractors" / "go"
 
 

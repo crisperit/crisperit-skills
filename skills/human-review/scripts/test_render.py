@@ -34,9 +34,6 @@ ANALYSIS = {
     "what_changed": "`loadSession` now falls back to the refresh token.\n\nThe title changed.",
     "how_it_works": "`store.get` reads the access token from the cookie jar.",
     "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]',
-    "section_notes": {"explorer": "Start at files, the change is in one module.",
-                      "layers": "Layers note.", "coupling": "Coupling note.",
-                      "structure": "Structure note."},
     "files": [{"path": "src/auth.py", "role": "r", "hunks": [{"header": "@@", "note": "n"}]}],
 }
 
@@ -136,51 +133,26 @@ def test_markdown_keeps_backticks_as_backticks():
 def test_pasted_sections_are_never_re_escaped():
     # sections.py already escaped these. Escaping again renders "&amp;lt;" on the page, and
     # re-indenting or re-wording them is how a legend drifts from its arrows.
-    explorer = '<div class="vd-explorer">a &lt; b &amp;&amp; c</div>'
     walk = '<pre class="diff"><span class="c">  x &lt; y</span></pre>'
-    out = html(explorer=explorer, walkthrough=walk)
+    out = html(walkthrough=walk)
 
-    assert explorer in out
     assert walk in out
     assert "&amp;lt;" not in out
 
 
-def test_markdown_pastes_its_sections_byte_for_byte():
-    sections = {"layers": "<!-- visual-diff:layers -->\n### Layers\n```mermaid\nflowchart LR\n```",
-                "coupling": "<!-- visual-diff:coupling -->\n### Files",
-                "structure": "<!-- visual-diff:structure -->\n### Symbols"}
-    out = md(sections=sections, walkthrough="<!-- visual-diff:walkthrough -->\n<details>x</details>")
+def test_markdown_pastes_the_symbols_section_byte_for_byte():
+    symbols = "<!-- visual-diff:symbols -->\n### Changes visualization\n```mermaid\nflowchart LR\n```"
+    out = md(symbols=symbols, walkthrough="<!-- visual-diff:walkthrough -->\n<details>x</details>")
 
-    for text in list(sections.values()) + ["<!-- visual-diff:walkthrough -->\n<details>x</details>"]:
-        assert text in out
+    assert symbols in out
+    assert "<!-- visual-diff:walkthrough -->\n<details>x</details>" in out
 
 
-def test_markdown_stacks_the_graphs_widest_first():
-    sections = {k: f"<!-- visual-diff:{k} -->" for k in ("layers", "coupling", "structure")}
-    out = md(sections=sections)
+def test_markdown_symbols_section_sits_between_how_it_works_and_the_walkthrough():
+    out = md(symbols="<!-- visual-diff:symbols -->\nSYM",
+              walkthrough="<!-- visual-diff:walkthrough -->\nWT")
 
-    order = [out.index(f"<!-- visual-diff:{k} -->") for k in ("layers", "coupling", "structure")]
-    assert order == sorted(order)
-
-
-def test_each_section_note_sits_above_its_own_section():
-    sections = {k: f"<!-- visual-diff:{k} -->" for k in ("layers", "coupling", "structure")}
-    out = md(sections=sections)
-
-    for kind, note in (("layers", "Layers note."), ("coupling", "Coupling note."),
-                       ("structure", "Structure note.")):
-        assert out.index(note) < out.index(f"<!-- visual-diff:{kind} -->")
-
-
-def test_relations_note_sits_above_the_explorer_and_no_heading_is_added():
-    # section-explorer.html opens with its own <h2>RELATIONS</h2>; adding one here put two
-    # headings in a row on a real page.
-    explorer = '<h2>RELATIONS</h2>\n<div class="vd-explorer"></div>'
-    out = html(explorer=explorer)
-
-    assert out.index("Start at files") < out.index("<h2>RELATIONS</h2>")
-    assert out.count("RELATIONS") == 1
-    assert "<h2>Relations</h2>" not in out
+    assert out.index("### How it works") < out.index("SYM") < out.index("WT")
 
 
 def test_symbols_pastes_verbatim_with_no_heading_added():
@@ -193,15 +165,6 @@ def test_symbols_pastes_verbatim_with_no_heading_added():
     assert out.count("CHANGES VISUALIZATION") == 1
 
 
-def test_explorer_and_symbols_both_appear_on_one_page():
-    explorer = '<h2>RELATIONS</h2>\n<div class="vd-explorer"></div>'
-    symbols = '<h2>CHANGES VISUALIZATION</h2>\n<div class="vd-symbols"></div>'
-    out = html(explorer=explorer, symbols=symbols)
-
-    assert explorer in out
-    assert symbols in out
-
-
 def test_an_empty_flow_drops_the_whole_section():
     out = html({**ANALYSIS, "flow_mermaid": ""})
 
@@ -212,7 +175,7 @@ def test_an_empty_flow_drops_the_whole_section():
 
 def test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams():
     # svgbox-flow is what lets the template give FLOW its own CSS rule instead of sharing the
-    # scale-to-fit one sized for the whole-repo module map sections.py pastes in below it.
+    # scale-to-fit one sized for the symbols graph sections.py pastes in below it.
     out = html()
 
     assert 'class="panel svgbox svgbox-flow"' in out
@@ -329,9 +292,8 @@ def test_an_empty_how_it_works_drops_the_whole_section():
 
 
 def test_an_empty_section_file_inserts_nothing_not_even_its_note():
-    out = html(explorer="", walkthrough="")
+    out = html(walkthrough="")
 
-    assert "Start at files" not in out  # the note has no section to introduce
     assert "<h2>Walkthrough</h2>" not in out
 
 
@@ -421,21 +383,12 @@ def test_a_full_recap_of_a_big_diff_fits_the_body_budget():
                    "hunks": [{"header": "@@ -1,1 +1,4 @@", "note": f"One line on `{p}`."}]}
                for p in order}
     walk = walkthrough.render_md(walkthrough.story(order, files, None, None), files, by_path)
-    # Graph sections measured at 6250 characters on a real branch; stand in for that.
-    sections = {k: f"<!-- visual-diff:{k} -->\n" + "x" * 2000 for k in ("layers", "coupling",
-                                                                       "structure")}
-    out = render_md(ANALYSIS, files, sections, walk)
+    # Graph section measured at 6250 characters on a real branch; stand in for that.
+    symbols = "<!-- visual-diff:symbols -->\n" + "x" * 6250
+    out = render_md(ANALYSIS, files, walk, symbols=symbols)
 
     assert len(walk) <= walkthrough.DEFAULT_MAX_CHARS
     assert len(out) <= MAX_BODY_CHARS, len(out)
-
-
-def test_section_notes_absent_is_not_an_error():
-    analysis = {k: v for k, v in ANALYSIS.items() if k != "section_notes"}
-    out = html(analysis, explorer='<h2>RELATIONS</h2><div class="vd-explorer"></div>')
-
-    assert "<h2>RELATIONS</h2>" in out
-    assert 'class="vd-explorer"' in out
 
 
 def test_overflow_warning_names_a_concrete_max_chars_below_the_walkthrough_length():
@@ -469,7 +422,7 @@ def test_overflow_warning_declines_to_suggest_when_the_walkthrough_cannot_absorb
         assert str(len(text)) in warning
         assert str(MAX_BODY_CHARS) in warning
         assert "--max-chars" not in warning
-        assert "layers" in warning and "coupling" in warning and "structure" in warning
+        assert "symbols" in warning
 
 
 def test_overflow_warning_boundary_around_the_min_useful_threshold():
@@ -497,7 +450,7 @@ def test_overflow_warning_names_the_floor_when_the_marker_makes_it_unsatisfiable
     assert "unsatisfiable" in warning
     assert "8042 characters" in warning
     assert "--max-chars" not in warning
-    assert "layers" in warning and "coupling" in warning and "structure" in warning
+    assert "symbols" in warning
 
 
 def test_overflow_warning_still_names_a_number_when_the_floor_marker_says_it_fits():
@@ -581,12 +534,9 @@ if __name__ == "__main__":
         test_markdown_never_html_escapes_anything,
         test_markdown_keeps_backticks_as_backticks,
         test_pasted_sections_are_never_re_escaped,
-        test_markdown_pastes_its_sections_byte_for_byte,
-        test_markdown_stacks_the_graphs_widest_first,
-        test_each_section_note_sits_above_its_own_section,
-        test_relations_note_sits_above_the_explorer_and_no_heading_is_added,
+        test_markdown_pastes_the_symbols_section_byte_for_byte,
+        test_markdown_symbols_section_sits_between_how_it_works_and_the_walkthrough,
         test_symbols_pastes_verbatim_with_no_heading_added,
-        test_explorer_and_symbols_both_appear_on_one_page,
         test_an_empty_flow_drops_the_whole_section,
         test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams,
         test_flow_tb_leaves_a_non_lr_diagram_alone,
@@ -610,7 +560,6 @@ if __name__ == "__main__":
         test_no_links_json_means_no_links,
         test_html_footer_link_is_safe_to_click_from_a_file_url,
         test_a_full_recap_of_a_big_diff_fits_the_body_budget,
-        test_section_notes_absent_is_not_an_error,
         test_overflow_warning_names_a_concrete_max_chars_below_the_walkthrough_length,
         test_overflow_warning_declines_to_suggest_when_the_walkthrough_cannot_absorb_it,
         test_overflow_warning_boundary_around_the_min_useful_threshold,

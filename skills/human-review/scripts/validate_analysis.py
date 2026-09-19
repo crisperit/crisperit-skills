@@ -59,6 +59,7 @@ import argparse
 import json
 import re
 import sys
+from pathlib import PurePosixPath
 
 DIFF_GIT = re.compile(r'^diff --git (?:"a/(.+)"|a/(\S+)) (?:"b/(.+)"|b/(\S+))$')
 HUNK_PREFIX = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)")
@@ -92,6 +93,39 @@ BANNED_ROLE_WORDS = frozenset({
     "moved", "deleted", "modified", "updated", "changed", "added", "removed", "renamed",
     "refactored",
 })
+# Sole owner of test-path classification: walkthrough.py's hunk ordering and symdelta.py's
+# graph edge filtering both import this, so a change to what counts as a test path can't
+# drift between the two.
+_TEST_DIR_SEGMENTS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
+_TEST_FILENAME_PATTERNS = (
+    re.compile(r"^test_.*", re.IGNORECASE),  # pytest / unittest
+    re.compile(r".*_test\..+$", re.IGNORECASE),  # Go / Ruby / Python suffix
+    re.compile(r".*\.test\..+$", re.IGNORECASE),  # JS/TS (jest, vitest)
+    re.compile(r".*\.spec\..+$", re.IGNORECASE),  # JS/TS (jasmine, karma)
+    re.compile(r".*_spec\..+$", re.IGNORECASE),  # RSpec
+    re.compile(r".*\.e2e-spec\..+$", re.IGNORECASE),  # e.g. mcp-auth.e2e-spec.ts
+    re.compile(r".*\.tests\.ps1$", re.IGNORECASE),  # PowerShell Pester
+    re.compile(r"^conftest\.py$", re.IGNORECASE),  # pytest fixtures
+    # Java/C#/Swift: an uppercase-led Test(s) right before the extension, so lowercase
+    # mid-word hits like "greatest.cs"/"contest.java" do not match.
+    re.compile(r".*Test\.java$"),
+    re.compile(r".*Tests\.java$"),
+    re.compile(r".*Tests\.cs$"),
+    re.compile(r".*Tests\.swift$"),
+)
+
+
+def is_test_path(path):
+    """Classify a path as a test path: segment-aware and suffix-aware, never
+    substring-aware, so "latest/x.py", "src/contest.py" and "src/greatest/x.py" stay
+    non-test."""
+    if not path:
+        return False
+    norm = str(path).replace("\\", "/")
+    if any(segment.lower() in _TEST_DIR_SEGMENTS for segment in PurePosixPath(norm).parts):
+        return True
+    filename = PurePosixPath(norm).name
+    return any(pattern.match(filename) for pattern in _TEST_FILENAME_PATTERNS)
 
 
 def parse_hunks(text):

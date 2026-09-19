@@ -12,6 +12,7 @@ from validate_analysis import (  # noqa: E402
     _empty_note_floor,
     check_rendered,
     check_sections,
+    is_test_path,
     parse_diff,
     validate,
 )
@@ -58,6 +59,38 @@ GOOD = {
         {"path": "logo.png", "role": "binary, replaced artwork", "hunks": []},
     ],
 }
+
+
+def test_is_test_path_classifies_across_ecosystems():
+    hits = [
+        "internal/ratelimit/ratelimit_request_test.go",
+        "corelib/macros/macros_test.go",
+        "app/foo_test.py",
+        "src/main/java/FooTest.java",
+        "pkg/a/b_test.go",
+        "lib/foo_spec.rb",
+        "lib/foo_test.rb",
+        "Services/FooTests.cs",
+        "Sources/FooTests.swift",
+        "conftest.py",
+        "src/foo.test.ts",
+        "src/foo.spec.ts",
+        "tests/x.py",
+        "spec/y.rb",
+    ]
+    for path in hits:
+        assert is_test_path(path), f"expected test path: {path}"
+
+    non_test = [
+        "latest/x.py",
+        "src/contest.py",
+        "src/greatest/x.py",
+        "greatest.cs",
+        "contest.java",
+        "manifest.py",
+    ]
+    for path in non_test:
+        assert not is_test_path(path), f"expected non-test path: {path}"
 
 
 def test_parse_diff_finds_files_hunks_and_the_deleted_side():
@@ -164,17 +197,17 @@ def test_rendered_must_mention_every_path():
 
 def test_a_generated_section_must_reach_the_rendered_output():
     with tempfile.TemporaryDirectory() as tmp:
-        section = Path(tmp) / "section-structure.md"
-        section.write_text("<!-- visual-diff:structure -->\n\n### Structure coupling\n")
-        empty = Path(tmp) / "section-coupling.md"
+        section = Path(tmp) / "section-symbols.md"
+        section.write_text("<!-- visual-diff:symbols -->\n\n### Symbols touched\n")
+        empty = Path(tmp) / "section-links.md"
         empty.write_text("")
 
         missing = check_sections([str(section), str(empty)], "# recap, no section here")
         present = check_sections(
-            [str(section), str(empty)], "# recap\n<!-- visual-diff:structure -->\nstuff"
+            [str(section), str(empty)], "# recap\n<!-- visual-diff:symbols -->\nstuff"
         )
 
-        assert len(missing) == 1 and "visual-diff:structure" in missing[0]
+        assert len(missing) == 1 and "visual-diff:symbols" in missing[0]
         # An empty section file means there was nothing to draw, which is not a failure.
         assert present == []
 

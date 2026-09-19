@@ -16,8 +16,7 @@ Keys, see docs/plans/human-review/PLAN.md phase 6:
   per-hunk annotation      sha256(hunk body lines + "\\n" + file blob sha)[:16], body only,
                            never the `@@` header, so a pure line-number shift keeps the hash
   set hash                 sha256 over sorted (path, hunk hash) pairs; drives grouping/prose
-  coupling/structure/symdelta   (base_sha, head_sha, SCRIPT_VERSION); they diff internally
-  layers                   (head_sha, coupling's cache key, SCRIPT_VERSION); whole-repo input
+  symdelta                 (base_sha, head_sha, SCRIPT_VERSION); it diffs internally
   complexity/links         set hash, keyed with SCRIPT_VERSION same as the others
 
 Degradation: a file with no `index` line (rename-only in practice, not binaries) has no
@@ -42,16 +41,13 @@ from validate_analysis import HUNK_PREFIX, parse_hunks  # noqa: E402
 # Bumped by hand when a script's own behaviour changes, so a cache entry keyed on git refs
 # alone (which say nothing about the script that produced it) doesn't survive the edit.
 SCRIPT_VERSION = {
-    "coupling": 1,
-    "structure": 1,
     "symdelta": 1,
-    "layers": 1,
     "complexity": 1,
     "links": 1,
 }
-# These three take --base/--head and diff internally rather than consuming raw.diff, so a
-# ref pair is their whole input and a better key than any diff hash.
-REF_BASED = ("coupling", "structure", "symdelta")
+# Takes --base/--head and diffs internally rather than consuming raw.diff, so a ref pair is
+# its whole input and a better key than any diff hash.
+REF_BASED = ("symdelta",)
 
 
 def hunk_id(path, prefix):
@@ -141,15 +137,11 @@ def plan_analysers(cache_dir, repo, base_sha, head_sha, diff_path, set_hash_valu
         cmd = f"python3 {script}.py --repo {repo} --base {base_sha} --head {head_sha}"
         plans[script] = plan_analyser(cache_dir, script, key, cmd)
 
-    layers_key = analyser_key("layers", head_sha, plans["coupling"]["key"])
-    plans["layers"] = plan_analyser(
-        cache_dir, "layers", layers_key,
-        f"python3 layers.py --repo {repo} --head {head_sha} --coupling <coupling.json>",
-    )
-
     for script in ("complexity", "links"):
         key = analyser_key(script, set_hash_value)
         cmd = f"python3 {script}.py --repo {repo} --diff {diff_path} --head {head_sha}"
+        if script == "complexity":
+            cmd += f" --base {base_sha}"
         plans[script] = plan_analyser(cache_dir, script, key, cmd)
     return plans
 

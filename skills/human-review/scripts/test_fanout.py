@@ -183,7 +183,7 @@ def test_merge_carries_verdict_and_section_notes_through():
     with tempfile.TemporaryDirectory() as tmp:
         frag = Path(tmp) / "f.json"
         frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
-        notes = {"explorer": "e", "layers": "l", "coupling": "c", "structure": "s"}
+        notes = {"explorer": "e"}  # merge passes section_notes through opaquely, any keys do
 
         result = merge(DIFF, [str(frag)], {"verdict": "v", "section_notes": notes})
 
@@ -199,7 +199,7 @@ def test_merge_defaults_verdict_and_section_notes_when_prose_omits_them():
         result = merge(DIFF, [str(frag)], {})
 
         assert result["verdict"] == ""
-        # A dict, not a string: render.py calls .get() on section_notes.
+        # A dict, not a string, matching PROSE_DEFAULTS's falsy shape for this key.
         assert result["section_notes"] == {}
 
 

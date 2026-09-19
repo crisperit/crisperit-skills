@@ -1,44 +1,11 @@
-# The coupling and symbol-delta graphs
+# The symbol-delta graph
 
-Background for steps 2b2 and 2b3. Read it when a graph looks wrong, when deciding whether to
+Background for steps 2b2 and 2b3. Read it when the graph looks wrong, when deciding whether to
 trust a `language: null` result, or when the fleet-wide runtime is the thing you're planning
 around.
 
-## A module is a directory, full stop
-
-`layers.py` folds the whole repo into modules, and is the only one of the three 2b2 scripts that
-sees the files the diff never touched, so it is the only one that can place a change against the
-shape of the whole repo. A module is the file's own directory, at full depth, with only
-source-root segments like `src` and `pkg` stripped. There is no depth dial to tune: in Go, Java,
-Python and TypeScript the directory already is the package, so folding it to a fixed number of
-segments replaces a fact with a guess.
-
-There is also no architecture-layer grouping and no layer vocabulary. An earlier version guessed
-layers by matching directory names against hexagonal and DDD words, and on a repo that names
-directories by domain it put 9 of 10 modules in `unknown` while one accidental hit gave a
-config directory a private `infrastructure` box, which read as an architecture that was not
-there. So the module map answers "what depends on what, folded by directory", and
-`section_notes` should say something about coupling or reach, never that the change respects or
-violates a layering.
-
-Fixed depth also hides real work. Truncating to two segments once put four related
-subdirectories of the same feature area in one box, which was exactly the set a 45-file PR was
-rearranging, so the module map showed nothing happening. Full directories cost more boxes, 275
-against 102 across 1255 files on that repo, and the caps in each script plus scoping to touched
-modules are what keep the picture readable.
-
-Both `structure.py` and `coupling.py` treat `--base` as the merge base of the two refs, matching
-`git diff base...head`, so a commit that landed on the base branch after the fork is never
-attributed to this change.
-
-## Never background the four scripts with `&` and `wait`
-
-The Bash tool treats any command containing `&` as a background command: it stops waiting, hands
-back a task id, and the call burns its whole timeout before the harness gives up on it. Measured
-on a 1256-file Go repo, `&` plus `wait` sat for the full 600s after the scripts had already
-finished their real work in 34 seconds, and detaching every file descriptor did not help, so
-this is the tool's own detection rather than an inherited pipe. Run the four sequentially instead;
-sequentially they cost under a minute together, which is noise next to `symdelta.py`.
+Both scripts treat `--base` as the merge base of the two refs, matching `git diff base...head`,
+so a commit that landed on the base branch after the fork is never attributed to this change.
 
 ## `complexity.py`: report the worst touched function, not a file total
 
@@ -56,14 +23,15 @@ the author does not know what `4 cx +1` means. A file whose complexity this chan
 function the change did not move gets no chip at all, since a static number on untouched code is
 noise that outranked real findings on a measured run.
 
-`layers.py` walks every code file at one ref, so it is the slow one on a large repo. It reads
-from the working tree when the ref is HEAD and the tree is clean, which is the common case and
-much faster than a subprocess per file.
-
 ## `symdelta.py`: two tiers, and why it resolves calls instead of matching names
 
-`structure.py`'s symbol edges are matched by name, not by resolving the call, and a name is
-often not unique across a repo. Measured on a 1256-file Go repo, 591 of the 674 structure edges
+Never background this with `&` and `wait`: the Bash tool treats any command containing `&` as a
+background one, stops waiting, and burns its whole timeout before the harness gives up on it.
+Measured on a 1256-file Go repo, `&` plus `wait` sat for the full 600s after the script had
+already finished its real work in seconds. Run it as a plain foreground call instead.
+
+An earlier version matched symbol edges by name rather than resolving the call, and a name is
+often not unique across a repo. Measured on a 1256-file Go repo, 591 of 674 name-matched edges
 had a target name that occurred at more than one path, and one collision drew an edge like
 `billing.Error -> auth.String`, between two things that never call each other. `symdelta.py`
 resolves calls with a real type checker instead, so when it returns a language the page shows

@@ -39,9 +39,9 @@ from validate_analysis import (  # noqa: E402  shares the path-resolution rules
 
 BOUNDARY = re.compile(r"^diff --git ", re.M)
 PROSE_KEYS = ("target", "what_changed", "how_it_works", "flow_mermaid", "verdict", "section_notes")
-# render.py reads every one of these with `analysis.get(key) or <empty>`, so the default here
-# just has to be the same falsy shape: section_notes is a dict consumers call .get() on, the
-# rest are prose strings.
+# render.py reads the prose keys with `analysis.get(key) or <empty>`, so each default here has
+# to match that falsy shape: section_notes is a dict, the rest are strings. merge() carries
+# section_notes through opaquely regardless of what's in it or whether anything reads it yet.
 PROSE_DEFAULTS = {"section_notes": {}}
 
 
