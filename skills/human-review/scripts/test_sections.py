@@ -21,242 +21,10 @@ from sections import (  # noqa: E402
     _mm_escape,
     _symbols_orphans,
     _symbols_scope,
-    render,
     render_symbols,
+    render_symbols_md,
     wrap_label,
 )
-import layers as layers_mod  # noqa: E402
-
-COUPLING = {
-    "changed": True,
-    "mermaid": 'flowchart LR\n  N0["a.py"]\n  N1["b.py"]\n  N0 ==> N1',
-    "skipped": {"unsupported": [], "unparseable": []},
-    "note": "",
-}
-
-STRUCTURE = {
-    "changed": True,
-    "mermaid": 'flowchart LR\n  subgraph F0["a.py"]\n    S0["Thing<br/>run()"]\n  end',
-    "structures_added": [],
-    "structures_removed": [],
-    "truncated": False,
-    "skipped": {"unsupported": ["app.ts"], "unparseable": ["bad.py"]},
-    "note": "No structure appeared, disappeared or changed who it relates to.",
-}
-
-
-def test_markdown_has_marker_fence_legend_and_limitation():
-    out = render("coupling", COUPLING, "md")
-
-    assert out.startswith("<!-- visual-diff:coupling -->")
-    assert "### File coupling" in out
-    assert "```mermaid\nflowchart LR" in out
-    assert out.count("```") == 2
-    assert "Thick arrow is new" in out
-    assert "imports only" in out
-
-
-def test_html_has_marker_panel_and_zoomable_svgbox():
-    out = render("structure", STRUCTURE, "html")
-
-    assert out.startswith("<!-- visual-diff:structure -->")
-    assert "<h2>STRUCTURE COUPLING</h2>" in out
-    assert 'class="panel svgbox"' in out
-    assert 'tabindex="0"' in out and 'role="button"' in out and "aria-label=" in out
-    assert '<pre class="mermaid">' in out
-    assert '<p class="note">' in out
-
-
-def test_html_escapes_the_mermaid_source():
-    payload = {"mermaid": 'flowchart LR\n  A["<img src=x onerror=alert(1)> & co"]'}
-
-    out = render("coupling", payload, "html")
-
-    assert "<img" not in out
-    assert "&lt;img" in out
-    assert "&amp; co" in out
-
-
-def test_coupling_html_carries_data_ids_mapping_for_the_graph_menu():
-    payload = {**COUPLING, "ids": {"N1": "b.py", "N0": "a.py"}}
-
-    out = render("coupling", payload, "html")
-
-    attr = out.split('data-ids="', 1)[1].split('"', 1)[0]
-    assert json.loads(attr.replace("&quot;", '"')) == {"N0": "a.py", "N1": "b.py"}
-
-
-def test_coupling_html_data_ids_survives_a_quote_and_ampersand_in_a_path():
-    payload = {**COUPLING, "ids": {"N0": 'weird"&<>.py'}}
-
-    out = render("coupling", payload, "html")
-
-    attr = out.split('data-ids="', 1)[1].split('"', 1)[0]
-    assert '"' not in attr  # every quote became &quot;, so none can end the attribute early
-    unescaped = (
-        attr.replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-    )
-    assert json.loads(unescaped) == {"N0": 'weird"&<>.py'}
-
-
-def test_layers_and_structure_html_do_not_carry_data_ids():
-    # Both kinds' "ids" values are "pkg:symbol"-style tuples, not file paths (see structure.py),
-    # so a "go to file" menu built from them would be wrong -- data-ids is coupling-only.
-    layers = {"mermaid": "flowchart LR", "edges": [{"from": "a", "to": "b", "count": 1}],
-              "ids": {"N0": "pkg:symbol"}}
-    structure = {**STRUCTURE, "ids": {"N0": "a.py:Thing"}}
-
-    assert "data-ids=" not in render("layers", layers, "html")
-    assert "data-ids=" not in render("structure", structure, "html")
-
-
-def test_coupling_md_never_carries_data_ids():
-    payload = {**COUPLING, "ids": {"N0": "a.py"}}
-
-    assert "data-ids" not in render("coupling", payload, "md")
-
-
-def test_markdown_leaves_mermaid_unescaped_because_github_escapes_it():
-    payload = {"mermaid": 'flowchart LR\n  A["a & b"]'}
-
-    out = render("coupling", payload, "md")
-
-    assert "a & b" in out
-    assert "&amp;" not in out
-
-
-def test_skipped_and_note_lines_are_carried():
-    out = render("structure", STRUCTURE, "md")
-
-    assert "app.ts" in out
-    assert "bad.py" in out
-    assert STRUCTURE["note"] in out
-
-
-def test_empty_mermaid_emits_nothing_at_all():
-    for fmt in ("md", "html"):
-        assert render("coupling", {"mermaid": ""}, fmt) == ""
-        assert render("structure", {"mermaid": "   "}, fmt) == ""
-
-
-def test_structure_legend_explains_the_boxes_and_the_new_gone_marks():
-    out = render("structure", STRUCTURE, "md")
-
-    assert "classes and functions" in out
-    assert "(new)" in out and "(gone)" in out
-    assert "generic tree-sitter heuristic" in out
-
-
-GRAPH = {
-    "mermaid": "flowchart LR\n  S0[\"a\"]",
-    "added": [{"from": ["a.py", "go"], "to": ["hub.py", "run"], "kind": "uses"}],
-    "removed": [{"from": ["b.py", "old"], "to": ["hub.py", "run"], "kind": "uses"}],
-    "unchanged": [
-        {"from": ["c.py", "f"], "to": ["hub.py", "run"], "kind": "uses"},
-        {"from": ["d.py", "g"], "to": ["hub.py", "run"], "kind": "extends"},
-    ],
-    "structures_added": [["lonely.py", "Orphan"]],
-    "structures_removed": [],
-}
-
-
-def test_one_caption_paragraph_and_no_text_dump():
-    out = render("structure", GRAPH, "md")
-
-    assert "<details>" not in out, "the text fallback is gone, the diagram is the artifact"
-    # Legend, limitation, skipped list and numbers all land in one paragraph now.
-    assert out.count("\n\n") <= 4
-    assert "Numbers:" in out
-
-
-def test_numbers_line_counts_relations_and_names_the_hot_spot():
-    out = render("structure", GRAPH, "md")
-
-    assert "4 relations, 1 new, 1 gone" in out
-    assert "most depended on is `hub.py:run` with 3 incoming" in out
-    assert "crossing a directory boundary" in out
-
-
-def test_cycle_is_reported_when_one_exists():
-    cyclic = {
-        "mermaid": "flowchart LR",
-        "added": [],
-        "removed": [],
-        "unchanged": [
-            {"from": ["a.py", "x"], "to": ["b.py", "y"], "kind": "uses"},
-            {"from": ["b.py", "y"], "to": ["a.py", "x"], "kind": "uses"},
-        ],
-    }
-
-    out = render("structure", cyclic, "md")
-
-    assert "cycle present:" in out
-
-
-def test_file_level_pairs_are_normalised_too():
-    pairs = {
-        "mermaid": "flowchart LR",
-        "added": [["a.py", "b.py"]],
-        "removed": [],
-        "unchanged": [],
-    }
-
-    out = render("coupling", pairs, "md")
-
-    assert "1 relations, 1 new, 0 gone" in out
-
-
-def test_layer_edges_are_weighted_by_their_import_count():
-    layers = {
-        "mermaid": "flowchart LR",
-        "edges": [
-            {"from": "adapters/mcp", "to": "ports", "count": 5},
-            {"from": "src", "to": "infrastructure/auth", "count": 3},
-        ],
-        "note": "Whole-repo map at HEAD.",
-    }
-
-    out = render("layers", layers, "md")
-
-    assert "### Modules" in out
-    assert "most depended on is `ports` with 5 incoming" in out
-    assert "Whole-repo map at HEAD." in out
-
-
-def test_layers_heading_and_aria_never_mention_layers():
-    data = {
-        "mermaid": "flowchart LR",
-        "edges": [{"from": "a", "to": "b", "count": 1}],
-    }
-
-    md_out = render("layers", data, "md")
-    html_out = render("layers", data, "html")
-
-    assert "### Modules" in md_out and "layers" not in md_out.splitlines()[2].lower()
-    assert "<h2>MODULES</h2>" in html_out
-    assert 'aria-label="Module map, click to enlarge"' in html_out
-
-
-def test_html_caption_is_one_escaped_paragraph():
-    out = render("structure", {**GRAPH, "note": "a <script> note & more"}, "html")
-
-    assert out.count('<p class="note">') == 1
-    assert "<script>" not in out
-    assert "&lt;script&gt;" in out and "&amp; more" in out
-
-
-def test_layers_build_mermaid_ids_map_to_the_right_module():
-    # layers.py has no test file of its own; this is the closest one, since it already
-    # imports layers.py to build fixtures below.
-    counts = {("adapters/mcp", "ports"): 1}
-    modules = {"adapters/mcp": 2, "ports": 1}
-
-    mermaid, ids = layers_mod.build_mermaid(counts, modules, {"adapters/mcp"}, set())
-
-    assert set(ids.values()) == {"adapters/mcp", "ports"}
-    for node_id, module in ids.items():
-        assert f'{node_id}["{module}' in mermaid
-
 
 # ---- symdelta.py fixtures: nodes/edges shaped exactly like build_graph's own output --------
 
@@ -408,16 +176,17 @@ def test_mermaid_symbols_for_level_returns_a_placeholder_node_when_nothing_quali
     # A bare "flowchart LR" would render at a degenerate near-zero viewBox that the page's own
     # JS mistakes for a failed render (see diff-review-template.html's degenerate()); this has
     # to stay a real, if trivial, diagram instead.
-    text = _mermaid_symbols_for_level(SYMDELTA["nodes"], set(), [])
+    text, id_map = _mermaid_symbols_for_level(SYMDELTA["nodes"], set(), [])
     assert text == 'flowchart LR\n  N0["Nothing to draw at this detail level"]'
+    assert id_map == {}
 
 
 def test_mermaid_symbols_for_level_draws_normally_when_something_qualifies():
     ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
 
-    text = _mermaid_symbols_for_level(SYMDELTA["nodes"], ids, edges)
+    result = _mermaid_symbols_for_level(SYMDELTA["nodes"], ids, edges)
 
-    assert text == _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
+    assert result == _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
 
 def test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram():
@@ -437,6 +206,59 @@ def test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram(
     level2 = out.split('data-level="2" hidden', 1)[1].split("</div>", 1)[0]
     assert "Nothing to draw at this detail level" in level2
     assert "<li>b: Lonely (new)</li>" in out
+
+
+# ---- data-ids: the node menu's file map, moved here from the deleted coupling section -------
+
+_TWO_LINKED_SYMBOLS = [
+    {"id": "a", "label": "a", "kind": "pkg", "parent": None, "depth": 0},
+    {"id": "a:F", "label": "F", "kind": "symbol", "parent": "a", "depth": 1,
+     "state": "new", "file": "a/f.go"},
+    {"id": "a:G", "label": "G", "kind": "symbol", "parent": "a", "depth": 1,
+     "state": "new", "file": "a/g.go"},
+]
+_ONE_EDGE = [{"id": "e0", "source": "a:F", "target": "a:G", "state": "new"}]
+
+
+def test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes():
+    text, id_map = _mermaid_symbols(_TWO_LINKED_SYMBOLS, {"a:F", "a:G"}, _ONE_EDGE)
+
+    assert set(id_map.values()) == {"a/f.go", "a/g.go"}
+    assert all(k.startswith("S") for k in id_map)  # no "G..." package box id is ever a key
+
+
+def test_symbols_html_level1_data_ids_is_always_empty():
+    # Package boxes carry no file of their own (see _mermaid_symbols), so the packages level's
+    # map has nothing to hold even when the symbols level's does.
+    out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE})
+
+    attr = out.split('data-level="1"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
+    assert attr == "{}"
+
+
+def test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes():
+    out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE})
+
+    attr = out.split('data-level="2"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
+    ids = json.loads(attr.replace("&quot;", '"'))
+    assert set(ids.values()) == {"a/f.go", "a/g.go"}
+    assert all(k.startswith("S") for k in ids)
+
+
+def test_symbols_html_data_ids_survives_a_quote_in_a_file_path():
+    nodes = [
+        {"id": "a", "label": "a", "kind": "pkg", "parent": None, "depth": 0},
+        {"id": "a:F", "label": "F", "kind": "symbol", "parent": "a", "depth": 1,
+         "state": "new", "file": 'weird"path.go'},
+        {"id": "a:G", "label": "G", "kind": "symbol", "parent": "a", "depth": 1,
+         "state": "new", "file": "a/g.go"},
+    ]
+    out = render_symbols({"nodes": nodes, "edges": _ONE_EDGE})
+
+    attr = out.split('data-level="2"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
+    assert '"' not in attr  # every quote became &quot;, so none can end the attribute early
+    ids = json.loads(attr.replace("&quot;", '"'))
+    assert 'weird"path.go' in ids.values()
 
 
 def test_mm_escape_strips_parens_quotes_and_backticks():
@@ -640,7 +462,7 @@ def test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_class
     ids, edges = _symbols_scope(nodes, SYMDELTA["edges"])
     ids = ids | {"a:Filter"}
 
-    text = _mermaid_symbols(nodes, ids, edges)
+    text, _ = _mermaid_symbols(nodes, ids, edges)
     label_line = next(line for line in text.splitlines() if "filters" in line)
 
     assert "<br/>" in label_line
@@ -662,7 +484,7 @@ def test_mermaid_symbols_appends_a_was_line_for_a_renamed_symbol():
          "was": "incrementChecksTotal"},
     ]
 
-    text = _mermaid_symbols(nodes, {"a:IncrementChecksTotal"}, [])
+    text, _ = _mermaid_symbols(nodes, {"a:IncrementChecksTotal"}, [])
     label_line = next(line for line in text.splitlines() if "IncrementChecksTotal" in line)
 
     assert label_line.count('"') == 2  # still one label, one pair of quotes
@@ -672,7 +494,7 @@ def test_mermaid_symbols_appends_a_was_line_for_a_renamed_symbol():
 def test_mermaid_symbols_label_has_no_was_line_when_the_name_did_not_change():
     # b:Moved carries no "was" key at all (see SYMDELTA), matching a plain package move with no
     # rename -- its label must stay exactly its own name, no second line.
-    text = _mermaid_symbols(SYMDELTA["nodes"], {"b:Moved"}, [])
+    text, _ = _mermaid_symbols(SYMDELTA["nodes"], {"b:Moved"}, [])
     label_line = next(line for line in text.splitlines() if "Moved" in line)
 
     assert "was" not in label_line
@@ -691,7 +513,7 @@ def test_new_and_gone_class_lists_are_declaration_order_not_set_order():
     ]
     ids = {n["id"] for n in nodes if n["kind"] == "symbol"}
 
-    text = _mermaid_symbols(nodes, ids, [])
+    text, _ = _mermaid_symbols(nodes, ids, [])
 
     line = next(l for l in text.splitlines() if l.strip().startswith("class "))
     listed = line.strip().split()[1].split(",")
@@ -700,7 +522,7 @@ def test_new_and_gone_class_lists_are_declaration_order_not_set_order():
 
 def test_mermaid_symbols_subgraphs_by_package_and_classes_new_gone_but_not_changed():
     ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
+    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
     assert 'subgraph G0["a"]' in text
     assert 'subgraph G1["b"]' in text
@@ -725,7 +547,7 @@ def test_mermaid_symbols_own_symbols_sit_inside_a_box_that_also_nests_children()
     ]
     ids = {"corelib/ratelimit:Foo", "corelib/ratelimit/ratelimit_config:Bar"}
 
-    text = _mermaid_symbols(nodes, ids, [])
+    text, _ = _mermaid_symbols(nodes, ids, [])
 
     assert 'subgraph G0["corelib"]' in text
     assert 'subgraph G1["ratelimit"]' in text  # own label only, not "corelib/ratelimit"
@@ -750,7 +572,7 @@ def test_mermaid_symbols_keeps_a_symbol_whose_parent_is_unknown_or_missing():
     ]
     ids = {"a:Root", "a:Stray"}
 
-    text = _mermaid_symbols(nodes, ids, [])
+    text, _ = _mermaid_symbols(nodes, ids, [])
 
     assert '["Root"]' in text and '["Stray"]' in text
     assert "no_such_pkg" in text  # unknown parent shown as itself, not collapsed onto "(root)"
@@ -843,7 +665,7 @@ def test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph():
     ]
     ids = {"a:X", "a:Y", "a:Z", "a:W"}
 
-    text = _mermaid_symbols(nodes, ids, edges)
+    text, _ = _mermaid_symbols(nodes, ids, edges)
 
     assert text.count("subgraph") == 1  # one shared box, two components inside it
     assert "S0 ~~~ S1" in text  # component {W,Z} (min id W -> S0) chained to {X,Y} (min id X -> S1)
@@ -855,7 +677,7 @@ def test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph():
 
 def test_mermaid_symbols_invisible_links_are_never_indexed_by_linkstyle():
     ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
+    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
     linkstyle_lines = [l for l in text.splitlines() if l.strip().startswith("linkStyle")]
     # both real links (e0, g0) get a style; an invisible chain link would shift these if it
@@ -882,45 +704,90 @@ def test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order
     ]
     ids = {n["id"] for n in nodes if n["kind"] == "symbol"}
 
-    text = _mermaid_symbols(nodes, ids, edges)
+    text, _ = _mermaid_symbols(nodes, ids, edges)
 
     chain_lines = [l.strip() for l in text.splitlines() if "~~~" in l]
     assert chain_lines == ["S0 ~~~ S2", "S2 ~~~ S4"]
 
 
-def test_symbols_cli_rejects_markdown_format():
+# ---- markdown symbols output, sections.py --kind symbols --format md ------------------------
+
+def test_symbols_md_returns_nothing_when_there_are_no_nodes():
+    assert render_symbols_md({"nodes": []}) == ""
+    assert render_symbols_md({}) == ""
+
+
+def test_symbols_md_has_marker_two_fenced_blocks_and_no_html():
+    out = render_symbols_md(SYMDELTA)
+
+    assert out.startswith("<!-- visual-diff:symbols -->")
+    assert "### Changes visualization" in out
+    assert out.count("```mermaid") == 2
+    assert "**Packages**" in out and "**Symbols**" in out
+    assert "flowchart LR" in out
+    assert "data-ids" not in out  # that attribute is an HTML-page mechanism only
+    assert "<div" not in out and "<li>" not in out and "<ul" not in out
+
+
+def test_symbols_md_and_html_share_the_same_note_text():
+    note = "Showing 5 packages and symbols, 2 relations between them."
+
+    assert note in render_symbols(SYMDELTA)  # inside the escaped/codeified <p class="note">
+    assert note in render_symbols_md(SYMDELTA)  # verbatim, markdown never HTML-escapes
+
+
+def test_symbols_md_orphans_render_as_a_plain_bullet_not_a_list_tag():
+    out = render_symbols_md(SYMDELTA_WITH_ORPHAN)
+
+    assert "- b: Lonely (new)" in out
+    assert "<li>" not in out and "<ul" not in out
+
+
+def test_symbols_md_moved_renders_as_a_plain_bullet_too():
+    out = render_symbols_md(SYMDELTA)
+
+    assert "- 2 call sites moved, a/old -> b" in out
+    assert "&gt;" not in out  # markdown never HTML-escapes, unlike the html arrow in the <li>
+
+
+def test_symbols_cli_supports_markdown_format():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "symdelta.json"
-        path.write_text("{}")
+        path.write_text(json.dumps(SYMDELTA))
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "sections.py"),
              "--kind", "symbols", "--format", "md", "--data", str(path)],
             capture_output=True, text=True,
         )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("<!-- visual-diff:symbols -->")
+
+
+def test_symbols_cli_rejects_a_kind_other_than_symbols():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.json"
+        path.write_text("{}")
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "sections.py"),
+             "--kind", "coupling", "--format", "md", "--data", str(path)],
+            capture_output=True, text=True,
+        )
         assert result.returncode != 0
+
+
+def test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node():
+    # It used to be one static row under the heading, explaining both states even on a package
+    # view that has neither on screen.
+    out = render_symbols(SYMDELTA)
+
+    heading = out.split('class="h2-row"')[1].split("</h2>")[0]
+    assert "sw-new" not in heading  # the package level draws no new/gone node
+    level2 = out.split('data-level="2" hidden', 1)[1].split(">", 1)[0]
+    assert "sw-new" in level2 and "sw-gone" in level2
 
 
 if __name__ == "__main__":
     tests = [
-        test_markdown_has_marker_fence_legend_and_limitation,
-        test_html_has_marker_panel_and_zoomable_svgbox,
-        test_html_escapes_the_mermaid_source,
-        test_coupling_html_carries_data_ids_mapping_for_the_graph_menu,
-        test_coupling_html_data_ids_survives_a_quote_and_ampersand_in_a_path,
-        test_layers_and_structure_html_do_not_carry_data_ids,
-        test_coupling_md_never_carries_data_ids,
-        test_markdown_leaves_mermaid_unescaped_because_github_escapes_it,
-        test_skipped_and_note_lines_are_carried,
-        test_empty_mermaid_emits_nothing_at_all,
-        test_structure_legend_explains_the_boxes_and_the_new_gone_marks,
-        test_one_caption_paragraph_and_no_text_dump,
-        test_numbers_line_counts_relations_and_names_the_hot_spot,
-        test_cycle_is_reported_when_one_exists,
-        test_file_level_pairs_are_normalised_too,
-        test_layer_edges_are_weighted_by_their_import_count,
-        test_layers_heading_and_aria_never_mention_layers,
-        test_html_caption_is_one_escaped_paragraph,
-        test_layers_build_mermaid_ids_map_to_the_right_module,
         test_symbols_returns_nothing_when_there_are_no_nodes,
         test_symbols_html_has_marker_legend_slider_and_three_levels,
         test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed,
@@ -934,6 +801,10 @@ if __name__ == "__main__":
         test_mermaid_symbols_for_level_returns_a_placeholder_node_when_nothing_qualifies,
         test_mermaid_symbols_for_level_draws_normally_when_something_qualifies,
         test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram,
+        test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes,
+        test_symbols_html_level1_data_ids_is_always_empty,
+        test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes,
+        test_symbols_html_data_ids_survives_a_quote_in_a_file_path,
         test_mm_escape_strips_parens_quotes_and_backticks,
         test_wrap_label_breaks_a_long_multiword_label_at_spaces,
         test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries,
@@ -968,20 +839,16 @@ if __name__ == "__main__":
         test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph,
         test_mermaid_symbols_invisible_links_are_never_indexed_by_linkstyle,
         test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order,
-        test_symbols_cli_rejects_markdown_format,
+        test_symbols_md_returns_nothing_when_there_are_no_nodes,
+        test_symbols_md_has_marker_two_fenced_blocks_and_no_html,
+        test_symbols_md_and_html_share_the_same_note_text,
+        test_symbols_md_orphans_render_as_a_plain_bullet_not_a_list_tag,
+        test_symbols_md_moved_renders_as_a_plain_bullet_too,
+        test_symbols_cli_supports_markdown_format,
+        test_symbols_cli_rejects_a_kind_other_than_symbols,
+        test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node,
     ]
     for test in tests:
         test()
         print(f"ok  {test.__name__}")
     print(f"\n{len(tests)} passed")
-
-
-def test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node():
-    # It used to be one static row under the heading, explaining both states even on a package
-    # view that has neither on screen.
-    out = render_symbols(SYMDELTA)
-
-    heading = out.split('class="h2-row"')[1].split("</h2>")[0]
-    assert "sw-new" not in heading  # the package level draws no new/gone node
-    level2 = out.split('data-level="2" hidden', 1)[1].split(">", 1)[0]
-    assert "sw-new" in level2 and "sw-gone" in level2

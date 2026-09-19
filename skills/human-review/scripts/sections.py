@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Render a ready-to-embed coupling section from coupling.py, structure.py or symdelta.py output.
+"""Render a ready-to-embed symbol-delta section from symdelta.py output.
 
 Usage:
-  python3 sections.py --kind coupling --data coupling.json --format md   > section.md
-  python3 sections.py --kind symbols  --data symdelta.json  --format html > section.html
+  python3 sections.py --kind symbols --data symdelta.json --format html > section.html
+  python3 sections.py --kind symbols --data symdelta.json --format md   > section.md
 
-The diagram, its legend, its limitation line and its skipped-files line are built here, in
-code, so they cannot go missing or get paraphrased by whoever assembles the page. A renderer
-inserts this output verbatim; it does not rewrite it.
+The diagram, its legend, its caption and its data-ids map are built here, in code, so they
+cannot go missing or get paraphrased by whoever assembles the page. A renderer inserts this
+output verbatim; it does not rewrite it.
 
-The first line of the output is an HTML comment marker, `<!-- visual-diff:<kind> -->`, which
+The first line of the output is an HTML comment marker, `<!-- visual-diff:symbols -->`, which
 survives GitHub's sanitizer and renders as nothing. validate_analysis.py --sections uses it to
 prove the section actually reached the rendered file.
 
-Prints nothing at all when the analysis found no relations to draw, so an empty section is
-never emitted.
+Prints nothing at all when the analysis found no nodes to draw, so an empty section is never
+emitted.
 
 Stdlib only, no network.
 """
@@ -25,56 +25,7 @@ import re
 import sys
 from pathlib import Path
 
-LEGEND = (
-    "Thick arrow is new, dotted is one that went away, plain is unchanged."
-)
-
 SYMBOLS_MARKER = "<!-- visual-diff:symbols -->"
-
-KINDS = {
-    "coupling": {
-        "marker": "<!-- visual-diff:coupling -->",
-        "heading": "File coupling",
-        "legend": f"Arrows point from the file that imports to the file it imports. {LEGEND}",
-        "limitation": (
-            "This reads imports only, so coupling through string references, dynamic "
-            "dispatch, dependency injection or config wiring does not appear here."
-        ),
-        "aria": "File coupling diagram, click to enlarge",
-    },
-    "layers": {
-        "marker": "<!-- visual-diff:layers -->",
-        "heading": "Modules",
-        "legend": (
-            "The whole repo, not only the diff: every code file folded into its module. A star "
-            "marks a module this change touched. An arrow's number is how many file imports it "
-            "stands for, and a thick one carries a dependency this change introduced."
-        ),
-        "limitation": (
-            "This reads imports only, so coupling through string references, dynamic "
-            "dispatch, dependency injection or config wiring does not appear here."
-        ),
-        "aria": "Module map, click to enlarge",
-    },
-    "structure": {
-        "marker": "<!-- visual-diff:structure -->",
-        "heading": "Structure coupling",
-        "legend": (
-            "Boxes are classes and functions grouped by file, with a class's methods listed "
-            "under its name. An arrow means the box at the tail uses the one at the head, "
-            f"unless it is labelled extends or implements. {LEGEND} A structure that appeared "
-            "or disappeared is marked (new) or (gone). One marked (context) was not touched "
-            "by this change and is drawn only because something in the diff extends or "
-            "implements it."
-        ),
-        "limitation": (
-            "Python relations come from the parser and are exact. TypeScript and JavaScript "
-            "resolve a reference through the file's own imports. Every other language falls "
-            "back to a generic tree-sitter heuristic matched by name, which is weaker."
-        ),
-        "aria": "Structure coupling diagram, click to enlarge",
-    },
-}
 
 
 def escape(text):
@@ -95,173 +46,6 @@ def _html_note(text):
     """Prose bound for a `.note` <p>: escape first, then promote backtick-wrapped identifiers
     to <code>, so the tags are added to text that is already HTML-safe."""
     return _codeify(escape(text))
-
-
-def edges_of(data):
-    """[(src, dst, state, weight)] with plain string node names. The three analysers report
-    differently: coupling.py [importer, imported] pairs under added/removed/unchanged,
-    structure.py {from, to, kind} with [path, symbol] ends, layers.py one `edges` list of
-    {from, to, count} with no per-edge state. Normalise all three here."""
-    out = []
-    for state in ("added", "removed", "unchanged"):
-        for edge in data.get(state) or []:
-            if isinstance(edge, dict):
-                out.append((":".join(edge["from"]), ":".join(edge["to"]), state, 1))
-            else:
-                out.append((edge[0], edge[1], state, 1))
-    for edge in data.get("edges") or []:
-        out.append((edge["from"], edge["to"], "unchanged", edge.get("count", 1)))
-    return out
-
-
-def _dirname(node):
-    return node.split(":")[0].rsplit("/", 1)[0]
-
-
-def find_cycle(edges):
-    """One example cycle among the head-state edges, or None. Depth-first, iterative, so a
-    deep graph cannot blow the stack."""
-    graph = {}
-    for src, dst, state, _ in edges:
-        if state != "removed":
-            graph.setdefault(src, []).append(dst)
-
-    colour = {}
-    for root in list(graph):
-        if colour.get(root):
-            continue
-        stack = [(root, iter(graph.get(root, ())))]
-        path = [root]
-        colour[root] = "grey"
-        while stack:
-            node, children = stack[-1]
-            nxt = next(children, None)
-            if nxt is None:
-                colour[node] = "black"
-                stack.pop()
-                path.pop()
-                continue
-            if colour.get(nxt) == "grey":
-                return path[path.index(nxt):] + [nxt]
-            if colour.get(nxt) != "black":
-                colour[nxt] = "grey"
-                path.append(nxt)
-                stack.append((nxt, iter(graph.get(nxt, ()))))
-    return None
-
-
-def numbers_from_edges(edges):
-    """The edges-only half of numbers(), split out so its dict shape is defined once."""
-    live = [e for e in edges if e[2] != "removed"]
-    fan_in, fan_out = {}, {}
-    for src, dst, _, weight in live:
-        fan_out[src] = fan_out.get(src, 0) + weight
-        fan_in[dst] = fan_in.get(dst, 0) + weight
-
-    def top(counts):
-        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        return [{"node": n, "count": c} for n, c in ranked[:3] if c > 1]
-
-    return {
-        "relations": len(edges),
-        "new": sum(1 for e in edges if e[2] == "added"),
-        "gone": sum(1 for e in edges if e[2] == "removed"),
-        "top_depended_on": top(fan_in),
-        "top_depends_on": top(fan_out),
-        "across_directories": sum(1 for s, d, _, _ in live if _dirname(s) != _dirname(d)),
-        "cycle": find_cycle(edges),
-    }
-
-
-def numbers(data):
-    """Facts about the graph, computed rather than eyeballed, so any commentary written next
-    to the diagram has something to be accountable to. A layer edge stands for several file
-    imports, so its count is its weight."""
-    return numbers_from_edges(edges_of(data))
-
-
-def numbers_line(nums):
-    parts = [
-        f"{nums['relations']} relations, {nums['new']} new, {nums['gone']} gone",
-        f"{nums['across_directories']} crossing a directory boundary",
-    ]
-    if nums["top_depended_on"]:
-        top = nums["top_depended_on"][0]
-        parts.append(f"most depended on is `{top['node']}` with {top['count']} incoming")
-    if nums["top_depends_on"]:
-        top = nums["top_depends_on"][0]
-        parts.append(f"widest reach is `{top['node']}` with {top['count']} outgoing")
-    if nums["cycle"]:
-        parts.append("cycle present: " + " -> ".join(f"`{n}`" for n in nums["cycle"]))
-    return "Numbers: " + "; ".join(parts) + "."
-
-
-def _few(paths, limit=3):
-    shown = ", ".join(paths[:limit])
-    return shown if len(paths) <= limit else f"{shown} and {len(paths) - limit} more"
-
-
-def caption(kind, data, legend=None):
-    """One paragraph under the diagram: how to read it, then what was left out. It used to be
-    five stacked grey paragraphs, which is more apparatus than diagram and got skipped.
-    `legend` overrides `KINDS[kind]["legend"]` for a caller drawing a different picture from
-    the same underlying data; the limitation, skipped-files and note prose stay tied to `kind`,
-    since those describe the data, not the picture."""
-    spec = KINDS[kind]
-    parts = [legend if legend is not None else spec["legend"], spec["limitation"]]
-
-    unsupported = data.get("skipped", {}).get("unsupported") or []
-    unparseable = data.get("skipped", {}).get("unparseable") or []
-    if unsupported:
-        parts.append(f"Not analysed: {_few([f'`{p}`' for p in unsupported])}.")
-    if unparseable:
-        parts.append(f"Could not be parsed: {_few([f'`{p}`' for p in unparseable])}.")
-    if data.get("note"):
-        parts.append(data["note"])
-    return " ".join(parts)
-
-
-def render(kind, data, fmt):
-    mermaid = data.get("mermaid") or ""
-    if not mermaid.strip():
-        return ""
-
-    spec = KINDS[kind]
-    heading = spec["heading"]
-    aria = spec["aria"]
-    tail = f"{caption(kind, data)} {numbers_line(numbers(data))}"
-
-    if fmt == "md":
-        return "\n".join([
-            spec["marker"],
-            "",
-            f"### {heading}",
-            "",
-            "```mermaid",
-            mermaid,
-            "```",
-            "",
-            tail,
-            "",
-        ])
-
-    ids_attr = ""
-    if kind == "coupling" and data.get("ids"):
-        # Only coupling's ids map mermaid id -> file path; layers/structure ids map to
-        # "pkg:symbol" tuples, which a "go to file" menu would resolve wrongly.
-        ids_json = escape(json.dumps(data["ids"], sort_keys=True)).replace('"', "&quot;")
-        ids_attr = f' data-ids="{ids_json}"'
-
-    return "\n".join([
-        spec["marker"],
-        f"<h2>{escape(heading).upper()}</h2>",
-        '<div class="panel svgbox" tabindex="0" role="button"'
-        f' aria-label="{escape(aria)}"{ids_attr}>',
-        f'<pre class="mermaid">{escape(mermaid)}</pre>',
-        "</div>",
-        f'<p class="note">{_html_note(tail)}</p>',
-        "",
-    ])
 
 
 _MM_UNSAFE_RE = re.compile(r'[()"`]')
@@ -588,9 +372,13 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
     package with both an in-scope symbol of its own and child packages gets that symbol listed
     directly inside its box, alongside the nested child boxes. Styling is `class ... new/gone`,
     not classDef (see LINK_COLOR_NEW); mermaid has no per-edge classDef at all, only
-    `linkStyle <index>`, so edges are styled by their position in the diagram instead."""
+    `linkStyle <index>`, so edges are styled by their position in the diagram instead.
+
+    Returns `(mermaid_text, id_to_file)`: the second is the mermaid `S<n>` id of every symbol
+    node mapped to its file path, for the page's node menu to resolve a click to a file. A
+    package box carries no single file of its own, so it is never a key here."""
     if not symbol_ids:
-        return "flowchart LR"
+        return "flowchart LR", {}
     by_id = {n["id"]: n for n in nodes}
     pkg_by_id = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
 
@@ -666,12 +454,12 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
 
     edge_pairs = [(e["source"], e["target"]) for e in kept_edges]
     lines.extend(_chain_components_lines(symbol_ids, edge_pairs, mm_id))
-    return "\n".join(lines)
+    id_to_file = {nid: by_id[sid]["file"] for sid, nid in mm_id.items() if by_id[sid].get("file")}
+    return "\n".join(lines), id_to_file
 
 
-def _symbols_note(node_count, edge_count, drawn_count, listed_count, undrawn_count):
-    """The graph's only remaining prose: the legend is generated markup now (`.vd-legend`), not
-    a paragraph, so this is the counts sentence plus, since the symbols level holds back an
+def _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count):
+    """The counts sentence shared by both formats: since the symbols level holds back an
     edge-less changed symbol as text instead of a node, how many landed each way -- so a reader
     is never left wondering whether one was silently dropped (see render_symbols). The trailing
     sentence names `undrawn_count` (see `_mermaid_packages`), the total relations skipped because
@@ -686,24 +474,48 @@ def _symbols_note(node_count, edge_count, drawn_count, listed_count, undrawn_cou
             f"{undrawn_count} relations between a package and a package inside it are not "
             "drawn because the containment box already shows them."
         )
-    return _html_note(" ".join(parts))
+    return " ".join(parts)
 
 
-def _symbols_orphans(nodes, orphan_ids):
-    """The compact text list for changed symbols _mermaid_symbols never gets to draw: grouped by
-    package, then by symbol, and marked (new)/(gone) the same way the structure caption already
-    marks an appeared/disappeared structure. Reuses the `.vd-moved` list styling rather than
-    adding page CSS for a second list. Empty (no list at all) when nothing was held back."""
+def _symbols_note(node_count, edge_count, drawn_count, listed_count, undrawn_count):
+    """html counterpart of _symbols_note_text: the legend is generated markup now
+    (`.vd-legend`), not a paragraph, so this is the only remaining prose."""
+    return _html_note(
+        _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count)
+    )
+
+
+def _symbols_orphan_rows(nodes, orphan_ids):
+    """(package label, symbol label, state) tuples for changed symbols _mermaid_symbols never
+    gets to draw, grouped by package then by symbol -- the sort order both format's listings
+    share. [] when nothing was held back."""
     if not orphan_ids:
-        return ""
+        return []
     by_id = {n["id"]: n for n in nodes}
     pkg_by_id = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
-    rows = sorted(
+    return sorted(
         (_pkg_label(by_id[sid].get("parent"), pkg_by_id), by_id[sid]["label"], by_id[sid]["state"])
         for sid in orphan_ids
     )
+
+
+def _symbols_orphans(nodes, orphan_ids):
+    """The compact text list for changed symbols _mermaid_symbols never gets to draw, marked
+    (new)/(gone) the same way the old structure caption marked an appeared/disappeared
+    structure. Reuses the `.vd-moved` list styling rather than adding page CSS for a second
+    list. Empty (no list at all) when nothing was held back."""
+    rows = _symbols_orphan_rows(nodes, orphan_ids)
+    if not rows:
+        return ""
     items = "".join(f"<li>{escape(pkg)}: {escape(label)} ({state})</li>" for pkg, label, state in rows)
     return f'<ul class="vd-moved">{items}</ul>\n'
+
+
+def _symbols_orphans_md(nodes, orphan_ids):
+    """Markdown counterpart of _symbols_orphans: a plain bullet list, unescaped like the rest
+    of the markdown recap (GitHub's own renderer escapes what it displays)."""
+    rows = _symbols_orphan_rows(nodes, orphan_ids)
+    return "".join(f"- {pkg}: {label} ({state})\n" for pkg, label, state in rows)
 
 
 _EMPTY_LEVEL_LABEL = "Nothing to draw at this detail level"
@@ -713,10 +525,19 @@ def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges):
     """_mermaid_symbols, except when filtering to edge-having symbols leaves nothing at all: a
     bare `flowchart LR` renders at a near-zero viewBox, which the page's own `degenerate()`
     check (diff-review-template.html) mistakes for a real render failure rather than a level
-    that legitimately has nothing to draw. One placeholder node keeps it a valid diagram."""
+    that legitimately has nothing to draw. One placeholder node keeps it a valid diagram, with
+    no id to map since it draws nothing real."""
     if not symbol_ids:
-        return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]'
+        return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]', {}
     return _mermaid_symbols(nodes, symbol_ids, kept_edges)
+
+
+def _moved_lines(moved):
+    """One plain-text line per symdelta.py `moved` entry, shared by both formats' lists."""
+    return [
+        f"{m.get('callsites', 0)} call sites moved, {m.get('from', '')} -> {m.get('to', '')}"
+        for m in moved
+    ]
 
 
 def render_symbols(data):
@@ -745,7 +566,7 @@ def render_symbols(data):
     level1, undrawn_count = _mermaid_packages(nodes, edges)
     ids2, edges2 = _symbols_scope(nodes, edges)
     drawn2 = _edge_endpoint_ids(edges2)
-    level2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2)
+    level2, file_map2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2)
 
     changed_ids = _changed_symbol_ids(nodes)
     orphan_ids = changed_ids - drawn2
@@ -758,11 +579,7 @@ def render_symbols(data):
 
     moved_html = ""
     if moved:
-        lines = [
-            f"{m.get('callsites', 0)} call sites moved, {m.get('from', '')} -> {m.get('to', '')}"
-            for m in moved
-        ]
-        items = "".join(f"<li>{escape(line)}</li>" for line in lines)
+        items = "".join(f"<li>{escape(line)}</li>" for line in _moved_lines(moved))
         moved_html = f'<ul class="vd-moved">{items}</ul>\n'
 
     # The legend is per level, not per section: a level with no new and no gone node was
@@ -772,6 +589,11 @@ def render_symbols(data):
     # This module's escape() leaves quotes alone, so an attribute holding markup needs the
     # same &quot; pass names_attr above does or the first inner quote ends the attribute.
     legend_attrs = [escape(x).replace('"', "&quot;") for x in legends]
+    # Package boxes carry no file of their own (see _mermaid_symbols), so level 1's map is
+    # always empty; the same escape/&quot; idiom as data-names above, so a click handler on
+    # the page can resolve a clicked node to a file the same way the old coupling graph did.
+    ids_attrs = [escape(json.dumps(m, sort_keys=True)).replace('"', "&quot;")
+                 for m in ({}, file_map2)]
     return "\n".join([
         SYMBOLS_MARKER,
         '<div class="vd-symbols">',
@@ -786,20 +608,61 @@ def render_symbols(data):
         f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[0].lower()}.'
         f' Activate to show {LEVEL_NAMES[1].lower()}."'
         f'>{escape(LEVEL_NAMES[0].lower())}</button></span></h2>',
-        f'<div class="mermaid" data-level="1" data-legend="{legend_attrs[0]}">'
-        f'{escape(level1)}</div>',
+        f'<div class="mermaid" data-level="1" data-legend="{legend_attrs[0]}"'
+        f' data-ids="{ids_attrs[0]}">{escape(level1)}</div>',
         f'<div class="mermaid" data-level="2" hidden '
-        f'data-legend="{legend_attrs[1]}">{escape(level2)}</div>',
+        f'data-legend="{legend_attrs[1]}" data-ids="{ids_attrs[1]}">{escape(level2)}</div>',
         f'<p class="note">{note}</p>',
     ]) + "\n" + orphans_html + moved_html + "</div>\n"
 
 
+def render_symbols_md(data):
+    """Markdown counterpart of render_symbols: mermaid has no live level toggle outside the
+    HTML page, so both pre-rendered levels ship as separate fenced blocks instead, packages
+    first, each captioned the same way its html counterpart is. No data-ids map here, that
+    attribute is an HTML-page mechanism only."""
+    nodes = data.get("nodes") or []
+    if not nodes:
+        return ""
+    edges = data.get("edges") or []
+    moved = data.get("moved") or []
+
+    level1, undrawn_count = _mermaid_packages(nodes, edges)
+    ids2, edges2 = _symbols_scope(nodes, edges)
+    drawn2 = _edge_endpoint_ids(edges2)
+    level2, _file_map2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2)
+
+    changed_ids = _changed_symbol_ids(nodes)
+    orphan_ids = changed_ids - drawn2
+
+    note = _symbols_note_text(
+        len(nodes), len(edges), len(changed_ids) - len(orphan_ids), len(orphan_ids), undrawn_count
+    )
+    legends = [_symbols_legend_text(level1), _symbols_legend_text(level2)]
+
+    out = [SYMBOLS_MARKER, "", "### Changes visualization", ""]
+    for name, mermaid, legend in zip(LEVEL_NAMES, (level1, level2), legends):
+        out.append(f"**{name}**" + (f" -- {legend}" if legend else ""))
+        out += ["", "```mermaid", mermaid, "```", ""]
+    out.append(note)
+    orphans_md = _symbols_orphans_md(nodes, orphan_ids)
+    if orphans_md:
+        out += ["", orphans_md.rstrip("\n")]
+    if moved:
+        out += ["", "\n".join(f"- {line}" for line in _moved_lines(moved))]
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _symbols_legend_states(mermaid_source):
+    """Which of new/gone this level's diagram actually marks -- both format legends key off
+    the same `class ... new`/`gone` test _mermaid_symbols emits."""
+    return " new" in mermaid_source, " gone" in mermaid_source
+
+
 def _symbols_legend(mermaid_source):
     """The new/gone key, emitted only for a level whose own diagram actually carries such a
-    node. `class ... new`/`gone` is how _mermaid_symbols marks them, so the rendered source is
-    the honest test: a package view with neither state was spending a row explaining both."""
-    has_new = " new" in mermaid_source
-    has_gone = " gone" in mermaid_source
+    node: a package view with neither state was spending a row explaining both."""
+    has_new, has_gone = _symbols_legend_states(mermaid_source)
     if not (has_new or has_gone):
         return ""
     parts = []
@@ -807,26 +670,26 @@ def _symbols_legend(mermaid_source):
         parts.append('<span class="sw sw-new"></span>new')
     if has_gone:
         parts.append('<span class="sw sw-gone"></span>gone')
-    return f'<span class="vd-legend">{"".join(parts)}</span>' 
+    return f'<span class="vd-legend">{"".join(parts)}</span>'
+
+
+def _symbols_legend_text(mermaid_source):
+    """Markdown counterpart of _symbols_legend: plain words, no swatch markup to carry the
+    colour."""
+    has_new, has_gone = _symbols_legend_states(mermaid_source)
+    states = [s for s, has in (("new", has_new), ("gone", has_gone)) if has]
+    return "new/gone marked" if len(states) == 2 else (f"{states[0]} marked" if states else "")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--kind", required=True, choices=sorted(list(KINDS) + ["symbols"]))
+    parser.add_argument("--kind", required=True, choices=("symbols",))
     parser.add_argument("--data", required=True)
     parser.add_argument("--format", required=True, choices=("md", "html"))
     args = parser.parse_args()
 
     data = json.loads(Path(args.data).read_text())
-
-    if args.kind == "symbols":
-        if args.format != "html":
-            print("--kind symbols only supports --format html", file=sys.stderr)
-            return 1
-        sys.stdout.write(render_symbols(data))
-        return 0
-
-    sys.stdout.write(render(args.kind, data, args.format))
+    sys.stdout.write(render_symbols_md(data) if args.format == "md" else render_symbols(data))
     return 0
 
 

@@ -214,7 +214,6 @@
      heading's bottom border stays under both. */
   h2.h2-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
   h2.h2-row .ctl{display:flex;align-items:center;gap:10px}
-  .ctl-hint{color:var(--muted);font-size:var(--fs-xs);text-transform:none;letter-spacing:0}
   /* One appearance, both states. Each toggle's label names the state you are in, so tinting
      the default state grey said it twice and read as switched off; --accent is this page's
      interactive colour, so the control wears it whatever it says, and hover/press move the
@@ -304,9 +303,9 @@
   #mermaid-zoom-close:hover{background:var(--border)}
   #mermaid-zoom-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-  /* Node menu on the coupling graph: badge, popup and focus-dimming. Scoped to svg.vd-nav,
-     set only on a graph whose box carried data-ids (see tagNavNodes below), so none of this
-     touches FLOW or the symbol-delta levels. */
+  /* Node menu on any graph whose box carries a data-ids map: badge, popup and focus-dimming.
+     Scoped to svg.vd-nav, set by tagNavNodes below only when that map is present, so FLOW
+     (no data-ids) stays untouched while both symbol-delta levels are in scope. */
   svg.vd-nav .node[data-path]{cursor:pointer;-webkit-touch-callout:none}
   svg.vd-nav .node[data-path]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Badge lives inside the svg so pan and zoom carry it for free, and cloneNode(true) in
@@ -393,7 +392,7 @@
 
   .fb-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
     padding:8px 10px;font-size:var(--fs-xs)}
-  /* n/N keyboard nav (see the keydown handler below) needs a visible landing spot. */
+  /* Visible landing spot for the comments panel's click-to-focus jump (see wireCommentsPanel below). */
   .fb-item:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Same dashed-and-dimmed convention as .sw-gone / .hunk-cx.gone above: a structural fact,
      not a warning. */
@@ -772,9 +771,9 @@
   document.getElementById('mermaid-zoom-close').onclick=()=>dlg.close();
   dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
 
-  // Coupling graph node menu (jump-to-file, focus-downstream). Lives in this IIFE because
-  // it needs panZoom's own moved/suppressClick tracking below plus openZoom/wire/dlg above,
-  // rather than duplicating a second click/drag split against the same svg.
+  // Node menu (jump-to-file, focus-downstream) for any graph tagNavNodes tags below. Lives in
+  // this IIFE because it needs panZoom's own moved/suppressClick tracking plus openZoom/wire/dlg
+  // above, rather than duplicating a second click/drag split against the same svg.
   const SVGNS='http://www.w3.org/2000/svg';
   let navMenu=null,navMenuFor=null;
 
@@ -801,7 +800,7 @@
   // dataset.pzWired: mermaid can still mutate the box a few times while it renders.
   function tagNavNodes(box,svg){
     if(svg.dataset.vdNavWired) return;
-    if(!box.matches('.svgbox[data-ids]')) return;
+    if(box.dataset.ids===undefined) return; // no map on this box at all (e.g. FLOW's .svgbox)
     let ids;
     try{ ids=JSON.parse(box.dataset.ids); }catch(_){ return; }
     svg.dataset.vdNavWired='1';
@@ -810,7 +809,7 @@
     svg.querySelectorAll('g.node').forEach(node=>{
       const mermaidId=navMermaidId(node);
       const path=mermaidId&&ids[mermaidId];
-      if(!path) return; // folded pseudo-nodes and anything coupling.py excluded on purpose
+      if(!path) return; // folded pseudo-nodes and anything the ids map excludes on purpose (e.g. an empty map at level 1)
       node.dataset.path=path;
       node.tabIndex=0;
       node.setAttribute('role','button');
@@ -824,7 +823,9 @@
       tagged[mermaidId]=node;
     });
     svg.querySelectorAll('path[data-id]').forEach(edge=>{
-      const m=/^L_(N\d+)_(N\d+)_\d+$/.exec(edge.dataset.id||'');
+      // Edge id's endpoints share whichever prefix that level's nodes use (S for symbols, P
+      // for packages); only the trailing per-edge index is a fixed \d+.
+      const m=/^L_([A-Za-z]\d+)_([A-Za-z]\d+)_\d+$/.exec(edge.dataset.id||'');
       if(!m||!tagged[m[1]]||!tagged[m[2]]) return;
       edge.classList.add('vd-edge');
       edge.dataset.from=m[1]; edge.dataset.to=m[2];
@@ -996,9 +997,10 @@
     const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
     const mid=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
     const beginDrag=(x,y)=>{ drag={x,y,view:view.slice(),rect:svg.getBoundingClientRect()}; };
-    // Node menu container: the inline graph positions it inside its own .svgbox, the
-    // fullscreen clone inside #mermaid-zoom-body (both carry position:relative).
-    const navContainer=()=>mode==='modal'?zbody:svg.closest('.svgbox');
+    // Node menu container: the inline graph positions it inside its own .svgbox, or -- for a
+    // symbol-delta level, which has no .svgbox ancestor -- the level's own .mermaid box; both
+    // carry position:relative. The fullscreen clone uses #mermaid-zoom-body instead.
+    const navContainer=()=>mode==='modal'?zbody:svg.closest('.svgbox, .vd-symbols .mermaid');
     let navPress=null;
     const cancelNavPress=()=>{ if(navPress){ clearTimeout(navPress); navPress=null; } };
     // A lone touch pointer's type has to survive into endPointer, so a pinch that drops to one
@@ -1099,9 +1101,9 @@
     svg.style.cursor='grab';
     return api;
   }
-  // The svg actually on screen inside `box`: for a FLOW/coupling/structure box that's its one
-  // .mermaid child, for a graph level box (box IS the .mermaid element, one per detail
-  // level, siblings hidden by the level script) it's the box's own svg.
+  // The svg actually on screen inside `box`: for a FLOW box that's its one .mermaid child, for
+  // a graph level box (box IS the .mermaid element, one per detail level, siblings hidden by
+  // the level script) it's the box's own svg.
   function visibleSvg(box){
     return box.matches('.mermaid')?box.querySelector('svg')
       :box.querySelector('.mermaid:not([hidden]) svg');
@@ -1362,7 +1364,9 @@
     return out;
   }
 
-  const RTF=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'});
+  // Pinned locale: the page's own text is English, so a browser-locale relative/absolute
+  // date (e.g. Polish "2 dni temu") would be the odd one out.
+  const RTF=new Intl.RelativeTimeFormat('en-GB',{numeric:'auto'});
   const REL_UNITS=[['year',31536000],['month',2592000],['week',604800],['day',86400],
                    ['hour',3600],['minute',60],['second',1]];
   function relTime(t){
@@ -1420,7 +1424,7 @@
       // Doubles as the link to the comment on GitHub, GitHub's own idiom.
       const t=document.createElement(n.gh_url?'a':'span'); t.className='fb-time';
       t.textContent=isNaN(when)?'on GitHub':relTime(when);
-      if(!isNaN(when)) t.title=new Date(when).toLocaleString();
+      if(!isNaN(when)) t.title=new Date(when).toLocaleString('en-GB');
       if(n.gh_url){
         t.href=n.gh_url; t.target='_blank'; t.rel='noopener noreferrer';
         t.setAttribute('aria-label','Open comment on GitHub');
@@ -1623,8 +1627,8 @@
   }
 
   // Same collapsed-<details> idiom as the .hr-lo fold below: cache the element per root id,
-  // never tear it down while focus is inside (keyboard nav via n/N can land a row here), and
-  // reconcile its children in place otherwise.
+  // never tear it down while focus is inside (the comments panel's click-to-focus jump can
+  // land a row here), and reconcile its children in place otherwise.
   function resolvedWrapFor(root,rows,confirmed){
     let entry=threadWrapByRoot.get(root.id);
     if(entry&&entry.el.contains(document.activeElement)) return entry.el;
@@ -1919,22 +1923,6 @@
 
     renderList();
   }
-
-  // n/N cycles focus through every comment row, live or stale, in document order.
-  document.addEventListener('keydown',e=>{
-    if(e.metaKey||e.ctrlKey||e.altKey) return;
-    if(e.key!=='n'&&e.key!=='N') return;
-    const t=e.target;
-    if(t&&(t.isContentEditable||['INPUT','TEXTAREA','SELECT'].includes(t.tagName))) return;
-    const rows=[...document.querySelectorAll('.fb-item[role="note"]')];
-    if(!rows.length) return;
-    e.preventDefault();
-    const cur=rows.indexOf(document.activeElement);
-    const dir=e.key==='N'?-1:1;
-    const next=rows[(cur+dir+rows.length)%rows.length];
-    openAncestorDetails(next);
-    next.focus();
-  });
 
   document.querySelectorAll('pre.diff').forEach(wireHunk);
   wireCommentsPanel();

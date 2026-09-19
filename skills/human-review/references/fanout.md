@@ -123,13 +123,12 @@ step exists: `references/rationale.md`.
 
 After the merge, one subagent, on a stronger model (sonnet class) since it needs the whole change
 in view and nothing downstream can check its judgment, gets the `(path, role)` pairs from the
-merged analysis, plus `layers.note`/`layers.touched`, `coupling.note`/`coupling.changed_nodes`,
-and `symdelta.counts`/`symdelta.moved`. It returns `groups`, `verdict` and `section_notes`; write
-what it returns into `analysis.json` before the gate, and review it rather than author it
-yourself. This is a deliberate tradeoff: `groups` is the reading order a human follows and is
-the least safe field here to hand off, but a `(path, role)` list plus the graph summaries is
-enough to group from, and it moves 40 to 50 seconds off what the main thread would otherwise
-spend writing groups, notes and gate patches by hand.
+merged analysis, plus `symdelta.counts`/`symdelta.moved`. It returns `groups`, `verdict` and
+`section_notes`; write what it returns into `analysis.json` before the gate, and review it
+rather than author it yourself. This is a deliberate tradeoff: `groups` is the reading order a
+human follows and is the least safe field here to hand off, but a `(path, role)` list plus the
+graph summary is enough to group from, and it moves 40 to 50 seconds off what the main thread
+would otherwise spend writing groups, notes and gate patches by hand.
 
 `validate_analysis.py` prints one plain line per problem and exits non-zero: a file present in
 the diff but missing from `files[]`, a blank `role`, an invented file or hunk, and a filled-in

@@ -164,17 +164,17 @@ def test_rendered_must_mention_every_path():
 
 def test_a_generated_section_must_reach_the_rendered_output():
     with tempfile.TemporaryDirectory() as tmp:
-        section = Path(tmp) / "section-structure.md"
-        section.write_text("<!-- visual-diff:structure -->\n\n### Structure coupling\n")
-        empty = Path(tmp) / "section-coupling.md"
+        section = Path(tmp) / "section-symbols.md"
+        section.write_text("<!-- visual-diff:symbols -->\n\n### Symbols touched\n")
+        empty = Path(tmp) / "section-links.md"
         empty.write_text("")
 
         missing = check_sections([str(section), str(empty)], "# recap, no section here")
         present = check_sections(
-            [str(section), str(empty)], "# recap\n<!-- visual-diff:structure -->\nstuff"
+            [str(section), str(empty)], "# recap\n<!-- visual-diff:symbols -->\nstuff"
         )
 
-        assert len(missing) == 1 and "visual-diff:structure" in missing[0]
+        assert len(missing) == 1 and "visual-diff:symbols" in missing[0]
         # An empty section file means there was nothing to draw, which is not a failure.
         assert present == []
 
