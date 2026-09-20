@@ -405,47 +405,6 @@ def test_a_whitespace_only_hunk_is_skipped():
     assert validate(WHITESPACE_DIFF, analysis) == []
 
 
-RECAP = {
-    "target": "master...HEAD",
-    "what_changed": "Renames the thing.",
-    "how_it_works": "",
-    "flow_mermaid": "",
-    # No "files" key at all: that's the shape step 2a-recap actually produces, not a
-    # files: [] someone remembered to add by hand.
-    "groups": [
-        {"title": "The rename", "paths": ["pkg/thing.py", "gone.py"]},
-        {"title": "Artwork", "paths": ["logo.png"]},
-    ],
-}
-
-
-def test_recap_passes_with_full_group_coverage():
-    assert validate(DIFF, RECAP, recap=True) == []
-
-
-def test_recap_passes_with_no_files_key_present():
-    assert "files" not in RECAP
-    assert validate(DIFF, RECAP, recap=True) == []
-
-
-def test_recap_fails_with_a_path_left_out():
-    bad = copy.deepcopy(RECAP)
-    bad["groups"] = [{"title": "The rename", "paths": ["pkg/thing.py", "gone.py"]}]
-
-    problems = validate(DIFF, bad, recap=True)
-
-    assert any("logo.png" in p and "no group" in p for p in problems)
-
-
-def test_recap_requires_groups_at_all():
-    bad = copy.deepcopy(RECAP)
-    del bad["groups"]
-
-    problems = validate(DIFF, bad, recap=True)
-
-    assert any("groups" in p for p in problems)
-
-
 # Each of these carries a second, unrelated filler hunk with a real note so the lone
 # empty-note hunk under test stays a 50% share, well under EMPTY_NOTE_FLOOR -- otherwise a
 # single-hunk diff with a blank note always trips the floor on its own (1/1 = 100%), which

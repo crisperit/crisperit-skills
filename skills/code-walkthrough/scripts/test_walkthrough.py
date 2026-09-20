@@ -7,17 +7,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from walkthrough import (  # noqa: E402
-    BAR_CELLS,
-    DEFAULT_MAX_CHARS,
     caller_depth,
-    complexity_chip,
     depth_chip,
     render_html,
-    render_md,
-    rename_hint,
     rename_index,
     rename_note,
-    scaled_bars,
     story,
 )
 from validate_analysis import parse_hunks, check_rendered  # noqa: E402
@@ -138,45 +132,11 @@ def test_html_escapes_diff_content_and_paths():
     assert "< c && d >" not in out
 
 
-def test_md_puts_a_blank_line_after_summary_so_github_parses_the_fence():
-    order, files = parsed()
-    out = render_md(flat(order, files), files, {e["path"]: e for e in ANALYSIS["files"]})
-
-    for chunk in out.split("<summary>")[2:]:
-        assert chunk.split("</summary>")[1].startswith("\n\n"), chunk[:80]
-
-
-def test_md_diff_lines_are_never_html_escaped():
-    diff = ('diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n'
-            '@@ -1,1 +1,1 @@\n+const a = b < c && d > e;\n')
-    order, files = parse_hunks(diff)
-    out = render_md(flat(order, files), files, {}, hunks="full")
-
-    # GitHub escapes these itself inside a fence; doing it here yields "&amp;lt;".
-    assert "+const a = b < c && d > e;" in out
-    assert "&lt;" not in out
-
-
-def test_md_notes_mode_keeps_every_file_and_drops_the_bodies():
-    order, files = parsed()
-    by_path = {e["path"]: e for e in ANALYSIS["files"]}
-    full = render_md(flat(order, files), files, by_path, hunks="full")
-    # the default: a PR description is the high-level view
-    notes = render_md(flat(order, files), files, by_path)
-
-    assert "```diff" in full and "```diff" not in notes
-    assert not check_rendered(DIFF, notes)  # still an inventory of every path
-    for note in ("Falls back instead of re-login.", "Drops the cached session.", "One heading."):
-        assert note in notes
-    assert len(notes) < len(full)
-
-
 def test_generated_output_passes_the_rendered_coverage_check():
     order, files = parsed()
     by_path = {e["path"]: e for e in ANALYSIS["files"]}
 
     assert not check_rendered(DIFF, render_html(flat(order, files), files, by_path))
-    assert not check_rendered(DIFF, render_md(flat(order, files), files, by_path))
 
 
 def test_a_file_the_analysis_forgot_is_still_rendered():
@@ -219,30 +179,6 @@ def test_no_newline_marker_is_dropped_so_line_counting_stays_exact():
     assert files["x.py"]["added"] == 1 and files["x.py"]["removed"] == 1
 
 
-def test_bars_are_scaled_against_the_widest_file():
-    files = {"big": {"added": 90, "removed": 10}, "small": {"added": 1, "removed": 0}}
-    bars = scaled_bars(files)
-
-    assert sum(bars["big"]) == BAR_CELLS and sum(bars["small"]) == BAR_CELLS
-    assert bars["big"][2] == 0  # widest file fills the whole bar
-    assert bars["small"][0] == 1 and bars["small"][2] == BAR_CELLS - 1
-
-
-def test_a_single_deleted_line_still_shows_a_red_cell():
-    files = {"big": {"added": 500, "removed": 0}, "tiny": {"added": 0, "removed": 1}}
-    bars = scaled_bars(files)
-
-    # Rounding 1/500 of ten cells gives zero; a change that happened must not draw as none.
-    assert bars["tiny"][1] >= 1
-    assert bars["big"][0] == BAR_CELLS
-
-
-def test_unchanged_file_bar_is_all_empty():
-    bars = scaled_bars({"x": {"added": 0, "removed": 0}})
-
-    assert bars["x"] == (0, 0, BAR_CELLS)
-
-
 def test_open_count_expands_the_front_of_the_reading_order():
     order, files = parsed()
     groups = story(order, files, [{"title": "Docs first", "paths": ["README.md"]},
@@ -281,17 +217,6 @@ def test_the_only_link_inside_a_summary_is_the_file_name():
         head = chunk.split("</summary>")[0]
         assert "https://gh/blob" not in head
         assert head.count("<a ") <= 1
-
-
-def test_md_links_the_role_line_and_every_hunk_note():
-    order, files = parsed()
-    by_path = {e["path"]: e for e in ANALYSIS["files"]}
-    out = render_md(flat(order, files), files, by_path, links=LINKS)
-
-    assert "[view in PR](https://gh/pull/1/files#diff-abc)" in out
-    assert "[L40-L43](https://gh/blob/s/a.py#L40-L43)" in out
-    assert "[L59-L61](https://gh/blob/s/a.py#L59-L61)" in out
-    assert "`README.md`" in out  # no url for it, still listed
 
 
 def test_the_file_name_itself_is_the_link_to_the_file_on_the_pr():
@@ -333,120 +258,13 @@ def test_skips_links_when_the_head_is_not_pushed():
     unpushed = {**LINKS, "head_pushed": False}
 
     # Those urls 404 until the commit exists on the remote.
-    assert "https://gh" not in render_md(flat(order, files), files, by_path, links=unpushed)
     assert "https://gh" not in render_html(flat(order, files), files, by_path, links=unpushed)
 
 
-def _many_files(count, lines=6):
-    body = "".join(f"+line {i}\n" for i in range(lines))
-    diff = "".join(
-        f"diff --git a/pkg/mod{i}.py b/pkg/mod{i}.py\n--- a/pkg/mod{i}.py\n"
-        f"+++ b/pkg/mod{i}.py\n@@ -1,1 +1,{lines} @@\n{body}"
-        for i in range(count)
-    )
-    order, files = parse_hunks(diff)
-    by_path = {p: {"path": p, "role": f"role for {p}" * 4,
-                   "hunks": [{"header": "@@ -1,1 +1,6 @@", "note": f"note for {p}" * 4}]}
-               for p in order}
-    return diff, order, files, by_path
-
-
-def test_md_over_budget_demotes_files_but_never_drops_one():
-    diff, order, files, by_path = _many_files(200)
-    full = render_md(flat(order, files), files, by_path, max_chars=0)
-    out = render_md(flat(order, files), files, by_path, max_chars=DEFAULT_MAX_CHARS)
-
-    assert len(full) > DEFAULT_MAX_CHARS >= len(out)
-    assert not check_rendered(diff, out)  # every path still present
-    assert "more files, path and role only" in out
-    assert "<details>" in out.split("more files")[0]  # some files kept the full treatment
-
-
-def test_md_too_many_files_for_any_budget_still_lists_them_all():
-    # One line per file is the floor. Going below it would mean dropping a file, and a file
-    # missing from the walkthrough reads as a file that was not touched.
-    diff, order, files, by_path = _many_files(400)
-    out = render_md(flat(order, files), files, by_path, max_chars=1000)
-
-    assert len(out) > 1000
-    assert not check_rendered(diff, out)
-    assert "400 more files, path and role only" in out
-
-
-def test_md_under_budget_keeps_the_full_treatment_for_everyone():
-    diff, order, files, by_path = _many_files(4)
-    out = render_md(flat(order, files), files, by_path, max_chars=8000)
-
-    assert "more files, path and role only" not in out
-    assert out.count("<details>") == len(order) + 1  # the wrapper plus one per file
-
-
-def test_md_budget_of_zero_is_off():
-    _diff, order, files, by_path = _many_files(120)
-
-    assert len(render_md(flat(order, files), files, by_path, max_chars=0)) > 8000
-
-
-def test_md_budget_demotes_lockfiles_and_tests_before_real_code():
-    diff = "".join(
-        f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1,1 +1,2 @@\n+x\n"
-        for p in ("src/app.py", "tests/test_app.py", "package-lock.json")
-    )
-    order, files = parse_hunks(diff)
-    by_path = {p: {"path": p, "role": "r" * 300,
-                   "hunks": [{"header": "@@ -1,1 +1,2 @@", "note": "n" * 300}]}
-               for p in order}
-    floor = len(render_md(flat(order, files), files, by_path, max_chars=1))
-
-    # Pinning one budget pins arithmetic instead of behaviour. The invariant is the ordering:
-    # at every budget, production code holds its full treatment longer than a test file, and a
-    # test file longer than a lockfile.
-    seen = set()
-    for extra in range(0, 1600, 40):
-        out = render_md(flat(order, files), files, by_path, max_chars=floor + extra)
-        kept = out.split("more files, path and role only")[0] if "more files" in out else out
-        survivors = tuple(p for p in order if f"`{p}`" in kept)
-        seen.add(survivors)
-        assert not check_rendered(diff, out), "a file was dropped entirely"
-        if "tests/test_app.py" in survivors:
-            assert "src/app.py" in survivors
-        if "package-lock.json" in survivors:
-            assert "src/app.py" in survivors and "tests/test_app.py" in survivors
-
-    # The sweep has to actually cross the thresholds, or the assertions above prove nothing.
-    assert () in seen
-    assert ("src/app.py",) in seen
-    assert tuple(order) in seen
-
-
-def test_both_formats_carry_the_marker_the_section_check_looks_for():
+def test_walkthrough_carries_the_marker_the_section_check_looks_for():
     order, files = parsed()
 
-    assert render_md(flat(order, files), files, {}).startswith("<!-- visual-diff:walkthrough -->")
     assert render_html(flat(order, files), files, {}).startswith("<!-- visual-diff:walkthrough -->")
-
-
-def test_md_output_carries_the_floor_marker_right_after_the_section_marker():
-    diff, order, files, by_path = _many_files(120)
-    out = render_md(flat(order, files), files, by_path, max_chars=1)  # forces every file to demote
-
-    lines = out.splitlines()
-    assert lines[0] == "<!-- visual-diff:walkthrough -->"
-    assert lines[1].startswith("<!-- visual-diff:walkthrough-floor ")
-    floor = int(lines[1].split(" ")[2])
-    # Nothing survives demotion at max_chars=1, so this run's own text is exactly its floor
-    # plus the marker line render.overflow_warning reads back, plus that line's newline.
-    assert len(out) == floor + len(lines[1]) + 1
-
-
-def test_floor_marker_is_the_same_number_whether_or_not_this_run_needed_to_demote():
-    diff, order, files, by_path = _many_files(4)
-    under = render_md(flat(order, files), files, by_path, max_chars=8000)  # fits, no demotion
-    over = render_md(flat(order, files), files, by_path, max_chars=1)  # everything demotes
-
-    assert "more files, path and role only" not in under
-    # The floor is a property of the diff, not of the budget this call happened to be given.
-    assert under.splitlines()[1] == over.splitlines()[1]
 
 
 # ---- reading order ----
@@ -592,25 +410,15 @@ def test_no_groups_at_all_renders_one_untitled_block_with_no_heading():
     assert "wt-group" not in out
 
 
-def test_group_titles_reach_both_formats():
+def test_group_titles_reach_the_page():
     order, files = parsed()
     groups = story(order, files, [{"title": "Session handling", "why": "the point of the PR",
                                    "paths": ["src/auth.py"]}], None)
 
     assert "Session handling" in render_html(groups, files, {})
-    assert "**Session handling** - the point of the PR" in render_md(groups, files, {})
     # The catch-all has to be named once something else is, or README looks like it belongs
     # to the group above it.
     assert "Everything else" in render_html(groups, files, {})
-
-
-def test_a_group_heading_is_not_printed_when_the_budget_demoted_all_its_files():
-    order, files = parsed()
-    groups = story(order, files, [{"title": "Session handling", "paths": ["src/auth.py"]}], None)
-    out = render_md(groups, files, {}, max_chars=1)
-
-    assert "Session handling" not in out
-    assert "`src/auth.py`" in out
 
 
 # ---- complexity ----
@@ -762,22 +570,12 @@ def test_depth_chip_is_suppressed_for_a_removed_function():
     assert depth_chip({"peak": {"name": "x", "depth": 5, "removed": True}}) == ""
 
 
-def test_the_page_carries_no_legend_but_the_markdown_still_does():
-    # On the page the chip says "branches" in words and repeats the long form in its title, so
-    # the legend was a paragraph of vocabulary before the first file. The PR description has
-    # nothing to hover, so it keeps it.
+def test_the_page_carries_no_legend():
+    # The chip says "branches" in words and repeats the long form in its title, so a legend
+    # would only add a paragraph of vocabulary before the first file.
     order, files = parsed()
 
     assert "cyclomatic complexity" not in render_html(flat(order, files), files, {}, complexity=CX)
-    assert "cyclomatic complexity" in render_md(flat(order, files), files, {}, complexity=CX)
-
-
-def test_the_md_summary_carries_the_new_chip_wording_and_legend():
-    order, files = parsed()
-    out = render_md(flat(order, files), files, {}, complexity=CX)
-
-    assert "`load_session 2→9 branches`" in out
-    assert "cyclomatic complexity" in out
 
 
 def test_no_complexity_input_renders_the_same_walkthrough_as_before():
@@ -942,33 +740,24 @@ index 111..222 100644
 """
 
 
-def test_a_pure_rename_shows_where_it_moved_from_in_both_formats():
+def test_a_pure_rename_shows_where_it_moved_from():
     order, files = parse_hunks(RENAME_DIFF)
     renames = rename_index(RENAME_DIFF)
     out_html = render_html(flat(order, files), files, {}, renames=renames)
-    out_md = render_md(flat(order, files), files, {}, renames=renames)
 
-    # HTML shows the full old path on its own line, no truncation: rename_hint's compact
-    # differing-directory form ("internal/") told the reader nothing on its own. md keeps
-    # rename_hint's compact form -- its new path is already first on the line, so repeating
-    # the full old path too would cost the size budget across every renamed file.
+    # HTML shows the full old path on its own line, no truncation.
     assert '<span class="hunk-was">moved from corelib/ratelimit/internal/config.go</span>' \
            in out_html
-    assert "(← `internal/`)" in out_md
-    assert "no content change" in out_html and "no content change" in out_md
-    assert not check_rendered(RENAME_DIFF, out_md)
+    assert "no content change" in out_html
 
 
 def test_a_rename_with_edits_is_distinguished_from_a_pure_rename():
     order, files = parse_hunks(RENAME_EDIT_DIFF)
     renames = rename_index(RENAME_EDIT_DIFF)
     out_html = render_html(flat(order, files), files, {}, renames=renames)
-    out_md = render_md(flat(order, files), files, {}, renames=renames)
 
     assert '<span class="hunk-was">moved from old/util.py</span>' in out_html
-    assert "(← `old/`)" in out_md
     assert "no content change" not in out_html
-    assert "no content change" not in out_md
 
 
 def test_renamed_file_header_row_carries_no_arrow_and_a_pure_hunk_path():
@@ -991,33 +780,11 @@ def test_a_non_renamed_file_gets_no_arrow_or_hunk_was():
     assert "hunk-was" not in out
 
 
-def test_markdown_rename_note_does_not_repeat_the_new_path():
-    order, files = parse_hunks(RENAME_DIFF)
-    renames = rename_index(RENAME_DIFF)
-    out_md = render_md(flat(order, files), files, {}, renames=renames)
-
-    # The new path appears once, from the plain summary line; a rename hint that spelled it
-    # out again alongside the old path would blow the size budget across many renames.
-    assert out_md.count("corelib/ratelimit/ratelimit_config/config.go") == 1
-
-
-def test_a_demoted_renamed_file_still_shows_where_it_moved_from():
-    diff, order, files, by_path = _many_files(400)
-    renames = {order[0]: "old/" + order[0]}
-    out = render_md(flat(order, files), files, by_path, max_chars=1000, renames=renames)
-
-    assert "400 more files, path and role only" in out
-    assert f"(← `{rename_hint(renames[order[0]], order[0])}`)" in out
-    assert not check_rendered(diff, out)
-
-
 def test_renames_absent_changes_nothing():
     order, files = parsed()
 
     assert (render_html(flat(order, files), files, {})
             == render_html(flat(order, files), files, {}, renames=None))
-    assert (render_md(flat(order, files), files, {})
-            == render_md(flat(order, files), files, {}, renames=None))
 
 
 if __name__ == "__main__":

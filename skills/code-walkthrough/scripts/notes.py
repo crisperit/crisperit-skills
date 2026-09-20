@@ -16,7 +16,7 @@
 notes.py never calls git. `gh` is the one subprocess it runs, and only for `deliver` and
 `submit`, always `gh api graphql` with the request body on stdin (see "GitHub delivery").
 Everything else here is a pure state transformer over state.json's notes[] array (schema:
-docs/plans/human-review/PLAN.md, "The state document").
+docs/plans/code-walkthrough/PLAN.md, "The state document").
 
 Lifecycle is draft -> posted. A record is never deleted and never rewritten in place by any
 other step; a failed post leaves the note a draft, so nothing is lost.

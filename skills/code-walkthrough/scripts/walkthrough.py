@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Render the walkthrough section from analysis.json and raw.diff.
 
-  python3 walkthrough.py --analysis analysis.json --diff raw.diff --format html
-  python3 walkthrough.py --analysis analysis.json --diff raw.diff --format md \
-      [--hunks notes] [--links links.json] [--symdelta symdelta.json] \
-      [--complexity complexity.json] [--open 3]
+  python3 walkthrough.py --analysis analysis.json --diff raw.diff --format html \
+      [--links links.json] [--symdelta symdelta.json] [--complexity complexity.json] [--open 3]
 
 Everything in a walkthrough except the prose is mechanical: the paths, the line counts, the
 bars, the `<details>` nesting, the fences, the escaping and the diff bodies all follow from
@@ -36,23 +34,12 @@ from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> co
 from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 
-# Same scaling rule in both formats, so the HTML page and the PR description agree about which
-# file is the big one: widest file gets all ten cells, everything else is proportional to it.
-BAR_CELLS = 10
 DEFAULT_OPEN = 3
-# The walkthrough is the residual: render.MAX_BODY_CHARS (45000) is the budget for the whole
-# recap, and the prose plus the three graph sections take the rest of it. It has to be the
-# part that gives, because it is the only part that scales with file count, and render.py
-# warns if the total still comes out over.
-DEFAULT_MAX_CHARS = 32000
 # Complexity worth a chip when this change did not move it. McCabe's own "consider
 # restructuring" line, and it is what keeps the chip a signal: without it, the measured 13-file
 # commit put a chip on all 13, including "1 cx" on four new one-line getters. With it, three
 # files carry one, and all three hold a function a reviewer should look at.
 NOTEWORTHY_CX = 10
-COMPLEXITY_LEGEND = ('"Branches" counts the independent paths through a function (cyclomatic '
-                     'complexity); the arrow shows how this change moved it, or "removed" '
-                     "when the function is gone.")
 
 _LOCKFILES = frozenset({
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
@@ -155,30 +142,6 @@ def story(order, files, groups, symdelta):
     rest = [p for p in order if p not in seen]
     if rest:
         out.append(("Everything else" if out else "", "", sorted(rest, key=reading_key)))
-    return out
-
-
-def scaled_bars(files):
-    """{path: (added cells, removed cells, empty cells)}, every bar BAR_CELLS wide and filled in
-    proportion to the widest file, so a two-line tweak next to a 900-line rewrite reads as the
-    small one it is. A file that changed anything keeps at least one cell, and a side with any
-    lines at all keeps at least one of them, or a 1-line deletion in a big diff rounds away to a
-    bar that says nothing changed."""
-    widest = max((e["added"] + e["removed"] for e in files.values()), default=0)
-    out = {}
-    for path, entry in files.items():
-        added, removed = entry["added"], entry["removed"]
-        total = added + removed
-        if not total or not widest:
-            out[path] = (0, 0, BAR_CELLS)
-            continue
-        filled = max(1, round(BAR_CELLS * total / widest))
-        a = round(filled * added / total)
-        if added and a == 0:
-            a = 1
-        if removed and a == filled:
-            a = filled - 1
-        out[path] = (a, filled - a, BAR_CELLS - filled)
     return out
 
 
@@ -301,23 +264,6 @@ def rename_note(old, new):
     return "/".join(part for part in (prefix, middle, suffix) if part)
 
 
-def rename_hint(old, new):
-    """Cheap "moved from" hint: trims the directory prefix `old` shares with `new`, already
-    shown right beside it (the header row's hunk-was, or md's own path token), and shows only
-    what's left — unlike rename_note's `{old => new}` form, which repeats the new path a
-    second time for no reason once the new path is already alongside it. Falls back to the
-    old basename too when it also changed, since nothing else would tell the file apart."""
-    old_parts, new_parts = old.split("/"), new.split("/")
-    old_dir, new_dir = old_parts[:-1], new_parts[:-1]
-    i = 0
-    while i < len(old_dir) and i < len(new_dir) and old_dir[i] == new_dir[i]:
-        i += 1
-    tail = old_dir[i:]
-    if old_parts[-1] == new_parts[-1]:
-        return "/".join(tail) + "/" if tail else "./"
-    return "/".join(tail + old_parts[-1:])
-
-
 def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, complexity=None,
                  renames=None):
     is_open = _open_paths(groups, open_count)
@@ -333,10 +279,9 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
 
     # First line is the marker validate_analysis.py --sections looks for, same convention as
     # sections.py, so a walkthrough that never reached the page is caught rather than shipped.
-    # No legend here, unlike render_md: the chip reads "load_session 2->9 branches" in words
-    # and carries the long form in its title, so on the page the legend was only a paragraph
-    # of vocabulary between the reader and the first file. The PR description has no titles to
-    # hover, which is why the markdown still opens with it.
+    # No legend here: the chip reads "load_session 2->9 branches" in words and carries the
+    # long form in its title, so a legend here would only add a paragraph of vocabulary
+    # between the reader and the first file.
     out = ["<!-- visual-diff:walkthrough -->"]
     for title, why, paths in groups:
         if title:
@@ -429,152 +374,16 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     return "\n".join(out) + "\n"
 
 
-def render_md(groups, files, by_path, hunks="notes", links=None, max_chars=DEFAULT_MAX_CHARS,
-              complexity=None, renames=None):
-    bars = scaled_bars(files)
-    file_urls, hunk_urls = link_index(links)
-    cx = complexity_index(complexity)
-    renames = renames or {}
-    order = [path for _title, _why, paths in groups for path in paths]
-    # Same gating as render_html: the legend costs a line only when there is a chip somewhere
-    # for it to explain.
-    show_legend = any(complexity_chip(cx.get(p))[0] or depth_chip(cx.get(p)) for p in order)
-
-    def block(path):
-        """One file's <details>, full treatment."""
-        entry, file = by_path.get(path) or {}, files[path]
-        a, d, empty = bars[path]
-        chip, _direction = complexity_chip(cx.get(path))
-        depth = depth_chip(cx.get(path))
-        old_path = renames.get(path)
-        # Folded into the summary line rather than a sentence of its own: a whole extra line
-        # per renamed file is what blew the size budget (see rename_hint). Arrow points left,
-        # unlike the HTML row: the new path is already first here, so "→" would dangle.
-        moved = f"(← `{rename_hint(old_path, path)}`) " if old_path else ""
-        no_change = " (no content change)" if old_path and not file["hunks"] else ""
-        out = ["<details>",
-               f'<summary>`{path}` +{file["added"]} -{file["removed"]} '
-               + (f"`{chip}` " if chip else "")
-               + (f"`{depth}` " if depth else "")
-               + moved
-               + f'{"█" * a}{"▒" * d}{"░" * empty}{no_change}</summary>',
-               # GitHub renders a fence inside <details> as literal backticks unless a blank
-               # line follows </summary>. Verified both ways against its /markdown endpoint.
-               ""]
-        # The link goes here rather than in the summary above: a link inside a summary fights
-        # the click that opens the block.
-        role = entry.get("role") or ""
-        if role or file_urls.get(path):
-            tail = f" [view in PR]({file_urls[path]})" if file_urls.get(path) else ""
-            out += [role + tail, ""]
-        for hunk, note in zip(file["hunks"], _notes_for(entry, file["hunks"])):
-            url = hunk_urls.get((path, hunk["prefix"]))
-            label = hunk_label(hunk["prefix"]) if url else ""
-            if note or label:
-                out.append(note + (f" [{label}]({url})" if label else ""))
-            if hunks == "full":
-                out += ["```diff", hunk["header"], *(t for _kind, t in hunk["lines"]), "```"]
-            else:
-                out.append(f"`{hunk['prefix']}`")
-            out.append("")
-        if not file["hunks"] and not old_path:
-            out += ["No textual diff: a binary, mode or rename-only change.", ""]
-        return out + ["</details>", ""]
-
-    def tail_line(path):
-        """A file demoted to the collapsed tail: path, counts and role, so nothing is silently
-        dropped and the coverage check still passes.
-
-        No link. A blob url on this repo runs 110 characters, so linking 76 tail files spends
-        8400 on urls while the budget is busy truncating the content they point at. These are
-        the files the ranking already called least interesting; Files changed has them."""
-        entry, file = by_path.get(path) or {}, files[path]
-        role = entry.get("role") or ""
-        old_path = renames.get(path)
-        # Left-pointing arrow, same reason as block()'s moved line: the new path is first here too.
-        moved = f" (← `{rename_hint(old_path, path)}`)" if old_path else ""
-        return (f'- `{path}` +{file["added"]} -{file["removed"]}' + moved
-                + (f" - {role}" if role else ""))
-
-    def assemble(keep):
-        out = ["<!-- visual-diff:walkthrough -->", "<details>",
-               "<summary>Walkthrough</summary>", ""]
-        if show_legend:
-            out += [COMPLEXITY_LEGEND, ""]
-        tail = []
-        for title, why, paths in groups:
-            # Bold rather than a heading: this sits inside a <details>, where GitHub's own
-            # anchor-generating headings would collide with the PR description's outline.
-            if title and any(path in keep for path in paths):
-                out += [f"**{title}**" + (f" - {why}" if why else ""), ""]
-            for path in paths:
-                if path in keep:
-                    out += block(path)
-                else:
-                    tail.append(tail_line(path))
-        if tail:
-            out += ["<details>",
-                    f"<summary>{len(tail)} more files, path and role only</summary>", "",
-                    *tail, "", "</details>", ""]
-        if hunks != "full":
-            out += ["Hunk bodies are in the PR's own Files changed tab, and in full in the "
-                    "local HTML review page.", ""]
-        return "\n".join(out + ["</details>"]) + "\n"
-
-    # The size of the walkthrough with every file demoted to one line: the true floor no
-    # --max-chars retry can shrink past. Computed unconditionally, not just when this run had to
-    # demote, so render.py can tell a satisfiable --max-chars suggestion from one that isn't,
-    # even on a run that happened to fit.
-    floor = len(assemble(set()))
-    floor_line = f"<!-- visual-diff:walkthrough-floor {floor} -->"
-    overhead = len(floor_line) + 1  # its own line, so it counts against max_chars too
-
-    def with_floor(text):
-        """Floor goes on the line right after the section marker, so render.py can read it back
-        without re-running the demotion this function already did."""
-        marker, rest = text.split("\n", 1)
-        return f"{marker}\n{floor_line}\n{rest}"
-
-    text = assemble(set(order))
-    if not max_chars or len(text) + overhead <= max_chars:
-        return with_floor(text)
-
-    # Over budget. Keep the full treatment for the files a reviewer actually came for and demote
-    # the rest to one line each, rather than truncating a hunk or dropping a file. Costed per
-    # file up front so this stays one pass: re-assembling to test each candidate is quadratic,
-    # and a diff big enough to land here is exactly the one with the most files to test.
-    cost = {p: sum(len(line) + 1 for line in block(p)) - (len(tail_line(p)) + 1) for p in order}
-    ranked = sorted(order, key=lambda p: (interest_rank(p),
-                                          -(files[p]["added"] + files[p]["removed"]), p))
-    room, keep = max_chars - floor - overhead, set()
-    for path in ranked:
-        if cost[path] > room:
-            break
-        room -= cost[path]
-        keep.add(path)
-    return with_floor(assemble(keep))
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis", required=True)
     parser.add_argument("--diff", required=True)
-    parser.add_argument("--format", required=True, choices=("md", "html"))
-    # A PR description is a high-level artifact and GitHub renders the real diff directly below
-    # it, so repeating the hunk bodies there is duplication that costs the whole size budget:
-    # measured on a 76-file branch, bodies came to 440845 characters against notes' 14842. The
-    # HTML page has no budget and carries every body.
-    parser.add_argument("--hunks", default="notes", choices=("full", "notes"),
-                        help="md only: 'full' adds the hunk bodies, well past the size budget")
+    parser.add_argument("--format", required=True, choices=("html",))
     parser.add_argument("--links", help="links.json, to link each file and hunk into the PR")
     parser.add_argument("--symdelta", help="symdelta.json, to order each group caller-first")
     parser.add_argument("--complexity", help="complexity.json, for the per-file cx deltas")
-    parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
-                        help="md only: demote the least interesting files to one line each "
-                             "until the section fits; 0 disables")
     parser.add_argument("--open", type=int, default=DEFAULT_OPEN,
-                        help="html only: how many of the first files in reading order render "
-                             "expanded")
+                        help="how many of the first files in reading order render expanded")
     args = parser.parse_args()
 
     analysis = json.loads(Path(args.analysis).read_text())
@@ -592,19 +401,7 @@ def main():
     links = optional(args.links)
     groups = story(order, files, analysis.get("groups"), optional(args.symdelta))
     complexity = optional(args.complexity)
-    if args.format == "html":
-        sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity,
-                                      renames))
-    else:
-        text = render_md(groups, files, by_path, args.hunks, links, args.max_chars, complexity,
-                          renames)
-        if args.max_chars and len(text) > args.max_chars:
-            # Every file demoted to one line and still over. Say so rather than drop a file:
-            # GitHub refuses a body over 65536 characters, so the caller needs to know the
-            # walkthrough alone leaves no room for the prose and graphs above it.
-            print(f"warning: {len(order)} files will not fit in {args.max_chars} characters, "
-                  f"the smallest walkthrough for this diff is {len(text)}", file=sys.stderr)
-        sys.stdout.write(text)
+    sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity, renames))
     return 0
 
 

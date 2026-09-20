@@ -1,0 +1,55 @@
+name: version bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: "!contains(github.event.head_commit.message, 'chore: bump marketplace plugin')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version from conventional commits
+        run: |
+          set -euo pipefail
+          before='${{ github.event.before }}'
+          case "$before" in
+            0000000000000000000000000000000000000000|'') range='HEAD~1..HEAD' ;;
+            *) range="$before..${{ github.sha }}" ;;
+          esac
+          msgs=$(git log --format=%B "$range")
+
+          if grep -qE '^[a-z]+(\(.+\))?!:' <<<"$msgs" || grep -q '^BREAKING CHANGE' <<<"$msgs"; then
+            part=major
+          elif grep -qE '^feat(\(.+\))?:' <<<"$msgs"; then
+            part=minor
+          elif grep -qE '^(fix|perf|refactor)(\(.+\))?:' <<<"$msgs"; then
+            part=patch
+          else
+            echo "no version-worthy commits in $range"
+            exit 0
+          fi
+
+          manifest=.claude-plugin/marketplace.json
+          IFS=. read -r major minor patch < <(jq -r '.plugins[0].version' "$manifest")
+          case $part in
+            major) major=$((major+1)); minor=0; patch=0 ;;
+            minor) minor=$((minor+1)); patch=0 ;;
+            patch) patch=$((patch+1)) ;;
+          esac
+          new="$major.$minor.$patch"
+
+          jq --arg v "$new" '.plugins[0].version = $v' "$manifest" > "$manifest.tmp"
+          mv "$manifest.tmp" "$manifest"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git commit -m "chore: bump marketplace plugin to $new" "$manifest"
+          git push

@@ -29,14 +29,6 @@ refactor it marked 550 lines, over half the diff body, so its colour became the 
 hue instead of a highlight. A file's move is now said once in its header row as `old → new`,
 which is the same fact without the per-line noise.
 
-## Why the markdown budget retry uses the printed number, not a guess
-
-`walkthrough.py --format md`'s default `--max-chars` is 32000, sized against a typical case, and
-it overflows when the graph sections come out fatter than that. `render.py` names the exact
-value to retry with on an over-budget warning. Converging by hand instead cost three render
-cycles on a 45-file diff, back when the default was still 12000: 12000, then 9800, then 9600
-characters before it fit. Take the printed number.
-
 ## Why `symdelta.py` resolves calls instead of matching names
 
 An earlier version matched symbol edges by name, and a name is often not unique across a repo.

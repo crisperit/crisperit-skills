@@ -18,7 +18,7 @@ merge-base commit, matching what `base...head` itself diffs; head at its tip) an
 them up, even on failure.
 
 Stdlib only except for shelling out to `git`, the vendored `go` extractor, and (for the LSP tier)
-the relevant language server over raw stdio JSON-RPC. See human-review/SKILL.md for how this fits
+the relevant language server over raw stdio JSON-RPC. See code-walkthrough/SKILL.md for how this fits
 the recap flow.
 """
 
@@ -178,7 +178,7 @@ def detect_language(repo, base, head):
     Returns (language, reason): language is None when nothing recognised changed, in which case
     reason explains that; otherwise reason is None unless more than one language's files
     changed, in which case it names the tie-break so a mixed diff's pick is never silent."""
-    diff = run_git(repo, ["diff", "--name-only", f"{base}...{head}"])
+    diff = run_git(repo, ["diff", "--name-only", f"{base}..{head}"])
     if diff.returncode != 0:
         raise RuntimeError(f"git diff failed: {diff.stderr.strip()}")
 
@@ -333,7 +333,7 @@ def dependency_files_changed(repo, base, head, lang="typescript"):
     an empty result for a symbol it can't resolve instead of erroring, so a dependency change
     would silently drop real base edges and fabricate spurious new/gone ones. Refusing here is
     cheaper than guessing."""
-    diff = run_git(repo, ["diff", "--name-only", f"{base}...{head}"])
+    diff = run_git(repo, ["diff", "--name-only", f"{base}..{head}"])
     if diff.returncode != 0:
         raise RuntimeError(f"git diff failed: {diff.stderr.strip()}")
     changed_basenames = {posixpath.basename(f) for f in diff.stdout.splitlines() if f}
@@ -343,7 +343,7 @@ def dependency_files_changed(repo, base, head, lang="typescript"):
 def ts_diff_entries(repo, base, head):
     """(status, old_path, new_path) triples from `git diff --name-status -M`; old == new for a
     plain add/modify/delete, so callers never need to branch on shape."""
-    result = run_git(repo, ["diff", "--name-status", "-M", f"{base}...{head}"])
+    result = run_git(repo, ["diff", "--name-status", "-M", f"{base}..{head}"])
     if result.returncode != 0:
         raise RuntimeError(f"git diff --name-status failed: {result.stderr.strip()}")
     entries = []
@@ -769,21 +769,21 @@ def build_graph(final_new, final_gone, rename_map=None, moved_pairs=None):
 
 
 def _rename_map(repo, base, head):
-    summary = run_git(repo, ["diff", "--summary", f"{base}...{head}"])
+    summary = run_git(repo, ["diff", "--summary", f"{base}..{head}"])
     if summary.returncode != 0:
         raise RuntimeError(f"git diff --summary failed: {summary.stderr.strip()}")
     return parse_rename_map(summary.stdout)
 
 
 def _run_in_worktrees(repo, base, head, extract_base, extract_head):
-    """Create detached worktrees at base's merge-base commit and at head (matching what
-    `base...head` itself diffs), run the given per-ref callables, and always clean up --
-    shared by both language tiers, which differ only in what they run inside each worktree."""
-    base_commit = resolve_base(repo, base, head)
+    """Create detached worktrees at base and at head, run the given per-ref callables, and
+    always clean up -- shared by both language tiers, which differ only in what they run
+    inside each worktree. `base` arrives already resolved to the merge-base commit (analyse()
+    does that once, up front)."""
     tmpdir = tempfile.mkdtemp(prefix="symdelta-")
     base_wt, head_wt = Path(tmpdir) / "base", Path(tmpdir) / "head"
     try:
-        add_worktree(repo, base_commit, base_wt)
+        add_worktree(repo, base, base_wt)
         add_worktree(repo, head, head_wt)
         return extract_base(base_wt), extract_head(head_wt)
     finally:
@@ -867,6 +867,12 @@ def analyse(repo, base, head):
         verify = run_git(repo, ["rev-parse", "--verify", f"{ref}^{{commit}}"])
         if verify.returncode != 0:
             raise RuntimeError(f"bad ref: {ref!r}")
+
+    # Resolve once, up front: three-dot needs a merge base, which an orphan baseline (the
+    # empty-tree commit "explain a feature" mode diffs against) doesn't have. resolve_base falls
+    # back to base unchanged when merge-base fails, so two-dot on the resolved value matches the
+    # old three-dot behaviour everywhere else too (git diff A...B == git diff $(merge-base A B) B).
+    base = resolve_base(repo, base, head)
 
     lang, reason = detect_language(repo, base, head)
     if lang is None:

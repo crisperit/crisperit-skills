@@ -510,8 +510,7 @@ def analyse(repo, base, head, paths, hunk_ranges=None, diff_text=None):
 
 
 def summary_line(data):
-    """The recap's one-line complexity fact, or "" when nothing was measured. Lives here rather
-    than in render.py so the page and the PR description word it the same way.
+    """The page's one-line complexity fact, or "" when nothing was measured.
 
     Leads with where the worst touched function now stands. The net delta across the diff used
     to lead and was close to meaningless: it adds a refactor that split one big function to a

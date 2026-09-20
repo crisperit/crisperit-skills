@@ -2,7 +2,6 @@
 """Self-check for sections.py. Assert-based, no framework."""
 
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -21,11 +20,9 @@ from sections import (  # noqa: E402
     _mermaid_symbols_for_level,
     _mm_escape,
     _symbols_legend,
-    _symbols_legend_text,
     _symbols_orphans,
     _symbols_scope,
     render_symbols,
-    render_symbols_md,
     wrap_label,
 )
 
@@ -473,7 +470,7 @@ def test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_class
     ids, edges = _symbols_scope(nodes, SYMDELTA["edges"])
     ids = ids | {"a:Filter"}
 
-    text, _ = _mermaid_symbols(nodes, ids, edges, emit_classdef=True)
+    text, _ = _mermaid_symbols(nodes, ids, edges)
     label_line = next(line for line in text.splitlines() if "filters" in line)
 
     assert "<br/>" in label_line
@@ -482,8 +479,6 @@ def test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_class
     assert " ".join(wrapped.split("<br/>")) == (
         "filters unusable identifiers before they reach the exchange")
     # everything else about the diagram is exactly what it was without the long label
-    assert f"classDef new stroke:{LINK_COLOR_NEW},stroke-width:2px;" in text
-    assert f"classDef gone stroke:{LINK_COLOR_GONE},stroke-dasharray:4 4,opacity:0.7;" in text
     assert "var(" not in text  # mermaid's own parser can't resolve a CSS var()
     assert "class " in text
     assert text.count("-->") == len(edges)
@@ -526,7 +521,6 @@ def test_symbols_legend_ignores_the_word_new_in_a_label_not_a_class_line():
 
     assert "class " not in text
     assert _symbols_legend(text) == ""
-    assert _symbols_legend_text(text) == ""
 
 
 def test_new_and_gone_class_lists_are_declaration_order_not_set_order():
@@ -551,26 +545,15 @@ def test_new_and_gone_class_lists_are_declaration_order_not_set_order():
 
 def test_mermaid_symbols_subgraphs_by_package_and_classes_new_gone_but_not_changed():
     ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges, emit_classdef=True)
+    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
     assert 'subgraph G0["a"]' in text
     assert 'subgraph G1["b"]' in text
-    assert "classDef new" in text and "classDef gone" in text
+    assert "classDef" not in text
     assert "var(" not in text
     assert "class new" not in text  # never a bare "changed" classDef
     assert "linkStyle" in text
     assert LINK_COLOR_NEW in text and LINK_COLOR_GONE in text
-
-
-def test_mermaid_symbols_omits_classdef_by_default_html_shape():
-    # Default (no emit_classdef) is what render_symbols (HTML) uses -- see
-    # test_symbols_html_never_emits_classdef for the full-pipeline pin. `class ... new/gone`
-    # itself must still be there, for the legend.
-    ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
-
-    assert "classDef" not in text
-    assert "class " in text
 
 
 def test_mermaid_symbols_own_symbols_sit_inside_a_box_that_also_nests_children():
@@ -750,94 +733,13 @@ def test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order
     assert chain_lines == ["S0 ~~~ S2", "S2 ~~~ S4"]
 
 
-# ---- markdown symbols output, sections.py --kind symbols --format md ------------------------
-
-def test_symbols_md_returns_nothing_when_there_are_no_nodes():
-    assert render_symbols_md({"nodes": []}) == ""
-    assert render_symbols_md({}) == ""
-
-
-def test_symbols_md_has_marker_two_fenced_blocks_and_no_html():
-    out = render_symbols_md(SYMDELTA)
-
-    assert out.startswith("<!-- visual-diff:symbols -->")
-    assert "### Changes visualization" in out
-    assert out.count("```mermaid") == 2
-    assert "**Packages**" in out and "**Symbols**" in out
-    assert "flowchart LR" in out
-    assert "data-ids" not in out  # that attribute is an HTML-page mechanism only
-    assert "<div" not in out and "<li>" not in out and "<ul" not in out
-
-
-def test_symbols_md_and_html_share_the_same_note_text():
-    note = "Showing 5 packages and symbols, 2 relations between them."
-
-    assert note in render_symbols(SYMDELTA)  # inside the escaped/codeified <p class="note">
-    assert note in render_symbols_md(SYMDELTA)  # verbatim, markdown never HTML-escapes
-
-
-def test_symbols_md_orphans_render_as_a_plain_bullet_not_a_list_tag():
-    out = render_symbols_md(SYMDELTA_WITH_ORPHAN)
-
-    assert "- b: Lonely (new)" in out
-    assert "<li>" not in out and "<ul" not in out
-
-
-def test_symbols_md_moved_renders_as_a_plain_bullet_too():
-    out = render_symbols_md(SYMDELTA)
-
-    assert "* 2 call sites moved, a/old -> b" in out
-    assert "&gt;" not in out  # markdown never HTML-escapes, unlike the html arrow in the <li>
-
-
-def test_symbols_md_orphan_and_moved_bullets_use_different_markers_so_they_stay_two_lists():
-    # A blank line alone doesn't start a new CommonMark list, only a bullet-marker change does --
-    # SYMDELTA_WITH_ORPHAN carries both an orphaned symbol and a moved one, which mean different
-    # things (see render_symbols_md), so they must render as two lists, not one merged list.
-    out = render_symbols_md(SYMDELTA_WITH_ORPHAN)
-
-    orphan_marker = next(l for l in out.splitlines() if "Lonely" in l)[0]
-    moved_marker = next(l for l in out.splitlines() if "call sites moved" in l)[0]
-    assert orphan_marker in "-*" and moved_marker in "-*"
-    assert orphan_marker != moved_marker
-
-
-def test_symbols_md_mermaid_source_carries_a_classdef_for_every_class_it_applies():
-    # Derived from the emitted source itself, not a hardcoded "classDef new"/"classDef gone"
-    # string: whichever states a level's `class <ids> <state>` line actually applies must each
-    # get a matching `classDef <state>`, or GitHub renders that state's nodes uncoloured while
-    # the legend's caption still claims otherwise (see _symbols_legend_text).
-    out = render_symbols_md(SYMDELTA)
-    found_any = False
-    for block in out.split("```mermaid")[1:]:
-        source = block.split("```", 1)[0]
-        applied = set(re.findall(r"^\s*class \S+ (\S+)$", source, re.MULTILINE))
-        defined = set(re.findall(r"^\s*classDef (\S+) ", source, re.MULTILINE))
-        assert applied <= defined
-        found_any = found_any or bool(applied)
-    assert found_any  # otherwise this test would pass even if classDef were never emitted
-
-
-def test_symbols_cli_supports_markdown_format():
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "symdelta.json"
-        path.write_text(json.dumps(SYMDELTA))
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).parent / "sections.py"),
-             "--kind", "symbols", "--format", "md", "--data", str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.startswith("<!-- visual-diff:symbols -->")
-
-
 def test_symbols_cli_rejects_a_kind_other_than_symbols():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "x.json"
         path.write_text("{}")
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "sections.py"),
-             "--kind", "coupling", "--format", "md", "--data", str(path)],
+             "--kind", "coupling", "--format", "html", "--data", str(path)],
             capture_output=True, text=True,
         )
         assert result.returncode != 0
@@ -898,7 +800,6 @@ if __name__ == "__main__":
         test_symbols_legend_ignores_the_word_new_in_a_label_not_a_class_line,
         test_new_and_gone_class_lists_are_declaration_order_not_set_order,
         test_mermaid_symbols_subgraphs_by_package_and_classes_new_gone_but_not_changed,
-        test_mermaid_symbols_omits_classdef_by_default_html_shape,
         test_mermaid_symbols_own_symbols_sit_inside_a_box_that_also_nests_children,
         test_mermaid_symbols_keeps_a_symbol_whose_parent_is_unknown_or_missing,
         test_connected_components_orders_by_lowest_id_and_uses_it_as_the_representative,
@@ -910,14 +811,6 @@ if __name__ == "__main__":
         test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph,
         test_mermaid_symbols_invisible_links_are_never_indexed_by_linkstyle,
         test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order,
-        test_symbols_md_returns_nothing_when_there_are_no_nodes,
-        test_symbols_md_has_marker_two_fenced_blocks_and_no_html,
-        test_symbols_md_and_html_share_the_same_note_text,
-        test_symbols_md_orphans_render_as_a_plain_bullet_not_a_list_tag,
-        test_symbols_md_moved_renders_as_a_plain_bullet_too,
-        test_symbols_md_orphan_and_moved_bullets_use_different_markers_so_they_stay_two_lists,
-        test_symbols_md_mermaid_source_carries_a_classdef_for_every_class_it_applies,
-        test_symbols_cli_supports_markdown_format,
         test_symbols_cli_rejects_a_kind_other_than_symbols,
         test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node,
     ]

@@ -12,7 +12,7 @@ place from the prior state.json. It never shells out, never calls git, never run
 analyser, never spawns a subagent. The agent reads the printed plan and runs the named
 commands itself.
 
-Keys, see docs/plans/human-review/PLAN.md phase 6:
+Keys, see docs/plans/code-walkthrough/PLAN.md phase 6:
   per-hunk annotation      sha256(hunk body lines + "\\n" + file blob sha)[:16], body only,
                            never the `@@` header, so a pure line-number shift keeps the hash
   set hash                 sha256 over sorted (path, hunk hash) pairs; drives grouping/prose
