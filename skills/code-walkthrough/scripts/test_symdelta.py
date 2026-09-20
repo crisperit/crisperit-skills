@@ -59,6 +59,19 @@ def _run_symdelta(repo, base, head):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def _orphan_baseline(repo):
+    """A commit with no parent, pointing at git's well-known empty tree -- the "explain an
+    existing feature" mode's baseline when there is no real base commit. Shares no history with
+    any ref in the repo, so `git merge-base` fails against it."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "commit-tree",
+         "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "empty baseline"],
+        input="", capture_output=True, text=True, env={**os.environ, **GIT_ENV},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
 # ---- pure-logic tests: rename-map parsing ----------------------------------------------
 
 
@@ -600,6 +613,20 @@ def test_detect_language_routes_py_files_to_python():
         assert lang == "python" and reason is None
 
 
+def test_detect_language_works_against_an_orphan_baseline_with_no_merge_base():
+    # Three-dot diff needs a merge base; an orphan baseline has none, so this used to fail with
+    # "fatal: ...: no merge base" before detect_language switched to two-dot on a resolved base.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "a.py", "def a():\n    pass\n")
+        head = _commit(repo, "head")
+        orphan = _orphan_baseline(repo)
+
+        lang, reason = symdelta.detect_language(repo, orphan, head)
+        assert lang == "python" and reason is None
+
+
 def test_detect_language_routes_rs_files_to_rust():
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
@@ -1007,6 +1034,25 @@ def test_bad_ref_fails_with_nonzero_exit():
         assert "bad ref" in result.stderr
 
 
+def test_analyse_does_not_crash_on_an_orphan_baseline():
+    # End-to-end version of the orphan-baseline bug above: it used to fail every git-diff call
+    # in analyse()'s pipeline with a three-dot "no merge base" error. A missing language-server
+    # tool is a legitimate, separate reason to bail out; a merge-base crash is not.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "a.py", "def a():\n    pass\n")
+        head = _commit(repo, "head")
+        orphan = _orphan_baseline(repo)
+
+        result = _run_symdelta(repo, orphan, head)
+
+        assert result.returncode == 0, result.stderr
+        assert "no merge base" not in result.stderr
+        payload = json.loads(result.stdout)
+        assert "language" in payload
+
+
 def test_end_to_end_ts_repo_reports_a_cross_file_call():
     if shutil.which("typescript-language-server") is None:
         print("skip (no typescript-language-server on PATH): test_end_to_end_ts_repo_reports_a_cross_file_call")
@@ -1262,6 +1308,7 @@ if __name__ == "__main__":
         test_build_graph_two_root_files_with_same_symbol_name_stay_distinct,
         test_detect_language_tie_break_is_honest_and_deterministic,
         test_detect_language_routes_py_files_to_python,
+        test_detect_language_works_against_an_orphan_baseline_with_no_merge_base,
         test_detect_language_routes_rs_files_to_rust,
         test_detect_language_tie_break_between_python_and_rust_is_alphabetical,
         test_lsp_language_tables_all_cover_typescript_python_and_rust,
@@ -1288,6 +1335,7 @@ if __name__ == "__main__":
         test_ts_files_by_side_excludes_added_from_base_and_deleted_from_head,
         test_ts_files_by_side_filters_by_given_extensions,
         test_bad_ref_fails_with_nonzero_exit,
+        test_analyse_does_not_crash_on_an_orphan_baseline,
         test_end_to_end_ts_repo_reports_a_cross_file_call,
         test_end_to_end_go_repo_reports_added_and_removed_symbols,
         test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking,

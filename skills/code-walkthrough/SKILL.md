@@ -1,6 +1,6 @@
 ---
 name: code-walkthrough
-description: Turns a git diff, commit range, branch, or GitHub PR into a self-contained local HTML review page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line comments you hand back to the agent or post to the PR. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "review this with me", "walk me through this change", "walk me through this PR", or /code-walkthrough; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
+description: Turns a git diff, commit range, branch, GitHub PR, or an existing area of code with no change at all into a self-contained local HTML walkthrough page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line comments you hand back to the agent or post to the PR. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "review this with me", "walk me through this change", "walk me through this PR", "explain the auth flow", "explain how billing works", "how does X work", "walk me through the auth flow", "help me understand this codebase", "help me understand src/parser/", or /code-walkthrough; both the -ize and -ise spellings mean this skill. This is for reviewing a change or explaining code that already exists, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the code).
 ---
 
 # Code Walkthrough
@@ -25,7 +25,79 @@ The target arrives as prose as often as a ref, so read the words:
 | `123`, `#123`, a PR URL | that PR |
 | "this branch", "my branch", "what this branch adds" | `<base>...HEAD` three-dot |
 | `HEAD~3..HEAD`, `main...HEAD` | as given |
-| a path | that path, as a filter |
+| "explain X", "how does X work", "walk me through the auth flow", "help me understand this codebase" | X as it stands, diffed against the empty baseline, see below |
+| a bare path or directory, with no change described | ambiguous, see below |
+
+"Explain X" and "walk me through the auth flow" name an area, not a ref: nothing downstream turns
+prose into files on its own, so resolve it yourself first, see "Turning prose into a file list"
+below. A bare path is genuinely ambiguous: it can mean "diff filtered to this path" (there is a
+real change and the user is narrowing it) or "explain this path as it stands" (there is no change,
+and the user wants it read cold). Tell the two apart from context: a branch ahead of its base,
+staged changes, or the words "diff" or "changes" mean the first; a clean checkout of the base
+branch, or "explain", "how does", "understand", "walk me through" attached to the path, mean the
+second. When neither signal is there, ask the user in one line rather than guessing; guessing wrong
+here means redoing the whole walkthrough.
+
+### Turning prose into a file list
+
+Nothing downstream reads prose, so "the auth flow" has to become paths before step 2 can start.
+Keep it cheap: grep and glob the repo for the terms the ask names, skim the hits enough to tell
+signal from noise, and propose the file list back to the user in one line, for example "That looks
+like `src/auth/*.go` and `middleware/session.go`, 6 files. Use those?", before spending any
+subagent budget on it. Do not write a new script for this: it is a grep-and-confirm pass, not a
+search feature.
+
+### The empty baseline, for explain mode
+
+Diff against an empty tree and every line in the named path comes back as an addition, so the
+walkthrough machinery below runs unchanged, one code path, not two. The empty tree
+`4b825dc642cb6eb9a060e54bf8d69288fbee4904` cannot be used directly as a diff base: `git merge-base`
+and three-dot both reject it with "is a tree, not a commit". Wrap it in an orphan commit first,
+once per session:
+
+```bash
+EMPTY_BASE=$(git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -m "empty baseline" </dev/null)
+```
+
+Then diff two-dot against it, filtered to the path or file list from above. Three-dot still fails
+here, "no merge base", since the orphan shares no history with `HEAD`, so two-dot is not a
+shortcut, it is the only option; do not "fix" it to three-dot later. Run numstat first, before
+`raw.diff` gets written at all: it is the size check the next section runs on, and it costs
+nothing to ask for:
+
+```bash
+git diff --numstat $EMPTY_BASE HEAD -- <path>
+git diff $EMPTY_BASE HEAD -- <path> > <scratchpad>/raw.diff
+```
+
+`$EMPTY_BASE` is this mode's `<base>` everywhere below: pass it to `complexity.py` and
+`symdelta.py` the same as any other base.
+
+### Negotiate scope before spending, explain mode
+
+Explain mode has no size ceiling of its own: "explain the auth flow" might be 400 lines, but
+"help me understand this codebase" or a bare `src/` aims the empty baseline at an entire subtree,
+and every line in it comes back as an addition to fan out. Read the numstat total above before
+writing `raw.diff`, spawning a subagent, or starting the graph scripts. Three bands, keyed to
+section 2's fan-out table so this does not invent a second scale:
+
+- At or under 1200 lines and 6 files, the same line that keeps a diff on the single-subagent
+  route: proceed, say nothing.
+- Above that but under 5000 lines: say the total and what it triggers, one line, then keep going.
+  "1800 lines across 9 files, that fans out into a few batches" is enough; the user asked to
+  understand something, not to approve a budget, so do not turn it into a question.
+- At 5000 lines or more: stop before writing `raw.diff`. Come back with the count and two or
+  three concrete ways to cut it, drawn from what the numstat and file list actually show, never a
+  bare "this is large, continue?": a subdirectory carrying most of the weight, entry points and
+  types instead of every file, one language out of a mixed tree, or tests and generated files
+  excluded. For example: "help me understand this codebase" against a bare `src/` comes back
+  40000 lines across 300 files, 32000 of them under `src/vendor/`. Say "40000 lines, 300 files,
+  32000 under `src/vendor/`. Explain `src/` without vendor, or just the entry points (`main.go`,
+  `cmd/*.go`) plus the types (`pkg/*/types.go`)?" and wait for an answer.
+
+Diff mode hits the same ceiling from the other side, a 20000-line PR fans out just as wide; there
+the change is not negotiable, so state the size and proceed rather than asking the user to review
+less of their own PR.
 
 "This PR" resolves through the current branch:
 
@@ -62,7 +134,8 @@ base is stale and the diff is wrong. Why this matters and what it once cost:
 `references/rationale.md`.
 
 Bail with one clear line if the target resolves to an empty diff; an empty review page is worse
-than a message.
+than a message. In explain mode this is what an empty diff means: a path with no matching files,
+not "nothing changed", so the same bail applies, worded for that case.
 
 ## 2. Capture the diff to a file, never into context
 
@@ -248,13 +321,18 @@ python3 <skill>/scripts/complexity.py --repo . --base <base> --head <head> \
 ```
 
 Reports where the worst touched function now stands, not a per-file total; see
-`references/graphs.md` for why.
+`references/graphs.md` for why. In explain mode `<base>` is the empty baseline, so every function
+has no before; the chip already treats a function with no before as new either way, so it names
+the worst genuinely complex function per file (`resolve_symbol_merges 27 branches`) instead of
+drawing a before/after arrow. Nothing here needs adjusting for this mode.
 
 ## 2b3. Build the symbol-delta graph, only when the target names two refs
 
 The only graph either output carries besides the flow diagram. Same condition as 2b2: a
 working-tree diff has no second ref. Issue this as its own Bash call, `dangerouslyDisableSandbox:
-true`, in the same message as the fan-out spawns and 2b2's call.
+true`, in the same message as the fan-out spawns and 2b2's call. In explain mode `<base>` is the
+empty baseline: `resolve_base` already falls back to the base itself when three-dot's merge-base
+does not exist, so this runs two-dot under the hood without any separate handling.
 
 ```bash
 python3 <skill>/scripts/symdelta.py --repo . --base <base> --head <head> > <scratchpad>/symdelta.json
@@ -298,7 +376,9 @@ and per-hunk `url`s (that hunk's new-side line range on the blob page).
 
 Always pass `--pr <number>` when the branch has a PR at all, whatever the target was: a link into
 the Files changed tab is where a reviewer wants to land, a blob permalink is the fallback for a
-branch with no PR. The number comes from step 1's `gh pr view` call.
+branch with no PR. The number comes from step 1's `gh pr view` call. Explain mode never has a PR,
+so omit `--pr` entirely; `diff_url` comes back empty for every file and the blob permalink at
+`<head>` is the only link, the same branch-with-no-PR fallback described above.
 
 Skip this step, and every link, when `head_pushed` is false or `repo_url` is empty: an unpushed
 commit or a repo with no web remote produces links that 404. Nothing here needs the network.
@@ -451,7 +531,11 @@ The page has no server to post a click to: the user opens the Comments button, c
 agent there, and pastes the JSON it copies into the conversation (or, when a PR exists, may
 instead run the `gh` command Copy gh command printed -- one heredoc per postable comment plus
 one `resolveReviewThread` mutation per thread marked Resolve conversation, in which case this
-step is already done). Import the pasted JSON, then deliver the ids it names:
+step is already done). Explain mode never has a PR, so the page already hides the Copy gh command
+button and shows a note instead; Copy for agent is the only exit. `import` still works, it only
+merges JSON into `state.json`, but `deliver` and `submit` post through a PR review that does not
+exist here, so a note stays imported and local rather than going anywhere; there is nothing to
+post it to. Import the pasted JSON, then deliver the ids it names:
 
 ```bash
 python3 <skill>/scripts/notes.py import --state <scratchpad>/state.json   # JSON on stdin

@@ -5,27 +5,35 @@ code-walkthrough.
 
 ## code-walkthrough
 
-Point it at a git diff, a commit range, a branch or a GitHub PR. It produces a
-self-contained HTML review page you open locally.
+Point it at a git diff, a commit range, a branch, a GitHub PR, or an area of
+code with no change to it at all, "explain the auth flow", "how does billing
+work". It produces a self-contained HTML walkthrough page you open locally.
 
 ```
-/code-walkthrough                 # working tree plus staged changes
-/code-walkthrough this branch     # main...HEAD
-/code-walkthrough 123             # that PR
+/code-walkthrough                          # working tree plus staged changes
+/code-walkthrough this branch              # main...HEAD
+/code-walkthrough 123                      # that PR
 /code-walkthrough HEAD~3..HEAD
+/code-walkthrough explain the auth flow    # diffed against an empty baseline
 ```
 
 ### Why
 
-It exists to make human review faster and more thorough, because that is where
-real defects still get caught. When I review a PR by hand I do the same three
-things every time, and the diff helps with none of them:
+Agents write code faster than anyone can read it now, so reading and
+responding is the bottleneck, not writing. A unified diff is a bad surface to
+read on, and it is the surface everyone defaults to.
 
-**1. I estimate coupling by reading what imports what.** That is how you find
-the blast radius of a change, and doing it by hand across seven files is slow
-and easy to get wrong. code-walkthrough derives the import and call graph by parsing
-the code itself, not by asking a model to guess it from the diff text, and draws
-it at two levels. Packages first:
+What you mark on the page comes back as instructions. Hand the whole set to
+the agent to act on, or post them to the PR. That loop is the point.
+
+When I review a PR by hand I do the same three things every time, and the
+diff helps with none of them:
+
+**1. I estimate coupling by reading what imports what.** That is how you
+find the blast radius of a change, and doing it by hand across seven files
+is slow and easy to get wrong. code-walkthrough derives the import and call
+graph by parsing the code itself, not by asking a model to guess it from
+the diff text, and draws it at two levels. Packages first:
 
 ![Package level relations](docs/images/coupling-packages.png)
 
@@ -36,26 +44,29 @@ has fan-out and which are leaves:
 
 **2. I group the changed files by feature and read them in that order.** A
 GitHub file list is alphabetical, which is never the order the change makes
-sense in. So code-walkthrough groups the files into themes, puts the theme a reviewer
-needs first at the top, and orders files inside a group caller before callee.
+sense in. So code-walkthrough groups the files into themes, puts the theme
+a reviewer needs first at the top, and orders files inside a group caller
+before callee.
 
 ![Walkthrough grouped by feature](docs/images/reading-order.png)
 
-**3. I take notes per line, then turn them into review comments.** Comments sit
-on the diff lines they are about, and each one has a button that posts it to the
-PR. Nothing leaves the page unless you click it.
+**3. I take notes per line, then send them somewhere.** Comments sit on the
+diff lines they are about. The page has no server, so nothing posts itself.
+The Comments panel gives you two exits: Copy for agent, which hands the whole
+set to the assistant to act on, and Copy gh command, which prints the gh
+calls to post them as PR review comments yourself. Nothing leaves the page
+unless you copy it.
 
 ![Commenting on a diff line](docs/images/line-comment.png)
 
 Anything else a reviewer works out in their head could go on the page instead.
-If you have a habit like these three, open an issue. A review aid that saves ten
-minutes per PR is worth building.
+If you have a habit like these three, open an issue.
 
 ### The rest of the page
 
 A facts strip, a summary, and a mermaid flow diagram of the change:
 
-![Top of the review page](docs/images/overview.png)
+![Top of the walkthrough page](docs/images/overview.png)
 
 Each file carries a one-line role, each hunk a note on what the code does, above
 the diff itself:
