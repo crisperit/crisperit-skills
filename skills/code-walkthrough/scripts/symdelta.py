@@ -43,12 +43,34 @@ from validate_analysis import is_test_path  # noqa: E402  one owner for test-pat
 EXTRACTOR_DIR = SCRIPT_DIR / "extractors" / "go"
 
 
-def _resolve_cache_dir(environ, home):
-    """XDG_CACHE_HOME wins outright; set it when ~/.cache isn't writable. Otherwise falls back
-    to ~/.cache. Takes environ/home as arguments, rather than reading os.environ/Path.home()
-    itself, so the fallback chain is testable without patching globals.
+CACHE_NAME = "code-walkthrough"
+
+
+def _first_existing(path):
+    """The nearest ancestor of `path` that exists, `path` itself included."""
+    while not path.exists() and path.parent != path:
+        path = path.parent
+    return path
+
+
+def _resolve_cache_dir(environ, home, tmp=None):
+    """Where the compiled Go extractor and its module/build caches live.
+
+    XDG_CACHE_HOME wins outright. Otherwise `~/.cache/code-walkthrough`, unless that is not
+    writable -- an agent sandbox that allowlists writes usually does not include `~/.cache` --
+    in which case the temp dir. Falling back beats failing: the cost is a rebuild per boot
+    instead of per machine, and the alternative was the whole symbols section going missing.
+
+    Takes environ/home/tmp as arguments, rather than reading os.environ/Path.home() itself, so
+    the fallback chain is testable without patching globals.
     """
-    return Path(environ.get("XDG_CACHE_HOME", str(home / ".cache"))) / "visual-diff"
+    xdg = environ.get("XDG_CACHE_HOME")
+    if xdg:
+        return Path(xdg) / CACHE_NAME
+    home_cache = home / ".cache" / CACHE_NAME
+    if os.access(_first_existing(home_cache), os.W_OK):
+        return home_cache
+    return Path(tmp or tempfile.gettempdir()) / CACHE_NAME
 
 
 CACHE_DIR = _resolve_cache_dir(os.environ, Path.home())
@@ -775,19 +797,38 @@ def _rename_map(repo, base, head):
     return parse_rename_map(summary.stdout)
 
 
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def is_empty_base(repo, base):
+    """Whether `base` is the empty baseline explain mode diffs against (see SKILL.md). Matched on
+    the tree, not the commit: the baseline is an orphan commit wrapping the empty tree, so its own
+    sha differs per session while the tree is a constant."""
+    out = run_git(repo, ["rev-parse", f"{base}^{{tree}}"])
+    return out.returncode == 0 and out.stdout.strip() == EMPTY_TREE
+
+
 def _run_in_worktrees(repo, base, head, extract_base, extract_head):
     """Create detached worktrees at base and at head, run the given per-ref callables, and
     always clean up -- shared by both language tiers, which differ only in what they run
     inside each worktree. `base` arrives already resolved to the merge-base commit (analyse()
-    does that once, up front)."""
+    does that once, up front).
+
+    The empty baseline gets no worktree and no extractor run: a checkout of the empty tree has
+    no go.mod, no package.json and no source at all, so every extractor fails on it, which is
+    what used to cost explain mode its whole symbols section. Its edge set is empty by
+    definition, so there is nothing to fail at."""
+    empty_base = is_empty_base(repo, base)
     tmpdir = tempfile.mkdtemp(prefix="symdelta-")
     base_wt, head_wt = Path(tmpdir) / "base", Path(tmpdir) / "head"
     try:
-        add_worktree(repo, base, base_wt)
+        if not empty_base:
+            add_worktree(repo, base, base_wt)
         add_worktree(repo, head, head_wt)
-        return extract_base(base_wt), extract_head(head_wt)
+        return ([] if empty_base else extract_base(base_wt)), extract_head(head_wt)
     finally:
-        remove_worktree(repo, base_wt)
+        if not empty_base:
+            remove_worktree(repo, base_wt)
         remove_worktree(repo, head_wt)
         run_git(repo, ["worktree", "prune"])
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -821,7 +862,9 @@ def analyse_lsp(repo, base, head, lang):
     """Shared by the three LSP-tier languages (typescript, python, rust); they differ only in
     their file extensions, dependency manifests, worktree prep and which server extract.py
     spawns via --lang."""
-    if dependency_files_changed(repo, base, head, lang):
+    # Against the empty baseline every manifest reads as added, but there is no before side
+    # for a dependency change to make incomparable, so the refusal below does not apply.
+    if not is_empty_base(repo, base) and dependency_files_changed(repo, base, head, lang):
         return {"language": None, "reason": DEPENDENCY_REASON[lang]}
 
     ok, reason = check_typescript_tooling(repo, lang)

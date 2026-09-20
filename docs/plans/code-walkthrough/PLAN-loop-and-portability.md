@@ -34,6 +34,9 @@ skill beats `scr`, whose viewer cannot open without its server at all (its `inde
 contracts, the `<!-- visual-diff:kind -->` markers keep their literal names, and
 `$XDG_CACHE_HOME/visual-diff` keeps its path.
 
+> **Superseded.** Both were renamed later, once the skill itself became `code-walkthrough`: the section markers are `<!-- code-walkthrough:kind -->` and the cache is `~/.cache/code-walkthrough`, falling back to the temp dir when `~/.cache` is not writable. The reasons below stopped holding: the PR-description `visual-diff:start/end` markers this protected no longer exist in the skill at all, and the cache had to move anyway because an agent sandbox does not allowlist `~/.cache`, which cost explain mode its whole symbols section.
+
+
 Deliberately not built, with the reason: **CRDTs** (Automerge, Yjs) for shared state, because
 writes here are coarse and human-paced and a single-writer server plus a `rev` counter never
 realistically contends, so the cost is a dependency and a merge-semantics burden for nothing.

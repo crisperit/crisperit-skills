@@ -1,6 +1,6 @@
 # Plan: node menu on the coupling graph
 
-Status: approved in design, not started.
+Status: shipped. The gesture table below was revised after use: everything is a plain click now, see the note under it.
 Design mockup: `/tmp/claude-1000/node-menu-mockup-v3.html` (verified in Chrome, no JS errors).
 
 ## Goal
@@ -13,14 +13,15 @@ This is the thing Archify (tt-a1i/archify) cannot do. Its graph is authored by t
 
 | Surface | Gesture | Result |
 |---|---|---|
-| Desktop, mouse | hover a node | badge appears in the node's top-right corner |
-| Desktop | click the badge, or right-click the node | menu opens |
-| Desktop | click the graph background | fullscreen dialog, unchanged from today |
-| Mobile | long-press a node, 500ms | menu opens |
-| Mobile | tap the graph background | fullscreen dialog, long-press works in there too |
+| Any pointer | click or tap a node | menu opens; same gesture again closes it |
+| Any pointer | click or tap the graph background | fullscreen dialog, and the same click opens the menu in there too |
 | Keyboard | Tab to a node, Enter or Space | menu opens |
 | Any | drag, pinch, wheel | pan and zoom, never opens the menu |
 | Any | Escape | closes the menu, clears the focus dimming |
+
+The hover badge, the 500ms long-press and the `contextmenu` handler are gone. Three gestures
+for one action meant the phone and the desktop behaved differently for no gain, and the badge
+was the only thing a node click did not already cover.
 
 Menu items: the file path as a header, `Go to file`, `Focus downstream`, and `Clear focus` only while a focus is active.
 
@@ -29,11 +30,12 @@ Menu items: the file path as a header, `Go to file`, `Focus downstream`, and `Cl
 ## Decided, do not relitigate
 
 - **Jump to file is the primary action, not dimming.** Dimming is a picture-level feature; jumping is what moves a reviewer toward the code.
-- **The badge is pointer-gated.** `@media (hover:hover) and (pointer:fine)`. Touch browsers keep `:hover` stuck after a tap, so without the gate the badge leaks onto the phone. This applies to any hover-only affordance added to the page, not just this one.
+- **No hover-only affordance.** Touch browsers keep `:hover` stuck after a tap, so a hover-gated control is either invisible or sticky on a phone. The badge went for that reason; the rule still applies to anything added to the page later.
 - **Fullscreen stays.** It is how the graph is readable on a phone at all.
 - **No list view.** Tried in mockup v2, rejected: it duplicates the walkthrough's own file list and costs a view switch.
 - **No sequence diagram.** Separate idea, separate plan.
-- **Badge is drawn inside the SVG**, so pan and zoom carry it for free. The menu is an HTML overlay positioned once when it opens.
+- **The menu is an HTML overlay** positioned once when it opens, not an SVG child, so pan and zoom do not have to carry it.
+- **A package box gets the menu too.** A package with children renders as `g.cluster`, not `g.node`, and its mermaid dom id is `<renderId>-<id>` with no `-flowchart-` infix -- both verified against the vendored mermaid 11.15. `Focus downstream` is the point of it; the path is a directory, so the file item resolves to the package's first hunk in the walkthrough and reads `Go to first file`.
 
 ## Steps
 

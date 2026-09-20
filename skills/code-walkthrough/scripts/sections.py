@@ -8,7 +8,7 @@ The diagram, its legend, its caption and its data-ids map are built here, in cod
 cannot go missing or get paraphrased by whoever assembles the page. A renderer inserts this
 output verbatim; it does not rewrite it.
 
-The first line of the output is an HTML comment marker, `<!-- visual-diff:symbols -->`, which
+The first line of the output is an HTML comment marker, `<!-- code-walkthrough:symbols -->`, which
 survives GitHub's sanitizer and renders as nothing. validate_analysis.py --sections uses it to
 prove the section actually reached the rendered file.
 
@@ -24,7 +24,7 @@ import re
 import sys
 from pathlib import Path
 
-SYMBOLS_MARKER = "<!-- visual-diff:symbols -->"
+SYMBOLS_MARKER = "<!-- code-walkthrough:symbols -->"
 
 
 def escape(text):
@@ -127,33 +127,34 @@ def _split_overlong(word, target, seps=("/", "_", ".")):
     return out
 
 
+ZWSP = "\u200b"
+
+
 def wrap_label(label, target=LABEL_WRAP_TARGET):
-    """Break `label` into `<br/>`-joined lines of about `target` chars, so Mermaid arrives with
-    lines already broken instead of auto-wrapping (and clipping) its SVG text at the
-    `flowchart.wrappingWidth` default under `securityLevel: 'strict'`. Breaks at spaces first; a
-    single word still over `target` (a package path, a snake_case identifier, a Go `Type.Method`
-    selector, or a run-together identifier) is broken further by `_split_overlong`, down to a
-    camelCase fallback as a last resort. A word with no separator and no camel boundary, or a
-    label that keeps overflowing regardless, keeps growing more lines rather than dropping any
-    of it -- a tall node beats a lost name."""
+    """Give `label` break opportunities mermaid can use, without adding or removing a character
+    of it.
+
+    This used to join pre-broken lines with `<br/>`. Mermaid 11.15 under `securityLevel: 'strict'`
+    draws a node label as an HTML `foreignObject` and its sanitiser *deletes* `<br/>` outright, so
+    "picks winner<br/>bid" reached the page as "picks winnerbid": two words silently welded
+    together, and the label clipped at the box edge. Verified in Chrome against the vendored
+    build; do not put `<br/>` back.
+
+    What that label div does have is `white-space: break-spaces` and a `wrappingWidth` max-width,
+    so mermaid wraps on spaces by itself and needs no help there. The one case it cannot wrap is a
+    single space-free word longer than the box -- a package path, a snake_case identifier, a Go
+    `Type.Method` selector, a run-together camelCase name -- which grows the node sideways instead.
+    `_split_overlong` already knows where such a word wants to break, so its split points get a
+    zero-width space: invisible, survives the sanitiser, and gives the wrapper somewhere to break.
+
+    Nothing is ever dropped; the text is exactly the input plus zero-width spaces."""
     words = label.split()
     if not words:
         return label
-    # Each atom carries its own joiner: a real space where the label itself had one (the start of
-    # a new word), empty where the atom is a fragment `_split_overlong` cut out of one overlong
-    # word -- joining two such fragments with a space would inject a character the label never had.
-    atoms = []
-    for wi, word in enumerate(words):
-        pieces = _split_overlong(word, target) if len(word) > target else [word]
-        atoms.extend((piece, " " if wi and i == 0 else "") for i, piece in enumerate(pieces))
-    lines = [atoms[0][0]]
-    for piece, joiner in atoms[1:]:
-        candidate = lines[-1] + joiner + piece
-        if len(candidate) <= target:
-            lines[-1] = candidate
-        else:
-            lines.append(piece)
-    return "<br/>".join(lines)
+    return " ".join(
+        ZWSP.join(_split_overlong(word, target)) if len(word) > target else word
+        for word in words
+    )
 
 
 def _pkg_label(pkg_id, pkg_by_id):
@@ -261,10 +262,15 @@ def _mermaid_packages(nodes, edges):
     either: dagre has nowhere sensible to route a box-to-its-own-child edge, and the containment
     box already states that relationship. It carries little review signal anyway -- it's the
     expected direction -- so it isn't drawn at all here; the caller reports the total once in the
-    graph's note instead (see `_nested_inner_id`). Returns `(mermaid_text, undrawn_count)`."""
+    graph's note instead (see `_nested_inner_id`).
+
+    Returns `(mermaid_text, undrawn_count, ids)`, where `ids` maps each drawn box's mermaid id to
+    the package's own path -- a package node's id already is its path (see symdelta.py's
+    `_collapse_chains`). That map is what gives a package box the node menu the symbols level
+    gets from its file map."""
     pkg_by_id = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
     if not pkg_by_id:
-        return "flowchart LR", 0
+        return "flowchart LR", 0, {}
     pkg_of_symbol = {n["id"]: n.get("parent") for n in nodes if n["kind"] == "symbol"}
 
     counts = {}
@@ -325,7 +331,49 @@ def _mermaid_packages(nodes, edges):
         lines.append(f'  {mm_id[src]} -->|{count}| {mm_id[dst]}')
 
     lines.extend(_chain_components_lines(owning_ids, list(counts.keys()) + containment_pairs, mm_id))
-    return "\n".join(lines), undrawn_count
+    # A root package can have an empty id (the repo root itself); it would prefix-match every
+    # path in the walkthrough, so it gets no entry and stays menu-less.
+    ids = {mm: pid for pid, mm in mm_id.items() if pid}
+    return "\n".join(lines), undrawn_count, ids
+
+
+MAX_SYMBOL_NODES = 400
+
+
+def _scope_to_paths(nodes, edges, paths):
+    """Cut the delta down to the area the page is about. Explain mode diffs against the empty
+    baseline, so symdelta reports every symbol in the repository as new; without a scope, a page
+    explaining one package got the whole tree (measured on a real repo: 3909 nodes, 5905 edges,
+    611 KB of mermaid, enough to hang the tab). Kept: a symbol whose file sits under one of
+    `paths`, every edge touching one, the symbol at the far end of such an edge so callers and
+    callees still show one hop out, and the package ancestors needed to contain what is left.
+    Empty `paths` means no scope, which is what diff mode passes -- its delta is already small."""
+    if not paths:
+        return nodes, edges
+    prefixes = [p.rstrip("/") for p in paths]
+
+    def in_scope(node):
+        path = node.get("file") or ""
+        return any(path == pre or path.startswith(pre + "/") for pre in prefixes)
+
+    subjects = {n["id"] for n in nodes if n["kind"] == "symbol" and in_scope(n)}
+    kept_edges = [e for e in edges if e["source"] in subjects or e["target"] in subjects]
+    keep = set(subjects)
+    for e in kept_edges:
+        keep.add(e["source"])
+        keep.add(e["target"])
+
+    pkg_by_id = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
+    pkgs = set()
+    for n in nodes:
+        if n["kind"] != "symbol" or n["id"] not in keep:
+            continue
+        pid = n.get("parent")
+        if pid is not None:
+            pkgs.add(pid)
+            pkgs.update(_pkg_ancestor_ids(pid, pkg_by_id))
+    keep |= pkgs
+    return [n for n in nodes if n["id"] in keep], kept_edges
 
 
 def _changed_symbol_ids(nodes):
@@ -362,13 +410,13 @@ def _edge_endpoint_ids(edges):
     return ids
 
 
-def _mermaid_symbols(nodes, symbol_ids, kept_edges):
+def _mermaid_symbols(nodes, symbol_ids, kept_edges, explain=False):
     """Levels 2 and 3 share this: symbol_ids grouped by package, nested the same way level 1 is
     -- a package that owns an in-scope symbol gets a box, and so does every ancestor needed to
     contain it, so `corelib/ratelimit` sits inside one `corelib` box rather than beside it. A
     package with both an in-scope symbol of its own and child packages gets that symbol listed
-    directly inside its box, alongside the nested child boxes. Nodes always get `class ...
-    new/gone`, for the legend's new/gone check. Edges have no per-edge classDef at all, only
+    directly inside its box, alongside the nested child boxes. Nodes get `class ... new/gone`,
+    for the legend's new/gone check, unless `explain` is set. Edges have no per-edge classDef at all, only
     `linkStyle <index>`, so they're styled by their position in the diagram instead.
 
     Returns `(mermaid_text, id_to_file)`: the second is the mermaid `S<n>` id of every symbol
@@ -410,19 +458,20 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
         box_count[0] += 1
         # No wrap_label here, unlike every other label on this page: a cluster title is drawn
         # inside the cluster's own top edge and mermaid reserves one line's height for it, so a
-        # second <br/> line is painted under the border and lost. A long single-line title
-        # overhangs the box instead, which is readable; a clipped one is not.
+        # title that wraps has its second line painted under the border and lost. A long
+        # single-line title overhangs the box instead, which is readable; a clipped one is not.
         lines.append(f'{pad}subgraph {gid}["{_mm_escape(_pkg_label(pid, pkg_by_id))}"]')
         for sid in sorted(symbols_by_pkg.get(pid, [])):
             mm_id[sid] = f"S{len(mm_id)}"
-            label = wrap_label(_mm_escape(by_id[sid]["label"]))
             # A rename resolved across a package move (see resolve_symbol_merges in symdelta.py,
-            # e.g. a Go export-capitalisation change) carries its pre-rename name as `was`; give
-            # it a second line, through the same escape/wrap treatment as the label itself so it
-            # can't break mermaid syntax or get clipped either.
+            # e.g. a Go export-capitalisation change) carries its pre-rename name as `was`. It
+            # rides in the same label, comma-joined rather than on a forced second line: there is
+            # no way to force one (see wrap_label), and the label wraps on the space anyway.
+            text = by_id[sid]["label"]
             was = by_id[sid].get("was")
             if was:
-                label = f'{label}<br/>{wrap_label(_mm_escape(f"was {was}"))}'
+                text = f"{text}, was {was}"
+            label = wrap_label(_mm_escape(text))
             lines.append(f'{pad}  {mm_id[sid]}["{label}"]')
         for kid in sorted(children.get(pid, [])):
             emit(kid, indent + 1)
@@ -433,8 +482,11 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
 
     # Iterates mm_id, not the caller's symbol_ids set directly: mm_id was just built in a fixed
     # (package, then symbol) sort order, and a set's own iteration order isn't stable run to run.
-    new_ids = [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "new"]
-    gone_ids = [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "gone"]
+    # Explain mode diffs against the empty baseline, so every symbol and every edge comes back
+    # "new": colouring them all green and printing a legend for a gone state that cannot occur
+    # says nothing. Left plain, the graph reads as structure, which is what it is there for.
+    new_ids = [] if explain else [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "new"]
+    gone_ids = [] if explain else [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "gone"]
     if new_ids:
         lines.append(f'  class {",".join(new_ids)} new')
     if gone_ids:
@@ -443,7 +495,8 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
     new_links, gone_links = [], []
     for idx, e in enumerate(kept_edges):
         lines.append(f'  {mm_id[e["source"]]} --> {mm_id[e["target"]]}')
-        (new_links if e["state"] == "new" else gone_links).append(str(idx))
+        if not explain:
+            (new_links if e["state"] == "new" else gone_links).append(str(idx))
     if new_links:
         lines.append(f'  linkStyle {",".join(new_links)} stroke:{LINK_COLOR_NEW},stroke-width:2px;')
     if gone_links:
@@ -455,7 +508,8 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges):
     return "\n".join(lines), id_to_file
 
 
-def _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count):
+def _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count,
+                       explain=False, oversized_count=0):
     """The counts sentence shared by both formats: since the symbols level holds back an
     edge-less changed symbol as text instead of a node, how many landed each way -- so a reader
     is never left wondering whether one was silently dropped (see render_symbols). The trailing
@@ -464,6 +518,7 @@ def _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undraw
     note never states a count that adds nothing."""
     parts = [
         f"Showing {node_count} packages and symbols, {edge_count} relations between them.",
+        f"{drawn_count} symbols drawn as nodes, {listed_count} listed below." if explain else
         f"{drawn_count} changed symbols drawn as nodes, {listed_count} listed below.",
     ]
     if undrawn_count:
@@ -471,14 +526,21 @@ def _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undraw
             f"{undrawn_count} relations between a package and a package inside it are not "
             "drawn because the containment box already shows them."
         )
+    if oversized_count:
+        parts.append(
+            f"The symbols level holds {oversized_count} boxes, too many to open unasked, so "
+            "this starts on packages. Switch with the button above to draw it."
+        )
     return " ".join(parts)
 
 
-def _symbols_note(node_count, edge_count, drawn_count, listed_count, undrawn_count):
+def _symbols_note(node_count, edge_count, drawn_count, listed_count, undrawn_count,
+                  explain=False, oversized_count=0):
     """html counterpart of _symbols_note_text: the legend is generated markup now
     (`.vd-legend`), not a paragraph, so this is the only remaining prose."""
     return _html_note(
-        _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count)
+        _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count,
+                           explain, oversized_count)
     )
 
 
@@ -496,7 +558,7 @@ def _symbols_orphan_rows(nodes, orphan_ids):
     )
 
 
-def _symbols_orphans(nodes, orphan_ids):
+def _symbols_orphans(nodes, orphan_ids, explain=False):
     """The compact text list for changed symbols _mermaid_symbols never gets to draw, marked
     (new)/(gone) the same way the old structure caption marked an appeared/disappeared
     structure. Reuses the `.vd-moved` list styling rather than adding page CSS for a second
@@ -504,14 +566,18 @@ def _symbols_orphans(nodes, orphan_ids):
     rows = _symbols_orphan_rows(nodes, orphan_ids)
     if not rows:
         return ""
-    items = "".join(f"<li>{escape(pkg)}: {escape(label)} ({state})</li>" for pkg, label, state in rows)
+    items = "".join(
+        f"<li>{escape(pkg)}: {escape(label)}</li>" if explain else
+        f"<li>{escape(pkg)}: {escape(label)} ({state})</li>"
+        for pkg, label, state in rows
+    )
     return f'<ul class="vd-moved">{items}</ul>\n'
 
 
 _EMPTY_LEVEL_LABEL = "Nothing to draw at this detail level"
 
 
-def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges):
+def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges, explain=False):
     """_mermaid_symbols, except when filtering to edge-having symbols leaves nothing at all: a
     bare `flowchart LR` renders at a near-zero viewBox, which the page's own `degenerate()`
     check (diff-review-template.html) mistakes for a real render failure rather than a level
@@ -519,7 +585,7 @@ def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges):
     no id to map since it draws nothing real."""
     if not symbol_ids:
         return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]', {}
-    return _mermaid_symbols(nodes, symbol_ids, kept_edges)
+    return _mermaid_symbols(nodes, symbol_ids, kept_edges, explain)
 
 
 def _moved_lines(moved):
@@ -530,7 +596,7 @@ def _moved_lines(moved):
     ]
 
 
-def render_symbols(data):
+def render_symbols(data, explain=False, paths=()):
     """The symbol-delta diagram: two pre-rendered `flowchart LR` mermaid diagrams (packages,
     then symbols with their callers), swapped client-side by a toggle. LR, not TB: these
     graphs are dominated by fan-out (one caller reaching several callees), and TB spreads that
@@ -553,19 +619,31 @@ def render_symbols(data):
     edges = data.get("edges") or []
     moved = data.get("moved") or []
 
-    level1, undrawn_count = _mermaid_packages(nodes, edges)
+    nodes, edges = _scope_to_paths(nodes, edges, paths)
+    if not nodes:
+        return ""
+
+    level1, undrawn_count, pkg_map = _mermaid_packages(nodes, edges)
     ids2, edges2 = _symbols_scope(nodes, edges)
     drawn2 = _edge_endpoint_ids(edges2)
-    level2, file_map2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2)
+    drawn_ids2 = ids2 & drawn2
+    level2, file_map2 = _mermaid_symbols_for_level(nodes, drawn_ids2, edges2, explain)
+
+    # Past this many symbol boxes the level is still worth having, just not worth opening
+    # unasked: the page renders a level the first time it is shown, so starting on packages
+    # leaves the big one to a deliberate click. See MAX_SYMBOL_NODES.
+    oversized = len(drawn_ids2) > MAX_SYMBOL_NODES
+    default_level = 1 if oversized else 2
 
     changed_ids = _changed_symbol_ids(nodes)
     orphan_ids = changed_ids - drawn2
 
     note = _symbols_note(
-        len(nodes), len(edges), len(changed_ids) - len(orphan_ids), len(orphan_ids), undrawn_count
+        len(nodes), len(edges), len(changed_ids) - len(orphan_ids), len(orphan_ids), undrawn_count,
+        explain, len(drawn_ids2) if oversized else 0,
     )
     names_attr = escape(json.dumps(LEVEL_NAMES)).replace('"', "&quot;")
-    orphans_html = _symbols_orphans(nodes, orphan_ids)
+    orphans_html = _symbols_orphans(nodes, orphan_ids, explain)
 
     moved_html = ""
     if moved:
@@ -579,28 +657,31 @@ def render_symbols(data):
     # This module's escape() leaves quotes alone, so an attribute holding markup needs the
     # same &quot; pass names_attr above does or the first inner quote ends the attribute.
     legend_attrs = [escape(x).replace('"', "&quot;") for x in legends]
-    # Package boxes carry no file of their own (see _mermaid_symbols), so level 1's map is
-    # always empty; the same escape/&quot; idiom as data-names above, so a click handler on
-    # the page can resolve a clicked node to a file the same way the old coupling graph did.
+    # Level 1's map holds directories and level 2's files; the page treats both the same way,
+    # resolving a clicked box to a walkthrough hunk by exact path or, for a directory, by its
+    # first file. Same escape/&quot; idiom as data-names above.
     ids_attrs = [escape(json.dumps(m, sort_keys=True)).replace('"', "&quot;")
-                 for m in ({}, file_map2)]
+                 for m in (pkg_map, file_map2)]
+    here = default_level - 1
+    there = 1 - here
     return "\n".join([
         SYMBOLS_MARKER,
-        '<div class="vd-symbols">',
+        f'<div class="vd-symbols" data-default="{default_level}">',
         # Title left, controls right, matching the walkthrough heading. The button names the
         # level you are looking at rather than the one it switches to, which is why the
         # slider's caption underneath is gone. No aria-pressed: a label reading "packages" and
         # a state reading "pressed" say different things, so the accessible name spells out
         # both the state and what activating does, and the script keeps it in step.
-        '<h2 class="h2-row"><span>Changes visualization</span><span class="ctl">'
-        f'{legends[0]}'
+        f'<h2 class="h2-row"><span>{"Structure" if explain else "Changes visualization"}'
+        '</span><span class="ctl">'
+        f'{legends[here]}'
         '<button type="button" id="vd-level-toggle" '
-        f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[0].lower()}.'
-        f' Activate to show {LEVEL_NAMES[1].lower()}."'
-        f'>{escape(LEVEL_NAMES[0].lower())}</button></span></h2>',
-        f'<div class="mermaid" data-level="1" data-legend="{legend_attrs[0]}"'
-        f' data-ids="{ids_attrs[0]}">{escape(level1)}</div>',
-        f'<div class="mermaid" data-level="2" hidden '
+        f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[here].lower()}.'
+        f' Activate to show {LEVEL_NAMES[there].lower()}."'
+        f'>{escape(LEVEL_NAMES[here].lower())}</button></span></h2>',
+        f'<div class="mermaid" data-level="1"{"" if default_level == 1 else " hidden"} '
+        f'data-legend="{legend_attrs[0]}" data-ids="{ids_attrs[0]}">{escape(level1)}</div>',
+        f'<div class="mermaid" data-level="2"{"" if default_level == 2 else " hidden"} '
         f'data-legend="{legend_attrs[1]}" data-ids="{ids_attrs[1]}">{escape(level2)}</div>',
         f'<p class="note">{note}</p>',
     ]) + "\n" + orphans_html + moved_html + "</div>\n"
@@ -637,10 +718,17 @@ def main():
     parser.add_argument("--kind", required=True, choices=("symbols",))
     parser.add_argument("--data", required=True)
     parser.add_argument("--format", required=True, choices=("html",))
+    parser.add_argument("--explain", action="store_true",
+                        help="the target is code as it stands, not a change: drop the new/gone "
+                             "colouring and legend, which the empty baseline makes meaningless")
+    parser.add_argument("--paths", nargs="*", default=[],
+                        help="repo-relative files or directories the page is about; the graph "
+                             "is cut down to symbols under them plus one hop out. Needed in "
+                             "explain mode, where the empty baseline makes the whole repo new")
     args = parser.parse_args()
 
     data = json.loads(Path(args.data).read_text())
-    sys.stdout.write(render_symbols(data))
+    sys.stdout.write(render_symbols(data, args.explain, args.paths))
     return 0
 
 

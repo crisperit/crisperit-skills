@@ -97,23 +97,29 @@ def _wrap_edge_label(m):
 
 
 def _wrap_flow_labels(mermaid):
-    """Wrap every quoted node/subgraph label, and every edge label, in FLOW so Mermaid receives
-    lines pre-broken with `<br/>` instead of auto-wrapping -- and clipping -- SVG text at the
-    `flowchart.wrappingWidth` default under `securityLevel: 'strict'` (see `sections.wrap_label`)."""
+    """Run every quoted node/subgraph label, and every edge label, in FLOW through
+    `sections.wrap_label`, so a long space-free identifier gets somewhere to break instead of
+    stretching its node across the page (see `wrap_label` for why it is zero-width spaces and
+    not `<br/>`)."""
     mermaid = _MERMAID_LABEL_RE.sub(lambda m: f'{m.group(1)}"{wrap_label(m.group(2))}"', mermaid)
     return _MERMAID_EDGE_LABEL_RE.sub(_wrap_edge_label, mermaid)
 
 
 def render_html(analysis, files, template, walkthrough="", links=None, title=None,
-                now=None, symbols="", complexity=None, state=None):
+                now=None, symbols="", complexity=None, state=None, explain=False):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
 
+    # Explain mode diffs the named path against the empty baseline, so the add/remove arithmetic
+    # only ever restates the file size. It reads as scope instead.
+    scope = (f'<div class="fact"><b>Scope</b><span>{count} file{"" if count == 1 else "s"}, '
+             f'{added} line{"" if added == 1 else "s"}</span></div>') if explain else (
+            f'<div class="fact"><b>Changed</b><span>{count} '
+            f'file{"" if count == 1 else "s"}, +{added} -{removed} (net {sign}{net})</span></div>')
     body = [
         '<div class="facts">',
-        f'  <div class="fact"><b>Changed</b><span>{count} '
-        f'file{"" if count == 1 else "s"}, +{added} -{removed} (net {sign}{net})</span></div>',
+        "  " + scope,
         f'  <div class="fact"><b>Target</b><span>{escape(target)}</span></div>',
     ]
     cx = summary_line(complexity)
@@ -121,12 +127,13 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
         body.append(f'  <div class="fact"><b>Complexity</b><span>{_html_prose(cx)}</span></div>')
     verdict = analysis.get("verdict") or ""
     if verdict:
-        body.append(f'  <div class="fact"><b>Verdict</b><span>{_html_prose(verdict)}</span></div>')
+        label = "Summary" if explain else "Verdict"
+        body.append(f'  <div class="fact"><b>{label}</b><span>{_html_prose(verdict)}</span></div>')
     body.append("</div>")
 
     what = _paragraphs(analysis.get("what_changed"))
     if what:
-        body.append("<h2>What changed</h2>")
+        body.append(f'<h2>{"What this is" if explain else "What changed"}</h2>')
         body += [f"<p>{_html_prose(p)}</p>" for p in what]
 
     flow = _wrap_flow_labels(_flow_tb((analysis.get("flow_mermaid") or "").strip()))
@@ -169,7 +176,7 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                  ' rel="noopener noreferrer">pull request</a>')
     body.append(f'<div class="foot">{foot}</div>')
 
-    heading = title or (f"Visual diff: {target}" if target else "Visual diff")
+    heading = title or (f"Code walkthrough: {target}" if target else "Code walkthrough")
     page = template.replace(TITLE_PLACEHOLDER, escape(heading))
     page = page.replace(CONTENT_PLACEHOLDER, "\n".join(body))
     if state is not None:
@@ -199,6 +206,9 @@ def main():
     parser.add_argument("--symbols", help="section-symbols.html")
     parser.add_argument("--state", help="state.json, inlined behind HR_STATE")
     parser.add_argument("--title")
+    parser.add_argument("--explain", action="store_true",
+                        help="the target is code as it stands, not a change: reword the headings "
+                             "and drop the add/remove arithmetic the empty baseline makes empty")
     args = parser.parse_args()
 
     analysis = json.loads(Path(args.analysis).read_text())
@@ -210,7 +220,7 @@ def main():
     sys.stdout.write(render_html(
         analysis, files, _read(args.template),
         _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
-        complexity=complexity, state=state,
+        complexity=complexity, state=state, explain=args.explain,
     ))
     return 0
 

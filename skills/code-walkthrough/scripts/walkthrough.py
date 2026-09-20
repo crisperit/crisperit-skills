@@ -265,7 +265,7 @@ def rename_note(old, new):
 
 
 def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, complexity=None,
-                 renames=None):
+                 renames=None, explain=False):
     is_open = _open_paths(groups, open_count)
     file_urls, hunk_urls = link_index(links)
     cx = complexity_index(complexity)
@@ -282,7 +282,7 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     # No legend here: the chip reads "load_session 2->9 branches" in words and carries the
     # long form in its title, so a legend here would only add a paragraph of vocabulary
     # between the reader and the first file.
-    out = ["<!-- visual-diff:walkthrough -->"]
+    out = ["<!-- code-walkthrough:walkthrough -->"]
     for title, why, paths in groups:
         if title:
             out.append(f'<h3 class="wt-group">{_codeify(escape(title))} '
@@ -314,8 +314,14 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
             # Filled in client-side (renderNotes) once notes exist for this path; empty here
             # so :empty hides it and a hunk with no comments shows nothing.
             out.append('      <span class="hunk-count"></span>')
-            out.append(f'      <span class="hunk-stat"><span class="add">+{file["added"]}'
-                       f'</span> <span class="del">-{file["removed"]}</span></span>')
+            if explain:
+                # Every line is an addition against the empty baseline, so "+400 -0" is a fact
+                # about the trick, not about the file.
+                out.append(f'      <span class="hunk-stat">{file["added"]} '
+                           f'line{"" if file["added"] == 1 else "s"}</span>')
+            else:
+                out.append(f'      <span class="hunk-stat"><span class="add">+{file["added"]}'
+                           f'</span> <span class="del">-{file["removed"]}</span></span>')
             if old_path:
                 # Sibling of .hunk-path, never inside it: the page's comment JS reads
                 # .hunk-path's textContent as the literal PR-comment path, which must stay pure.
@@ -356,11 +362,23 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
                                f'{_codeify(escape(note))}{tail}</p>')
                 # One span per line with no newline before the first or after the last, or the
                 # <pre> renders a blank row at each end of every hunk.
-                spans = "\n".join(
-                    [f'<span class="h">{escape(hunk["header"])}</span>']
-                    + [f'<span class="{kind}">{escape(text)}</span>'
-                       for kind, text in hunk["lines"]]
-                )
+                #
+                # Explain mode reads as plain code: the leading +/-/space marker is dropped and
+                # every line is class "c", which is what the page's wireHunk() numbers off the
+                # header's new-side start -- so the badges are the file's own line numbers. The
+                # header span itself stays in the DOM, hidden, because wireHunk() parses it.
+                if explain:
+                    head = f'<span class="h" hidden>{escape(hunk["header"])}</span>'
+                    body = [f'<span class="c">{escape(text[1:])}</span>'
+                            for _kind, text in hunk["lines"]]
+                    # No newline after the hidden header: the separator is a text node inside
+                    # the <pre>, so hiding the span alone would leave a blank first row.
+                    spans = head + "\n".join(body)
+                else:
+                    head = f'<span class="h">{escape(hunk["header"])}</span>'
+                    body = [f'<span class="{kind}">{escape(text)}</span>'
+                            for kind, text in hunk["lines"]]
+                    spans = "\n".join([head] + body)
                 out.append(f'  <pre class="diff">{spans}</pre>')
             if not file["hunks"]:
                 if old_path:
@@ -384,6 +402,9 @@ def main():
     parser.add_argument("--complexity", help="complexity.json, for the per-file cx deltas")
     parser.add_argument("--open", type=int, default=DEFAULT_OPEN,
                         help="how many of the first files in reading order render expanded")
+    parser.add_argument("--explain", action="store_true",
+                        help="the target is code as it stands, not a change: render plain code "
+                             "with the file's own line numbers instead of diff rows")
     args = parser.parse_args()
 
     analysis = json.loads(Path(args.analysis).read_text())
@@ -401,7 +422,8 @@ def main():
     links = optional(args.links)
     groups = story(order, files, analysis.get("groups"), optional(args.symdelta))
     complexity = optional(args.complexity)
-    sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity, renames))
+    sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity, renames,
+                                 args.explain))
     return 0
 
 

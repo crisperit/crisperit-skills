@@ -555,7 +555,7 @@ def test_resolve_cache_dir_uses_xdg_cache_home_when_set():
         home = Path(tmp)
         result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": "/xdg/cache"}, home)
 
-        assert result == Path("/xdg/cache") / "visual-diff"
+        assert result == Path("/xdg/cache") / "code-walkthrough"
 
 
 def test_resolve_cache_dir_falls_back_to_dot_cache_when_xdg_unset():
@@ -564,7 +564,7 @@ def test_resolve_cache_dir_falls_back_to_dot_cache_when_xdg_unset():
 
         result = symdelta._resolve_cache_dir({}, home)
 
-        assert result == home / ".cache" / "visual-diff"
+        assert result == home / ".cache" / "code-walkthrough"
 
 
 def test_resolve_cache_dir_xdg_cache_home_wins_even_when_dot_cache_exists():
@@ -574,7 +574,30 @@ def test_resolve_cache_dir_xdg_cache_home_wins_even_when_dot_cache_exists():
 
         result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": "/xdg/cache"}, home)
 
-        assert result == Path("/xdg/cache") / "visual-diff"
+        assert result == Path("/xdg/cache") / "code-walkthrough"
+
+
+def test_resolve_cache_dir_falls_back_to_tmp_when_dot_cache_is_not_writable():
+    # The agent-sandbox case: ~/.cache is read-only, so the extractor would never build and the
+    # whole symbols section would go missing over a cache directory.
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        (home / ".cache").mkdir(parents=True)
+        (home / ".cache").chmod(0o555)
+        try:
+            result = symdelta._resolve_cache_dir({}, home, tmp="/scratch")
+        finally:
+            (home / ".cache").chmod(0o755)
+
+        assert result == Path("/scratch") / "code-walkthrough"
+
+
+def test_resolve_cache_dir_xdg_cache_home_wins_even_when_it_is_not_writable():
+    # An explicit XDG_CACHE_HOME is a decision, not a guess; silently relocating it would hide
+    # a misconfiguration behind a cache that keeps getting rebuilt.
+    result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": "/proc"}, Path("/nonexistent"))
+
+    assert result == Path("/proc") / "code-walkthrough"
 
 
 # ---- pure-logic tests: detect_language's tie-break is honest and deterministic ----------
@@ -1051,6 +1074,63 @@ def test_analyse_does_not_crash_on_an_orphan_baseline():
         assert "no merge base" not in result.stderr
         payload = json.loads(result.stdout)
         assert "language" in payload
+
+
+def test_is_empty_base_matches_the_baseline_by_tree_not_by_commit():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "a.py", "def a():\n    pass\n")
+        head = _commit(repo, "head")
+
+        assert symdelta.is_empty_base(repo, _orphan_baseline(repo))
+        assert not symdelta.is_empty_base(repo, head)
+
+
+def test_the_empty_baseline_gets_no_worktree_and_no_extractor_run():
+    # A checkout of the empty tree has no go.mod, no package.json and no source, so every
+    # extractor used to fail on it and take the whole symbols section down with it.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "a.py", "def a():\n    pass\n")
+        head = _commit(repo, "head")
+        orphan = _orphan_baseline(repo)
+        seen = []
+
+        def base_extractor(path):
+            seen.append(path)
+            raise AssertionError("the base extractor must not run against the empty baseline")
+
+        def head_extractor(path):
+            assert (path / "a.py").exists()
+            return ["edge"]
+
+        base_edges, head_edges = symdelta._run_in_worktrees(
+            repo, orphan, head, base_extractor, head_extractor
+        )
+
+        assert seen == []
+        assert base_edges == []
+        assert head_edges == ["edge"]
+
+
+def test_a_real_base_still_gets_its_own_worktree():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "a.py", "def a():\n    pass\n")
+        base = _commit(repo, "base")
+        _write(repo, "b.py", "def b():\n    pass\n")
+        head = _commit(repo, "head")
+
+        both = symdelta._run_in_worktrees(
+            repo, base, head,
+            lambda p: [(p / "a.py").exists(), (p / "b.py").exists()],
+            lambda p: [(p / "a.py").exists(), (p / "b.py").exists()],
+        )
+
+        assert both == ([True, False], [True, True])
 
 
 def test_end_to_end_ts_repo_reports_a_cross_file_call():

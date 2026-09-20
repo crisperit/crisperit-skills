@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from sections import (  # noqa: E402
     LABEL_WRAP_TARGET,
+    ZWSP,
     LINK_COLOR_GONE,
     LINK_COLOR_NEW,
     _changed_symbol_ids,
@@ -19,6 +20,7 @@ from sections import (  # noqa: E402
     _mermaid_symbols,
     _mermaid_symbols_for_level,
     _mm_escape,
+    _scope_to_paths,
     _symbols_legend,
     _symbols_orphans,
     _symbols_scope,
@@ -49,6 +51,69 @@ SYMDELTA = {
 }
 
 
+def test_scope_to_paths_keeps_the_far_end_of_an_edge_that_leaves_the_scope():
+    nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], ["a"])
+    ids = {n["id"] for n in nodes}
+    # b:Moved sits outside a/, and is kept only because a:New calls it; its package comes with it.
+    assert ids == {"a", "b", "a:New", "a:Gone", "b:Moved"}
+    assert len(edges) == 2
+
+
+def test_scope_to_paths_drops_what_no_edge_reaches():
+    data = {
+        "nodes": SYMDELTA["nodes"] + [
+            {"id": "c", "label": "c", "kind": "pkg", "parent": None, "depth": 0},
+            {"id": "c:Far", "label": "Far", "kind": "symbol", "parent": "c", "depth": 1,
+             "state": "new", "file": "c/z.go"},
+        ],
+        "edges": SYMDELTA["edges"],
+    }
+    nodes, _ = _scope_to_paths(data["nodes"], data["edges"], ["a"])
+    assert {n["id"] for n in nodes} == {"a", "b", "a:New", "a:Gone", "b:Moved"}
+
+
+def test_scope_to_paths_matches_on_a_path_segment_not_a_string_prefix():
+    nodes, _ = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], ["a/x.go"])
+    assert "a:New" in {n["id"] for n in nodes}
+    nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], ["a/x"])
+    assert nodes == [] and edges == []
+
+
+def test_scope_to_paths_without_paths_changes_nothing():
+    nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], [])
+    assert nodes is SYMDELTA["nodes"] and edges is SYMDELTA["edges"]
+
+
+def test_symbols_scoped_out_of_existence_renders_no_section():
+    assert render_symbols(SYMDELTA, paths=["nowhere"]) == ""
+
+
+def test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized():
+    out = render_symbols(SYMDELTA)
+    assert 'data-default="2"' in out
+    assert '<div class="mermaid" data-level="1" hidden ' in out
+
+    big = _oversized_delta()
+    out = render_symbols(big, explain=True)
+    assert 'data-default="1"' in out
+    assert '<div class="mermaid" data-level="2" hidden ' in out
+    assert "too many to open unasked" in out
+
+
+def _oversized_delta():
+    """One package of MAX_SYMBOL_NODES+2 symbols, each with an edge so none is held back as an
+    orphan -- the node budget counts drawn boxes, not changed symbols."""
+    from sections import MAX_SYMBOL_NODES
+    nodes = [{"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0}]
+    edges = []
+    for i in range(MAX_SYMBOL_NODES + 2):
+        nodes.append({"id": f"p:S{i}", "label": f"S{i}", "kind": "symbol", "parent": "p",
+                      "depth": 1, "state": "new", "file": "p/x.go"})
+        if i:
+            edges.append({"id": f"e{i}", "source": "p:S0", "target": f"p:S{i}", "state": "new"})
+    return {"nodes": nodes, "edges": edges}
+
+
 def test_symbols_returns_nothing_when_there_are_no_nodes():
     assert render_symbols({"nodes": []}) == ""
     assert render_symbols({}) == ""
@@ -57,18 +122,18 @@ def test_symbols_returns_nothing_when_there_are_no_nodes():
 def test_symbols_html_has_marker_legend_slider_and_three_levels():
     out = render_symbols(SYMDELTA)
 
-    assert out.startswith("<!-- visual-diff:symbols -->")
-    assert '<div class="vd-symbols">' in out
+    assert out.startswith("<!-- code-walkthrough:symbols -->")
+    assert '<div class="vd-symbols" data-default="2">' in out
     assert '<h2 class="h2-row"><span>Changes visualization</span>' in out
-    # Two levels, so a toggle: it opens on packages and its label names that, not the switch.
+    # Two levels, so a toggle: it opens on symbols and its label names that, not the switch.
     assert 'id="vd-level-toggle"' in out
-    assert ">packages</button>" in out
-    assert 'aria-label="Detail level: packages. Activate to show symbols."' in out
+    assert ">symbols</button>" in out
+    assert 'aria-label="Detail level: symbols. Activate to show packages."' in out
     assert "aria-pressed" not in out
     assert 'data-names="' in out and "Symbols + callers" not in out
     assert "vd-level-name" not in out  # the slider's caption went with it
-    assert '<div class="mermaid" data-level="1"' in out
-    assert '<div class="mermaid" data-level="2" hidden' in out
+    assert '<div class="mermaid" data-level="1" hidden' in out
+    assert '<div class="mermaid" data-level="2" ' in out
     assert 'data-level="3"' not in out
     assert "flowchart LR" in out
     assert "flowchart TB" not in out
@@ -150,7 +215,7 @@ def test_symbols_orphan_symbol_is_listed_instead_of_drawn():
     # out to thousands of pixels wide on a real PR.
     out = render_symbols(SYMDELTA_WITH_ORPHAN)
 
-    level2 = out.split('data-level="2" hidden', 1)[1].split("</div>", 1)[0]
+    level2 = out.split('data-level="2"', 1)[1].split("</div>", 1)[0]
     assert "Lonely" not in level2
     assert "<li>b: Lonely (new)</li>" in out
     note = out.split('<p class="note">', 1)[1].split("</p>", 1)[0]
@@ -211,7 +276,7 @@ def test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram(
 
     out = render_symbols(data)
 
-    level2 = out.split('data-level="2" hidden', 1)[1].split("</div>", 1)[0]
+    level2 = out.split('data-level="2"', 1)[1].split("</div>", 1)[0]
     assert "Nothing to draw at this detail level" in level2
     assert "<li>b: Lonely (new)</li>" in out
 
@@ -235,13 +300,15 @@ def test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes():
     assert all(k.startswith("S") for k in id_map)  # no "G..." package box id is ever a key
 
 
-def test_symbols_html_level1_data_ids_is_always_empty():
-    # Package boxes carry no file of their own (see _mermaid_symbols), so the packages level's
-    # map has nothing to hold even when the symbols level's does.
+def test_symbols_html_level1_data_ids_maps_package_boxes_to_their_directory():
+    # A package box has no file of its own, but it does have a path, which is what the node
+    # menu resolves to the package's first hunk in the walkthrough.
     out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE})
 
     attr = out.split('data-level="1"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
-    assert attr == "{}"
+    ids = json.loads(attr.replace("&quot;", '"'))
+    assert set(ids.values()) == {"a"}
+    assert all(k.startswith("P") for k in ids)
 
 
 def test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes():
@@ -273,13 +340,12 @@ def test_mm_escape_strips_parens_quotes_and_backticks():
     assert _mm_escape('Foo("bar") `baz`') == "Foobar baz"
 
 
-def test_wrap_label_breaks_a_long_multiword_label_at_spaces():
+def test_wrap_label_leaves_a_long_multiword_label_alone():
+    # mermaid's own label div wraps on spaces, so a label with no over-length word needs
+    # nothing done to it -- and must come back byte for byte, not respaced.
     label = "NewRequest sets Request User Id to usrID for the MediaGuard lookup"
 
-    out = wrap_label(label)
-
-    assert " ".join(out.split("<br/>")) == label  # every word survives, none lost
-    assert "MediaGuard lookup" in out  # never split across a line break
+    assert wrap_label(label) == label
 
 
 def test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries():
@@ -289,16 +355,17 @@ def test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries():
 
     out = wrap_label(identifier)
 
-    assert "<br/>" in out
-    assert "".join(out.split("<br/>")) == identifier  # every character survives, none lost
+    assert ZWSP in out
+    assert out.replace(ZWSP, "") == identifier  # every character survives, none lost
 
 
 def test_wrap_label_keeps_going_around_a_long_camelcase_word_between_short_ones():
     out = wrap_label("short filterUnusableIdentifierThatIsVeryLongIndeedYes done")
+    words = out.split(" ")
 
-    assert "".join(out.split("<br/>")[1:-1]) == "filterUnusableIdentifierThatIsVeryLongIndeedYes"
-    assert out.split("<br/>")[0] == "short"
-    assert out.split("<br/>")[-1] == "done"
+    assert words[0] == "short" and words[-1] == "done"  # short words untouched
+    assert ZWSP in words[1]
+    assert words[1].replace(ZWSP, "") == "filterUnusableIdentifierThatIsVeryLongIndeedYes"
 
 
 def test_wrap_label_keeps_going_rather_than_truncating_a_long_sentence():
@@ -307,10 +374,7 @@ def test_wrap_label_keeps_going_rather_than_truncating_a_long_sentence():
     sentence = ("Resolve priority chain IFA for app then SyncID cookie then "
                 "User BuyerUID then User ID then Pubcid then IFA fallback for site")
 
-    out = wrap_label(sentence)
-
-    assert " ".join(out.split("<br/>")) == sentence
-    assert out.count("<br/>") > 3  # ran past the nominal four lines instead of cutting anything
+    assert wrap_label(sentence) == sentence  # not one word over the target, so not one cut
 
 
 def test_wrap_label_empty_label_is_unchanged():
@@ -322,9 +386,9 @@ def test_wrap_label_breaks_a_package_path_at_slashes():
 
     out = wrap_label(label)
 
-    assert "<br/>" in out
-    assert "".join(out.split("<br/>")) == label  # slash stays on the end of the earlier line
-    assert out.split("<br/>")[0].endswith("/")
+    assert ZWSP in out
+    assert out.replace(ZWSP, "") == label  # slash stays on the end of the earlier piece
+    assert out.split(ZWSP)[0].endswith("/")
 
 
 def test_wrap_label_falls_back_to_underscore_when_a_segment_alone_is_too_long():
@@ -333,9 +397,9 @@ def test_wrap_label_falls_back_to_underscore_when_a_segment_alone_is_too_long():
 
     out = wrap_label(label, target=12)
 
-    assert "<br/>" in out
-    assert "".join(out.split("<br/>")) == label
-    assert all(len(line) <= 12 for line in out.split("<br/>"))
+    assert ZWSP in out
+    assert out.replace(ZWSP, "") == label
+    assert all(len(piece) <= 12 for piece in out.split(ZWSP))
 
 
 def test_wrap_label_leaves_a_short_package_path_untouched():
@@ -356,16 +420,16 @@ _REAL_CLIPPED_LABELS = [
 def test_wrap_label_breaks_the_real_clipped_go_symbol_names():
     for label in _REAL_CLIPPED_LABELS:
         out = wrap_label(label)
-        lines = out.split("<br/>")
+        pieces = out.split(ZWSP)
 
-        assert "".join(lines) == label  # no piece ever loses a character
-        assert all(len(line) <= LABEL_WRAP_TARGET for line in lines), label
+        assert "".join(pieces) == label  # no piece ever loses a character
+        assert all(len(piece) <= LABEL_WRAP_TARGET for piece in pieces), label
 
 
 def test_wrap_label_breaks_a_dotted_selector_after_the_dot():
     out = wrap_label("MediaGuardGRPCDecorator.Lookup")
 
-    assert out.split("<br/>")[0].endswith(".")  # dot stays on the end of the earlier line, like '/'
+    assert out.split(ZWSP)[0].endswith(".")  # dot stays on the end of the earlier piece, like '/'
 
 
 def test_wrap_label_keeps_an_acronym_run_together_when_camel_splitting():
@@ -373,8 +437,8 @@ def test_wrap_label_keeps_an_acronym_run_together_when_camel_splitting():
     # separator left and camelCase boundaries are all that's left to break on.
     out = wrap_label("MediaGuardGRPCDecorator", target=12)
 
-    assert "".join(out.split("<br/>")) == "MediaGuardGRPCDecorator"
-    assert "GRPC" in out.split("<br/>")
+    assert out.replace(ZWSP, "") == "MediaGuardGRPCDecorator"
+    assert "GRPC" in out.split(ZWSP)
 
 
 def test_wrap_label_all_caps_word_with_no_boundary_is_returned_whole():
@@ -400,7 +464,7 @@ def test_symbols_scope_pulls_in_the_context_endpoint_of_a_changed_edge():
 
 
 def test_mermaid_packages_rolls_up_cross_package_edges_with_a_count_label():
-    text, undrawn = _mermaid_packages(SYMDELTA["nodes"], SYMDELTA["edges"])
+    text, undrawn, _ = _mermaid_packages(SYMDELTA["nodes"], SYMDELTA["edges"])
 
     assert text.startswith("flowchart LR")
     assert '["a"]' in text and '["b"]' in text
@@ -418,7 +482,7 @@ def test_mermaid_packages_nests_child_packages_inside_their_parent_box():
          "parent": "corelib/ratelimit", "depth": 2},
     ]
 
-    text, undrawn = _mermaid_packages(nodes, [])
+    text, undrawn, _ = _mermaid_packages(nodes, [])
 
     assert 'subgraph P0["corelib"]' in text
     assert 'subgraph P1["ratelimit"]' in text
@@ -453,7 +517,7 @@ def test_mermaid_packages_does_not_draw_a_containment_edge_and_reports_its_count
         {"source": "outer:A", "target": "sib:C", "state": "new"},
     ]
 
-    text, undrawn = _mermaid_packages(nodes, edges)
+    text, undrawn, _ = _mermaid_packages(nodes, edges)
 
     assert '["inner"]' in text  # just the package's own segment name
     assert "×" not in text
@@ -462,7 +526,7 @@ def test_mermaid_packages_does_not_draw_a_containment_edge_and_reports_its_count
     assert undrawn == 1  # outer -> outer/inner, skipped rather than drawn
 
 
-def test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_classdef():
+def test_mermaid_symbols_keeps_a_long_label_in_one_pair_of_quotes():
     nodes = SYMDELTA["nodes"] + [
         {"id": "a:Filter", "label": "filters unusable identifiers before they reach the exchange",
          "kind": "symbol", "parent": "a", "depth": 1, "state": "new", "file": "a/z.go"},
@@ -473,10 +537,8 @@ def test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_class
     text, _ = _mermaid_symbols(nodes, ids, edges)
     label_line = next(line for line in text.splitlines() if "filters" in line)
 
-    assert "<br/>" in label_line
-    assert label_line.count('"') == 2  # one label, one pair of quotes -- not one per wrapped line
-    wrapped = label_line.split('"')[1]
-    assert " ".join(wrapped.split("<br/>")) == (
+    assert label_line.count('"') == 2  # one label, one pair of quotes
+    assert label_line.split('"')[1] == (
         "filters unusable identifiers before they reach the exchange")
     # everything else about the diagram is exactly what it was without the long label
     assert "var(" not in text  # mermaid's own parser can't resolve a CSS var()
@@ -484,7 +546,7 @@ def test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_class
     assert text.count("-->") == len(edges)
 
 
-def test_mermaid_symbols_appends_a_was_line_for_a_renamed_symbol():
+def test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol():
     nodes = SYMDELTA["nodes"] + [
         {"id": "a:IncrementChecksTotal", "label": "IncrementChecksTotal", "kind": "symbol",
          "parent": "a", "depth": 1, "state": "changed", "file": "a/x.go",
@@ -495,7 +557,7 @@ def test_mermaid_symbols_appends_a_was_line_for_a_renamed_symbol():
     label_line = next(line for line in text.splitlines() if "IncrementChecksTotal" in line)
 
     assert label_line.count('"') == 2  # still one label, one pair of quotes
-    assert "<br/>was incrementChecksTotal" in label_line
+    assert "IncrementChecksTotal, was incrementChecksTotal" in label_line
 
 
 def test_mermaid_symbols_label_has_no_was_line_when_the_name_did_not_change():
@@ -629,7 +691,7 @@ def test_mermaid_packages_chains_disconnected_packages_with_an_invisible_link():
          "state": "new", "file": "b/y.go"},
     ]
 
-    text, _ = _mermaid_packages(nodes, [])
+    text, _, _ = _mermaid_packages(nodes, [])
 
     assert "P0 ~~~ P1" in text
 
@@ -644,7 +706,7 @@ def test_mermaid_packages_never_chains_a_container_to_its_own_nested_child():
          "state": "new", "file": "root/leaf/x.go"},
     ]
 
-    text, _ = _mermaid_packages(nodes, [])
+    text, _, _ = _mermaid_packages(nodes, [])
 
     assert "~~~" not in text
 
@@ -662,13 +724,13 @@ def test_mermaid_packages_never_chains_an_owning_package_to_its_own_owning_child
          "state": "new", "file": "p1/b.go"},
     ]
 
-    text, _ = _mermaid_packages(nodes, [])
+    text, _, _ = _mermaid_packages(nodes, [])
 
     assert "~~~" not in text
 
 
 def test_mermaid_packages_single_component_has_no_invisible_link():
-    text, _ = _mermaid_packages(SYMDELTA["nodes"], SYMDELTA["edges"])
+    text, _, _ = _mermaid_packages(SYMDELTA["nodes"], SYMDELTA["edges"])
 
     assert "~~~" not in text
 
@@ -750,15 +812,35 @@ def test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node(
     # view that has neither on screen.
     out = render_symbols(SYMDELTA)
 
+    # The heading starts on the level the page opens on (symbols), which does draw both.
     heading = out.split('class="h2-row"')[1].split("</h2>")[0]
-    assert "sw-new" not in heading  # the package level draws no new/gone node
-    level2 = out.split('data-level="2" hidden', 1)[1].split(">", 1)[0]
+    assert "sw-new" in heading and "sw-gone" in heading
+    level1 = out.split('data-level="1"', 1)[1].split(">", 1)[0]
+    assert "sw-new" not in level1  # the package level draws no new/gone node
+    level2 = out.split('data-level="2"', 1)[1].split(">", 1)[0]
     assert "sw-new" in level2 and "sw-gone" in level2
+
+
+def test_explain_drops_the_new_gone_colouring_the_empty_baseline_makes_meaningless():
+    out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE}, explain=True)
+
+    assert ">structure<" not in out  # the toggle still names the detail level, not the section
+    assert "Structure</span>" in out and "Changes visualization" not in out
+    assert "  class " not in out and "linkStyle" not in out
+    assert "vd-legend" not in out
+    assert "changed symbols drawn as nodes" not in out
+    assert "symbols drawn as nodes" in out
 
 
 if __name__ == "__main__":
     tests = [
         test_symbols_returns_nothing_when_there_are_no_nodes,
+        test_scope_to_paths_keeps_the_far_end_of_an_edge_that_leaves_the_scope,
+        test_scope_to_paths_drops_what_no_edge_reaches,
+        test_scope_to_paths_matches_on_a_path_segment_not_a_string_prefix,
+        test_scope_to_paths_without_paths_changes_nothing,
+        test_symbols_scoped_out_of_existence_renders_no_section,
+        test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized,
         test_symbols_html_has_marker_legend_slider_and_three_levels,
         test_symbols_html_never_emits_classdef,
         test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed,
@@ -773,11 +855,12 @@ if __name__ == "__main__":
         test_mermaid_symbols_for_level_draws_normally_when_something_qualifies,
         test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram,
         test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes,
-        test_symbols_html_level1_data_ids_is_always_empty,
+        test_symbols_html_level1_data_ids_maps_package_boxes_to_their_directory,
+        test_explain_drops_the_new_gone_colouring_the_empty_baseline_makes_meaningless,
         test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes,
         test_symbols_html_data_ids_survives_a_quote_in_a_file_path,
         test_mm_escape_strips_parens_quotes_and_backticks,
-        test_wrap_label_breaks_a_long_multiword_label_at_spaces,
+        test_wrap_label_leaves_a_long_multiword_label_alone,
         test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries,
         test_wrap_label_keeps_going_around_a_long_camelcase_word_between_short_ones,
         test_wrap_label_keeps_going_rather_than_truncating_a_long_sentence,
@@ -794,8 +877,8 @@ if __name__ == "__main__":
         test_mermaid_packages_rolls_up_cross_package_edges_with_a_count_label,
         test_mermaid_packages_nests_child_packages_inside_their_parent_box,
         test_mermaid_packages_does_not_draw_a_containment_edge_and_reports_its_count,
-        test_mermaid_symbols_wraps_a_long_label_without_touching_ids_arrows_or_classdef,
-        test_mermaid_symbols_appends_a_was_line_for_a_renamed_symbol,
+        test_mermaid_symbols_keeps_a_long_label_in_one_pair_of_quotes,
+        test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol,
         test_mermaid_symbols_label_has_no_was_line_when_the_name_did_not_change,
         test_symbols_legend_ignores_the_word_new_in_a_label_not_a_class_line,
         test_new_and_gone_class_lists_are_declaration_order_not_set_order,

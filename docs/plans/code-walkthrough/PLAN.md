@@ -30,6 +30,9 @@ Deliberately not built, with the reason: a client-side diff renderer (the JS wou
 - `<!-- visual-diff:start -->` / `<!-- visual-diff:end -->` (pr-markdown.md:243,245,270; pr-workflow.md:29; test_markers.py:10). These markers are **already in the wild inside PR descriptions on GitHub**. Renaming them makes the next refresh of an existing PR append a second block instead of splicing the first, which is exactly the idempotency `test_markers.py` exists to protect. They stay.
 - `$XDG_CACHE_HOME/visual-diff` (symdelta.py:50, graphs.md:126-127, asserted in test_symdelta.py). This holds the compiled Go extractor binary plus Go's build caches (code-map.md:246-251). Renaming it orphans every existing user's cache and forces a recompile, a behaviour change for zero gain (state.md:101-104).
 
+> **Superseded.** Both were renamed later, once the skill itself became `code-walkthrough`: the section markers are `<!-- code-walkthrough:kind -->` and the cache is `~/.cache/code-walkthrough`, falling back to the temp dir when `~/.cache` is not writable. The reasons below stopped holding: the PR-description `visual-diff:start/end` markers this protected no longer exist in the skill at all, and the cache had to move anyway because an agent sandbox does not allowlist `~/.cache`, which cost explain mode its whole symbols section.
+
+
 **Check**
 
 ```bash
