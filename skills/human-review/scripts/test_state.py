@@ -265,12 +265,24 @@ def test_resolve_conversation_button_only_appears_once_a_thread_has_a_gh_thread_
 def test_resolved_thread_collapses_into_a_details_summary():
     """A resolved thread (confirmed by sync-threads, or still only requested locally) renders
     collapsed in a <details> with a Resolved summary, the same idiom as the .hr-lo stray fold.
+    The resolver's name is optional: the summary falls back to plain "Resolved" when
+    root.resolved_by is absent, and gets a "(pending sync)" suffix while unconfirmed.
     """
     text = TEMPLATE_PATH.read_text()
 
     assert "hr-thread-resolved" in text
-    assert "'Resolved'" in text
-    assert "pending sync" in text
+
+    summary_match = re.search(
+        r"summary\.appendChild\(document\.createTextNode\(\s*(.*?)\)\);", text, re.S
+    )
+    assert summary_match, "resolved-thread summary text builder not found"
+    summary_src = summary_match.group(1)
+
+    assert re.search(r"['\"]\s*Resolved['\"]", summary_src)
+    assert re.search(r"root\.resolved_by\s*\?.*?:\s*''", summary_src), (
+        "resolver name must be optional, falling back to plain Resolved"
+    )
+    assert "pending sync" in summary_src
 
 
 def test_own_draft_renders_an_editable_textarea_with_no_edit_button():
@@ -314,6 +326,40 @@ def test_legacy_copy_targets_the_open_dialog_and_never_reports_a_false_success()
     assert re.search(r"if\(document\.activeElement===ta\)\{", body), (
         "legacyCopy no longer gates execCommand('copy') on the textarea actually taking"
         " focus, so a failed focus can be reported as a successful copy again"
+    )
+
+
+def test_build_snippet_expand_label_counts_rendered_rows_not_raw_lines():
+    """rows are built from rawLines[1:] (rawLines[0] is the @@ header, never turned into a
+    row), so the expand label's more-lines count must be based on rows.length. Basing it on
+    rawLines.length instead would overcount the revealed lines by one.
+    """
+    text = TEMPLATE_PATH.read_text()
+    fn_match = re.search(r"function buildSnippet\(root\)\{(.*?)\n  \}", text, re.S)
+    assert fn_match, "buildSnippet() not found in diff-review-template.html"
+    body = fn_match.group(1)
+
+    assert "const moreCount=rows.length-" in body
+    assert "const moreCount=rawLines.length-" not in body, (
+        "buildSnippet's expand-button count reverted to rawLines.length, which includes the "
+        "@@ header and overcounts the revealed lines by one"
+    )
+
+
+def test_build_snippet_encodes_path_per_segment_for_the_view_file_link():
+    """A path with a space or other URL-significant character must still produce a working
+    github.com/.../blob/ URL; encodeURIComponent on the whole path would also escape the '/'
+    separators the link depends on, so each segment has to be encoded on its own.
+    """
+    text = TEMPLATE_PATH.read_text()
+    fn_match = re.search(r"function buildSnippet\(root\)\{(.*?)\n  \}", text, re.S)
+    assert fn_match, "buildSnippet() not found in diff-review-template.html"
+    body = fn_match.group(1)
+
+    assert "root.path.split('/').map(encodeURIComponent).join('/')" in body
+    assert "+root.path+'#L'" not in body, (
+        "the View file link interpolates root.path unencoded again -- a space or other "
+        "URL-significant character in the path will produce a broken github.com URL"
     )
 
 

@@ -171,8 +171,13 @@
      edge now: the path has to shrink to its text so the PR link sits against the filename
      rather than out at 60% of the row with a gap behind it. */
   details.hunk .hunk-stat{flex:none;margin-left:auto}
-  details.hunk .hunk-count{flex:none;font-size:var(--fs-xs);color:var(--yellow)}
+  details.hunk .hunk-count{flex:none;font-size:var(--fs-xs);color:var(--muted)}
   details.hunk .hunk-count:empty{display:none}
+  /* outdated/resolved are per-comment and per-thread counts respectively (see renderNotes),
+     coloured like every other outdated/resolved marker on the page; the leading "N comments"
+     segment stays --muted above since it isn't either state. */
+  details.hunk .hunk-count .hunk-count-outdated{color:var(--yellow)}
+  details.hunk .hunk-count .hunk-count-resolved{color:var(--green)}
   details.hunk .hunk-was{flex:0 0 100%;color:var(--muted);font-size:var(--fs-xs);
     overflow-wrap:anywhere;white-space:normal}
   /* Complexity chips, moved out of the summary into their own quiet row -- no card, no
@@ -472,6 +477,7 @@
   details.hr-thread-resolved>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-xs)}
   details.hr-thread-resolved>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   details.hr-thread-resolved .fb-item{margin-top:8px}
+  details.hr-thread-resolved .hr-check{color:var(--green)}
 
   #hr-dirty{max-width:min(1400px,92vw);margin:0 auto 20px;background:var(--panel);
     border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;
@@ -522,14 +528,44 @@
     border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;
     min-height:80px;margin-top:8px;font-family:var(--mono);font-size:var(--fs-xs)}
 
-  /* Leftover notes: a stray with no current line to ride along with (outdated, or its line
-     dropped from the diff). Folded into a collapsed <details> inside the stray's own file
-     hunk, GitHub's outdated-thread idiom; only a path with no hunk on the page (never made
-     the walkthrough) falls back into the #hr-leftovers section instead. */
+  /* Leftover notes: one card per THREAD with no current line to ride along with (outdated, or
+     its line dropped from the diff) -- see buildSnippet/strayCardFor. Folded into a collapsed
+     <details> inside the stray's own file hunk, GitHub's outdated-thread idiom; only a path with
+     no hunk on the page (never made the walkthrough) falls back into the #hr-leftovers section
+     instead. */
   details.hr-lo{background:var(--panel);border:1px solid var(--border);border-radius:10px;
     padding:10px 14px;margin-bottom:12px}
   details.hunk>details.hr-lo{margin:0 14px 14px}
-  details.hr-lo>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm)}
+  /* Path, chip and count share the row now instead of one plain text string, since a card can
+     carry all three where the old per-path fold only ever showed a count. */
+  details.hr-lo>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm);
+    display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+  .hr-lo-path{font-family:var(--mono);overflow-wrap:anywhere;color:var(--text)}
+
+  /* Sentence case and a small square-ish radius, not a pill: a chip here is a passive label
+     riding inside a summary line, not a control. */
+  .chip{display:inline-block;font-size:var(--fs-xs);padding:2px 7px;border-radius:3px;
+    font-weight:600;line-height:1.4;white-space:nowrap}
+  .chip-outdated{color:var(--yellow);background:color-mix(in srgb,var(--yellow) 16%,transparent)}
+
+  /* Thread-level code snippet (see buildSnippet): the ROOT note's diff_hunk, rendered once per
+     thread instead of once per comment. .dl mirrors the page's own per-line comment row shape
+     but stays read-only quoted code, never a commentable .dline. */
+  .thread-snippet{margin:0 0 8px}
+  .snip-pre{margin:0;background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+    padding:8px 0;overflow-x:auto;font-family:var(--mono);font-size:var(--fs-code);line-height:1.6}
+  .dl{display:flex;white-space:pre;padding:0 12px}
+  /* A bare [hidden] loses to the plain .dl rule above on a specificity tie broken by source
+     order; attribute+class outranks .dl on its own, scoped to just these rows rather than
+     reaching for a page-wide [hidden]{display:none!important} override. */
+  .dl[hidden]{display:none}
+  .dl.anchor{border-left:3px solid var(--accent);margin-left:-3px;padding-left:9px;
+    background:color-mix(in srgb,var(--text) 5%,var(--panel2))}
+  .snippet-controls{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px}
+  .linklike{background:none;border:none;color:var(--accent);text-decoration:underline;
+    text-underline-offset:2px;cursor:pointer;font:inherit;font-size:var(--fs-xs);padding:0}
+  .linklike:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  a.linklike{display:inline-block}
   details.hr-lo>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .hr-lo .fb-item{margin-top:8px}
 
@@ -565,6 +601,7 @@
        summary's own padding instead of making every file header 20px taller. */
     h2.h2-row a{min-width:44px;padding:11px 0;margin:-11px 0;
       display:inline-flex;align-items:center;justify-content:center}
+    .linklike{padding:11px 0;margin:-11px 0}
   }
 
   @media (prefers-reduced-motion:reduce){
@@ -1495,39 +1532,14 @@
       head.appendChild(t);
     }
     d.appendChild(head);
-    // rec (line-anchored row): path, line and side already read off the diff line above (and off
-    // .fb-who), so only the status suffixes remain, skipped entirely when none apply -- an .s
-    // with nothing to say would be an empty stray element. A leftover has no such line, so it
-    // keeps the full path:line SIDE coordinate.
-    const statusParts=[];
-    if(n.stale) statusParts.push('outdated');
-    if(rec){
-      if(statusParts.length){
-        const s=document.createElement('span'); s.className='s';
-        s.textContent=statusParts.join(' · ');
-        d.appendChild(s);
-      }
-    } else {
+    // rec rows (line-anchored) have path/line/side already visible from the diff line above,
+    // and the outdated badge now lives on the thread card's header (see strayCardFor) instead of
+    // repeating per comment, so a rec row's .s status line has nothing left to say. A leftover
+    // keeps the full path:line SIDE coordinate, its only such marker on the page.
+    if(!rec){
       const s=document.createElement('span'); s.className='s';
-      s.textContent=n.path+':'+n.line+' '+n.side+(statusParts.length?' · '+statusParts.join(' · '):'');
+      s.textContent=n.path+':'+n.line+' '+n.side;
       d.appendChild(s);
-    }
-    // diff_hunk comes only from a synced GitHub comment; anchor_text only from a note typed
-    // on the page (an unposted draft staled by reanchor has no gh_id to source a hunk from).
-    // A stale note carries at most one of the two, so each branch below stands alone.
-    if(n.stale&&n.diff_hunk){
-      const details=document.createElement('details');
-      const summary=document.createElement('summary'); summary.textContent='the code the comment was written against';
-      const hunk=document.createElement('div'); hunk.className='diff';
-      n.diff_hunk.split('\n').forEach((line,i)=>{
-        if(i>0) hunk.appendChild(document.createTextNode('\n'));
-        const span=document.createElement('span');
-        span.className=line.startsWith('@@')?'h':line.startsWith('+')?'a':line.startsWith('-')?'d':'c';
-        span.textContent=line;
-        hunk.appendChild(span);
-      });
-      details.append(summary,hunk);
-      d.appendChild(details);
     }
     // rec rows skip the quote entirely: the code it quotes is the diff line sitting right above.
     // A leftover has no such line, so the quote is its only trace of what the comment was on.
@@ -1674,7 +1686,7 @@
     return d;
   }
 
-  const threadWrapByRoot=new Map(); // rootId -> its collapsed <details.hr-thread-resolved>
+  const threadWrapByRoot=new Map();    // rootId -> its collapsed <details.hr-thread-resolved>
   const replyBoxByRoot=new Map();   // rootId -> its persistent reply input (stateless, built once)
   const resolveBtnByRoot=new Map(); // rootId -> its Resolve conversation control (same reason)
 
@@ -1701,8 +1713,14 @@
       entry={el:d}; threadWrapByRoot.set(root.id,entry);
     }
     const summary=entry.el.querySelector('summary');
-    summary.textContent='Resolved'+(confirmed?'':' (pending sync)')+' · '+rows.length
-      +' comment'+(rows.length===1?'':'s');
+    summary.textContent='';
+    const check=document.createElement('span'); check.className='hr-check'; check.textContent='✓';
+    check.setAttribute('aria-hidden','true');
+    summary.appendChild(check);
+    summary.appendChild(document.createTextNode(
+      ' Resolved'+(root.resolved_by?' by '+root.resolved_by:'')+(confirmed?'':' (pending sync)')
+      +' · '+root.path+':'+root.line+' · '+rows.length+' comment'+(rows.length===1?'':'s')
+    ));
     placeIn(entry.el,[summary,...rows]);
     return entry.el;
   }
@@ -1739,7 +1757,136 @@
     return out;
   }
 
-  const foldByPath=new Map(); // path -> its collapsed <details.hr-lo> of strays
+  const strayCardByRoot=new Map(); // rootId -> its collapsed per-thread <details.hr-lo> card
+  const snippetByRoot=new Map();   // rootId -> its <div class="thread-snippet">, or null when the
+                                    // root's diff_hunk is missing/unparseable -- built once, the
+                                    // hunk a root carries never changes at runtime
+
+  // The ROOT note's diff_hunk, rendered once per thread (see the per-comment fold this replaced
+  // in buildItem). Returns null rather than an empty snippet when there is nothing usable to
+  // show, so callers can just skip appending it.
+  function buildSnippet(root){
+    if(!root.diff_hunk) return null;
+    const rawLines=root.diff_hunk.split('\n');
+    const header=parseHeader(rawLines[0]);
+    if(!header) return null;
+    let newN=header.newStart;
+    const rows=[];
+    for(let i=1;i<rawLines.length;i++){
+      const text=rawLines[i];
+      const cls=text.startsWith('+')?'a':text.startsWith('-')?'d':'c';
+      // A removed line has no new-side number -- skip it in the running count the way the real
+      // diff does (see wireHunk), rather than assigning it one.
+      rows.push({text,cls,num:cls==='d'?null:newN});
+      if(cls!=='d') newN++;
+    }
+    if(!rows.length) return null;
+    let anchorIdx=rows.findIndex(r=>r.num===root.line);
+    if(anchorIdx===-1) anchorIdx=rows.length-1; // root.line not found in its own hunk: still show something, ending on the last line
+    const visibleStart=Math.max(0,anchorIdx-3);
+
+    // .diff carries the row colouring (.a/.d/.h/.c, see the stylesheet) but has to land on the
+    // wrapper, not the code box itself: both wireHunk's initial sweep and the explanations
+    // toggle select every `pre.diff`, and a snippet element that matched got merged into the
+    // file's own hunk pre and hidden (verified by rendering this for real).
+    const wrap=document.createElement('div'); wrap.className='thread-snippet diff';
+    // Each row is its own block-level flex container (see .dl), not inline text riding a shared
+    // whitespace run, so nothing here needs <pre>'s preformatted-text handling -- a plain div
+    // with the monospace styling moved onto .snip-pre gets the same look without the mismatch.
+    const box=document.createElement('div'); box.className='snip-pre';
+    // A deletion row has num:null (removed lines don't exist on the new side), so the window's
+    // edges can land on one -- walk inward to the nearest numbered row rather than printing null.
+    let startNum=null;
+    for(let i=visibleStart;i<=anchorIdx;i++){ if(rows[i].num!=null){ startNum=rows[i].num; break; } }
+    let endNum=null;
+    for(let i=anchorIdx;i>=visibleStart;i--){ if(rows[i].num!=null){ endNum=rows[i].num; break; } }
+    box.setAttribute('aria-label',startNum!=null&&endNum!=null?
+      ('Code near the comment, lines '+startNum+' to '+endNum):'Code near the comment');
+    rows.forEach((r,i)=>{
+      const extra=i<visibleStart||i>anchorIdx;
+      const row=document.createElement('span');
+      row.className='dl'+(i===anchorIdx?' anchor':'')+(extra?' extra':'');
+      if(extra) row.hidden=true;
+      const numEl=document.createElement('span'); numEl.className='dline-num';
+      numEl.setAttribute('aria-hidden','true');
+      if(r.num!=null) numEl.textContent=r.num;
+      row.appendChild(numEl);
+      const code=document.createElement('span'); code.className=r.cls; code.textContent=r.text;
+      row.appendChild(code);
+      box.appendChild(row);
+    });
+    wrap.appendChild(box);
+
+    const controls=document.createElement('div'); controls.className='snippet-controls';
+    if(visibleStart>0||anchorIdx<rows.length-1){
+      // rows.length, not rawLines.length -- rawLines[0] is the @@ header, never rendered as a
+      // row. The count is how many rows the collapsed window is hiding, not the thread's total,
+      // so it never repeats the line number already visible in the window above.
+      const moreCount=rows.length-(anchorIdx-visibleStart+1);
+      const moreLabel='Show '+moreCount+' more line'+(moreCount===1?'':'s');
+      const expand=document.createElement('button'); expand.type='button'; expand.className='linklike';
+      expand.setAttribute('aria-expanded','false');
+      expand.textContent=moreLabel;
+      // Reveals the earlier lines above the always-visible window rather than growing downward,
+      // so the anchored line -- already on screen at the bottom of the collapsed view -- never
+      // has to be re-found after expanding.
+      expand.addEventListener('click',()=>{
+        const nowOpen=expand.getAttribute('aria-expanded')!=='true';
+        expand.setAttribute('aria-expanded',String(nowOpen));
+        expand.textContent=nowOpen?'Show fewer lines':moreLabel;
+        box.querySelectorAll('.extra').forEach(el=>{ el.hidden=!nowOpen; });
+      });
+      controls.appendChild(expand);
+    }
+    if(root.original_commit_id){
+      const sha=root.original_commit_id;
+      const link=document.createElement('a'); link.className='linklike';
+      const encodedPath=root.path.split('/').map(encodeURIComponent).join('/'); // per-segment: encodeURIComponent alone would also escape the '/' separators
+      link.href='https://github.com/'+state.meta.repo+'/blob/'+sha+'/'+encodedPath+'#L'+root.line;
+      link.target='_blank'; link.rel='noopener noreferrer';
+      link.textContent='View file at '+sha.slice(0,7)+' ';
+      const arrow=document.createElement('span'); arrow.setAttribute('aria-hidden','true'); arrow.textContent='↗';
+      link.appendChild(arrow);
+      controls.appendChild(link);
+    }
+    if(controls.children.length) wrap.appendChild(controls);
+    return wrap;
+  }
+  function snippetFor(root){
+    if(!snippetByRoot.has(root.id)) snippetByRoot.set(root.id,buildSnippet(root));
+    return snippetByRoot.get(root.id);
+  }
+
+  // One card per thread: the header shows the path only when this file has no hunk of its own
+  // on the page (the inFile check below), plus an Outdated chip and this thread's own count.
+  function strayCardFor(group,byIdAll,inFile){
+    const root=group.root;
+    let card=strayCardByRoot.get(root.id);
+    if(card&&card.contains(document.activeElement)) return card;
+    if(!card){
+      card=document.createElement('details'); card.className='hr-lo';
+      card.appendChild(document.createElement('summary'));
+      strayCardByRoot.set(root.id,card);
+    }
+    const summary=card.querySelector('summary');
+    summary.textContent='';
+    if(!inFile){
+      const p=document.createElement('span'); p.className='hr-lo-path'; p.textContent=root.path;
+      summary.appendChild(p);
+    }
+    const chip=document.createElement('span'); chip.className='chip chip-outdated'; chip.textContent='Outdated';
+    summary.appendChild(chip);
+    // A bare text node isn't a flex item, so the summary's `gap` wouldn't separate it from the
+    // chip beside it (found by rendering this for real -- "Outdated3 comments", no space).
+    const count=document.createElement('span');
+    count.textContent=group.notes.length+' comment'+(group.notes.length===1?'':'s');
+    summary.appendChild(count);
+    const snippet=snippetFor(root);
+    const body=snippet?[snippet]:[];
+    body.push(...elementsForThreads(group.notes,byIdAll));
+    placeIn(card,[summary,...body]);
+    return card;
+  }
 
   // Reconciles by note id rather than clearing and rebuilding: a full rebuild on every render
   // would collapse an open <details>, drop focus off a row mid-tab, and kill a text selection.
@@ -1748,6 +1895,16 @@
   function renderNotes(){
     const ordered=orderThreaded(state.notes);
     const byIdAll=new Map(state.notes.map(n=>[n.id,n]));
+    // Root id per note and which roots are resolved, computed once for the whole page: the
+    // per-file .hunk-count badge needs this across every thread, not just the ones a given loop
+    // below happens to be rendering.
+    const rootIdOfNote=new Map();
+    const resolvedRootIds=new Set();
+    for(const g of groupThreads(ordered,byIdAll)){
+      const root=g.root;
+      if(root.resolved||pendingResolveSet.has(root.id)) resolvedRootIds.add(root.id);
+      for(const n of g.notes) rootIdOfNote.set(n.id,root.id);
+    }
     const byLine=new Map();
     const strays=[];
     for(const n of ordered){
@@ -1770,56 +1927,66 @@
       rec.span.classList.toggle('has-comment',notesHere.length>0);
     }
 
-    const byPath=new Map();
-    for(const n of strays){
-      const arr=byPath.get(n.path)||[]; arr.push(n); byPath.set(n.path,arr);
+    // A path with a hunk on the page folds its stray threads into it, one card each; a path
+    // that never made the walkthrough has no hunk to fold into, so its cards fall back to the
+    // page-level section instead.
+    const strayGroups=groupThreads(strays,byIdAll);
+    const groupsByPath=new Map();
+    for(const g of strayGroups){
+      const arr=groupsByPath.get(g.root.path)||[]; arr.push(g); groupsByPath.set(g.root.path,arr);
     }
-    // A path with a hunk on the page folds its strays into it; a path that never made the
-    // walkthrough has no hunk to fold into, so it falls back to the page-level section.
-    const orphanPaths=[...byPath.keys()].filter(p=>!detailsByPath.has(p));
+    const orphanPaths=[...groupsByPath.keys()].filter(p=>!detailsByPath.has(p));
     let section=document.getElementById('hr-leftovers');
     if(!section&&orphanPaths.length){
       section=document.createElement('section'); section.id='hr-leftovers'; section.tabIndex=-1;
       section.innerHTML='<h2>Comments on files outside the walkthrough</h2>';
       document.getElementById('plan-content').appendChild(section);
     }
-    for(const [path,fold] of foldByPath){
-      if(!byPath.has(path)){ fold.remove(); foldByPath.delete(path); }
+    const strayRootIds=new Set(strayGroups.map(g=>g.root.id));
+    for(const [rootId,card] of strayCardByRoot){
+      if(!strayRootIds.has(rootId)){ card.remove(); strayCardByRoot.delete(rootId); }
     }
-    for(const [path,notes] of byPath){
-      let fold=foldByPath.get(path);
-      if(!fold){
-        fold=document.createElement('details'); fold.className='hr-lo';
-        fold.appendChild(document.createElement('summary'));
-        foldByPath.set(path,fold);
-      }
-      const inFile=detailsByPath.has(path);
-      const outdated=notes.filter(n=>n.stale).length;
-      const summary=fold.querySelector('summary');
-      summary.textContent=(inFile?'':path+' · ')+notes.length+' comment'
-        +(notes.length===1?'':'s')+(outdated?', '+outdated+' outdated':'');
-      placeIn(fold,[summary,...elementsForThreads(notes,byIdAll)]);
-      const host=inFile?detailsByPath.get(path):section;
-      if(fold.parentElement!==host) host.appendChild(fold);
+    for(const g of strayGroups){
+      const inFile=detailsByPath.has(g.root.path);
+      const card=strayCardFor(g,byIdAll,inFile);
+      const host=inFile?detailsByPath.get(g.root.path):section;
+      if(card.parentElement!==host) host.appendChild(card);
     }
     if(section) section.hidden = orphanPaths.length===0;
 
     for(const [path,details] of detailsByPath){
       const countEl=details.querySelector('.hunk-count');
       if(!countEl) continue;
+      countEl.textContent='';
       const notes=state.notes.filter(n=>n.path===path);
-      if(notes.length===0){ countEl.textContent=''; continue; }
+      if(notes.length===0) continue;
       const outdated=notes.filter(n=>n.stale).length;
-      countEl.textContent=notes.length+' comment'+(notes.length===1?'':'s')
-        +(outdated?', '+outdated+' outdated':'');
+      const resolvedRootsHere=new Set();
+      for(const n of notes){
+        const rid=rootIdOfNote.get(n.id);
+        if(rid&&resolvedRootIds.has(rid)) resolvedRootsHere.add(rid);
+      }
+      countEl.appendChild(document.createTextNode(notes.length+' comment'+(notes.length===1?'':'s')));
+      if(outdated){
+        countEl.appendChild(document.createTextNode(' · '));
+        const sp=document.createElement('span'); sp.className='hunk-count-outdated';
+        sp.textContent=outdated+' outdated';
+        countEl.appendChild(sp);
+      }
+      if(resolvedRootsHere.size){
+        countEl.appendChild(document.createTextNode(' · '));
+        const sp=document.createElement('span'); sp.className='hunk-count-resolved';
+        sp.textContent=resolvedRootsHere.size+' resolved';
+        countEl.appendChild(sp);
+      }
     }
 
     const liveIds=new Set(state.notes.map(n=>n.id));
     for(const [id,rec] of rowById){
       if(!liveIds.has(id)){ rec.el.remove(); rowById.delete(id); }
     }
-    // Same liveIds cleanup, for the three thread-level caches: a deleted root must not leave
-    // its reply box, resolve button or collapsed wrapper behind.
+    // Same liveIds cleanup, for the thread-level caches: a deleted root must not leave its
+    // reply box, resolve button, collapsed wrapper, stray card or snippet behind.
     for(const [rootId,rec] of threadWrapByRoot){
       if(!liveIds.has(rootId)){ rec.el.remove(); threadWrapByRoot.delete(rootId); }
     }
@@ -1828,6 +1995,12 @@
     }
     for(const [rootId,el] of resolveBtnByRoot){
       if(!liveIds.has(rootId)){ el.remove(); resolveBtnByRoot.delete(rootId); }
+    }
+    for(const [rootId,card] of strayCardByRoot){
+      if(!liveIds.has(rootId)){ card.remove(); strayCardByRoot.delete(rootId); }
+    }
+    for(const [rootId,el] of snippetByRoot){
+      if(!liveIds.has(rootId)){ if(el) el.remove(); snippetByRoot.delete(rootId); }
     }
     refreshCommentsPanel();
   }
