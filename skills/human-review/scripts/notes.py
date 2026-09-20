@@ -26,9 +26,10 @@ sync ingests `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate` output 
 several back-to-back JSON documents; read_paginated_json handles that without a `jq -s`
 round trip. `line === null` is GitHub's outdated-comment signal (empirically confirmed, see
 state.md): the comment is kept with `line = original_line` and `stale = true`.
-`position`/`original_position` are never stored, they're unreliable. `diff_hunk` is stored
-verbatim -- the hunk as it stood when the comment was written, for rendering the outdated
-snippet a stale comment refers to. `in_reply_to_id` resolves to the parent's local id when
+`position`/`original_position` are never stored, they're unreliable. `diff_hunk` and
+`original_commit_id` are stored verbatim -- the hunk and the commit sha it came from, together
+enough to render the outdated snippet a stale comment refers to (`head_sha` is the wrong commit
+for that by definition). `in_reply_to_id` resolves to the parent's local id when
 the parent is already in state; otherwise the raw gh id is kept on `reply_to_gh_id` and
 re-tried on every sync, since `--paginate` does not guarantee parent-before-child order. A
 reply always inherits its parent's `line`/`side`.
@@ -42,10 +43,12 @@ ever show a Resolve button. Run it after `sync`, from the query's own response o
     python3 notes.py sync-threads --state state.json
 
 REVIEW_THREADS_QUERY (below, next to the delivery mutations) walks
-`repository.pullRequest.reviewThreads.nodes` for `id`, `isResolved`, and each thread's
-`comments.nodes[].databaseId`, then sync_threads maps every thread onto the notes whose gh_id
-(the REST-style integer `sync` already stored) matches one of those databaseIds, setting
-`gh_thread_id` and `resolved` on each. Idempotent like `sync`: matched by gh_id, so replaying
+`repository.pullRequest.reviewThreads.nodes` for `id`, `isResolved`, `resolvedBy { login }`, and
+each thread's `comments.nodes[].databaseId`, then sync_threads maps every thread onto the notes
+whose gh_id (the REST-style integer `sync` already stored) matches one of those databaseIds,
+setting `gh_thread_id`, `resolved`, and `resolved_by` (the resolver's login, or None when
+unresolved) on each; an unresolve clears `resolved_by` along with `resolved` rather than leaving
+a stale name behind. Idempotent like `sync`: matched by gh_id, so replaying
 the same response twice is a no-op the second time. `first: 100` on both connections rather than
 `--paginate`, since a nested connection (comments inside each thread) has its own cursor that
 --paginate's outer-cursor convention does not reach; a PR with over 100 threads or over 100
@@ -206,6 +209,7 @@ query ReviewThreads($owner: String!, $repo: String!, $number: Int!) {
         nodes {
           id
           isResolved
+          resolvedBy { login }
           comments(first: 100) {
             pageInfo { hasNextPage }
             nodes { databaseId }
@@ -386,13 +390,14 @@ def sync_comments(state, comments):
         gh_url = comment.get("html_url")
         in_reply_to_id = comment.get("in_reply_to_id")
         diff_hunk = comment.get("diff_hunk")
+        original_commit_id = comment.get("original_commit_id")
 
         existing = by_gh_id.get(gh_id)
         if existing is not None:
             existing.update(
                 path=path, line=line, side=side, stale=stale, body=body, author=author,
                 created_at=created_at, gh_url=gh_url,
-                anchor_line=line, diff_hunk=diff_hunk,
+                anchor_line=line, diff_hunk=diff_hunk, original_commit_id=original_commit_id,
             )
             if existing.get("reply_to") is None:
                 existing["reply_to_gh_id"] = in_reply_to_id
@@ -404,6 +409,7 @@ def sync_comments(state, comments):
                 "order": SYNCED_ORDER, "author": author,
                 "created_at": created_at, "gh_id": gh_id, "gh_url": gh_url, "reply_to": None,
                 "reply_to_gh_id": in_reply_to_id, "diff_hunk": diff_hunk,
+                "original_commit_id": original_commit_id,
             }
             notes.append(new_note)
             by_gh_id[gh_id] = new_note
@@ -427,21 +433,24 @@ def sync_comments(state, comments):
 def sync_threads(state, threads):
     """Merge GraphQL review-thread nodes (REVIEW_THREADS_QUERY's shape) into state["notes"],
     in place: every note whose gh_id matches one of a thread's comments' databaseId gets that
-    thread's id and resolved status. Matched by gh_id like sync_comments, so replaying the same
-    threads is a no-op the second time. A thread with no matching note (nothing from `sync` yet)
-    contributes nothing rather than raising.
+    thread's id, resolved status, and resolver login (None when unresolved, clearing any prior
+    value). Matched by gh_id like sync_comments, so replaying the same threads is a no-op the
+    second time. A thread with no matching note (nothing from `sync` yet) contributes nothing
+    rather than raising.
     """
     notes = state.setdefault("notes", [])
     by_gh_id = _index_by_gh_id(notes)
     for thread in threads:
         thread_id = thread.get("id")
         resolved = bool(thread.get("isResolved"))
+        resolved_by = (thread.get("resolvedBy") or {}).get("login") if resolved else None
         comment_ids = [c.get("databaseId") for c in (thread.get("comments") or {}).get("nodes") or []]
         for gh_id in comment_ids:
             note = by_gh_id.get(gh_id)
             if note is not None:
                 note["gh_thread_id"] = thread_id
                 note["resolved"] = resolved
+                note["resolved_by"] = resolved_by
     return state
 
 
