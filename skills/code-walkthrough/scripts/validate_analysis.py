@@ -378,7 +378,7 @@ def check_rendered(diff_text, rendered):
 
 
 def check_sections(section_paths, rendered):
-    """Each section file's first line is its `<!-- visual-diff:kind -->` marker, so finding
+    """Each section file's first line is its `<!-- code-walkthrough:kind -->` marker, so finding
     that marker in the output proves the section reached it. An empty section file means the
     analysis had nothing to draw, which is not a failure."""
     problems = []

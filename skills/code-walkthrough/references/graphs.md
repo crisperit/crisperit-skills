@@ -91,10 +91,13 @@ language it did not pick get no graph either.
 
 ## Cache location and runtime budget
 
-`symdelta.py` builds and caches its extractor binary under `$XDG_CACHE_HOME/visual-diff` when
-that is set, else `~/.cache/visual-diff`. Set `XDG_CACHE_HOME` yourself when `~/.cache` is
-read-only in your sandbox; a build failure there surfaces as a build error, not a language
-mismatch, and is easy to misread as one.
+`symdelta.py` builds and caches its extractor binary under `$XDG_CACHE_HOME/code-walkthrough`
+when that is set, else `~/.cache/code-walkthrough`, else the temp dir when `~/.cache` is not
+writable. That last fallback is what makes this work in an agent sandbox, which typically
+allowlists writes to a handful of paths and `~/.cache` is not one of them; the cost is a rebuild
+per boot rather than per machine. Point `XDG_CACHE_HOME` somewhere durable, or allowlist
+`~/.cache/code-walkthrough`, to keep the binary for good. A build failure surfaces as a build
+error, not a language mismatch, and is easy to misread as one.
 
 Budget for it: on a 1256-file Go repo this took 10m19s with the extractor binary already built
 and cached, which was two thirds of a 15-minute run. The cost is not the build, it is

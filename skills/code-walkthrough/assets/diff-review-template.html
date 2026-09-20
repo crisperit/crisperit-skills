@@ -308,34 +308,20 @@
   #mermaid-zoom-close:hover{background:var(--border)}
   #mermaid-zoom-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-  /* Node menu on any graph whose box carries a data-ids map: badge, popup and focus-dimming.
+  /* Node menu on any graph whose box carries a data-ids map: popup and focus-dimming.
      Scoped to svg.vd-nav, set by tagNavNodes below only when that map is present, so FLOW
      (no data-ids) stays untouched while both symbol-delta levels are in scope. */
-  svg.vd-nav .node[data-path]{cursor:pointer;-webkit-touch-callout:none}
-  svg.vd-nav .node[data-path]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  /* Badge lives inside the svg so pan and zoom carry it for free, and cloneNode(true) in
-     openZoom() copies it onto the fullscreen clone along with the rest of the tagged node. */
-  .vd-badge{opacity:0;pointer-events:none;transition:opacity .18s ease}
-  .vd-badge circle{fill:var(--panel);stroke:var(--accent);stroke-width:1.2}
-  .vd-badge path{stroke:var(--accent);stroke-width:1.6;fill:none;stroke-linecap:round}
-  /* Touch keeps :hover stuck after a tap, so the badge is pointer-gated: on a phone the
-     long-press is the whole affordance, same rule as any other hover-only control here.
-     pointer-events stays none outside this block so an invisible badge can't swallow the
-     tap that should reach the fullscreen-zoom handler underneath it. */
-  @media (hover:hover) and (pointer:fine){
-    svg.vd-nav .node:hover .vd-badge,
-    svg.vd-nav .node.vd-menu-open .vd-badge,
-    svg.vd-nav .node[data-path]:focus-visible .vd-badge{opacity:1;pointer-events:auto}
-  }
+  svg.vd-nav :is(.node,.cluster)[data-path]{cursor:pointer;-webkit-touch-callout:none}
+  svg.vd-nav :is(.node,.cluster)[data-path]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Mermaid writes an ID-scoped .node rule per render that outranks a plain rect selector,
      same reason .node.new/.node.gone above need !important. */
-  svg.vd-nav .node.vd-sel rect{stroke:var(--accent)!important;stroke-width:2px!important}
+  svg.vd-nav :is(.node,.cluster).vd-sel rect{stroke:var(--accent)!important;stroke-width:2px!important}
   /* Same !important-outranks-!important reason as .node.vd-sel rect above: a removed node
      (.node.gone, opacity:.7!important below) or an added one outside the reachable set must
      still drop to .22, not win on its own !important rule instead. */
-  svg.vd-nav.vd-focusing .node:not(.vd-reach){opacity:.22!important}
+  svg.vd-nav.vd-focusing :is(.node,.cluster):not(.vd-reach){opacity:.22!important}
   svg.vd-nav.vd-focusing .vd-edge:not(.vd-reach){opacity:.12}
-  svg.vd-nav .node,svg.vd-nav .vd-edge{transition:opacity .22s ease}
+  svg.vd-nav :is(.node,.cluster),svg.vd-nav .vd-edge{transition:opacity .22s ease}
   .vd-menu{position:absolute;z-index:20;min-width:190px;background:var(--panel);
     border:1px solid var(--border);border-radius:9px;padding:5px;
     box-shadow:0 10px 26px rgba(8,10,16,.45);font-size:var(--fs-sm)}
@@ -738,15 +724,30 @@
   if (!toggle || !levels.length) return;
   let names = [];
   try { names = JSON.parse(toggle.dataset.names || '[]'); } catch (_) { names = []; }
-  let level = 1;
+  // sections.py picks the opening level: it drops to packages when the symbols level holds more
+  // boxes than are worth laying out before the reader has asked for them.
+  let level = Number(root.dataset.default) || 2;
+  const rendered = new Set();
+  // Renders run one at a time: mermaid.render() carries shared id/def bookkeeping that two
+  // in-flight calls trip over, and a fast double-click on the toggle is two of them.
+  let chain = Promise.resolve();
 
   // The label is the level you are on, so the accessible name has to carry both that and what
   // activating does -- a button reading "packages" tells a screen reader nothing on its own.
-  function showLevel(n) {
-    level = Number(n);
-    levels.forEach(el => { el.hidden = el.dataset.level !== String(level); });
-    const here = (names[level - 1] || '').toLowerCase();
-    const other = (names[level === 1 ? 1 : 0] || '').toLowerCase();
+  // `level` moves the moment the toggle is clicked, not when the render it queued finishes, so
+  // a second click during a slow first render still flips to the other level rather than
+  // re-requesting the one already on its way.
+  function showLevel(n) { const target = Number(n); level = target; chain = chain.then(() => applyLevel(target)); return chain; }
+
+  async function applyLevel(n) {
+    // Each level renders the first time it is shown, not all of them up front: an explain-mode
+    // symbols level can carry hundreds of boxes, and mermaid laying that out at load blocks the
+    // page before anyone has switched to it.
+    const target = levels.find(el => el.dataset.level === String(n));
+    if (target && !rendered.has(target)) { rendered.add(target); await renderLevel(target); }
+    levels.forEach(el => { el.hidden = el.dataset.level !== String(n); });
+    const here = (names[n - 1] || '').toLowerCase();
+    const other = (names[n === 1 ? 1 : 0] || '').toLowerCase();
     toggle.textContent = here;
     toggle.setAttribute('aria-label',
       'Detail level: ' + here + '. Activate to show ' + other + '.');
@@ -757,7 +758,7 @@
     const shown = levels.find(el => !el.hidden);
     if (shown && shown.dataset.legend) toggle.insertAdjacentHTML('beforebegin', shown.dataset.legend);
   }
-  toggle.addEventListener('click', () => showLevel(level === 1 ? 2 : 1));
+  toggle.addEventListener('click', () => { showLevel(level === 1 ? 2 : 1); });
 
   function fail(el, n) {
     el.textContent = (names[n - 1] || ('Level ' + n)) + ' failed to render.';
@@ -791,10 +792,7 @@
     el.hidden = true; // showLevel() below unhides only the level the slider actually wants
   }
 
-  // Sequential, not Promise.all: mermaid.render() carries the same shared id/def bookkeeping as
-  // the FLOW run() above, so concurrent in-flight renders here can trip over it just as easily.
-  for (const el of levels) await renderLevel(el);
-  showLevel(1);
+  await showLevel(level);
 })();
 </script>
 <script>
@@ -813,39 +811,34 @@
   // Node menu (jump-to-file, focus-downstream) for any graph tagNavNodes tags below. Lives in
   // this IIFE because it needs panZoom's own moved/suppressClick tracking plus openZoom/wire/dlg
   // above, rather than duplicating a second click/drag split against the same svg.
-  const SVGNS='http://www.w3.org/2000/svg';
   let navMenu=null,navMenuFor=null;
+  const navWired=new WeakSet(),pzWired=new WeakSet(); // see tagNavNodes for why these aren't attributes
 
   function navEscapeHtml(s){
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
+  const NAV_SEL='.node,.cluster'; // a leaf package and a symbol are g.node, a package with children is g.cluster
   function navMermaidId(node){
-    // Mermaid's own id shape, verified against a real render: "<renderId>-flowchart-<id>-<n>".
-    const m=/-flowchart-(.+)-\d+$/.exec(node.id||'');
+    // Mermaid's own id shapes, verified against a real render of the bundled build:
+    // "<renderId>-flowchart-<id>-<n>" for a node, "<renderId>-<id>" for a cluster.
+    const id=node.id||'';
+    const m=/-flowchart-(.+)-\d+$/.exec(id)||/-([A-Za-z]\d+)$/.exec(id);
     return m&&m[1];
   }
-  function navBadge(bx,by){
-    const g=document.createElementNS(SVGNS,'g');
-    g.setAttribute('class','vd-badge');
-    g.setAttribute('transform','translate('+bx+','+by+')');
-    const circle=document.createElementNS(SVGNS,'circle');
-    circle.setAttribute('r','9');
-    const path=document.createElementNS(SVGNS,'path');
-    path.setAttribute('d','M-3.2 -3.2 h6.4 M-3.2 0 h6.4 M-3.2 3.2 h6.4');
-    g.append(circle,path);
-    return g;
-  }
-  // Runs on every wire() pass but tags an svg only once, same guard idiom as panZoom's own
-  // dataset.pzWired: mermaid can still mutate the box a few times while it renders.
+  // Runs on every wire() pass but tags an svg only once. The guard is a WeakSet, not an
+  // attribute: wire()'s observer can fire while mermaid.render() is still awaiting inside, and
+  // whatever attribute we left on the half-built svg is then serialised into the string render()
+  // returns -- so the finished svg came back claiming to be wired while mermaid's own class reset
+  // had already dropped vd-nav off it. An element identity can't be serialised.
   function tagNavNodes(box,svg){
-    if(svg.dataset.vdNavWired) return;
+    if(navWired.has(svg)) return;
     if(box.dataset.ids===undefined) return; // no map on this box at all (e.g. FLOW's .svgbox)
     let ids;
     try{ ids=JSON.parse(box.dataset.ids); }catch(_){ return; }
-    svg.dataset.vdNavWired='1';
+    navWired.add(svg);
     svg.classList.add('vd-nav');
-    const tagged={}; // mermaidId -> its <g.node>, so the edge pass below can require both ends tagged
-    svg.querySelectorAll('g.node').forEach(node=>{
+    const tagged={}; // mermaidId -> its box, so the edge pass below can require both ends tagged
+    svg.querySelectorAll(NAV_SEL).forEach(node=>{
       const mermaidId=navMermaidId(node);
       const path=mermaidId&&ids[mermaidId];
       if(!path) return; // folded pseudo-nodes and anything the ids map excludes on purpose (e.g. an empty map at level 1)
@@ -853,12 +846,6 @@
       node.tabIndex=0;
       node.setAttribute('role','button');
       node.setAttribute('aria-label','Open menu for '+path);
-      const rect=node.querySelector('rect');
-      if(rect){
-        const rx=parseFloat(rect.getAttribute('x')||'0'), ry=parseFloat(rect.getAttribute('y')||'0'),
-              rw=parseFloat(rect.getAttribute('width')||'0');
-        node.appendChild(navBadge(rx+rw-8,ry+8));
-      }
       tagged[mermaidId]=node;
     });
     svg.querySelectorAll('path[data-id]').forEach(edge=>{
@@ -902,14 +889,13 @@
   function closeNavMenu(returnFocus=false){
     if(navMenu){ navMenu.remove(); navMenu=null; }
     if(navMenuFor){
-      navMenuFor.classList.remove('vd-menu-open');
       if(returnFocus) navMenuFor.focus();
       navMenuFor=null;
     }
   }
   function clearNavFocus(root){
     root.classList.remove('vd-focusing');
-    root.querySelectorAll('.node,.vd-edge').forEach(n=>n.classList.remove('vd-reach','vd-sel'));
+    root.querySelectorAll(NAV_SEL+',.vd-edge').forEach(n=>n.classList.remove('vd-reach','vd-sel'));
     // __navSource (set in openZoom) points a fullscreen clone back at its inline graph; mirror
     // the clear there too, or closing the dialog leaves the inline graph stuck dimmed.
     if(root.__navSource) clearNavFocus(root.__navSource);
@@ -932,7 +918,7 @@
     const id=navMermaidId(node), seen=navDownstream(root,id);
     const downCount=seen.size; // pre-mutation: true downstream count, excluding the focused node
     seen.add(id);
-    root.querySelectorAll('.node').forEach(n=>{ if(seen.has(navMermaidId(n))) n.classList.add('vd-reach'); });
+    root.querySelectorAll(NAV_SEL).forEach(n=>{ if(seen.has(navMermaidId(n))) n.classList.add('vd-reach'); });
     root.querySelectorAll('.vd-edge').forEach(e=>{
       if(seen.has(e.dataset.from)&&seen.has(e.dataset.to)) e.classList.add('vd-reach');
     });
@@ -944,7 +930,7 @@
     // case reports a symbol count instead of "0 files"; a genuinely empty set gets its own
     // message.
     const paths=new Set();
-    root.querySelectorAll('.node.vd-reach').forEach(n=>{ if(n.dataset.path&&n.dataset.path!==node.dataset.path) paths.add(n.dataset.path); });
+    root.querySelectorAll('.node.vd-reach,.cluster.vd-reach').forEach(n=>{ if(n.dataset.path&&n.dataset.path!==node.dataset.path) paths.add(n.dataset.path); });
     const msg=downCount===0?'nothing downstream of '+node.dataset.path
       :paths.size===0?downCount+(downCount===1?' symbol':' symbols')+' downstream of '+node.dataset.path
       :paths.size+(paths.size===1?' file':' files')+' downstream of '+node.dataset.path;
@@ -952,15 +938,20 @@
     // Same __navSource mirror as clearNavFocus above, matched by mermaid id since clone and
     // inline svg share ids.
     if(root.__navSource){
-      const srcNode=[...root.__navSource.querySelectorAll('.node')].find(n=>navMermaidId(n)===id);
+      const srcNode=[...root.__navSource.querySelectorAll(NAV_SEL)].find(n=>navMermaidId(n)===id);
       if(srcNode) focusNavNode(root.__navSource,srcNode);
     }
   }
   // The walkthrough carries no per-file anchor id (see scripts/walkthrough.py), so a path is
   // resolved to its <details class="hunk"> at click time by matching .hunk-path's own text.
   function navFindHunk(path){
-    return [...document.querySelectorAll('details.hunk')]
-      .find(d=>{ const p=d.querySelector('.hunk-path'); return p&&p.textContent.trim()===path; })||null;
+    const hunks=[...document.querySelectorAll('details.hunk')];
+    const at=d=>{ const p=d.querySelector('.hunk-path'); return p?p.textContent.trim():null; };
+    // A package box's path is a directory, which matches no hunk of its own, so it falls back
+    // to the first file under it -- the walkthrough is already in diff order, so that is the
+    // package's first changed file rather than an arbitrary one.
+    return hunks.find(d=>at(d)===path)
+      ||hunks.find(d=>{ const a=at(d); return a&&a.startsWith(path+'/'); })||null;
   }
   function navGoToFile(path){
     const target=navFindHunk(path);
@@ -973,14 +964,17 @@
   }
   function openNavMenu(root,container,node,x,y){
     closeNavMenu();
-    navMenuFor=node; node.classList.add('vd-menu-open');
-    const path=node.dataset.path, hasFile=!!navFindHunk(path);
+    navMenuFor=node;
+    const path=node.dataset.path, hunk=navFindHunk(path);
+    // Naming which file it lands on matters for a directory: it is one of several, not the one.
+    const fileLabel=hunk&&hunk.querySelector('.hunk-path').textContent.trim()===path
+      ?'Go to file':'Go to first file';
     // A plain container, not role="menu": its buttons are already tabbable, and a real ARIA
     // menu needs arrow-key roving focus and containment this doesn't implement.
     const menu=document.createElement('div');
     menu.className='vd-menu';
     let markup='<div class="vd-menu-path">'+navEscapeHtml(path)+'</div>';
-    if(hasFile) markup+='<button type="button" data-a="file"><span class="vd-menu-ic">&#8594;</span>Go to file</button>';
+    if(hunk) markup+='<button type="button" data-a="file"><span class="vd-menu-ic">&#8594;</span>'+fileLabel+'</button>';
     markup+='<button type="button" data-a="focus"><span class="vd-menu-ic">&#9678;</span>Focus downstream</button>';
     if(root.classList.contains('vd-focusing'))
       markup+='<button type="button" data-a="clear"><span class="vd-menu-ic">&#215;</span>Clear focus</button>';
@@ -1040,10 +1034,10 @@
   // no library and never rasterises. mode='modal' sizes a clone to fill the full-screen dialog;
   // mode='inline' is the diagram sitting in the page, which must keep scrolling and stay put.
   function panZoom(svg,mode='modal',onChange){
-    if(svg.dataset.pzWired) return null; // already wired: wire()'s MutationObserver pass can revisit the same svg
+    if(pzWired.has(svg)) return null; // already wired: wire()'s MutationObserver pass can revisit the same svg
     const box=(svg.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number);
     if(box.length!==4||box.some(Number.isNaN)) return null;
-    svg.dataset.pzWired='1';
+    pzWired.add(svg);
     const home=box.slice();
     let view=box.slice();
     const apply=()=>{ svg.setAttribute('viewBox',view.join(' ')); if(onChange) onChange(); };
@@ -1098,8 +1092,6 @@
     // symbol-delta level, which has no .svgbox ancestor -- the level's own .mermaid box; both
     // carry position:relative. The fullscreen clone uses #mermaid-zoom-body instead.
     const navContainer=()=>mode==='modal'?zbody:svg.closest('.svgbox, .vd-symbols .mermaid');
-    let navPress=null;
-    const cancelNavPress=()=>{ if(navPress){ clearTimeout(navPress); navPress=null; } };
     // A lone touch pointer's type has to survive into endPointer, so a pinch that drops to one
     // finger can tell whether to resume a manual drag or leave it to touch-action:pan-y below.
     svg.addEventListener('pointerdown',e=>{
@@ -1112,25 +1104,14 @@
         // inline + a lone touch: leave it to touch-action:pan-y (native page scroll); only
         // mouse/pen drag pans a single pointer here, a second touch still starts a pinch below
         if(mode!=='inline'||e.pointerType!=='touch'){ beginDrag(e.clientX,e.clientY); svg.style.cursor='grabbing'; }
-        // Long-press opens the menu on touch/pen; mouse already has the hover badge and
-        // right-click, so it's excluded the same way the mockup excludes it.
-        const navNode=svg.classList.contains('vd-nav')&&e.target.closest('.node[data-path]');
-        if(navNode&&e.pointerType!=='mouse'){
-          cancelNavPress();
-          navPress=setTimeout(()=>{
-            navPress=null; moved=true; // borrow the drag-suppression flag so the trailing click can't also fire
-            openNavMenu(svg,navContainer(),navNode,e.clientX,e.clientY);
-            if(navigator.vibrate) navigator.vibrate(8);
-          },500);
-        }
       }
-      else if(pts.size===2){ drag=null; const[a,b]=arr(); pinch={d:dist(a,b),mid:mid(a,b)}; cancelNavPress(); }
+      else if(pts.size===2){ drag=null; const[a,b]=arr(); pinch={d:dist(a,b),mid:mid(a,b)}; }
       if(mode==='inline'&&pts.size>=2) e.preventDefault(); // one finger scrolls the page, a pinch must not
     });
     svg.addEventListener('pointermove',e=>{
       if(!pts.has(e.pointerId)) return;
       pts.set(e.pointerId,{x:e.clientX,y:e.clientY,type:e.pointerType});
-      if(origin&&Math.hypot(e.clientX-origin.x,e.clientY-origin.y)>4){ moved=true; cancelNavPress(); }
+      if(origin&&Math.hypot(e.clientX-origin.x,e.clientY-origin.y)>4){ moved=true; }
       if(pts.size>=2&&pinch){
         if(mode==='inline') e.preventDefault();
         const[a,b]=arr(); const d=dist(a,b), m=mid(a,b);
@@ -1147,7 +1128,6 @@
       }
     });
     const endPointer=e=>{
-      cancelNavPress();
       pts.delete(e.pointerId);
       if(pts.size===0){
         drag=null; pinch=null; origin=null; svg.style.cursor='grab';
@@ -1164,32 +1144,22 @@
     // A drag ending over the box still fires a click; swallow it once so panning an inline
     // diagram doesn't also pop the full-screen dialog open.
     svg.addEventListener('click',e=>{ if(suppressClick){ e.stopPropagation(); suppressClick=false; } },true);
-    // Right-click opens the same menu as the badge/long-press. iOS also fires this on a
-    // long-press, after the timer above has likely already opened it -- navMenuFor guards
-    // the double-open rather than racing the two.
-    svg.addEventListener('contextmenu',e=>{
-      if(!svg.classList.contains('vd-nav')) return;
-      const node=e.target.closest('.node[data-path]');
-      if(!node) return;
-      e.preventDefault();
-      cancelNavPress();
-      if(navMenuFor===node&&navMenu) return;
-      openNavMenu(svg,navContainer(),node,e.clientX,e.clientY);
-    });
-    // Click opens the menu only when it landed on the badge; a click anywhere else on a
-    // tagged node still bubbles to the box's own click handler and opens the fullscreen
-    // dialog, unchanged from a graph with no menu at all.
+    // A plain click anywhere on a tagged node opens the menu; a click on the graph
+    // background still bubbles to the box's own handler and opens the fullscreen dialog.
+    // Same gesture on every pointer type, so there is nothing hover- or right-click-only
+    // left to be undiscoverable on a phone.
     svg.addEventListener('click',e=>{
       if(!svg.classList.contains('vd-nav')) return;
-      const node=e.target.closest('.vd-badge')&&e.target.closest('.node[data-path]');
+      const node=e.target.closest('[data-path]');
       if(!node) return;
       e.stopPropagation();
+      if(navMenuFor===node&&navMenu){ closeNavMenu(); return; } // second tap on the same node closes it
       openNavMenu(svg,navContainer(),node,e.clientX,e.clientY);
     });
     svg.addEventListener('keydown',e=>{
       if(!svg.classList.contains('vd-nav')) return;
       if(e.key!=='Enter'&&e.key!==' ') return;
-      const node=e.target.closest('.node[data-path]');
+      const node=e.target.closest('[data-path]');
       if(!node) return;
       e.preventDefault(); e.stopPropagation();
       const rect=node.querySelector('rect');
@@ -1212,7 +1182,6 @@
     const svg=visibleSvg(box);
     if(!svg) return;
     const clone=svg.cloneNode(true);
-    delete clone.dataset.pzWired; // cloneNode copies the inline svg's own wiring flag too
     clone.__navSource=svg; // focusNavNode/clearNavFocus mirror onto this, so fullscreen focus changes survive the dialog closing
     zbody.replaceChildren(clone);
     const api=panZoom(clone,'modal');
@@ -1236,15 +1205,18 @@
     const svg=visibleSvg(box);
     if(!svg) return;
     tagNavNodes(box,svg);
-    if(svg.dataset.pzWired) return;
+    if(pzWired.has(svg)) return;
     panZoom(svg,'inline');
   }
   function wireAll(){
     document.querySelectorAll('.svgbox, .vd-symbols .mermaid').forEach(wire);
   }
   // mermaid renders asynchronously after startOnLoad, so watch for the svg to
-  // appear instead of assuming it exists when this script runs.
-  new MutationObserver(wireAll).observe(document.getElementById('plan-content'),{childList:true,subtree:true});
+  // appear instead of assuming it exists when this script runs. `hidden` is watched too: a
+  // graph level renders while still off-screen and is only unhidden afterwards, and wire()
+  // skips a box with no visible svg, so the unhide is the moment that box becomes wirable.
+  new MutationObserver(wireAll).observe(document.getElementById('plan-content'),
+    {childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   wireAll();
 })();
 </script>

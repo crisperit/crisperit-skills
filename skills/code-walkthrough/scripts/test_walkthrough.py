@@ -264,7 +264,7 @@ def test_skips_links_when_the_head_is_not_pushed():
 def test_walkthrough_carries_the_marker_the_section_check_looks_for():
     order, files = parsed()
 
-    assert render_html(flat(order, files), files, {}).startswith("<!-- visual-diff:walkthrough -->")
+    assert render_html(flat(order, files), files, {}).startswith("<!-- code-walkthrough:walkthrough -->")
 
 
 # ---- reading order ----
@@ -785,6 +785,27 @@ def test_renames_absent_changes_nothing():
 
     assert (render_html(flat(order, files), files, {})
             == render_html(flat(order, files), files, {}, renames=None))
+
+
+def test_explain_renders_plain_code_lines_not_diff_rows():
+    order, files = parsed()
+    out = render_html(flat(order, files), files, {}, explain=True)
+
+    # class "c" is what the page numbers off the header's new-side start, so the badges come
+    # out as the file's own line numbers.
+    assert 'class="a"' not in out and 'class="d"' not in out
+    assert '<span class="c">' in out
+    assert '<span class="h" hidden>' in out
+    # the +/- marker is gone from the text itself, not just from the colouring
+    assert ">+" not in out.split('<pre class="diff">', 1)[1]
+
+
+def test_explain_file_stat_counts_lines_instead_of_adds_and_removes():
+    order, files = parsed()
+    out = render_html(flat(order, files), files, {}, explain=True)
+
+    assert '<span class="add">' not in out
+    assert "lines</span>" in out or "line</span>" in out
 
 
 if __name__ == "__main__":

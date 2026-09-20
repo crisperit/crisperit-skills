@@ -10,6 +10,7 @@ from render import (  # noqa: E402
     render_html, counts_from, _flow_tb, _wrap_flow_labels,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
+from sections import ZWSP  # noqa: E402
 from validate_analysis import parse_hunks  # noqa: E402
 
 DIFF = """diff --git a/src/auth.py b/src/auth.py
@@ -69,7 +70,7 @@ def test_both_placeholders_are_replaced():
     out = html()
 
     assert TITLE_PLACEHOLDER not in out and CONTENT_PLACEHOLDER not in out
-    assert "<title>Visual diff: master...HEAD</title>" in out
+    assert "<title>Code walkthrough: master...HEAD</title>" in out
 
 
 def test_an_explicit_title_wins_even_with_no_target():
@@ -163,17 +164,13 @@ def test_html_rewrites_a_flowchart_lr_analysis_to_tb():
     assert "flowchart TB" in html_out and "flowchart LR" not in html_out
 
 
-def test_wrap_flow_labels_breaks_a_long_label_at_word_boundaries():
+def test_wrap_flow_labels_leaves_a_long_multiword_label_alone():
+    # mermaid wraps on spaces by itself, so a label with no over-length word comes back
+    # byte for byte (see sections.wrap_label).
     flow = ('flowchart TB\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
             'for the MediaGuard lookup"]')
 
-    out = _wrap_flow_labels(flow)
-
-    assert "<br/>" in out
-    assert "MediaGuard lookup" in out  # never split across the break
-    label = out.split('B["', 1)[1].rsplit('"]', 1)[0]
-    assert " ".join(label.split("<br/>")) == (
-        "NewRequest sets Request User Id to usrID for the MediaGuard lookup")
+    assert _wrap_flow_labels(flow) == flow
 
 
 def test_wrap_flow_labels_breaks_a_long_identifier_at_camel_boundaries():
@@ -182,8 +179,8 @@ def test_wrap_flow_labels_breaks_a_long_identifier_at_camel_boundaries():
     out = _wrap_flow_labels(flow)
 
     label = out.split('A["', 1)[1].rsplit('"]', 1)[0]
-    assert "<br/>" in label
-    assert "".join(label.split("<br/>")) == "filterUnusableIdentifierThatIsVeryLongIndeedYes"
+    assert ZWSP in label
+    assert label.replace(ZWSP, "") == "filterUnusableIdentifierThatIsVeryLongIndeedYes"
 
 
 def test_wrap_flow_labels_leaves_ids_arrows_and_edge_counts_alone():
@@ -196,49 +193,48 @@ def test_wrap_flow_labels_leaves_ids_arrows_and_edge_counts_alone():
     assert 'B["ok"]' in out  # short label untouched
 
 
-def test_wrap_flow_labels_wraps_a_long_quoted_edge_label():
-    flow = 'flowchart TB\n  A["short"] -->|"cache miss on the primary lookup index"| B["ok"]'
+def test_wrap_flow_labels_breaks_a_long_identifier_in_a_quoted_edge_label():
+    flow = 'flowchart TB\n  A["short"] -->|"via resolveSymbolMergesAcrossPackages"| B["ok"]'
 
     out = _wrap_flow_labels(flow)
 
     label = out.split('-->|"', 1)[1].split('"|', 1)[0]
-    assert "<br/>" in label
-    assert " ".join(label.split("<br/>")) == "cache miss on the primary lookup index"
+    assert ZWSP in label
+    assert label.replace(ZWSP, "") == "via resolveSymbolMergesAcrossPackages"
 
 
-def test_wrap_flow_labels_wraps_a_long_bare_edge_label():
-    flow = 'flowchart TB\n  A["short"] -->|cache miss on the primary lookup index| B["ok"]'
+def test_wrap_flow_labels_breaks_a_long_identifier_in_a_bare_edge_label():
+    flow = 'flowchart TB\n  A["short"] -->|via resolveSymbolMergesAcrossPackages| B["ok"]'
 
     out = _wrap_flow_labels(flow)
 
     label = out.split('-->|', 1)[1].split('|', 1)[0]
-    assert "<br/>" in label
-    assert " ".join(label.split("<br/>")) == "cache miss on the primary lookup index"
+    assert ZWSP in label
+    assert label.replace(ZWSP, "") == "via resolveSymbolMergesAcrossPackages"
 
 
-def test_wrap_flow_labels_wraps_a_node_and_an_edge_label_on_the_same_line():
-    flow = ('flowchart TB\n  A["NewRequest sets Request User Id to usrID for the lookup"] '
-            '-->|"cache miss on the primary lookup index"| B["ok"]')
+def test_wrap_flow_labels_reaches_a_node_and_an_edge_label_on_the_same_line():
+    flow = ('flowchart TB\n  A["filterUnusableIdentifierThatIsVeryLong"] '
+            '-->|"via resolveSymbolMergesAcrossPackages"| B["ok"]')
 
     out = _wrap_flow_labels(flow)
 
     node_label = out.split('A["', 1)[1].split('"]', 1)[0]
     edge_label = out.split('-->|"', 1)[1].split('"|', 1)[0]
-    assert "<br/>" in node_label
-    assert "<br/>" in edge_label
+    assert ZWSP in node_label
+    assert ZWSP in edge_label
 
 
-def test_flow_diagram_wraps_a_long_label_end_to_end():
+def test_flow_diagram_breaks_a_long_identifier_end_to_end():
     long_flow = {**ANALYSIS, "flow_mermaid":
-                 'flowchart LR\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
-                 'for the MediaGuard lookup"]'}
+                 'flowchart LR\n  A["short"] --> B["filterUnusableIdentifierThatIsVeryLong"]'}
 
     html_out = html(long_flow)
 
-    # The HTML source escapes the diagram like any other prose; the browser's own textContent
-    # decoding turns &lt;br/&gt; back into a real <br/> before Mermaid ever parses it.
-    assert "&lt;br/&gt;" in html_out
-    assert "MediaGuard lookup" in html_out
+    # A zero-width space needs no HTML escaping, so it reaches the page as itself -- unlike the
+    # <br/> this used to emit, which mermaid's sanitiser deleted (see sections.wrap_label).
+    assert ZWSP in html_out
+    assert "&lt;br" not in html_out
 
 
 def test_an_empty_how_it_works_drops_the_whole_section():
@@ -261,7 +257,7 @@ def test_no_text_size_control_is_emitted_at_all():
 
 
 def test_the_walkthrough_heading_carries_only_the_explanations_toggle():
-    wt = "<!-- visual-diff:walkthrough -->\n<details>x</details>"
+    wt = "<!-- code-walkthrough:walkthrough -->\n<details>x</details>"
     out = html(walkthrough=wt, links={"pr_url": "https://gh/pull/7"})
 
     assert 'class="h2-row"' in out
@@ -315,9 +311,20 @@ def test_html_footer_link_is_safe_to_click_from_a_file_url():
     assert 'target="_blank" rel="noopener noreferrer"' in out
 
 
+def test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic():
+    out = html(explain=True)
+
+    assert "<b>Scope</b>" in out and "<b>Changed</b>" not in out
+    assert "2 files, 2 lines" in out
+    assert "(net " not in out
+    assert "<h2>What this is</h2>" in out and "<h2>What changed</h2>" not in out
+    assert "<b>Summary</b>" in out and "<b>Verdict</b>" not in out
+
+
 if __name__ == "__main__":
     tests = [
         test_facts_come_from_the_diff_not_the_analysis,
+        test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic,
         test_a_net_deletion_reads_as_negative,
         test_both_placeholders_are_replaced,
         test_an_explicit_title_wins_even_with_no_target,
@@ -331,13 +338,13 @@ if __name__ == "__main__":
         test_flow_tb_leaves_a_non_lr_diagram_alone,
         test_flow_tb_rewrites_only_the_leading_lr_token,
         test_html_rewrites_a_flowchart_lr_analysis_to_tb,
-        test_wrap_flow_labels_breaks_a_long_label_at_word_boundaries,
+        test_wrap_flow_labels_leaves_a_long_multiword_label_alone,
         test_wrap_flow_labels_breaks_a_long_identifier_at_camel_boundaries,
         test_wrap_flow_labels_leaves_ids_arrows_and_edge_counts_alone,
-        test_wrap_flow_labels_wraps_a_long_quoted_edge_label,
-        test_wrap_flow_labels_wraps_a_long_bare_edge_label,
-        test_wrap_flow_labels_wraps_a_node_and_an_edge_label_on_the_same_line,
-        test_flow_diagram_wraps_a_long_label_end_to_end,
+        test_wrap_flow_labels_breaks_a_long_identifier_in_a_quoted_edge_label,
+        test_wrap_flow_labels_breaks_a_long_identifier_in_a_bare_edge_label,
+        test_wrap_flow_labels_reaches_a_node_and_an_edge_label_on_the_same_line,
+        test_flow_diagram_breaks_a_long_identifier_end_to_end,
         test_an_empty_how_it_works_drops_the_whole_section,
         test_an_empty_section_file_inserts_nothing_not_even_its_note,
         test_no_text_size_control_is_emitted_at_all,

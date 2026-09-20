@@ -1,6 +1,6 @@
 ---
 name: code-walkthrough
-description: Turns a git diff, commit range, branch, GitHub PR, or an existing area of code with no change at all into a self-contained local HTML walkthrough page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line comments you hand back to the agent or post to the PR. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "review this with me", "walk me through this change", "walk me through this PR", "explain the auth flow", "explain how billing works", "how does X work", "walk me through the auth flow", "help me understand this codebase", "help me understand src/parser/", or /code-walkthrough; both the -ize and -ise spellings mean this skill. This is for reviewing a change or explaining code that already exists, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the code).
+description: Use when the user wants a change or an area of code shown to them rather than searched: "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "review this with me", "walk me through this change", "walk me through this PR", "explain the auth flow", "explain how billing works", "how does X work", "walk me through the auth flow", "help me understand this codebase", "help me understand src/parser/", or /code-walkthrough; both the -ize and -ise spellings mean this skill. Turn a git diff, commit range, branch, GitHub PR, or an unchanged area of code into a self-contained local HTML walkthrough page: mermaid flow diagram, annotated diff walkthrough, per-line comments to hand back to the agent or post to the PR. Reviews or explains code that already exists, unlike a planning skill (plans work that does not exist yet) and unlike a code-review skill (hunts defects rather than recapping or visualizing).
 ---
 
 # Code Walkthrough
@@ -47,57 +47,19 @@ like `src/auth/*.go` and `middleware/session.go`, 6 files. Use those?", before s
 subagent budget on it. Do not write a new script for this: it is a grep-and-confirm pass, not a
 search feature.
 
-### The empty baseline, for explain mode
+### Explain mode: diff against an empty baseline
 
-Diff against an empty tree and every line in the named path comes back as an addition, so the
-walkthrough machinery below runs unchanged, one code path, not two. The empty tree
-`4b825dc642cb6eb9a060e54bf8d69288fbee4904` cannot be used directly as a diff base: `git merge-base`
-and three-dot both reject it with "is a tree, not a commit". Wrap it in an orphan commit first,
-once per session:
+"Explain X as it stands" names no second ref, so build one: an orphan commit wrapping the empty
+tree. Every line in the named path then comes back as an addition and the machinery below runs
+unchanged, one code path rather than two. That choice also sets the page's mode, `<explain>` in
+step 3. Explain mode has no size ceiling of its own either, so it negotiates scope with the user
+before spending.
 
-```bash
-EMPTY_BASE=$(git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -m "empty baseline" </dev/null)
-```
+Read `references/explain-mode.md` now, before step 2 writes anything: the baseline commands, the
+three size bands that decide whether to proceed, mention the cost, or stop and offer cuts, and
+what `--explain` changes downstream.
 
-Then diff two-dot against it, filtered to the path or file list from above. Three-dot still fails
-here, "no merge base", since the orphan shares no history with `HEAD`, so two-dot is not a
-shortcut, it is the only option; do not "fix" it to three-dot later. Run numstat first, before
-`raw.diff` gets written at all: it is the size check the next section runs on, and it costs
-nothing to ask for:
-
-```bash
-git diff --numstat $EMPTY_BASE HEAD -- <path>
-git diff $EMPTY_BASE HEAD -- <path> > <scratchpad>/raw.diff
-```
-
-`$EMPTY_BASE` is this mode's `<base>` everywhere below: pass it to `complexity.py` and
-`symdelta.py` the same as any other base.
-
-### Negotiate scope before spending, explain mode
-
-Explain mode has no size ceiling of its own: "explain the auth flow" might be 400 lines, but
-"help me understand this codebase" or a bare `src/` aims the empty baseline at an entire subtree,
-and every line in it comes back as an addition to fan out. Read the numstat total above before
-writing `raw.diff`, spawning a subagent, or starting the graph scripts. Three bands, keyed to
-section 2's fan-out table so this does not invent a second scale:
-
-- At or under 1200 lines and 6 files, the same line that keeps a diff on the single-subagent
-  route: proceed, say nothing.
-- Above that but under 5000 lines: say the total and what it triggers, one line, then keep going.
-  "1800 lines across 9 files, that fans out into a few batches" is enough; the user asked to
-  understand something, not to approve a budget, so do not turn it into a question.
-- At 5000 lines or more: stop before writing `raw.diff`. Come back with the count and two or
-  three concrete ways to cut it, drawn from what the numstat and file list actually show, never a
-  bare "this is large, continue?": a subdirectory carrying most of the weight, entry points and
-  types instead of every file, one language out of a mixed tree, or tests and generated files
-  excluded. For example: "help me understand this codebase" against a bare `src/` comes back
-  40000 lines across 300 files, 32000 of them under `src/vendor/`. Say "40000 lines, 300 files,
-  32000 under `src/vendor/`. Explain `src/` without vendor, or just the entry points (`main.go`,
-  `cmd/*.go`) plus the types (`pkg/*/types.go`)?" and wait for an answer.
-
-Diff mode hits the same ceiling from the other side, a 20000-line PR fans out just as wide; there
-the change is not negotiable, so state the size and proceed rather than asking the user to review
-less of their own PR.
+### "This PR", and three-dot over two-dot
 
 "This PR" resolves through the current branch:
 
@@ -346,12 +308,21 @@ this graph exists to avoid.
 
 ```bash
 python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
-  --format html > <scratchpad>/section-symbols.html
+  --format html <explain> --paths <paths> > <scratchpad>/section-symbols.html
 ```
 
-Shows two pre-rendered levels, packages then symbols, with a toggle between them. Pass the file
-to `render.py`'s `--symbols <path>`; it inserts nothing when the file is empty or the flag is
+Shows two levels, packages then symbols, with a toggle between them; each is laid out the first
+time it is shown, so a large symbols level costs nothing until someone switches to it. Pass the
+file to `render.py`'s `--symbols <path>`; it inserts nothing when the file is empty or the flag is
 omitted.
+
+`<paths>` is the files and directories the page is about, the same pathspec the diff used, space
+separated. The graph keeps symbols under those paths plus whatever their edges reach one hop out.
+**Required in explain mode**: the empty baseline makes every symbol in the repository new, so
+without it a page explaining one package draws the entire tree (measured: 3909 nodes, 5905 edges,
+611 KB of mermaid). Omit it when the diff is a real change, where the delta is already the scope.
+Explaining a whole repository is a legitimate `<paths>` of `.`; the section then opens on the
+packages level and says so in its note, with the symbols level one click away.
 
 Supported: Go (`.go`, native `go/packages`), TypeScript (`.ts`, `.tsx`), Python (`.py`) and Rust
 (`.rs`), the last three over LSP and each needing its server on PATH
@@ -392,7 +363,7 @@ fences, escaping, and the order inside each group.
 ```bash
 python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
   --diff <scratchpad>/raw.diff --format html --symdelta <scratchpad>/symdelta.json \
-  --complexity <scratchpad>/complexity.json \
+  --complexity <scratchpad>/complexity.json <explain> \
   > <scratchpad>/section-walkthrough.html
 ```
 
@@ -419,33 +390,12 @@ scratchpad path, so its `notes[]` carry forward instead of being lost.
 ## 2f. Sync existing PR comments, only when the diffed target is a GitHub PR
 
 Pull the PR's own review comments in before rendering, or the page shows zero threads even when
-the PR already has them:
+the PR already has them: a `notes.py sync` pass over the REST comments, then an additive
+`sync-threads` pass over the GraphQL review threads, since the REST payload carries no thread
+node id and resolving one needs it.
 
-```bash
-gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate | \
-  python3 <skill>/scripts/notes.py sync --state <scratchpad>/state.json
-```
-
-Then a second, additive pass so a resolved thread's state is known before the page renders --
-the REST comments above carry no review-thread node id, so resolving one is only possible once
-this has run:
-
-```bash
-gh api graphql -f query='
-  query ReviewThreads($owner: String!, $repo: String!, $number: Int!) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $number) {
-        reviewThreads(first: 100) {
-          nodes { id isResolved resolvedBy { login } comments(first: 100) { nodes { databaseId } } }
-        }
-      }
-    }
-  }' -F owner=<owner> -F repo=<repo> -F number=<n> | \
-  python3 <skill>/scripts/notes.py sync-threads --state <scratchpad>/state.json
-```
-
-Which fields are trusted, how an outdated comment is kept, and how a reply finds its parent:
-`references/pr-comments.md`.
+Both commands, which fields are trusted, how an outdated comment is kept, and how a reply finds
+its parent: `references/pr-comments.md`.
 
 ## 3. Build the output
 
@@ -459,12 +409,23 @@ python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
   --walkthrough <scratchpad>/section-walkthrough.html \
   --state <scratchpad>/state.json \
   [--symbols <scratchpad>/section-symbols.html] \
-  [--links <scratchpad>/links.json] [--title "Code walkthrough: <slug>"] \
+  [--links <scratchpad>/links.json] [--title "Code walkthrough: <slug>"] <explain> \
   > <scratchpad>/code-walkthrough-<slug>.html
 ```
 
 Omit `--symbols` when 2b3 did not run or returned `language: null`, `--links` when 2c did not
 run. An empty section file inserts nothing, not even its heading.
+
+### `<explain>`
+
+Resolve it like `<skill>` and `<scratchpad>`, not like an optional extra: every renderer above
+carries it, and all three have to agree. It is `--explain` when step 1 read the ask as "explain X
+as it stands" (the empty-baseline row of the target table), and empty in every other mode.
+
+Do not re-derive the mode down here from the diff's shape. The empty baseline makes everything an
+addition, but so does a real change that only adds files, and those two want different pages: one
+is code being explained, the other is code being reviewed. Only the ask tells them apart. What
+`--explain` changes in the rendered page: `references/explain-mode.md`.
 
 `references/builder.md` is background on why the output is shaped the way it is, not
 instructions to follow.
@@ -478,7 +439,7 @@ python3 <skill>/scripts/validate_analysis.py --diff <scratchpad>/raw.diff \
 ```
 
 It fails when a changed file's path never appears in the output, and when a section that was
-generated never reached it: each section file starts with a `<!-- visual-diff:kind -->` marker
+generated never reached it: each section file starts with a `<!-- code-walkthrough:kind -->` marker
 that has to show up in the rendered file. Do not proceed until it exits 0; a failure here is a
 bug to fix, not something to send back and retry.
 
@@ -527,44 +488,11 @@ Copy for agent payload and asks for it to be delivered, step 7.
 
 ## 7. Turn notes into PR comments, when the user asks
 
-The page has no server to post a click to: the user opens the Comments button, clicks Copy for
-agent there, and pastes the JSON it copies into the conversation (or, when a PR exists, may
-instead run the `gh` command Copy gh command printed -- one heredoc per postable comment plus
-one `resolveReviewThread` mutation per thread marked Resolve conversation, in which case this
-step is already done). Explain mode never has a PR, so the page already hides the Copy gh command
-button and shows a note instead; Copy for agent is the only exit. `import` still works, it only
-merges JSON into `state.json`, but `deliver` and `submit` post through a PR review that does not
-exist here, so a note stays imported and local rather than going anywhere; there is nothing to
-post it to. Import the pasted JSON, then deliver the ids it names:
+The page has no server to post a click to. The user opens the Comments button and clicks Copy for
+agent, then pastes the JSON here; or runs the `gh` command Copy gh command printed, in which case
+this step is already done. Explain mode never has a PR, so the page offers only Copy for agent
+there. Then `notes.py import` the pasted JSON, one `deliver` per id it names, and one `submit` to
+publish them as a single review rather than loose comments.
 
-```bash
-python3 <skill>/scripts/notes.py import --state <scratchpad>/state.json   # JSON on stdin
-python3 <skill>/scripts/notes.py deliver --state <scratchpad>/state.json --id <id>
-```
-
-`import` prints how many notes were added versus updated and which ids are ready to post, so
-which `deliver` calls come next is never a guess.
-
-`deliver` resolves the note's anchor against the current diff before it posts: a line still
-inside a hunk goes where it always did, a line just outside one moves to the nearest hunk line
-and says so in the body, and one with nothing near it becomes a file-level comment instead of the
-silent drop GitHub gives a raw out-of-hunk post.
-
-Once every drafted note for this ask has been delivered, submit the review as one unit instead
-of leaving it as loose comments:
-
-```bash
-python3 <skill>/scripts/notes.py submit --state <scratchpad>/state.json \
-  --event COMMENT --body-file <f>
-```
-
-`--event` is `COMMENT`, `APPROVE` or `REQUEST_CHANGES`; ask the user which if it is not obvious.
-`submit` publishes one review and sends the author one notification, not one per comment.
-
-When the user asks to refresh the comments, re-run step 2f's `notes.py sync` and `sync-threads`,
-then reload the page to see them: nothing pushes an update to a page that is already open. A
-thread the reader marked Resolve conversation shows as resolved for real once this confirms it;
-until then the page shows it as pending.
-
-What to show the user before posting, and why this one is never automatic:
-`references/pr-comments.md`.
+Commands, how `deliver` re-anchors a note against the current diff, refreshing after a sync, what
+to show the user before posting, and why this one is never automatic: `references/pr-comments.md`.
