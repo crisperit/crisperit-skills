@@ -3,7 +3,6 @@
 
 Usage:
   python3 sections.py --kind symbols --data symdelta.json --format html > section.html
-  python3 sections.py --kind symbols --data symdelta.json --format md   > section.md
 
 The diagram, its legend, its caption and its data-ids map are built here, in code, so they
 cannot go missing or get paraphrased by whoever assembles the page. A renderer inserts this
@@ -56,14 +55,10 @@ _MM_UNSAFE_RE = re.compile(r'[()"`]')
 # made a slider feel arbitrary. Callers are always in now.
 LEVEL_NAMES = ["Packages", "Symbols"]
 
-# Mermaid can't resolve a CSS var() inside classDef/linkStyle, so both carry a literal hex
-# mirroring the page's default (dark-theme) --accent/--muted. Edge linkStyle is emitted in both
-# formats -- there's no page CSS for edges either way. Node classDef is markdown-only: mermaid
-# compiles it to an id-scoped `#<renderId> .new > *{...!important}` rule that outranks the page's
-# own `.node.new`/`.node.gone` CSS (also !important, but by class), so emitting it into the HTML
-# page overrides the page's light/dark theming instead of losing to it. The colour-semantics
-# table lives once in diff-review-template.html next to :root -- these hexes must match it by
-# hand.
+# Mermaid can't resolve a CSS var() inside linkStyle, so it carries a literal hex mirroring the
+# page's default (dark-theme) --accent/--muted; there's no page CSS for edges either way. The
+# colour-semantics table lives once in diff-review-template.html next to :root -- these hexes
+# must match it by hand.
 LINK_COLOR_NEW = "#7aa2f7"
 LINK_COLOR_GONE = "#9aa3b2"
 
@@ -367,16 +362,14 @@ def _edge_endpoint_ids(edges):
     return ids
 
 
-def _mermaid_symbols(nodes, symbol_ids, kept_edges, emit_classdef=False):
+def _mermaid_symbols(nodes, symbol_ids, kept_edges):
     """Levels 2 and 3 share this: symbol_ids grouped by package, nested the same way level 1 is
     -- a package that owns an in-scope symbol gets a box, and so does every ancestor needed to
     contain it, so `corelib/ratelimit` sits inside one `corelib` box rather than beside it. A
     package with both an in-scope symbol of its own and child packages gets that symbol listed
     directly inside its box, alongside the nested child boxes. Nodes always get `class ...
-    new/gone`, for the legend's new/gone check; the backing literal-hex `classDef` is
-    markdown-only (`emit_classdef`) -- see the comment above LINK_COLOR_NEW/GONE for why it can't
-    also apply to the HTML page. Edges have no per-edge classDef at all, only `linkStyle
-    <index>`, so they're styled by their position in the diagram instead.
+    new/gone`, for the legend's new/gone check. Edges have no per-edge classDef at all, only
+    `linkStyle <index>`, so they're styled by their position in the diagram instead.
 
     Returns `(mermaid_text, id_to_file)`: the second is the mermaid `S<n>` id of every symbol
     node mapped to its file path, for the page's node menu to resolve a click to a file. A
@@ -443,12 +436,8 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges, emit_classdef=False):
     new_ids = [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "new"]
     gone_ids = [nid for sid, nid in mm_id.items() if by_id[sid].get("state") == "gone"]
     if new_ids:
-        if emit_classdef:
-            lines.append(f'  classDef new stroke:{LINK_COLOR_NEW},stroke-width:2px;')
         lines.append(f'  class {",".join(new_ids)} new')
     if gone_ids:
-        if emit_classdef:
-            lines.append(f'  classDef gone stroke:{LINK_COLOR_GONE},stroke-dasharray:4 4,opacity:0.7;')
         lines.append(f'  class {",".join(gone_ids)} gone')
 
     new_links, gone_links = [], []
@@ -519,17 +508,10 @@ def _symbols_orphans(nodes, orphan_ids):
     return f'<ul class="vd-moved">{items}</ul>\n'
 
 
-def _symbols_orphans_md(nodes, orphan_ids):
-    """Markdown counterpart of _symbols_orphans: a plain bullet list, unescaped like the rest
-    of the markdown recap (GitHub's own renderer escapes what it displays)."""
-    rows = _symbols_orphan_rows(nodes, orphan_ids)
-    return "".join(f"- {pkg}: {label} ({state})\n" for pkg, label, state in rows)
-
-
 _EMPTY_LEVEL_LABEL = "Nothing to draw at this detail level"
 
 
-def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges, emit_classdef=False):
+def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges):
     """_mermaid_symbols, except when filtering to edge-having symbols leaves nothing at all: a
     bare `flowchart LR` renders at a near-zero viewBox, which the page's own `degenerate()`
     check (diff-review-template.html) mistakes for a real render failure rather than a level
@@ -537,7 +519,7 @@ def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges, emit_classdef=Fals
     no id to map since it draws nothing real."""
     if not symbol_ids:
         return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]', {}
-    return _mermaid_symbols(nodes, symbol_ids, kept_edges, emit_classdef)
+    return _mermaid_symbols(nodes, symbol_ids, kept_edges)
 
 
 def _moved_lines(moved):
@@ -624,47 +606,6 @@ def render_symbols(data):
     ]) + "\n" + orphans_html + moved_html + "</div>\n"
 
 
-def render_symbols_md(data):
-    """Markdown counterpart of render_symbols: mermaid has no live level toggle outside the
-    HTML page, so both pre-rendered levels ship as separate fenced blocks instead, packages
-    first, each captioned the same way its html counterpart is. No data-ids map here, that
-    attribute is an HTML-page mechanism only."""
-    nodes = data.get("nodes") or []
-    if not nodes:
-        return ""
-    edges = data.get("edges") or []
-    moved = data.get("moved") or []
-
-    level1, undrawn_count = _mermaid_packages(nodes, edges)
-    ids2, edges2 = _symbols_scope(nodes, edges)
-    drawn2 = _edge_endpoint_ids(edges2)
-    level2, _file_map2 = _mermaid_symbols_for_level(nodes, ids2 & drawn2, edges2, emit_classdef=True)
-
-    changed_ids = _changed_symbol_ids(nodes)
-    orphan_ids = changed_ids - drawn2
-
-    note = _symbols_note_text(
-        len(nodes), len(edges), len(changed_ids) - len(orphan_ids), len(orphan_ids), undrawn_count
-    )
-    legends = [_symbols_legend_text(level1), _symbols_legend_text(level2)]
-
-    out = [SYMBOLS_MARKER, "", "### Changes visualization", ""]
-    for name, mermaid, legend in zip(LEVEL_NAMES, (level1, level2), legends):
-        out.append(f"**{name}**" + (f" -- {legend}" if legend else ""))
-        out += ["", "```mermaid", mermaid, "```", ""]
-    out.append(note)
-    orphans_md = _symbols_orphans_md(nodes, orphan_ids)
-    if orphans_md:
-        out += ["", orphans_md.rstrip("\n")]
-    if moved:
-        # A different bullet marker than the orphans list above: a blank line alone doesn't
-        # start a new CommonMark list, only a marker change does, and these need to render as
-        # two lists, matching the two separate `<ul class="vd-moved">` blocks the HTML path uses
-        # for the same reason -- an orphaned symbol and a moved one mean different things.
-        out += ["", "\n".join(f"* {line}" for line in _moved_lines(moved))]
-    return "\n".join(out).rstrip("\n") + "\n"
-
-
 _LEGEND_STATE_RE = re.compile(r"^  class \S+ (new|gone)$", re.MULTILINE)
 
 
@@ -691,23 +632,15 @@ def _symbols_legend(mermaid_source):
     return f'<span class="vd-legend">{"".join(parts)}</span>'
 
 
-def _symbols_legend_text(mermaid_source):
-    """Markdown counterpart of _symbols_legend: plain words, no swatch markup to carry the
-    colour."""
-    has_new, has_gone = _symbols_legend_states(mermaid_source)
-    states = [s for s, has in (("new", has_new), ("gone", has_gone)) if has]
-    return "new/gone marked" if len(states) == 2 else (f"{states[0]} marked" if states else "")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kind", required=True, choices=("symbols",))
     parser.add_argument("--data", required=True)
-    parser.add_argument("--format", required=True, choices=("md", "html"))
+    parser.add_argument("--format", required=True, choices=("html",))
     args = parser.parse_args()
 
     data = json.loads(Path(args.data).read_text())
-    sys.stdout.write(render_symbols_md(data) if args.format == "md" else render_symbols(data))
+    sys.stdout.write(render_symbols(data))
     return 0
 
 

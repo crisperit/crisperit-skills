@@ -85,9 +85,8 @@ using a different class silently breaks that count, and a reader's comment lands
 line of a real pull request. `walkthrough.py` owns it, with a test asserting that context plus
 removed equals the old span each header declares and context plus added equals the new span.
 
-The page has no size budget, so it carries every hunk body. That is where the reader is sent
-when the markdown recap dropped them for length. The worked examples below are what the script
-emits, kept so a reviewer can see the shape without running it.
+The page has no size budget, so it carries every hunk body. The worked examples below are what
+the script emits, kept so a reviewer can see the shape without running it.
 
 ## Describe, not judge
 

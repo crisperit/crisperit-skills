@@ -3,8 +3,7 @@
 
 Usage:
   python3 validate_analysis.py --diff raw.diff --analysis analysis.json
-  python3 validate_analysis.py --diff raw.diff --analysis analysis.json --rendered out.md
-  python3 validate_analysis.py --diff raw.diff --analysis analysis.json --recap
+  python3 validate_analysis.py --diff raw.diff --analysis analysis.json --rendered out.html
 
 raw.diff is the source of truth: every file it touches must appear in analysis.json, and
 every `@@` hunk of that file must appear under it. A hunk's note may be blank -- churn
@@ -15,12 +14,7 @@ without reading the hunk. Across the whole diff, too many blank notes still fail
 EMPTY_NOTE_FLOOR.
 With --rendered, also checks the produced recap mentions every file path.
 
---recap is for the cheap prose-only mode, whose analysis.json has no files[] entries at
-all: it skips every per-file and per-hunk check and instead requires "groups" to cover
-every path in the diff exactly once, since groups is the only thing carrying per-file
-coverage on that path.
-
-Schema (see human-review/SKILL.md step 2):
+Schema (see code-walkthrough/SKILL.md step 2):
 
   {
     "target": "master...HEAD",
@@ -67,8 +61,6 @@ HUNK_PREFIX = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)")
 # in the file changes, not just the edited hunk.
 INDEX_LINE = re.compile(r"^index [0-9a-fA-F]+\.\.([0-9a-fA-F]+)")
 REQUIRED_KEYS = ("target", "what_changed", "how_it_works", "flow_mermaid", "files")
-# --recap has no files[] at all (see module docstring), so it only owes the prose keys.
-PROSE_KEYS = tuple(key for key in REQUIRED_KEYS if key != "files")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 MIN_IDENTIFIER_LEN = 4
@@ -265,35 +257,18 @@ def _empty_note_floor(hunks):
     ]
 
 
-def validate(diff_text, analysis, recap=False):
-    """Return a list of plain-sentence problems; empty means it passes.
-
-    recap=True is the cheap --recap mode: analysis.json carries no per-file or per-hunk
-    detail, so those checks are skipped and "groups" becomes the only thing that has to
-    cover every path in the diff.
-    """
+def validate(diff_text, analysis):
+    """Return a list of plain-sentence problems; empty means it passes."""
     order, diff_files = parse_hunks(diff_text)
     diff_hunks = {path: [h["prefix"] for h in entry["hunks"]]
                   for path, entry in diff_files.items()}
     problems = []
 
-    for key in (PROSE_KEYS if recap else REQUIRED_KEYS):
+    for key in REQUIRED_KEYS:
         if key not in analysis:
             problems.append(f"missing top-level key: {key}")
     if _blank(analysis.get("what_changed")):
         problems.append("what_changed is empty")
-
-    if recap:
-        groups = analysis.get("groups")
-        if groups is None:
-            problems.append("recap requires groups to cover every path in the diff")
-        problems += _validate_groups(groups, diff_hunks)
-        if isinstance(groups, list):
-            claimed = {path for group in groups if isinstance(group, dict)
-                       for path in (group.get("paths") or []) if isinstance(path, str)}
-            problems += [f"{path}: changed in the diff but in no group"
-                         for path in order if path not in claimed]
-        return problems
 
     if not isinstance(analysis.get("files"), list):
         problems.append("files must be a list")
@@ -426,9 +401,6 @@ def main():
     parser.add_argument("--analysis", required=True)
     parser.add_argument("--rendered")
     parser.add_argument("--sections", nargs="*", default=[])
-    parser.add_argument("--recap", action="store_true",
-                         help="cheap prose-only mode: skip per-file/per-hunk checks, "
-                              "require groups to cover every path instead")
     args = parser.parse_args()
 
     diff_text = open(args.diff, errors="replace").read()
@@ -438,7 +410,7 @@ def main():
         print(f"analysis.json is not valid JSON: {exc}", file=sys.stderr)
         return 1
 
-    problems = validate(diff_text, analysis, recap=args.recap)
+    problems = validate(diff_text, analysis)
     if args.rendered:
         rendered = open(args.rendered, errors="replace").read()
         problems += check_rendered(diff_text, rendered)

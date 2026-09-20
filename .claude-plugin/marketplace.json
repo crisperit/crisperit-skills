@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "crisperit-skills",
-      "description": "human-review: turn a diff, branch or PR into a markdown recap plus a local interactive HTML review page",
+      "description": "code-walkthrough: turn a diff, branch or PR into a local interactive HTML review page you can comment on",
       "version": "0.3.0",
       "source": "./",
       "author": {

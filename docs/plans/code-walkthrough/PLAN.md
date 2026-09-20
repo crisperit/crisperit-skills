@@ -1,5 +1,11 @@
 # Plan: evolving `visual-diff` into `human-review`
 
+> Superseded on the name: the skill is now `code-walkthrough`. `human-review` collided with
+> petergyang/human-review, an unrelated skill on the same `/human-review` command. The markdown
+> recap and the `--pr` description flag were cut at the same time, so the skill builds only the
+> HTML review page now. Comment posting to GitHub stayed. Everything below still describes the
+> state document and the note lifecycle accurately; read `human-review` as `code-walkthrough`.
+
 ## What changes, and what does not
 
 The skill is renamed to `human-review` and grows a state document, `state.json`, that owns every mutable part of the review page: human notes, their GitHub lifecycle, per-hunk annotation hashes, and staleness. One JavaScript renderer draws that state, inline JSON for the dependency-free single file the page always is. Notes gain a draft -> posted lifecycle targeted at a GitHub PR, a sync-in path for comments that already exist on the PR, text-based re-anchoring when line numbers shift, and hash-keyed incremental regeneration so a re-run only redoes the work whose input actually changed. What deliberately does not change: the diff body itself stays server-rendered HTML from `walkthrough.py`, `render.py` stays a string-interpolation renderer, the four graph analysers keep their current CLI contracts, `validate_analysis.py` stays the gate over `analysis.json` + `raw.diff`, the `<!-- visual-diff:kind -->` markers and the `~/.cache/visual-diff` directory keep their literal names, and agent-fix notes are out of scope for this plan and are not designed for beyond one `target` field left in the note record.

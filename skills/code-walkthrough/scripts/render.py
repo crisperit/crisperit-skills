@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Assemble the finished HTML page or markdown recap from analysis.json and the section files.
+"""Assemble the finished HTML page from analysis.json and the section files.
 
   python3 render.py --analysis analysis.json --diff raw.diff --format html \
       --template ../assets/diff-review-template.html \
       --walkthrough section-walkthrough.html \
       [--symbols section-symbols.html] [--links links.json] [--title "..."] > out.html
-
-  python3 render.py --analysis analysis.json --diff raw.diff --format md \
-      --walkthrough section-walkthrough.md \
-      [--symbols section-symbols.md] [--links links.json] > out.md
 
 The page body was the last thing a model still typed out, and almost none of it was judgment.
 Six of its seven sections are either a section file pasted byte for byte or a string that
@@ -23,9 +19,9 @@ mermaid error box. They are now one function with a test.
 The judgment stays in analysis.json: `what_changed`, `how_it_works`, `flow_mermaid`, `verdict`
 and the per-file `role` and per-hunk `note` that walkthrough.py places.
 
-Prose fields mark identifiers with backticks. Markdown passes those through, since GitHub
-renders them as inline code; HTML promotes them to `<code>` after escaping, so a tag is only
-ever added to text that is already safe. Same rule sections.py already follows for its captions.
+Prose fields mark identifiers with backticks; HTML promotes them to `<code>` after escaping,
+so a tag is only ever added to text that is already safe. Same rule sections.py already
+follows for its captions.
 
 Stdlib only, no network.
 """
@@ -46,21 +42,6 @@ from validate_analysis import parse_hunks  # noqa: E402  one owner for diff pars
 TITLE_PLACEHOLDER = "<!-- DIFF_TITLE -->"
 CONTENT_PLACEHOLDER = "<!-- DIFF_CONTENT -->"
 STATE_PLACEHOLDER = "<!-- HR_STATE -->"
-# Readable budget for the whole recap, which is the number walkthrough.DEFAULT_MAX_CHARS is
-# sized against. GitHub's hard ceiling is 65536 and it refuses a longer body outright; 45000
-# leaves headroom for the graph sections and prose while still being a body someone will
-# scroll rather than skip.
-MAX_BODY_CHARS = 45000
-# The demotion logic in walkthrough.py reflows line counts as it shrinks, so cutting
-# --max-chars by the overflow amount doesn't cut the recap by the same amount. This margin
-# pushes the naive subtraction down far enough to actually land under budget on the retry,
-# instead of landing just short and overflowing again.
-OVERFLOW_MARGIN_CHARS = 200
-# A one-file walkthrough's own skeleton (leading comment, <details> wrapper, boilerplate closing
-# sentence, one `- path +n -n` line) measures 272 chars with nothing else in it. A suggested
-# --max-chars below that isn't a smaller ask, it's one walkthrough.py's own demotion floor
-# already ignores, returning that skeleton regardless. 300 sits just past it.
-MIN_USEFUL_MAX_CHARS = 300
 
 
 def counts_from(files):
@@ -106,11 +87,6 @@ _MERMAID_LABEL_RE = re.compile(r'([\[({>]{1,2})"([^"]*)"')
 # thick, `--x`/`--o`, and their `<`-reversed forms); quoted and bare are separate groups so the
 # substitution can put back exactly the quoting it found.
 _MERMAID_EDGE_LABEL_RE = re.compile(r'(<?[-=.]+[-=]?[>ox])\|(?:"([^"|\n]*)"|([^|\n]*))\|')
-
-# walkthrough.py's own demotion floor for this diff, stamped on the line after its section
-# marker. An older section file (or no --walkthrough at all) carries no such line, and
-# overflow_warning falls back to MIN_USEFUL_MAX_CHARS rather than treating that as an error.
-_WALKTHROUGH_FLOOR_RE = re.compile(r"<!-- visual-diff:walkthrough-floor (\d+) -->")
 
 
 def _wrap_edge_label(m):
@@ -207,118 +183,22 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
     return page
 
 
-def _reading_order_md(groups):
-    """Stand-in for the walkthrough's own group listing when there is no walkthrough: a
-    PR-description-only run has no per-hunk notes, but validate_analysis --rendered still
-    requires every changed path to show up somewhere, and analysis["groups"] is the only thing
-    left naming them."""
-    out = ["### Reading order", ""]
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        paths = [p for p in (group.get("paths") or []) if p]
-        if not paths:
-            continue
-        title, why = group.get("title") or "", group.get("why") or ""
-        if title or why:
-            out.append(f"**{title}**" + (f" - {why}" if why else "") if title else why)
-        out += [", ".join(f"`{p}`" for p in paths), ""]
-    return out
-
-
-def render_md(analysis, files, walkthrough="", links=None, complexity=None, symbols=""):
-    target = analysis.get("target") or ""
-    count, added, removed, net = counts_from(files)
-    sign = "+" if net >= 0 else ""
-
-    # No HTML escaping anywhere below. GitHub's own renderer escapes what it displays, and
-    # escaping first produces double-escaped output like "&amp;lt;". Backticks stay backticks,
-    # which GitHub renders as inline code.
-    facts = (f"**{count} file{'' if count == 1 else 's'} changed, "
-             f"+{added} -{removed} (net {sign}{net})**")
-    if target:
-        facts += f" · `{target}`"
-    cx = summary_line(complexity)
-    if cx:
-        facts += f" · complexity {cx}"
-    out = [facts, ""]
-    verdict = analysis.get("verdict") or ""
-    if verdict:
-        out += [verdict, ""]
-
-    for para in _paragraphs(analysis.get("what_changed")):
-        out += [para, ""]
-
-    flow = _wrap_flow_labels(_flow_tb((analysis.get("flow_mermaid") or "").strip()))
-    if flow:
-        out += ["```mermaid", flow, "```", ""]
-
-    how = _paragraphs(analysis.get("how_it_works"))
-    if how:
-        out.append("### How it works")
-        out.append("")
-        for para in how:
-            out += [para, ""]
-
-    # Same paste-verbatim rule as the html path: section-symbols.md carries its own heading
-    # and caption, both written by sections.py, so nothing is added here.
-    if symbols.strip():
-        out += [symbols.strip(), ""]
-
-    if walkthrough.strip():
-        out += [walkthrough.strip(), ""]
-    elif analysis.get("groups"):
-        out += _reading_order_md(analysis["groups"])
-
-    # The recap never names a local path: every reader of a PR description is on someone else's
-    # machine, so a scratch directory means nothing to them and leaks a directory layout.
-    if links and links.get("pr_url"):
-        out += [f"[Files changed]({links['pr_url']}/files)", ""]
-
-    return "\n".join(out).rstrip("\n") + "\n"
-
-
 def _read(path):
     return Path(path).read_text(errors="replace") if path else ""
-
-
-def overflow_warning(text, walkthrough_text):
-    """The walkthrough is the only section with a size dial, so it gets a --max-chars
-    suggestion when it can actually absorb the overflow. When the suggestion falls below
-    walkthrough.py's own stamped floor for this diff, no retry can satisfy it, so say so by
-    name instead of handing out a number proven not to work. With no floor to check against
-    (older section file, or no walkthrough at all), fall back to MIN_USEFUL_MAX_CHARS."""
-    overflow = len(text) - MAX_BODY_CHARS
-    suggested = len(walkthrough_text) - overflow - OVERFLOW_MARGIN_CHARS
-    prefix = f"warning: recap is {len(text)} characters, over the {MAX_BODY_CHARS} budget; "
-    floor_match = _WALKTHROUGH_FLOOR_RE.search(walkthrough_text)
-    if floor_match:
-        floor = int(floor_match.group(1))
-        if suggested < floor:
-            return (prefix + "unsatisfiable by shrinking the walkthrough, its floor for this "
-                    f"diff is {floor} characters; the symbols graph section has no size dial "
-                    "either, so the excess has nowhere left to shrink from")
-        return prefix + f"re-run walkthrough.py with --max-chars {suggested}"
-    if suggested < MIN_USEFUL_MAX_CHARS:
-        # No floor marker: the walkthrough was already near-empty (or --walkthrough was never
-        # passed), so the excess is upstream in the prose or the symbols section instead.
-        return (prefix + "the walkthrough section is not where the excess is, so shrinking it "
-                "will not help; the symbols graph section has no size dial either")
-    return prefix + f"re-run walkthrough.py with --max-chars {suggested}"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis", required=True)
     parser.add_argument("--diff", required=True)
-    parser.add_argument("--format", required=True, choices=("md", "html"))
-    parser.add_argument("--walkthrough", help="section-walkthrough.{html,md}")
+    parser.add_argument("--format", required=True, choices=("html",))
+    parser.add_argument("--walkthrough", help="section-walkthrough.html")
     parser.add_argument("--links")
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
-    parser.add_argument("--template", help="html only: the page template")
-    parser.add_argument("--symbols", help="section-symbols.{html,md}")
-    parser.add_argument("--state", help="html only: state.json, inlined behind HR_STATE")
-    parser.add_argument("--title", help="html only")
+    parser.add_argument("--template", required=True, help="the page template")
+    parser.add_argument("--symbols", help="section-symbols.html")
+    parser.add_argument("--state", help="state.json, inlined behind HR_STATE")
+    parser.add_argument("--title")
     args = parser.parse_args()
 
     analysis = json.loads(Path(args.analysis).read_text())
@@ -327,21 +207,11 @@ def main():
     complexity = json.loads(Path(args.complexity).read_text()) if args.complexity else None
     state = json.loads(Path(args.state).read_text()) if args.state else None
 
-    if args.format == "html":
-        if not args.template:
-            parser.error("--template is required for --format html")
-        sys.stdout.write(render_html(
-            analysis, files, _read(args.template),
-            _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
-            complexity=complexity, state=state,
-        ))
-    else:
-        walkthrough_text = _read(args.walkthrough)
-        text = render_md(analysis, files, walkthrough_text, links, complexity,
-                          symbols=_read(args.symbols))
-        if len(text) > MAX_BODY_CHARS:
-            print(overflow_warning(text, walkthrough_text), file=sys.stderr)
-        sys.stdout.write(text)
+    sys.stdout.write(render_html(
+        analysis, files, _read(args.template),
+        _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
+        complexity=complexity, state=state,
+    ))
     return 0
 
 

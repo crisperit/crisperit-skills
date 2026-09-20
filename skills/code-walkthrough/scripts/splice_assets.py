@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Inline the vendored JS a built page actually uses.
 
-One placeholder. Mermaid is 3.2MB, so a page with no `class="mermaid"` block (a markdown-only
-run never even builds one) should not carry it. An unused placeholder stays in the file as an
+One placeholder. Mermaid is 3.2MB, so a page with no `class="mermaid"` block should not
+carry it. An unused placeholder stays in the file as an
 inert HTML comment, which is why it is safe to leave unfilled rather than erroring.
 
 Idempotent: a placeholder that is already gone is skipped, so re-splicing an existing page

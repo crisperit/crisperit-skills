@@ -18,7 +18,7 @@ merge-base commit, matching what `base...head` itself diffs; head at its tip) an
 them up, even on failure.
 
 Stdlib only except for shelling out to `git`, the vendored `go` extractor, and (for the LSP tier)
-the relevant language server over raw stdio JSON-RPC. See human-review/SKILL.md for how this fits
+the relevant language server over raw stdio JSON-RPC. See code-walkthrough/SKILL.md for how this fits
 the recap flow.
 """
 

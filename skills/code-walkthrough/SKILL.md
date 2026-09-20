@@ -1,39 +1,22 @@
 ---
-name: human-review
-description: Turns a git diff, commit range, branch, or GitHub PR that already exists into a markdown recap for the PR description plus a self-contained local HTML review page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line commenting that posts straight back as PR review comments. Nothing is published by default: the page stays a local file unless the user passes --pr or asks in words for it to be hosted. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "human review", "review this with me", or /human-review; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
+name: code-walkthrough
+description: Turns a git diff, commit range, branch, or GitHub PR into a self-contained local HTML review page, with a mermaid flow diagram, an annotated diff walkthrough, and per-line comments you hand back to the agent or post to the PR. Use for "visual diff", "visualize diff", "visualise diff", "visualize-diff", "visualize this PR", "visualise this branch", "visual recap", "review my changes visually", "show me what changed", "turn this PR into a review page", "graph the symbol changes in this PR", "review this with me", "walk me through this change", "walk me through this PR", or /code-walkthrough; both the -ize and -ise spellings mean this skill. This is for reviewing changes that already exist, unlike a planning skill (which plans work that does not exist yet) and unlike a code-review skill (which hunts for defects and reports findings rather than recapping or visualizing the change).
 ---
 
-# Human Review
+# Code Walkthrough
 
-Arguments: `$ARGUMENTS`, the diff target plus flags. Stay thin: capture the diff to a file and
+Arguments: `$ARGUMENTS`, the diff target. Stay thin: capture the diff to a file and
 hand the reading of it to subagents; the raw diff and the HTML template never enter your context.
 The main loop never loads diff hunks, file contents, or per-hunk notes; it may load the verdict,
-the group titles, and the gate result. Both outputs are then assembled by `render.py`, so no
+the group titles, and the gate result. The output is then assembled by `render.py`, so no
 subagent writes markup. Every subagent
 spawn passes an explicit `model` param; a built-in agent type with no pinned model would silently
 inherit the expensive session model. Style rule for all prose: apply the no-ai-slop skill if
 available, otherwise plain sentences, no dashes, no filler, no hedging.
 
-| Flag | Effect |
-|---|---|
-| (default) | build both outputs: markdown recap and local HTML page |
-| `--md-only` / `--markdown-only` | skip the HTML page |
-| `--html-only` | skip the markdown |
-| `--html` | accepted, ignored (default already covers it) |
-| `--pr [<number>]` | also write the markdown into a pull request description, step 6 |
-| `--recap-only` | cheap prose-only route, step 2a-recap; implies `--md-only` |
-| `--serve` | accepted, ignored (the page is always a local file, step 5) |
-| `--no-serve` | accepted, ignored (same reason) |
-
-Bail with one clear line rather than silently honouring either half:
-- `--html-only` + `--pr`: `--pr` needs the markdown that `--html-only` skips.
-- `--html-only` + `--recap-only`: same reason.
-
-`--recap-only` composes with `--pr`.
-
 ## 1. Resolve the target
 
-The target arrives as prose as often as a flag, so read the words:
+The target arrives as prose as often as a ref, so read the words:
 
 | What the user said | Target |
 |---|---|
@@ -54,15 +37,9 @@ Prefer diffing `<baseRefName>...HEAD` locally over `gh pr diff <n>`: it gives th
 path, base and head that `complexity.py`, `symdelta.py` and `links.py` all need, and it is the
 same three-dot comparison GitHub shows. Fall back to `gh pr diff <n>` when the branch is not
 checked out locally, and say in one line that the symbol-delta graph is skipped in that case. Bail
-with one clear line when the branch has no PR yet, naming `--pr` as the way to say which one.
+with one clear line when the branch has no PR yet.
 Always prefer three-dot over two-dot: two-dot also shows commits that landed on the base branch
 meanwhile, attributing other people's work to this change.
-
-Naming a PR as the target says which diff to read, not that anything gets written to GitHub;
-that needs `--pr`, and it asks first. On a `--pr` run, add `author` to that same `gh pr view`
-call and check it against `gh api /user --jq .login` now, not at step 6, so the authorship guard
-refuses someone else's PR before the analysis is paid for. Say in one line that the recap will
-be built but not written back.
 
 ### Fetch both refs first, and diff the remote base
 
@@ -89,20 +66,19 @@ than a message.
 
 ## 2. Capture the diff to a file, never into context
 
-Write it to the session scratchpad, never the git working tree (a stray review page or recap file
-there pollutes commits and PRs). A branch, range or path target: `git diff <target> >
+Write it to the session scratchpad, never the git working tree (a stray review page there
+pollutes commits and PRs). A branch, range or path target: `git diff <target> >
 <scratchpad>/raw.diff`, stats from `git diff --numstat <target>`. A PR target: `gh pr diff <n> >
 <scratchpad>/raw.diff`, stats from `gh pr view <n> --json files --jq '.files[] |
 "\(.additions)\t\(.deletions)\t\(.path)"'`, the PR equivalent of numstat.
 
-Pick the cheapest route that fits the diff; all three produce the same
+Pick the cheapest route that fits the diff; both produce the same
 `<scratchpad>/analysis.json`, gated the same way in step 2b, and the diff is never read twice.
 
 | Diff | Route |
 |---|---|
 | up to about 1200 lines and 6 files | one `general-purpose` subagent, on a stronger model (sonnet class) |
 | bigger than either | fan out per batch, step 2a |
-| `--recap-only` given | skip the fan-out entirely, step 2a-recap |
 
 Delegating below the fan-out threshold costs no wall clock over doing it in the main thread, and
 it costs the main context nothing; splitting it further into batches is where the cost shows up,
@@ -138,7 +114,7 @@ concurrently with the annotation agents keeps it off the critical path (`referen
 ```
 
 This file is the whole of your judgment. Nothing downstream writes prose: `render.py` and
-`walkthrough.py` place these strings and build every other part of both outputs from `raw.diff`.
+`walkthrough.py` place these strings and build every other part of the output from `raw.diff`.
 So a field left blank is a section that will not appear, not a section someone else will fill in.
 
 `groups` is the reading order, the one part of the walkthrough that needs you rather than the
@@ -179,21 +155,6 @@ through from `prose.json` when present, so write it into `analysis.json` yoursel
 and before the gate; missing it does not fail the gate, but it costs the facts strip. Step 2b's
 grouping subagent is the one exception: it writes it too, with the main thread reviewing rather
 than authoring it.
-
-## 2a-recap. `--recap-only`, the cheap route
-
-Skip the fan-out. Build step 2b2's complexity JSON and step 2b3's symbol-delta graph, spawn one
-`general-purpose` subagent on a stronger model (sonnet class) to write a lighter `analysis.json`
-from `git diff --numstat` and the graph summaries only, then gate and render without a
-walkthrough.
-
-```bash
-python3 <skill>/scripts/validate_analysis.py --diff <scratchpad>/raw.diff \
-  --analysis <scratchpad>/analysis.json --recap
-```
-
-Full flow, what the subagent reads and writes, and the rendering budget on this path:
-`references/recap-mode.md`.
 
 ## 2a. Fan out, only for a big diff
 
@@ -308,15 +269,11 @@ this graph exists to avoid.
 ```bash
 python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
   --format html > <scratchpad>/section-symbols.html
-python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
-  --format md > <scratchpad>/section-symbols.md
 ```
 
-Both formats show the same two pre-rendered levels, packages then symbols; html swaps between
-them with a toggle, md ships them as two fenced blocks since GitHub has no way to run a
-toggle. Pass the html file to `render.py`'s html call and the md file to its md call, both as
-`--symbols <path>`; it inserts nothing when the file is empty or the flag is omitted. Skip
-building either when it is not needed: html when `--md-only`, md when `--html-only`.
+Shows two pre-rendered levels, packages then symbols, with a toggle between them. Pass the file
+to `render.py`'s `--symbols <path>`; it inserts nothing when the file is empty or the flag is
+omitted.
 
 Supported: Go (`.go`, native `go/packages`), TypeScript (`.ts`, `.tsx`), Python (`.py`) and Rust
 (`.rs`), the last three over LSP and each needing its server on PATH
@@ -341,8 +298,7 @@ and per-hunk `url`s (that hunk's new-side line range on the blob page).
 
 Always pass `--pr <number>` when the branch has a PR at all, whatever the target was: a link into
 the Files changed tab is where a reviewer wants to land, a blob permalink is the fallback for a
-branch with no PR. The number comes from step 1's `gh pr view` call. `--pr` as a flag decides
-whether the recap gets written into the description, a separate question from where links point.
+branch with no PR. The number comes from step 1's `gh pr view` call.
 
 Skip this step, and every link, when `head_pushed` is false or `repo_url` is empty: an unpushed
 commit or a repo with no web remote produces links that 404. Nothing here needs the network.
@@ -358,22 +314,14 @@ python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
   --diff <scratchpad>/raw.diff --format html --symdelta <scratchpad>/symdelta.json \
   --complexity <scratchpad>/complexity.json \
   > <scratchpad>/section-walkthrough.html
-python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
-  --diff <scratchpad>/raw.diff --format md --links <scratchpad>/links.json \
-  --symdelta <scratchpad>/symdelta.json --complexity <scratchpad>/complexity.json \
-  > <scratchpad>/section-walkthrough.md
 ```
 
 `--symdelta` orders each group caller-first, `--complexity` adds the complexity chip, `--diff`'s
 rename headers let a moved file show its old path instead of reading as a new addition. All
-optional; pass them when the files exist. HTML carries every hunk body (no size budget, and
-per-line commenting needs the lines); markdown carries notes only, since GitHub renders the real
-diff below the recap. Neither format can omit a file even when `analysis.json` did.
+optional; pass them when the files exist. It carries every hunk body, no size budget, since
+per-line commenting needs the lines, and cannot omit a file even when `analysis.json` did.
 
-Markdown's default budget is `--max-chars 32000`. Over it, markdown demotes lockfiles and
-generated output first, then tests, to one line each. On an over-budget warning in step 3, rerun
-`walkthrough.py --format md` with the number `render.py` prints, once. Why to take that number
-rather than guess, and why there is no per-line moved-block marker: `references/rationale.md`.
+Why there is no per-line moved-block marker: `references/rationale.md`.
 
 ## 2e. Build the state document
 
@@ -386,21 +334,17 @@ python3 <skill>/scripts/state.py --analysis <scratchpad>/analysis.json --diff <s
 ```
 
 Pass `--prior` when a `state.json` from an earlier run on this same target already sits at that
-scratchpad path, so its `notes[]` carry forward instead of being lost. Skip this step on
-`--md-only`: nothing on the markdown path reads it.
+scratchpad path, so its `notes[]` carry forward instead of being lost.
 
 ## 2f. Sync existing PR comments, only when the diffed target is a GitHub PR
 
-Skip on `--md-only`, same reason as step 2e: nothing on the markdown path reads `state.json`.
-Otherwise, pull the PR's own review comments in before rendering, or the page shows zero threads
-even when the PR already has them:
+Pull the PR's own review comments in before rendering, or the page shows zero threads even when
+the PR already has them:
 
 ```bash
 gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate | \
   python3 <skill>/scripts/notes.py sync --state <scratchpad>/state.json
 ```
-
-Field rules, the `stale`/reply handling, and why running this twice is safe: `references/pr-workflow.md`.
 
 Then a second, additive pass so a resolved thread's state is known before the page renders --
 the REST comments above carry no review-thread node id, so resolving one is only possible once
@@ -420,11 +364,13 @@ gh api graphql -f query='
   python3 <skill>/scripts/notes.py sync-threads --state <scratchpad>/state.json
 ```
 
-## 3. Build the outputs
+Which fields are trusted, how an outdated comment is kept, and how a reply finds its parent:
+`references/pr-comments.md`.
 
-Both outputs run unless a flag says otherwise: skip the markdown one with `--html-only`, skip
-the HTML one with `--md-only`. No subagent renders either one. Both are `render.py` calls, and
-the slug comes from the diffed target (branch name, PR number, or "working").
+## 3. Build the output
+
+No subagent renders it. `render.py` builds the page, and the slug comes from the diffed target
+(branch name, PR number, or "working").
 
 ```bash
 python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
@@ -433,32 +379,22 @@ python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
   --walkthrough <scratchpad>/section-walkthrough.html \
   --state <scratchpad>/state.json \
   [--symbols <scratchpad>/section-symbols.html] \
-  [--links <scratchpad>/links.json] [--title "Human review: <slug>"] \
-  > <scratchpad>/human-review-<slug>.html
-
-python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
-  --diff <scratchpad>/raw.diff --format md \
-  --walkthrough <scratchpad>/section-walkthrough.md \
-  [--symbols <scratchpad>/section-symbols.md] \
-  [--links <scratchpad>/links.json] [--complexity <scratchpad>/complexity.json] \
-  > <scratchpad>/human-review-<slug>.md
+  [--links <scratchpad>/links.json] [--title "Code walkthrough: <slug>"] \
+  > <scratchpad>/code-walkthrough-<slug>.html
 ```
 
 Omit `--symbols` when 2b3 did not run or returned `language: null`, `--links` when 2c did not
-run, `--complexity` when that script did not run. An empty section file inserts nothing, not
-even its heading.
+run. An empty section file inserts nothing, not even its heading.
 
-`references/builder.md` and `references/pr-markdown.md` are background on why the output is
-shaped the way it is, not instructions to follow.
+`references/builder.md` is background on why the output is shaped the way it is, not
+instructions to follow.
 
 ## 3b. Gate the rendered output
 
-Once per rendered file:
-
 ```bash
 python3 <skill>/scripts/validate_analysis.py --diff <scratchpad>/raw.diff \
-  --analysis <scratchpad>/analysis.json --rendered <the .md or .html just written> \
-  --sections <the section-*.md or section-*.html files for that format>
+  --analysis <scratchpad>/analysis.json --rendered <the .html just written> \
+  --sections <the section-*.html files>
 ```
 
 It fails when a changed file's path never appears in the output, and when a section that was
@@ -477,17 +413,14 @@ commenting are both plain inline script in the template.
 python3 <skill>/scripts/splice_assets.py <out>.html --skill <skill>
 ```
 
-A page with no `class="mermaid"` block at all (a markdown-only run never even builds one) keeps
-the placeholder as an inert comment and stays small.
+A page with no `class="mermaid"` block at all keeps the placeholder as an inert comment and
+stays small.
 
-## 5. Open it, only when the HTML page was built and `--pr` was not given
+## 5. Open it, only when the HTML page was built
 
 The page is a plain local file: `xdg-open <out>.html`. Notes typed into it live in
 `localStorage` on this file's origin; nothing round-trips to `state.json` until the user opens
-the Comments panel and pastes the Copy for agent payload back to this session, see step 8.
-
-A `--pr` run is usually part of a longer push flow, so it names the path and leaves the browser
-alone; ask before opening if you want it anyway.
+the Comments panel and pastes the Copy for agent payload back to this session, see step 7.
 
 ### 5b. Hosting, only when the user asks for it in words
 
@@ -495,46 +428,24 @@ Nothing is uploaded by default. When the user asks for a link, to read it on a p
 host, hand the built page to whatever file-sharing or upload skill is available in the session,
 and post the URL it prints on its own line. Say that the link is public to anyone holding it.
 
-## 6. Write the PR description, only with `--pr [<number>]`
-
-Resolve the PR number from the argument, else the current branch. Bail with one clear line when
-no PR exists yet, or when the authenticated user is not the PR's author:
-
-```bash
-ME=$(gh api /user --jq .login)
-AUTHOR=$(gh pr view <n> --json author --jq .author.login)
-```
-
-1. `gh pr view <n> --json body --jq .body > <scratchpad>/pr-body.txt`
-2. Wrap the recap in `<!-- visual-diff:start -->` / `<!-- visual-diff:end -->` markers and
-   splice it into the body, writing `<scratchpad>/pr-body-new.txt`.
-3. `gh pr edit <n> --body-file <scratchpad>/pr-body-new.txt`, always `--body-file`, never an
-   inline `--body` string.
-
-Confirm once per PR per session before the first edit. Full splice logic, the authorship guard,
-and confirmation rules: `references/pr-workflow.md` and `references/pr-markdown.md`.
-
-## 7. Tell the user
+## 6. Tell the user
 
 Report what actually ran:
 
-- Name the markdown file's path, unless `--html-only` was given.
-- When the HTML page was built, name its path, say whether it was opened, and add: click a diff
+- Name the HTML page's path, say whether it was opened, and add: click a diff
   line in the walkthrough to comment on it, reply inline under an existing thread (the persistent
   box under it, no button needed), click Resolve conversation to mark a thread done, and open the
   Comments button (bottom right) to review every comment and copy either a `gh` command to post
-  them (and any resolved threads) directly, or the agent payload, see step 8.
-- When `--pr` ran, confirm the description was updated and give the PR URL
-  (`gh pr view <n> --json url --jq .url`).
+  them (and any resolved threads) directly, or the agent payload, see step 7.
 - When the diffed target was a PR, add that every comment in the panel can be turned into a
-  review comment once its payload is pasted back, see step 8.
+  review comment once its payload is pasted back, see step 7.
 - When step 5b uploaded the page, give the URL on its own line and repeat that commenting is
   local-file only.
 
-Nothing is published anywhere unless `--pr` was given, the user asked for hosting in step 5b, or
-the user pastes a Copy for agent payload and asks for it to be delivered, step 8.
+Nothing is published anywhere unless the user asked for hosting in step 5b, or the user pastes a
+Copy for agent payload and asks for it to be delivered, step 7.
 
-## 8. Turn notes into PR comments, when the user asks
+## 7. Turn notes into PR comments, when the user asks
 
 The page has no server to post a click to: the user opens the Comments button, clicks Copy for
 agent there, and pastes the JSON it copies into the conversation (or, when a PR exists, may
@@ -570,3 +481,6 @@ When the user asks to refresh the comments, re-run step 2f's `notes.py sync` and
 then reload the page to see them: nothing pushes an update to a page that is already open. A
 thread the reader marked Resolve conversation shows as resolved for real once this confirms it;
 until then the page shows it as pending.
+
+What to show the user before posting, and why this one is never automatic:
+`references/pr-comments.md`.

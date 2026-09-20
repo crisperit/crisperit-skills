@@ -1,19 +1,18 @@
 # crisperit-skills
 
 Agent skills I use on real work, packaged so you can install them. One so far,
-human-review.
+code-walkthrough.
 
-## human-review
+## code-walkthrough
 
 Point it at a git diff, a commit range, a branch or a GitHub PR. It produces a
-markdown recap for the PR description and a self-contained HTML review page you
-open locally.
+self-contained HTML review page you open locally.
 
 ```
-/human-review                 # working tree plus staged changes
-/human-review this branch     # main...HEAD
-/human-review 123             # that PR
-/human-review HEAD~3..HEAD
+/code-walkthrough                 # working tree plus staged changes
+/code-walkthrough this branch     # main...HEAD
+/code-walkthrough 123             # that PR
+/code-walkthrough HEAD~3..HEAD
 ```
 
 ### Why
@@ -24,7 +23,7 @@ things every time, and the diff helps with none of them:
 
 **1. I estimate coupling by reading what imports what.** That is how you find
 the blast radius of a change, and doing it by hand across seven files is slow
-and easy to get wrong. human-review derives the import and call graph by parsing
+and easy to get wrong. code-walkthrough derives the import and call graph by parsing
 the code itself, not by asking a model to guess it from the diff text, and draws
 it at two levels. Packages first:
 
@@ -37,7 +36,7 @@ has fan-out and which are leaves:
 
 **2. I group the changed files by feature and read them in that order.** A
 GitHub file list is alphabetical, which is never the order the change makes
-sense in. So human-review groups the files into themes, puts the theme a reviewer
+sense in. So code-walkthrough groups the files into themes, puts the theme a reviewer
 needs first at the top, and orders files inside a group caller before callee.
 
 ![Walkthrough grouped by feature](docs/images/reading-order.png)
@@ -66,18 +65,8 @@ the diff itself:
 The screenshots above come from a small demo Python service, on a branch adding
 recurring expenses and a budget forecast.
 
-Nothing is published. The page stays a local file unless you pass `--pr` or ask
-for it to be hosted.
-
-### Flags
-
-| Flag | Effect |
-|---|---|
-| (default) | both outputs, markdown recap and HTML page |
-| `--md-only` | skip the HTML page |
-| `--html-only` | skip the markdown |
-| `--recap-only` | prose only, no graphs, cheapest run |
-| `--pr [<number>]` | also write the recap into the PR description |
+Nothing is published. The page stays a local file unless you ask for it to be
+hosted.
 
 ### Prerequisites
 
@@ -90,8 +79,8 @@ for it to be hosted.
 ### Language support
 
 Everything built from the diff itself works in any language: the grouping and
-reading order, the annotated walkthrough, per-line comments, the markdown recap
-and the flow diagram.
+reading order, the annotated walkthrough, per-line comments and the flow
+diagram.
 
 The graphs have to parse the code. Python, Go, JavaScript and TypeScript need
 nothing installed. `pip install tree-sitter-language-pack` adds the symbol graph

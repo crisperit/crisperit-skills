@@ -7,9 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from render import (  # noqa: E402
-    render_html, render_md, counts_from, overflow_warning, _flow_tb, _wrap_flow_labels,
-    CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER, MAX_BODY_CHARS, MIN_USEFUL_MAX_CHARS,
-    OVERFLOW_MARGIN_CHARS,
+    render_html, counts_from, _flow_tb, _wrap_flow_labels,
+    CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
 from validate_analysis import parse_hunks  # noqa: E402
 
@@ -51,17 +50,11 @@ def html(analysis=None, **kw):
     return render_html(analysis or ANALYSIS, files, TEMPLATE, **kw)
 
 
-def md(analysis=None, **kw):
-    _order, files = parsed()
-    return render_md(analysis or ANALYSIS, files, **kw)
-
-
 def test_facts_come_from_the_diff_not_the_analysis():
     _order, files = parsed()
 
     assert counts_from(files) == (2, 2, 1, 1)
     assert "2 files, +2 -1 (net +1)" in html()
-    assert "**2 files changed, +2 -1 (net +1)**" in md()
 
 
 def test_a_net_deletion_reads_as_negative():
@@ -114,22 +107,6 @@ def test_html_escapes_the_mermaid_source():
     assert "a < b && c" not in out
 
 
-def test_markdown_never_html_escapes_anything():
-    flow = {**ANALYSIS, "flow_mermaid": 'flowchart LR\n  A["a < b && c"] --> B'}
-    out = md(flow)
-
-    # GitHub escapes what it displays; doing it here gives "&amp;lt;".
-    assert "a < b && c" in out
-    assert "&lt;" not in out and "&amp;" not in out
-
-
-def test_markdown_keeps_backticks_as_backticks():
-    out = md()
-
-    assert "`loadSession`" in out
-    assert "<code>" not in out
-
-
 def test_pasted_sections_are_never_re_escaped():
     # sections.py already escaped these. Escaping again renders "&amp;lt;" on the page, and
     # re-indenting or re-wording them is how a legend drifts from its arrows.
@@ -138,21 +115,6 @@ def test_pasted_sections_are_never_re_escaped():
 
     assert walk in out
     assert "&amp;lt;" not in out
-
-
-def test_markdown_pastes_the_symbols_section_byte_for_byte():
-    symbols = "<!-- visual-diff:symbols -->\n### Changes visualization\n```mermaid\nflowchart LR\n```"
-    out = md(symbols=symbols, walkthrough="<!-- visual-diff:walkthrough -->\n<details>x</details>")
-
-    assert symbols in out
-    assert "<!-- visual-diff:walkthrough -->\n<details>x</details>" in out
-
-
-def test_markdown_symbols_section_sits_between_how_it_works_and_the_walkthrough():
-    out = md(symbols="<!-- visual-diff:symbols -->\nSYM",
-              walkthrough="<!-- visual-diff:walkthrough -->\nWT")
-
-    assert out.index("### How it works") < out.index("SYM") < out.index("WT")
 
 
 def test_symbols_pastes_verbatim_with_no_heading_added():
@@ -193,14 +155,12 @@ def test_flow_tb_rewrites_only_the_leading_lr_token():
     assert out == 'flowchart TB\n  A["go LR"] --> B'
 
 
-def test_html_and_markdown_both_rewrite_a_flowchart_lr_analysis_to_tb():
+def test_html_rewrites_a_flowchart_lr_analysis_to_tb():
     lr = {**ANALYSIS, "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]'}
 
     html_out = html(lr)
-    md_out = md(lr)
 
     assert "flowchart TB" in html_out and "flowchart LR" not in html_out
-    assert "flowchart TB" in md_out and "flowchart LR" not in md_out
 
 
 def test_wrap_flow_labels_breaks_a_long_label_at_word_boundaries():
@@ -268,27 +228,23 @@ def test_wrap_flow_labels_wraps_a_node_and_an_edge_label_on_the_same_line():
     assert "<br/>" in edge_label
 
 
-def test_flow_diagram_wraps_a_long_label_end_to_end_in_html_and_markdown():
+def test_flow_diagram_wraps_a_long_label_end_to_end():
     long_flow = {**ANALYSIS, "flow_mermaid":
                  'flowchart LR\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
                  'for the MediaGuard lookup"]'}
 
     html_out = html(long_flow)
-    md_out = md(long_flow)
 
     # The HTML source escapes the diagram like any other prose; the browser's own textContent
     # decoding turns &lt;br/&gt; back into a real <br/> before Mermaid ever parses it.
     assert "&lt;br/&gt;" in html_out
     assert "MediaGuard lookup" in html_out
-    assert "<br/>" in md_out  # markdown pastes the fenced diagram verbatim, unescaped
-    assert "MediaGuard lookup" in md_out
 
 
 def test_an_empty_how_it_works_drops_the_whole_section():
     out = html({**ANALYSIS, "how_it_works": ""})
 
     assert "<h2>How it works</h2>" not in out
-    assert "### How it works" not in md({**ANALYSIS, "how_it_works": ""})
 
 
 def test_an_empty_section_file_inserts_nothing_not_even_its_note():
@@ -348,16 +304,7 @@ def test_footer_carries_the_target_and_a_stamp_but_no_local_path():
     assert "master...HEAD · generated 2026-09-11 18:15" in out
 
 
-def test_markdown_names_no_local_path_and_links_only_into_the_pr():
-    out = md(links={"pr_url": "https://gh/o/r/pull/7", "head_pushed": True})
-
-    assert "[Files changed](https://gh/o/r/pull/7/files)" in out
-    for leak in ("/tmp/", "scratchpad", "raw.diff", ".html"):
-        assert leak not in out
-
-
 def test_no_links_json_means_no_links():
-    assert "http" not in md()
     assert "pull request" not in html()
 
 
@@ -366,160 +313,6 @@ def test_html_footer_link_is_safe_to_click_from_a_file_url():
 
     # The page is opened from file:// and a link that replaces it costs the reader their notes.
     assert 'target="_blank" rel="noopener noreferrer"' in out
-
-
-def test_a_full_recap_of_a_big_diff_fits_the_body_budget():
-    # The two budgets have to add up: walkthrough.DEFAULT_MAX_CHARS plus the graph sections and
-    # prose must land under render.MAX_BODY_CHARS, or a big diff gets refused by GitHub outright.
-    import walkthrough
-
-    diff = "".join(
-        f"diff --git a/pkg/mod{i}.py b/pkg/mod{i}.py\n--- a/pkg/mod{i}.py\n"
-        f"+++ b/pkg/mod{i}.py\n@@ -1,1 +1,4 @@\n+a\n+b\n+c\n"
-        for i in range(120)
-    )
-    order, files = parse_hunks(diff)
-    by_path = {p: {"path": p, "role": f"What `{p}` is for, in one line.",
-                   "hunks": [{"header": "@@ -1,1 +1,4 @@", "note": f"One line on `{p}`."}]}
-               for p in order}
-    walk = walkthrough.render_md(walkthrough.story(order, files, None, None), files, by_path)
-    # Graph section measured at 6250 characters on a real branch; stand in for that.
-    symbols = "<!-- visual-diff:symbols -->\n" + "x" * 6250
-    out = render_md(ANALYSIS, files, walk, symbols=symbols)
-
-    assert len(walk) <= walkthrough.DEFAULT_MAX_CHARS
-    assert len(out) <= MAX_BODY_CHARS, len(out)
-
-
-def test_overflow_warning_names_a_concrete_max_chars_below_the_walkthrough_length():
-    walkthrough_len = 12000
-    overflow = 2264
-    walkthrough_text = "x" * walkthrough_len
-    text = "x" * (MAX_BODY_CHARS + overflow)
-
-    warning = overflow_warning(text, walkthrough_text)
-
-    assert str(len(text)) in warning
-    assert str(MAX_BODY_CHARS) in warning
-    suggested = int(warning.rsplit("--max-chars ", 1)[1])
-    # Pinned, not just bounded: a bound like `suggested < walkthrough_len` would still pass if
-    # OVERFLOW_MARGIN_CHARS regressed toward 0 and reintroduced the multi-retry problem this
-    # fix exists to solve.
-    assert suggested == walkthrough_len - overflow - OVERFLOW_MARGIN_CHARS
-    assert suggested < len(walkthrough_text)
-
-
-def test_overflow_warning_declines_to_suggest_when_the_walkthrough_cannot_absorb_it():
-    # Both reproduced live before this fix: the floor used to hand out `--max-chars 1`, advice
-    # that provably cannot work since the recap is already tens of thousands of characters over
-    # while the walkthrough itself is empty or nearly so. No --walkthrough passed is the same
-    # case: the overflow can't be coming from a section that isn't there.
-    for text, walkthrough_text in (
-        ("y" * (MAX_BODY_CHARS + 5000), ""), ("y" * (MAX_BODY_CHARS + 3000), "x" * 800),
-    ):
-        warning = overflow_warning(text, walkthrough_text)
-
-        assert str(len(text)) in warning
-        assert str(MAX_BODY_CHARS) in warning
-        assert "--max-chars" not in warning
-        assert "symbols" in warning
-
-
-def test_overflow_warning_boundary_around_the_min_useful_threshold():
-    # walkthrough_text sized so the unfloored suggestion lands exactly on MIN_USEFUL_MAX_CHARS
-    # on one side and one character short of it on the other, isolating the boundary itself
-    # from the rest of the arithmetic.
-    overflow = 500
-    text = "x" * (MAX_BODY_CHARS + overflow)
-    base = MIN_USEFUL_MAX_CHARS + overflow + OVERFLOW_MARGIN_CHARS
-
-    at_threshold = overflow_warning(text, "x" * base)
-    below_threshold = overflow_warning(text, "x" * (base - 1))
-
-    assert f"--max-chars {MIN_USEFUL_MAX_CHARS}" in at_threshold
-    assert "--max-chars" not in below_threshold
-
-
-def test_overflow_warning_names_the_floor_when_the_marker_makes_it_unsatisfiable():
-    walkthrough_text = ("<!-- visual-diff:walkthrough -->\n"
-                        "<!-- visual-diff:walkthrough-floor 8042 -->\n" + "x" * 8000)
-    text = "x" * (MAX_BODY_CHARS + 50000)  # overflow far too large for any floor to absorb
-
-    warning = overflow_warning(text, walkthrough_text)
-
-    assert "unsatisfiable" in warning
-    assert "8042 characters" in warning
-    assert "--max-chars" not in warning
-    assert "symbols" in warning
-
-
-def test_overflow_warning_still_names_a_number_when_the_floor_marker_says_it_fits():
-    floor = 2000
-    walkthrough_text = ("<!-- visual-diff:walkthrough -->\n"
-                        f"<!-- visual-diff:walkthrough-floor {floor} -->\n" + "x" * 12000)
-    text = "x" * (MAX_BODY_CHARS + 500)
-
-    warning = overflow_warning(text, walkthrough_text)
-
-    assert "unsatisfiable" not in warning
-    suggested = int(warning.rsplit("--max-chars ", 1)[1])
-    assert suggested >= floor
-
-
-def test_overflow_warning_round_trips_the_real_floor_walkthrough_py_computed():
-    import walkthrough
-
-    diff = "".join(
-        f"diff --git a/pkg/mod{i}.py b/pkg/mod{i}.py\n--- a/pkg/mod{i}.py\n"
-        f"+++ b/pkg/mod{i}.py\n@@ -1,1 +1,4 @@\n+a\n+b\n+c\n"
-        for i in range(120)
-    )
-    order, files = parse_hunks(diff)
-    by_path = {p: {"path": p, "role": f"What `{p}` is for, in one line.",
-                   "hunks": [{"header": "@@ -1,1 +1,4 @@", "note": f"One line on `{p}`."}]}
-               for p in order}
-    groups = walkthrough.story(order, files, None, None)
-    # max_chars=1 forces every file to demote, so this text's length is exactly its own floor
-    # plus the marker line -- the real number overflow_warning has to read back.
-    floored = walkthrough.render_md(groups, files, by_path, max_chars=1)
-    real_floor = int(floored.splitlines()[1].split(" ")[2])
-    text = "x" * (MAX_BODY_CHARS + 50000)
-
-    warning = overflow_warning(text, floored)
-
-    assert f"{real_floor} characters" in warning
-    assert "unsatisfiable" in warning
-
-
-def test_reading_order_section_appears_only_when_there_is_no_walkthrough():
-    groups = [{"title": "Auth", "why": "core of the change", "paths": ["src/auth.py"]},
-              {"title": "Docs", "paths": ["README.md"]}]
-    analysis = {**ANALYSIS, "groups": groups}
-
-    no_walk = md(analysis)
-    with_walk = md(analysis, walkthrough="<!-- visual-diff:walkthrough -->\n<details>x</details>")
-
-    assert "### Reading order" in no_walk
-    assert "### Reading order" not in with_walk
-
-
-def test_reading_order_section_lists_every_group_path_as_inline_code():
-    groups = [{"title": "Auth", "why": "core of the change", "paths": ["src/auth.py"]},
-              {"title": "Docs", "paths": ["README.md", "docs/x.md"]}]
-    analysis = {**ANALYSIS, "groups": groups}
-
-    out = md(analysis)
-
-    assert "**Auth** - core of the change" in out
-    assert "`src/auth.py`" in out
-    assert "**Docs**" in out
-    assert "`README.md`" in out and "`docs/x.md`" in out
-
-
-def test_no_groups_and_no_walkthrough_means_no_reading_order_section():
-    out = md()  # ANALYSIS has no "groups" key, and md() passes no walkthrough
-
-    assert "### Reading order" not in out
 
 
 if __name__ == "__main__":
@@ -531,24 +324,20 @@ if __name__ == "__main__":
         test_html_escapes_prose_before_promoting_backticks,
         test_html_promotes_backticks_in_every_prose_field,
         test_html_escapes_the_mermaid_source,
-        test_markdown_never_html_escapes_anything,
-        test_markdown_keeps_backticks_as_backticks,
         test_pasted_sections_are_never_re_escaped,
-        test_markdown_pastes_the_symbols_section_byte_for_byte,
-        test_markdown_symbols_section_sits_between_how_it_works_and_the_walkthrough,
         test_symbols_pastes_verbatim_with_no_heading_added,
         test_an_empty_flow_drops_the_whole_section,
         test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams,
         test_flow_tb_leaves_a_non_lr_diagram_alone,
         test_flow_tb_rewrites_only_the_leading_lr_token,
-        test_html_and_markdown_both_rewrite_a_flowchart_lr_analysis_to_tb,
+        test_html_rewrites_a_flowchart_lr_analysis_to_tb,
         test_wrap_flow_labels_breaks_a_long_label_at_word_boundaries,
         test_wrap_flow_labels_breaks_a_long_identifier_at_camel_boundaries,
         test_wrap_flow_labels_leaves_ids_arrows_and_edge_counts_alone,
         test_wrap_flow_labels_wraps_a_long_quoted_edge_label,
         test_wrap_flow_labels_wraps_a_long_bare_edge_label,
         test_wrap_flow_labels_wraps_a_node_and_an_edge_label_on_the_same_line,
-        test_flow_diagram_wraps_a_long_label_end_to_end_in_html_and_markdown,
+        test_flow_diagram_wraps_a_long_label_end_to_end,
         test_an_empty_how_it_works_drops_the_whole_section,
         test_an_empty_section_file_inserts_nothing_not_even_its_note,
         test_no_text_size_control_is_emitted_at_all,
@@ -556,19 +345,8 @@ if __name__ == "__main__":
         test_a_missing_verdict_drops_only_its_fact_block,
         test_prose_paragraphs_stay_separate,
         test_footer_carries_the_target_and_a_stamp_but_no_local_path,
-        test_markdown_names_no_local_path_and_links_only_into_the_pr,
         test_no_links_json_means_no_links,
         test_html_footer_link_is_safe_to_click_from_a_file_url,
-        test_a_full_recap_of_a_big_diff_fits_the_body_budget,
-        test_overflow_warning_names_a_concrete_max_chars_below_the_walkthrough_length,
-        test_overflow_warning_declines_to_suggest_when_the_walkthrough_cannot_absorb_it,
-        test_overflow_warning_boundary_around_the_min_useful_threshold,
-        test_overflow_warning_names_the_floor_when_the_marker_makes_it_unsatisfiable,
-        test_overflow_warning_still_names_a_number_when_the_floor_marker_says_it_fits,
-        test_overflow_warning_round_trips_the_real_floor_walkthrough_py_computed,
-        test_reading_order_section_appears_only_when_there_is_no_walkthrough,
-        test_reading_order_section_lists_every_group_path_as_inline_code,
-        test_no_groups_and_no_walkthrough_means_no_reading_order_section,
     ]
     for test in tests:
         test()
