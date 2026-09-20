@@ -186,6 +186,29 @@ def test_second_sync_of_same_comment_leaves_diff_hunk_unchanged():
     assert state["notes"][0]["diff_hunk"] == "@@ -1,2 +1,2 @@\n-old\n+new"
 
 
+def test_sync_stores_original_commit_id_on_a_new_note():
+    state = {"notes": []}
+    comment = _comment(id=42, original_commit_id="abc123")
+    sync_comments(state, [comment])
+    assert state["notes"][0]["original_commit_id"] == "abc123"
+
+
+def test_sync_stores_none_original_commit_id_when_absent():
+    state = {"notes": []}
+    comment = _comment(id=43)
+    assert "original_commit_id" not in comment
+    sync_comments(state, [comment])
+    assert state["notes"][0]["original_commit_id"] is None
+
+
+def test_second_sync_of_same_comment_leaves_original_commit_id_unchanged():
+    state = {"notes": []}
+    comment = _comment(id=44, original_commit_id="sha1")
+    sync_comments(state, [comment])
+    sync_comments(state, [comment])
+    assert state["notes"][0]["original_commit_id"] == "sha1"
+
+
 def test_local_draft_with_no_diff_hunk_round_trips_unharmed():
     draft = _note(id="n-1", origin="local", state="draft")
     assert "diff_hunk" not in draft
@@ -216,6 +239,48 @@ def test_sync_threads_maps_one_thread_onto_several_comments():
                                   comments={"nodes": [{"databaseId": 100}, {"databaseId": 101}]})])
     assert root["gh_thread_id"] == reply["gh_thread_id"] == "THREAD_1"
     assert root["resolved"] is False and reply["resolved"] is False
+
+
+def test_sync_threads_stores_resolved_by_login_on_every_note_in_the_thread():
+    root = _note(id="n-1", gh_id=100)
+    reply = _note(id="n-2", gh_id=101, reply_to="n-1")
+    state = {"notes": [root, reply]}
+    sync_threads(state, [_thread(id="THREAD_1", isResolved=True, resolvedBy={"login": "alice"},
+                                  comments={"nodes": [{"databaseId": 100}, {"databaseId": 101}]})])
+    assert root["resolved_by"] == reply["resolved_by"] == "alice"
+
+
+def test_sync_threads_resolved_by_is_none_when_the_field_is_absent():
+    note = _note(id="n-1", gh_id=100)
+    state = {"notes": [note]}
+    sync_threads(state, [_thread(id="THREAD_1", isResolved=True,
+                                  comments={"nodes": [{"databaseId": 100}]})])
+    assert note["resolved_by"] is None
+
+
+def test_sync_threads_unresolve_clears_resolved_and_resolved_by():
+    note = _note(id="n-1", gh_id=100)
+    state = {"notes": [note]}
+    sync_threads(state, [_thread(id="THREAD_1", isResolved=True, resolvedBy={"login": "alice"},
+                                  comments={"nodes": [{"databaseId": 100}]})])
+    assert note["resolved"] is True and note["resolved_by"] == "alice"
+
+    sync_threads(state, [_thread(id="THREAD_1", isResolved=False,
+                                  comments={"nodes": [{"databaseId": 100}]})])
+    assert note["resolved"] is False
+    assert note["resolved_by"] is None
+
+
+def test_sync_threads_idempotent_with_resolved_by():
+    note = _note(id="n-1", gh_id=100)
+    state = {"notes": [note]}
+    threads = [_thread(id="THREAD_1", isResolved=True, resolvedBy={"login": "alice"},
+                        comments={"nodes": [{"databaseId": 100}]})]
+    sync_threads(state, threads)
+    first = json.dumps(state, sort_keys=True)
+    sync_threads(state, threads)
+    second = json.dumps(state, sort_keys=True)
+    assert first == second
 
 
 def test_sync_threads_leaves_a_comment_with_no_matching_note_alone():
@@ -1139,9 +1204,16 @@ if __name__ == "__main__":
         test_dedupe_matches_a_local_draft_despite_its_empty_author,
         test_sync_stores_diff_hunk_verbatim_on_a_new_note,
         test_second_sync_of_same_comment_leaves_diff_hunk_unchanged,
+        test_sync_stores_original_commit_id_on_a_new_note,
+        test_sync_stores_none_original_commit_id_when_absent,
+        test_second_sync_of_same_comment_leaves_original_commit_id_unchanged,
         test_local_draft_with_no_diff_hunk_round_trips_unharmed,
         test_sync_threads_sets_thread_id_and_resolved_on_the_matching_note,
         test_sync_threads_maps_one_thread_onto_several_comments,
+        test_sync_threads_stores_resolved_by_login_on_every_note_in_the_thread,
+        test_sync_threads_resolved_by_is_none_when_the_field_is_absent,
+        test_sync_threads_unresolve_clears_resolved_and_resolved_by,
+        test_sync_threads_idempotent_with_resolved_by,
         test_sync_threads_leaves_a_comment_with_no_matching_note_alone,
         test_sync_threads_is_idempotent,
         test_do_sync_threads_reads_the_graphql_response_shape_from_stdin,

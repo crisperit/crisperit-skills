@@ -412,7 +412,7 @@ gh api graphql -f query='
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $number) {
         reviewThreads(first: 100) {
-          nodes { id isResolved comments(first: 100) { nodes { databaseId } } }
+          nodes { id isResolved resolvedBy { login } comments(first: 100) { nodes { databaseId } } }
         }
       }
     }
