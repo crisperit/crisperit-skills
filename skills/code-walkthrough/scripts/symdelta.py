@@ -261,6 +261,13 @@ def run_in_process_group(cmd, timeout, what):
     return proc.returncode, out, err
 
 
+LANGUAGE_SERVER_REMEDY = {
+    "typescript": "npm i -g typescript typescript-language-server",
+    "python": "npm i -g pyright",
+    "rust": "rustup component add rust-analyzer",
+}
+
+
 def check_typescript_tooling(repo, lang="typescript"):
     """Preflight-only invocation of the LSP extractor (no files given): does `lang`'s language
     server exist and advertise callHierarchyProvider? Checked before any worktree gets created,
@@ -360,6 +367,203 @@ def dependency_files_changed(repo, base, head, lang="typescript"):
         raise RuntimeError(f"git diff failed: {diff.stderr.strip()}")
     changed_basenames = {posixpath.basename(f) for f in diff.stdout.splitlines() if f}
     return bool(changed_basenames & DEPENDENCY_FILES_BY_LANG[lang])
+
+
+PACKAGE_JSON_DEP_KEYS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+# peerDependencies deliberately included: npm 7+ installs peers by default, so a missing one is
+# a real stale-tree symptom. optionalDependencies deliberately excluded: npm may legitimately
+# skip installing one (a platform-specific binary that doesn't match this OS), so a directory
+# absent for that reason is not staleness and must not trigger the "npm ci" remedy.
+NODE_MODULES_PRESENCE_KEYS = ("dependencies", "devDependencies", "peerDependencies")
+
+
+def _read_package_json(repo, ref):
+    """Parsed package.json at `ref`, or None when it's absent or fails to parse as JSON -- both
+    fold into the same conservative "can't compare" signal for callers, since a partially
+    committed manifest tells them nothing more than a ref that predates package.json entirely."""
+    result = run_git(repo, ["show", f"{ref}:package.json"])
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _union_deps(data, keys):
+    """The set of names declared across every section in `keys` of a parsed package.json.
+    A set, not a name->spec dict: callers here only ever need membership, and collapsing to a
+    set sidesteps the same last-section-wins trap _dep_specs_by_name exists to avoid below --
+    there's just nothing here for it to be wrong about, since no spec value is kept."""
+    names = set()
+    for key in keys:
+        names.update((data.get(key) or {}).keys())
+    return names
+
+
+def _dep_specs_by_name(data, keys):
+    """name -> the set of every distinct spec string declared for it across `keys`'s sections of
+    a parsed package.json. A set, not a dict.update() merge: the latter lets whichever section is
+    iterated last silently overwrite an earlier section's spec for the same name, so a package
+    declared in two sections with genuinely different specs (dependencies bumped, devDependencies
+    left stale behind it, say) could read as unchanged purely because of section order. A name
+    repeated across sections with the identical spec still collapses to one set element, so that
+    case reads as unchanged rather than as some kind of ambiguity."""
+    specs = defaultdict(set)
+    for key in keys:
+        for name, spec in (data.get(key) or {}).items():
+            specs[name].add(spec)
+    return specs
+
+
+def ts_dependency_incompatible(repo, base, head):
+    """Whether base and head declare TypeScript dependencies incompatibly enough that
+    link_node_modules()'s single node_modules, shared between both worktrees, can't stand in for
+    both. Narrower than the blunt "did a manifest file change" check python/rust still use:
+    additions-only and lockfile-only churn never touch what base source already resolved, and the
+    blunt check cost one real PR its whole TypeScript symbol graph over 25 unrelated files for two
+    package additions. What actually breaks resolution is base source importing something the
+    shared (head-side) node_modules no longer matches -- a package head removed, or a spec head
+    changed.
+
+    Decided from the declared specs in package.json, not from which files changed, so a
+    lockfile-only edit or an unchanged manifest never trips it. Bails when package.json is
+    missing or unparseable at either ref: there is nothing to compare, and guessing would be
+    worse than refusing.
+
+    Known ceiling, not checked here: an added devDependency can still shift base-side resolution
+    two ways this never sees -- ambient global type declarations (`@types/jest` declaring
+    `describe`/`it`/`expect` via `declare global`) change what's visible when analysing base too,
+    and npm's hoisting can re-resolve a shared transitive package to a different version that
+    never appears in package.json at all. Both are properties of node_modules being shared
+    between worktrees, not of this function; the fix is an install per worktree, and that's the
+    cost link_node_modules exists to avoid paying on every run."""
+    base_data, head_data = _read_package_json(repo, base), _read_package_json(repo, head)
+    if base_data is None or head_data is None:
+        return True, (
+            "package.json is missing or unparseable at base or head, so declared TypeScript "
+            "dependencies can't be compared"
+        )
+
+    base_specs = _dep_specs_by_name(base_data, PACKAGE_JSON_DEP_KEYS)
+    head_specs = _dep_specs_by_name(head_data, PACKAGE_JSON_DEP_KEYS)
+    removed = sorted(name for name in base_specs if name not in head_specs)
+    changed = sorted(
+        name for name in base_specs if name in head_specs and head_specs[name] != base_specs[name]
+    )
+    if not removed and not changed:
+        return False, None
+
+    parts = []
+    if removed:
+        parts.append(f"removed: {', '.join(removed)}")
+    if changed:
+        parts.append(f"version changed: {', '.join(changed)}")
+    return True, (
+        f"package.json dependency incompatibility between base and head ({'; '.join(parts)}); "
+        "node_modules is shared between both worktrees (see link_node_modules), so the "
+        "resulting call graph would be unreliable"
+    )
+
+
+def _missing_node_modules_packages(repo, names):
+    """Names with no directory under <repo>/node_modules. A scoped name (e.g. "@scope/name")
+    already joins correctly -- Path("node_modules") / "@scope/name" is just a nested directory --
+    so no special casing is needed for it."""
+    node_modules = Path(repo) / "node_modules"
+    return sorted(name for name in names if not (node_modules / name).is_dir())
+
+
+def _read_package_lock(repo, head):
+    """Parsed package-lock.json at `head`, or None when it's absent or unparseable -- the
+    staleness check below degrades to presence-only in that case rather than guessing, since a
+    yarn or pnpm repo has no npm lockfile to compare against at all, and that must not start
+    failing this preflight over a check it was never able to perform."""
+    result = run_git(repo, ["show", f"{head}:package-lock.json"])
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _locked_version(lock_data, name):
+    """The version package-lock.json resolved `name` to, or None when it has no entry for that
+    name. Tries lockfileVersion 2/3's flat "packages" map first (keyed "node_modules/<name>", or
+    "node_modules/@scope/name" for a scoped package), then falls back to v1's top-level
+    "dependencies" map, so either lockfile shape gets a real comparison rather than one silently
+    reading as "no entry" on the other's format."""
+    packages = lock_data.get("packages")
+    if isinstance(packages, dict):
+        entry = packages.get(f"node_modules/{name}")
+        if isinstance(entry, dict) and "version" in entry:
+            return entry["version"]
+    deps_v1 = lock_data.get("dependencies")
+    if isinstance(deps_v1, dict):
+        entry = deps_v1.get(name)
+        if isinstance(entry, dict) and "version" in entry:
+            return entry["version"]
+    return None
+
+
+def _installed_version(repo, name):
+    """The "version" field of node_modules/<name>/package.json, or None when that file is
+    missing or unparseable -- treated the same as "no entry" by the caller, not as a mismatch,
+    since there's nothing here to compare against."""
+    pkg_path = Path(repo) / "node_modules" / name / "package.json"
+    try:
+        data = json.loads(pkg_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data.get("version")
+
+
+def _stale_node_modules_packages(repo, head, present):
+    """Which names in `present` (already known to have a node_modules directory) have an
+    installed version that disagrees with what package-lock.json resolved head to -- the case a
+    bare directory-exists check can't see:
+    node_modules/foo left at 1.0.0 satisfies presence for a newly declared foo: ^2.0.0, and the
+    graph gets built against the wrong types. Exact-string comparison of two already-resolved
+    versions, never semver range resolution -- that's a package manager's job, not this
+    preflight's. Returns [] outright when the lockfile itself is unusable (see
+    _read_package_lock); a package with no lockfile entry is skipped individually rather than
+    counted as either stale or clean, since there's nothing to compare it against either."""
+    lock_data = _read_package_lock(repo, head)
+    if lock_data is None:
+        return []
+    stale = []
+    for name in sorted(present):
+        locked = _locked_version(lock_data, name)
+        if locked is None:
+            continue
+        installed = _installed_version(repo, name)
+        if installed is not None and installed != locked:
+            stale.append(name)
+    return stale
+
+
+def check_node_modules_coverage(repo, head):
+    """Preflight, run before any worktree is created: the main checkout's node_modules --
+    link_node_modules() symlinks it in rather than running `npm ci` per worktree -- has to
+    actually contain, and match, what head declares, or edges into whatever it's missing or stale
+    silently vanish or resolve against the wrong types, with no warning at all. Measured case:
+    head had just added @restatedev/restate-sdk, node_modules didn't have it yet, and every
+    head-side edge into that package disappeared from the graph with nothing to say why."""
+    data = _read_package_json(repo, head)
+    names = _union_deps(data, NODE_MODULES_PRESENCE_KEYS) if data is not None else set()
+    missing = _missing_node_modules_packages(repo, names)
+    present = names - set(missing)
+    stale = _stale_node_modules_packages(repo, head, present)
+
+    problems = sorted(set(missing) | set(stale))
+    if not problems:
+        return True, None
+    shown = problems[:5]
+    names_str = ", ".join(shown)
+    if len(problems) > 5:
+        names_str += f", and {len(problems) - 5} more"
+    return False, f"node_modules is missing or stale for {names_str}"
 
 
 def ts_diff_entries(repo, base, head):
@@ -863,13 +1067,25 @@ def analyse_lsp(repo, base, head, lang):
     their file extensions, dependency manifests, worktree prep and which server extract.py
     spawns via --lang."""
     # Against the empty baseline every manifest reads as added, but there is no before side
-    # for a dependency change to make incomparable, so the refusal below does not apply.
-    if not is_empty_base(repo, base) and dependency_files_changed(repo, base, head, lang):
-        return {"language": None, "reason": DEPENDENCY_REASON[lang]}
+    # for a dependency change to make incomparable, so the refusals below do not apply.
+    if not is_empty_base(repo, base):
+        if lang == "typescript":
+            # Narrower than python/rust's blunt dependency_files_changed: see
+            # ts_dependency_incompatible for why file-level detection over-refuses here.
+            incompatible, reason = ts_dependency_incompatible(repo, base, head)
+            if incompatible:
+                return {"language": None, "reason": reason}
+        elif dependency_files_changed(repo, base, head, lang):
+            return {"language": None, "reason": DEPENDENCY_REASON[lang]}
+
+    if lang == "typescript":
+        ok, reason = check_node_modules_coverage(repo, head)
+        if not ok:
+            return {"language": None, "reason": reason, "remedy": "npm ci"}
 
     ok, reason = check_typescript_tooling(repo, lang)
     if not ok:
-        return {"language": None, "reason": reason}
+        return {"language": None, "reason": reason, "remedy": LANGUAGE_SERVER_REMEDY[lang]}
 
     rename_map = _rename_map(repo, base, head)
     entries = ts_diff_entries(repo, base, head)
