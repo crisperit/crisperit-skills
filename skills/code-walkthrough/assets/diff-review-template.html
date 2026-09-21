@@ -486,13 +486,66 @@
     color:var(--text);border-radius:6px;padding:6px 10px;font:inherit;font-size:var(--fs-sm)}
   .fb-reply-input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-  /* A resolved thread collapses like a stray's .hr-lo fold above, same <details> idiom. */
+  /* A resolved thread collapses like a stray's .hr-lo fold above, same <details> idiom. Flex,
+     same reason hr-lo>summary is below: the chip appended after the comment count (see
+     buildResolutionChip) needs to wrap on a narrow screen instead of overflowing. */
   details.hr-thread-resolved{background:var(--panel2);border:1px solid var(--border);
     border-radius:8px;padding:8px 10px;margin-top:6px}
-  details.hr-thread-resolved>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-xs)}
+  details.hr-thread-resolved>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-xs);
+    display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
   details.hr-thread-resolved>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   details.hr-thread-resolved .fb-item{margin-top:8px}
   details.hr-thread-resolved .hr-check{color:var(--green)}
+
+  /* Interactive chip variants, next to the passive .chip-outdated/.chip-guess below: a control
+     needs hover/active/focus states, not just a colour. chip-fix is either a <button> that
+     opens #hr-resolution or an <a> straight to a ticket (see buildResolutionChip) -- same look
+     either way, since both are "this chip does something" controls. chip-nofix is a plain
+     <span>, not a disabled <button> -- it must stay out of tab order and never announce as a
+     control, since "nothing to show" is a fact to read, not an affordance to press.
+     appearance/border/font reset chip-fix back to .chip's shared box regardless of which
+     element renders it, since a <button> or <a> would otherwise carry the UA control's own
+     font and border. Hover/active read as a rising accent wash, same idiom as #hr-comments-btn;
+     the hover box-shadow stands in for a border without adding border-width, which would grow
+     the box and require animating a layout property to get there. */
+  .chip-fix{appearance:none;border:0;font:inherit;font-weight:600;line-height:1.4;padding:2px 7px;
+    color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);
+    cursor:pointer;text-decoration:none;transition:background .2s,color .2s,box-shadow .2s}
+  /* content's alt-text half (after the /) is the CSS way to say aria-hidden: there's no
+     pseudo-element DOM node to hang a real attribute on. */
+  .chip-fix::after{content:" ↗" / ""}
+  .chip-fix:hover{background:color-mix(in srgb,var(--accent) 28%,transparent);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent)}
+  .chip-fix:active{background:color-mix(in srgb,var(--accent) 40%,transparent)}
+  .chip-fix:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .chip-nofix{color:var(--muted);background:var(--panel);border:1px solid var(--border)}
+
+  /* Dialog content for whichever outcome buildResolutionContent renders: the thread's
+     path:line goes in the header instead (see openResolutionDialog), so only the outcome's
+     own fields need a class here. hr-resolution-why trails the sha and diff as a closing
+     note, muted like the page's other secondary notes (e.g. hunk-note) rather than a
+     headline competing with the snippet above it. */
+  .hr-resolution-why{margin:10px 0 0;font-weight:400;color:var(--muted);font-size:var(--fs-sm);
+    overflow-wrap:anywhere}
+  .hr-resolution-text{margin:6px 0 0;color:var(--text);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .hr-resolution-path{margin:8px 0 4px;font-family:var(--mono);font-size:var(--fs-xs);
+    color:var(--muted);overflow-wrap:anywhere}
+
+  /* Same dialog idiom as #hr-comments, just a touch wider for a diff hunk's line length. */
+  #hr-resolution{width:min(640px,92vw);max-height:82vh;padding:0;background:var(--panel);
+    border:1px solid var(--border);border-radius:10px;color:var(--text)}
+  #hr-resolution::backdrop{background:rgba(0,0,0,.6)}
+  /* Reads as a label, not a page title -- muted and small so the snippet stays the
+     biggest thing in the dialog. */
+  #hr-resolution-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:10px 16px;border-bottom:1px solid var(--border);font-weight:600;
+    font-family:var(--mono);font-size:var(--fs-xs);color:var(--muted);overflow-wrap:anywhere}
+  #hr-resolution-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1;
+    flex:none;transition:background .12s}
+  #hr-resolution-close:hover{background:var(--border)}
+  #hr-resolution-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #hr-resolution-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
 
   #hr-dirty{max-width:min(1400px,92vw);margin:0 auto 20px;background:var(--panel);
     border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;
@@ -561,7 +614,7 @@
      riding inside a summary line, not a control. */
   .chip{display:inline-block;font-size:var(--fs-xs);padding:2px 7px;border-radius:3px;
     font-weight:600;line-height:1.4;white-space:nowrap}
-  .chip-outdated{color:var(--yellow);background:color-mix(in srgb,var(--yellow) 16%,transparent)}
+  .chip-outdated,.chip-guess{color:var(--yellow);background:color-mix(in srgb,var(--yellow) 16%,transparent)}
 
   /* Thread-level code snippet (see buildSnippet): the ROOT note's diff_hunk, rendered once per
      thread instead of once per comment. .dl mirrors the page's own per-line comment row shape
@@ -611,6 +664,7 @@
     #hr-comments-btn{min-height:44px}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
+    #hr-resolution-close{width:44px;height:44px;font-size:16px}
     .fb-reply-input,.fb-actions button{min-height:44px}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
@@ -618,6 +672,9 @@
     h2.h2-row a{min-width:44px;padding:11px 0;margin:-11px 0;
       display:inline-flex;align-items:center;justify-content:center}
     .linklike{padding:11px 0;margin:-11px 0}
+    /* Same delta trick as .linklike above: chip-fix's own padding is 2px, so +11/-11 clears
+       44px without growing the chip's box in the summary row's layout. */
+    .chip-fix{padding:13px 7px;margin:-11px 0}
   }
 
   @media (prefers-reduced-motion:reduce){
@@ -664,6 +721,16 @@
     <span>scroll to zoom, drag to move, Esc to close</span>
   </div>
   <div id="mermaid-zoom-body"></div>
+</dialog>
+
+<!-- What fixed a resolved thread (see buildResolutionChip/openResolutionDialog), one dialog
+     reused for every thread's chip. -->
+<dialog id="hr-resolution" aria-labelledby="hr-resolution-title">
+  <div id="hr-resolution-head">
+    <span id="hr-resolution-title"></span>
+    <button type="button" id="hr-resolution-close" aria-label="Close">✕</button>
+  </div>
+  <div id="hr-resolution-body"></div>
 </dialog>
 
 <script><!-- MERMAID_JS --></script>
@@ -1361,6 +1428,7 @@
   const detailsByPath=new Map(); // path -> its <details.hunk>, for the per-file comment-count badge
   let docOrder=0;
   let refreshCommentsPanel=()=>{}; // replaced once wireCommentsPanel() finds its markup
+  let resolutionOpener=null; // chip that opened #hr-resolution, so close can focus it back
 
   function nowIso(){ return new Date().toISOString(); }
   function newNoteId(){ return 'n-'+Math.random().toString(36).slice(2,8); }
@@ -1806,6 +1874,106 @@
     return el;
   }
 
+  // #hr-resolution's content for one outcome (conversation/commits -- 'none' and 'deferred'
+  // never reach here: buildResolutionChip renders both as a chip with no dialog, either a
+  // dead chip or a direct link to the ticket).
+  function buildResolutionContent(res){
+    const frag=document.createDocumentFragment();
+    if(res.outcome==='conversation'){
+      const p=document.createElement('p'); p.className='hr-resolution-text';
+      p.textContent=res.closing_message||'Resolved in conversation.';
+      frag.appendChild(p);
+    } else if(res.outcome==='commits'){
+      // Low confidence reads as a guess, not a fact -- flagged ahead of everything it claims.
+      if(res.confidence==='low'){
+        const chip=document.createElement('span'); chip.className='chip chip-guess';
+        chip.textContent='Low confidence match'; frag.appendChild(chip);
+      }
+      const shas=document.createElement('p'); shas.className='hr-resolution-text';
+      shas.appendChild(document.createTextNode('Resolved by '));
+      (res.commits||[]).forEach((sha,i)=>{
+        if(i>0) shas.appendChild(document.createTextNode(', '));
+        const a=document.createElement('a'); a.className='linklike';
+        a.href='https://github.com/'+state.meta.repo+'/commit/'+sha;
+        a.target='_blank'; a.rel='noopener noreferrer'; a.textContent=sha.slice(0,7);
+        shas.appendChild(a);
+      });
+      frag.appendChild(shas);
+      // The header already names this thread's path (see openResolutionDialog) -- repeating
+      // it here is only useful once a fix spans more than one file, where the header can't
+      // say which is which.
+      const files=res.files||[];
+      for(const f of files){
+        if(files.length>1){
+          const fp=document.createElement('div'); fp.className='hr-resolution-path'; fp.textContent=f.path;
+          frag.appendChild(fp);
+        }
+        for(const h of f.hunks||[]){
+          const snip=commitHunkSnippet(h);
+          if(snip) frag.appendChild(snip);
+        }
+      }
+      // The diff above already answers the comment sitting above the dialog, so why is a
+      // closing note, not the headline, and skipped outright when the code speaks for itself.
+      if(res.why){
+        const why=document.createElement('p'); why.className='hr-resolution-why';
+        why.textContent=res.why; frag.appendChild(why);
+      }
+    }
+    return frag;
+  }
+
+  // #hr-resolution is reused for every thread; opening it swaps in this root's title and
+  // content, same one-dialog-many-openers idiom as #mermaid-zoom's box argument. opener is
+  // the chip clicked, so wireResolutionDialog's close handler can focus it back.
+  function openResolutionDialog(root,res,opener){
+    resolutionOpener=opener;
+    const dlg=document.getElementById('hr-resolution');
+    document.getElementById('hr-resolution-title').textContent=root.path+':'+root.line;
+    const body=document.getElementById('hr-resolution-body');
+    body.textContent='';
+    body.appendChild(buildResolutionContent(res));
+    dlg.showModal();
+  }
+
+  // The chip at the end of a resolved thread's <summary> (see resolvedWrapFor). null when
+  // resolution tracing never ran for this thread at all -- no entry in state.resolutions,
+  // not even a 'none'. 'none' and a ticketless 'deferred' both still get a chip, just a
+  // disabled-looking one: "nothing to show" is real information, not a missing feature. A
+  // dialog holding only a link (or nothing) isn't worth opening, so a ticketed 'deferred'
+  // skips #hr-resolution entirely and links straight to the ticket instead; only
+  // commits/conversation still open it.
+  function buildResolutionChip(root){
+    const res=state.resolutions&&state.resolutions[root.gh_thread_id];
+    if(!res) return null;
+    if(res.outcome==='none'||(res.outcome==='deferred'&&!res.ticket)){
+      const chip=document.createElement('span'); chip.className='chip chip-nofix';
+      chip.textContent=res.outcome==='none'?'Nothing found':'Deferred to later';
+      return chip;
+    }
+    if(res.outcome==='deferred'){
+      const chip=document.createElement('a'); chip.className='chip chip-fix';
+      chip.href=res.ticket; chip.target='_blank'; chip.rel='noopener noreferrer';
+      chip.textContent='Created ticket for it';
+      // Same problem the dialog-opening button below has: a click inside <summary> also
+      // toggles the parent <details> unless stopped. No preventDefault here -- the link
+      // still has to navigate.
+      chip.addEventListener('click',e=>{ e.stopPropagation(); });
+      return chip;
+    }
+    // Avoids "fix": most threads are nits/questions/answers, not defects.
+    const label=res.outcome==='commits'?'Related changes':'Answered in thread';
+    const chip=document.createElement('button'); chip.type='button'; chip.className='chip chip-fix';
+    chip.textContent=label; chip.setAttribute('aria-haspopup','dialog');
+    // Without both of these, the click also toggles the parent <details> -- summary's native
+    // activation behaviour fires on any click landing inside it, this button included.
+    chip.addEventListener('click',e=>{
+      e.preventDefault(); e.stopPropagation();
+      openResolutionDialog(root,res,chip);
+    });
+    return chip;
+  }
+
   // Same collapsed-<details> idiom as the .hr-lo fold below: cache the element per root id,
   // never tear it down while focus is inside (the comments panel's click-to-focus jump can
   // land a row here), and reconcile its children in place otherwise.
@@ -1826,6 +1994,8 @@
       ' Resolved'+(root.resolved_by?' by '+root.resolved_by:'')+(confirmed?'':' (pending sync)')
       +' · '+root.path+':'+root.line+' · '+rows.length+' comment'+(rows.length===1?'':'s')
     ));
+    const chip=buildResolutionChip(root);
+    if(chip) summary.appendChild(chip);
     placeIn(entry.el,[summary,...rows]);
     return entry.el;
   }
@@ -1867,12 +2037,12 @@
                                     // root's diff_hunk is missing/unparseable -- built once, the
                                     // hunk a root carries never changes at runtime
 
-  // The ROOT note's diff_hunk, rendered once per thread (see the per-comment fold this replaced
-  // in buildItem). Returns null rather than an empty snippet when there is nothing usable to
-  // show, so callers can just skip appending it.
-  function buildSnippet(root){
-    if(!root.diff_hunk) return null;
-    const rawLines=root.diff_hunk.split('\n');
+  // Shared by buildSnippet and commitHunkSnippet: splits a unified-diff hunk's header from its
+  // body and assigns each body line its new-side line number. A removed line has no new-side
+  // number -- skip it in the running count the way the real diff does (see wireHunk), rather
+  // than assigning it one.
+  function parseHunkRows(hunkText){
+    const rawLines=hunkText.split('\n');
     const header=parseHeader(rawLines[0]);
     if(!header) return null;
     let newN=header.newStart;
@@ -1880,12 +2050,32 @@
     for(let i=1;i<rawLines.length;i++){
       const text=rawLines[i];
       const cls=text.startsWith('+')?'a':text.startsWith('-')?'d':'c';
-      // A removed line has no new-side number -- skip it in the running count the way the real
-      // diff does (see wireHunk), rather than assigning it one.
       rows.push({text,cls,num:cls==='d'?null:newN});
       if(cls!=='d') newN++;
     }
-    if(!rows.length) return null;
+    return rows;
+  }
+
+  // One <span class="dl"> per hunk row: line number plus the coloured code text. buildSnippet
+  // adds .anchor/.extra and hidden on top; commitHunkSnippet uses it plain, no windowing.
+  function rowEl(r){
+    const row=document.createElement('span'); row.className='dl';
+    const numEl=document.createElement('span'); numEl.className='dline-num';
+    numEl.setAttribute('aria-hidden','true');
+    if(r.num!=null) numEl.textContent=r.num;
+    row.appendChild(numEl);
+    const code=document.createElement('span'); code.className=r.cls; code.textContent=r.text;
+    row.appendChild(code);
+    return row;
+  }
+
+  // The ROOT note's diff_hunk, rendered once per thread (see the per-comment fold this replaced
+  // in buildItem). Returns null rather than an empty snippet when there is nothing usable to
+  // show, so callers can just skip appending it.
+  function buildSnippet(root){
+    if(!root.diff_hunk) return null;
+    const rows=parseHunkRows(root.diff_hunk);
+    if(!rows||!rows.length) return null;
     let anchorIdx=rows.findIndex(r=>r.num===root.line);
     if(anchorIdx===-1) anchorIdx=rows.length-1; // root.line not found in its own hunk: still show something, ending on the last line
     const visibleStart=Math.max(0,anchorIdx-3);
@@ -1908,16 +2098,9 @@
     box.setAttribute('aria-label',startNum!=null&&endNum!=null?
       ('Code near the comment, lines '+startNum+' to '+endNum):'Code near the comment');
     rows.forEach((r,i)=>{
-      const extra=i<visibleStart||i>anchorIdx;
-      const row=document.createElement('span');
-      row.className='dl'+(i===anchorIdx?' anchor':'')+(extra?' extra':'');
-      if(extra) row.hidden=true;
-      const numEl=document.createElement('span'); numEl.className='dline-num';
-      numEl.setAttribute('aria-hidden','true');
-      if(r.num!=null) numEl.textContent=r.num;
-      row.appendChild(numEl);
-      const code=document.createElement('span'); code.className=r.cls; code.textContent=r.text;
-      row.appendChild(code);
+      const row=rowEl(r);
+      if(i===anchorIdx) row.classList.add('anchor');
+      else if(i<visibleStart||i>anchorIdx){ row.classList.add('extra'); row.hidden=true; }
       box.appendChild(row);
     });
     wrap.appendChild(box);
@@ -1960,6 +2143,19 @@
   function snippetFor(root){
     if(!snippetByRoot.has(root.id)) snippetByRoot.set(root.id,buildSnippet(root));
     return snippetByRoot.get(root.id);
+  }
+
+  // A matched hunk from buildResolutionContent's outcome=commits case: the whole hunk, no
+  // anchor window -- there's no commented line to centre on here, only a diff that answers the
+  // thread.
+  function commitHunkSnippet(hunkText){
+    const rows=parseHunkRows(hunkText);
+    if(!rows||!rows.length) return null;
+    const wrap=document.createElement('div'); wrap.className='thread-snippet diff';
+    const box=document.createElement('div'); box.className='snip-pre';
+    rows.forEach(r=>box.appendChild(rowEl(r)));
+    wrap.appendChild(box);
+    return wrap;
   }
 
   // One card per thread: the header shows the path only when this file has no hunk of its own
@@ -2265,8 +2461,20 @@
     renderList();
   }
 
+  // #hr-resolution has many possible openers (one chip per resolved thread), unlike
+  // #hr-comments' single button -- openResolutionDialog stashes the clicked chip in
+  // resolutionOpener so close can focus the right one back.
+  function wireResolutionDialog(){
+    const dlg=$('hr-resolution'), close=$('hr-resolution-close');
+    if(!dlg||!close) return;
+    close.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
+    dlg.addEventListener('close',()=>{ if(resolutionOpener) resolutionOpener.focus(); });
+  }
+
   document.querySelectorAll('pre.diff').forEach(wireHunk);
   wireCommentsPanel();
+  wireResolutionDialog();
   render();
 })();
 </script>

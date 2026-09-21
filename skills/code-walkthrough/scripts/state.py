@@ -11,7 +11,7 @@ import rather than re-deriving any of this from scratch. It reuses validate_anal
 the single owner of diff parsing (render.py and walkthrough.py already do the same), so a rename
 or a hunk boundary can never resolve two different ways between the gate and the page.
 
-Schema: docs/plans/code-walkthrough/PLAN.md, "The state document". Stdlib only, no network.
+Stdlib only, no network.
 """
 
 import argparse
@@ -125,6 +125,7 @@ def build(analysis, diff_text, links=None, prior=None):
         "files": files,
         "hunks": hunks,
         "notes": list((prior or {}).get("notes") or []),
+        "resolutions": dict((prior or {}).get("resolutions") or {}),
         "groups": list(analysis.get("groups") or []),
     }
 

@@ -18,7 +18,7 @@ most 8 batches, so a huge diff widens each batch instead of spawning 60 agents.
 
 ## The batch subagent brief
 
-One subagent per batch, each on a small fast model (haiku class): the job is per-hunk noticing
+One subagent per batch, each on a sonnet-class model: the job is per-hunk noticing
 inside one slice, and the gate checks every answer, so delegate down when a validator can catch
 the mistake and keep it up when it cannot. All spawned in a single message so they run
 concurrently. Each reads only its own `batch-N.diff` and its manifest-listed

@@ -12,13 +12,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import notes  # noqa: E402
 from notes import (  # noqa: E402
+    apply_resolutions,
     deliver_note,
     diff_anchors,
+    do_apply_resolutions,
     do_deliver,
     do_import,
     do_payloads,
     do_promote,
     do_reanchor,
+    do_resolved_threads,
     do_submit,
     do_sync,
     do_sync_threads,
@@ -31,6 +34,7 @@ from notes import (  # noqa: E402
     read_paginated_json,
     reanchor_note,
     resolve,
+    resolved_threads,
     submit_review,
     sync_comments,
     sync_threads,
@@ -345,6 +349,119 @@ def test_do_sync_threads_warns_on_stderr_when_either_connection_is_truncated():
     warnings = err.getvalue()
     assert "more than 100 review threads" in warnings
     assert "THREAD_1" in warnings and "more than 100 comments" in warnings
+
+
+# ---------------------------------------------------------------------------
+# resolved_threads / apply_resolutions (fanout_threads.py's input and output)
+# ---------------------------------------------------------------------------
+
+def test_resolved_threads_groups_several_notes_into_one_thread():
+    root = _note(id="n-1", gh_thread_id="T1", resolved=True, resolved_by="alice",
+                 path="src/auth.py", line=40, body="extract this",
+                 created_at="2026-09-01T10:00:00Z")
+    reply1 = _note(id="n-2", reply_to="n-1", gh_thread_id="T1", resolved=True,
+                    resolved_by="alice", author="bob", body="done",
+                    created_at="2026-09-02T09:00:00Z")
+    reply2 = _note(id="n-3", reply_to="n-1", gh_thread_id="T1", resolved=True,
+                    resolved_by="alice", author="alice", body="thanks",
+                    created_at="2026-09-03T09:00:00Z")
+    state = {"notes": [root, reply1, reply2]}
+
+    result = resolved_threads(state)
+
+    assert len(result["threads"]) == 1
+    thread = result["threads"][0]
+    assert thread["thread_id"] == "T1"
+    assert thread["path"] == "src/auth.py" and thread["line"] == 40
+    assert thread["body"] == "extract this" and thread["resolved_by"] == "alice"
+    assert [r["body"] for r in thread["replies"]] == ["done", "thanks"]
+
+
+def test_resolved_threads_finds_root_even_when_it_is_not_first():
+    reply = _note(id="n-2", reply_to="n-1", gh_thread_id="T1", resolved=True,
+                   body="reply body", created_at="2026-09-02T09:00:00Z")
+    root = _note(id="n-1", gh_thread_id="T1", resolved=True, path="a.py", line=1,
+                 body="root body", created_at="2026-09-01T10:00:00Z")
+    state = {"notes": [reply, root]}  # root appears second in notes[]
+
+    thread = resolved_threads(state)["threads"][0]
+
+    assert thread["body"] == "root body"
+    assert thread["replies"][0]["body"] == "reply body"
+
+
+def test_resolved_threads_excludes_unresolved_threads():
+    root = _note(id="n-1", gh_thread_id="T1", resolved=False, path="a.py", line=1, body="x")
+    state = {"notes": [root]}
+
+    assert resolved_threads(state)["threads"] == []
+
+
+def test_resolved_threads_last_comment_id_from_raw_payload():
+    root = _note(id="n-1", gh_thread_id="T1", resolved=True, gh_id=100, path="a.py",
+                 line=1, body="x")
+    state = {"notes": [root]}
+    payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"id": "T1", "comments": {"nodes": [{"databaseId": 100}, {"databaseId": 999}]}},
+    ]}}}}}
+
+    thread = resolved_threads(state, payload)["threads"][0]
+
+    # 999 only exists in the raw payload, not on any note -- proves the join is payload-first.
+    assert thread["last_comment_id"] == 999
+
+
+def test_resolved_threads_last_comment_id_falls_back_to_notes_gh_id_without_payload():
+    root = _note(id="n-1", gh_thread_id="T1", resolved=True, gh_id=100, path="a.py",
+                 line=1, body="x")
+    reply = _note(id="n-2", reply_to="n-1", gh_thread_id="T1", resolved=True, gh_id=150,
+                  created_at="t2", body="y")
+    state = {"notes": [root, reply]}
+
+    thread = resolved_threads(state)["threads"][0]
+
+    assert thread["last_comment_id"] == 150
+
+
+def test_apply_resolutions_merges_by_thread_id():
+    state = {}
+
+    apply_resolutions(state, {"T1": {"outcome": "none", "why": None}})
+
+    assert state["resolutions"] == {"T1": {"outcome": "none", "why": None}}
+
+
+def test_apply_resolutions_last_write_wins_on_same_thread_id():
+    state = {"resolutions": {"T1": {"outcome": "none"}}}
+
+    apply_resolutions(state, {"T1": {"outcome": "commits", "commits": ["abc"]}})
+
+    assert state["resolutions"]["T1"]["outcome"] == "commits"
+
+
+def test_do_resolved_threads_writes_contract_to_out_file():
+    root = _note(id="n-1", gh_thread_id="T1", resolved=True, path="a.py", line=1, body="x")
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": [root]})
+        out_path = Path(tmp) / "threads.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_resolved_threads(_Args(state=state_path, payload=None, out=str(out_path)))
+        result = json.loads(out_path.read_text())
+    assert result["threads"][0]["thread_id"] == "T1"
+
+
+def test_do_apply_resolutions_reads_stdin_and_saves_state():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": []})
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps({"T1": {"outcome": "none"}}))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                do_apply_resolutions(_Args(state=state_path))
+        finally:
+            sys.stdin = real_stdin
+        result = json.loads(Path(state_path).read_text())
+    assert result["resolutions"] == {"T1": {"outcome": "none"}}
 
 
 def test_payloads_emits_for_a_plain_draft_with_no_publish_requested_flag():
@@ -1217,6 +1334,16 @@ if __name__ == "__main__":
         test_sync_threads_leaves_a_comment_with_no_matching_note_alone,
         test_sync_threads_is_idempotent,
         test_do_sync_threads_reads_the_graphql_response_shape_from_stdin,
+        test_do_sync_threads_warns_on_stderr_when_either_connection_is_truncated,
+        test_resolved_threads_groups_several_notes_into_one_thread,
+        test_resolved_threads_finds_root_even_when_it_is_not_first,
+        test_resolved_threads_excludes_unresolved_threads,
+        test_resolved_threads_last_comment_id_from_raw_payload,
+        test_resolved_threads_last_comment_id_falls_back_to_notes_gh_id_without_payload,
+        test_apply_resolutions_merges_by_thread_id,
+        test_apply_resolutions_last_write_wins_on_same_thread_id,
+        test_do_resolved_threads_writes_contract_to_out_file,
+        test_do_apply_resolutions_reads_stdin_and_saves_state,
         test_payloads_emits_for_a_plain_draft_with_no_publish_requested_flag,
         test_payloads_emits_exact_payload_for_a_draft,
         test_payloads_emits_nothing_for_a_stale_draft,

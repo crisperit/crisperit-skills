@@ -4,7 +4,7 @@
   python3 regen.py --diff raw.diff --repo <repo> --base <base_sha> --head <head_sha> \
       --cache-dir <scratchpad>/cache [--prior-state <scratchpad>/state.json] \
       [--manifest <fanout split manifest.json>] [--head-file <path from
-      `git rev-parse --git-path HEAD`>]
+      `git rev-parse --git-path HEAD`>] [--threads <resolved-threads.json>]
 
 This module only computes keys, decides cache hit/miss by checking whether
 `<cache-dir>/<key>.json` exists, and pre-fills fanout.py's fragment-N.seed.json files in
@@ -12,12 +12,13 @@ place from the prior state.json. It never shells out, never calls git, never run
 analyser, never spawns a subagent. The agent reads the printed plan and runs the named
 commands itself.
 
-Keys, see docs/plans/code-walkthrough/PLAN.md phase 6:
+Keys:
   per-hunk annotation      sha256(hunk body lines + "\\n" + file blob sha)[:16], body only,
                            never the `@@` header, so a pure line-number shift keeps the hash
   set hash                 sha256 over sorted (path, hunk hash) pairs; drives grouping/prose
   symdelta                 (base_sha, head_sha, SCRIPT_VERSION); it diffs internally
   complexity/links         set hash, keyed with SCRIPT_VERSION same as the others
+  resolution               a positive/null key pair per thread, see below
 
 Degradation: a file with no `index` line (rename-only in practice, not binaries) has no
 blob sha. Its hunks still hash (falling back to body-only), but they are marked
@@ -27,6 +28,16 @@ Known ceiling: two textually identical hunks in one file collide on (path, hash)
 first-unmatched-wins in file order, which can swap two identical hunks' carried notes.
 Since the hunks are byte-identical, so is any note that actually explains them; not worth
 a smarter identity key.
+
+This script runs twice per regeneration: once for hunk/analyser caching (`--manifest`, as
+above) and again, later, once thread data exists, for resolution caching (`--threads`).
+The two are never passed in the same invocation.
+
+Resolution keys on (thread_id, last_comment_id), asymmetrically: the positive key omits
+head_sha, so a thread whose resolution WAS found caches forever no matter how many commits
+land afterwards. The null key ("no change found") includes head_sha, because that answer is
+worth retrying once there is new code to look at, so it falls out of cache naturally when
+head moves. `plan_resolution` checks the positive path first, then the null path.
 """
 
 import argparse
@@ -44,6 +55,7 @@ SCRIPT_VERSION = {
     "symdelta": 1,
     "complexity": 1,
     "links": 1,
+    "resolution": 1,
 }
 # Takes --base/--head and diffs internally rather than consuming raw.diff, so a ref pair is
 # its whole input and a better key than any diff hash.
@@ -126,6 +138,32 @@ def plan_analyser(cache_dir, script, key, cmd):
         "cache_path": cache_path,
         "status": "hit" if hit else "miss",
         "action": f"copy {cache_path}" if hit else cmd,
+    }
+
+
+def plan_resolution(cache_dir, thread, head_sha):
+    """Contract-(F) entry for one resolved thread: checks the positive cache path before
+    the null path (asymmetry documented in the module docstring)."""
+    thread_id = thread["thread_id"]
+    last_comment_id = thread["last_comment_id"]
+    positive_key = analyser_key("resolution", thread_id, last_comment_id)
+    null_key = analyser_key("resolution", thread_id, last_comment_id, head_sha)
+    cache_path_positive = str(Path(cache_dir) / f"{positive_key}.json")
+    cache_path_null = str(Path(cache_dir) / f"{null_key}.json")
+
+    if Path(cache_path_positive).exists():
+        cache_path_hit = cache_path_positive
+    elif Path(cache_path_null).exists():
+        cache_path_hit = cache_path_null
+    else:
+        cache_path_hit = None
+
+    return {
+        "thread_id": thread_id,
+        "cached": cache_path_hit is not None,
+        "cache_path_positive": cache_path_positive,
+        "cache_path_null": cache_path_null,
+        "cache_path_hit": cache_path_hit,
     }
 
 
@@ -224,6 +262,14 @@ def build_plan(args):
             for entry in manifest
         ]
 
+    resolution_plan = None
+    if args.threads:
+        threads = json.loads(Path(args.threads).read_text())
+        resolution_plan = [
+            plan_resolution(args.cache_dir, thread, args.head)
+            for thread in threads["threads"]
+        ]
+
     plan = {
         "set_hash": {
             "prior": prior_meta.get("set_hash"),
@@ -236,6 +282,7 @@ def build_plan(args):
         },
         "analysers": analysers,
         "fanout": fanout_plan,
+        "resolution": resolution_plan,
         "dirty": dirty(args.head_file, prior_meta.get("head_sha")) if args.head_file else None,
     }
     return plan
@@ -251,6 +298,7 @@ def main():
     parser.add_argument("--prior-state")
     parser.add_argument("--manifest")
     parser.add_argument("--head-file")
+    parser.add_argument("--threads")
     args = parser.parse_args()
 
     print(json.dumps(build_plan(args), indent=2))
