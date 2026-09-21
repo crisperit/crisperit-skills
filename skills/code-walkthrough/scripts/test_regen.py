@@ -288,6 +288,102 @@ def test_dirty_follows_a_symbolic_ref_to_the_branchs_sha():
         assert regen.dirty(str(packed_head), "abc123") is False
 
 
+def test_resolution_positive_hit_is_unaffected_by_head_sha():
+    thread = {"thread_id": "PRRT_1", "last_comment_id": 42}
+    with tempfile.TemporaryDirectory() as tmp:
+        positive_key = regen.analyser_key("resolution", "PRRT_1", 42)
+        (Path(tmp) / f"{positive_key}.json").write_text("{}")
+
+        plan_a = regen.plan_resolution(tmp, thread, "head1")
+        plan_b = regen.plan_resolution(tmp, thread, "head2")
+
+        # split runs once per batch, not per thread, so there is no per-thread command to emit.
+        assert "cmd" not in plan_a
+        assert plan_a["cached"] is True
+        assert plan_a["cache_path_hit"] == plan_a["cache_path_positive"]
+        assert plan_a["cache_path_positive"] == plan_b["cache_path_positive"]
+        assert plan_b["cached"] is True
+
+
+def test_resolution_null_hit_changes_with_head_sha():
+    thread = {"thread_id": "PRRT_1", "last_comment_id": 42}
+    with tempfile.TemporaryDirectory() as tmp:
+        null_key = regen.analyser_key("resolution", "PRRT_1", 42, "head1")
+        (Path(tmp) / f"{null_key}.json").write_text("{}")
+
+        at_head1 = regen.plan_resolution(tmp, thread, "head1")
+        at_head2 = regen.plan_resolution(tmp, thread, "head2")
+
+        assert at_head1["cached"] is True
+        assert at_head1["cache_path_hit"] == at_head1["cache_path_null"]
+        assert at_head2["cached"] is False
+        assert at_head1["cache_path_null"] != at_head2["cache_path_null"]
+
+
+def test_bumping_resolution_script_version_invalidates_both_resolution_keys():
+    thread = {"thread_id": "PRRT_1", "last_comment_id": 42}
+    original = regen.SCRIPT_VERSION["resolution"]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            positive_key = regen.analyser_key("resolution", "PRRT_1", 42)
+            null_key = regen.analyser_key("resolution", "PRRT_1", 42, "head1")
+            (Path(tmp) / f"{positive_key}.json").write_text("{}")
+            (Path(tmp) / f"{null_key}.json").write_text("{}")
+
+            before = regen.plan_resolution(tmp, thread, "head1")
+            assert before["cached"] is True
+            assert before["cache_path_hit"] == before["cache_path_positive"]
+
+            regen.SCRIPT_VERSION["resolution"] = original + 1
+            after = regen.plan_resolution(tmp, thread, "head1")
+
+            assert after["cached"] is False
+            assert after["cache_path_positive"] != before["cache_path_positive"]
+            assert after["cache_path_null"] != before["cache_path_null"]
+    finally:
+        regen.SCRIPT_VERSION["resolution"] = original
+
+
+def test_resolution_positive_hit_wins_over_a_null_hit():
+    thread = {"thread_id": "PRRT_1", "last_comment_id": 42}
+    with tempfile.TemporaryDirectory() as tmp:
+        positive_key = regen.analyser_key("resolution", "PRRT_1", 42)
+        null_key = regen.analyser_key("resolution", "PRRT_1", 42, "head1")
+        (Path(tmp) / f"{positive_key}.json").write_text("{}")
+        (Path(tmp) / f"{null_key}.json").write_text("{}")
+
+        plan = regen.plan_resolution(tmp, thread, "head1")
+
+        assert plan["cache_path_hit"] == plan["cache_path_positive"]
+
+
+def test_build_plan_populates_resolution_only_when_threads_is_passed():
+    with tempfile.TemporaryDirectory() as tmp:
+        diff_path = Path(tmp) / "raw.diff"
+        diff_path.write_text(_diff("f.py", INDEX, "@@ -10,3 +10,4 @@", BODY))
+        threads_path = Path(tmp) / "threads.json"
+        threads_path.write_text(json.dumps({"threads": [
+            {"thread_id": "PRRT_1", "last_comment_id": 42},
+        ]}))
+
+        no_threads_args = argparse.Namespace(
+            diff=str(diff_path), repo="/repo", base="base1", head="head1",
+            cache_dir=tmp, prior_state=None, manifest=None, head_file=None, threads=None,
+        )
+        assert regen.build_plan(no_threads_args)["resolution"] is None
+
+        with_threads_args = argparse.Namespace(
+            diff=str(diff_path), repo="/repo", base="base1", head="head1",
+            cache_dir=tmp, prior_state=None, manifest=None, head_file=None,
+            threads=str(threads_path),
+        )
+        resolution = regen.build_plan(with_threads_args)["resolution"]
+        assert len(resolution) == 1
+        assert resolution[0]["thread_id"] == "PRRT_1"
+        assert resolution[0]["cached"] is False
+        assert resolution[0]["cache_path_hit"] is None
+
+
 def test_dirty_follows_a_linked_worktrees_commondir_to_the_common_repos_refs():
     with tempfile.TemporaryDirectory() as tmp:
         git_dir = Path(tmp)
@@ -321,6 +417,11 @@ if __name__ == "__main__":
         test_dirty_reads_the_head_file_and_compares_to_the_built_sha,
         test_dirty_follows_a_symbolic_ref_to_the_branchs_sha,
         test_dirty_follows_a_linked_worktrees_commondir_to_the_common_repos_refs,
+        test_resolution_positive_hit_is_unaffected_by_head_sha,
+        test_resolution_null_hit_changes_with_head_sha,
+        test_bumping_resolution_script_version_invalidates_both_resolution_keys,
+        test_resolution_positive_hit_wins_over_a_null_hit,
+        test_build_plan_populates_resolution_only_when_threads_is_passed,
     ]
     for test in tests:
         test()

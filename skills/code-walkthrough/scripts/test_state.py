@@ -435,6 +435,20 @@ def test_no_prior_means_no_notes():
     assert state["notes"] == []
 
 
+def test_prior_resolutions_are_carried_forward():
+    prior = {"resolutions": {"T1": {"outcome": "none"}}}
+
+    state = build(ANALYSIS, DIFF_MOVED, prior=prior)
+
+    assert state["resolutions"] == {"T1": {"outcome": "none"}}
+
+
+def test_no_prior_means_no_resolutions():
+    state = build(ANALYSIS, DIFF_MOVED)
+
+    assert state["resolutions"] == {}
+
+
 def test_built_state_has_no_requests_key():
     state = build(ANALYSIS, DIFF_MOVED, prior={"requests": [{"id": "r-1"}]})
 

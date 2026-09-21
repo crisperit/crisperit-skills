@@ -8,6 +8,9 @@
   python3 notes.py submit --state state.json --event COMMENT|APPROVE|REQUEST_CHANGES \
       --body-file <f>
   python3 notes.py reanchor --state state.json --diff raw.diff
+  python3 notes.py resolved-threads --state state.json [--payload raw-graphql.json] \
+      --out threads.json
+  python3 notes.py apply-resolutions --state state.json  (< merged resolutions JSON on stdin)
 
   Superseded, kept for one release (see "GitHub delivery" below):
   python3 notes.py payloads --state state.json --commit-id <sha> --out <dir>
@@ -15,8 +18,7 @@
 
 notes.py never calls git. `gh` is the one subprocess it runs, and only for `deliver` and
 `submit`, always `gh api graphql` with the request body on stdin (see "GitHub delivery").
-Everything else here is a pure state transformer over state.json's notes[] array (schema:
-docs/plans/code-walkthrough/PLAN.md, "The state document").
+Everything else here is a pure state transformer over state.json's notes[] array (schema: see state.py).
 
 Lifecycle is draft -> posted. A record is never deleted and never rewritten in place by any
 other step; a failed post leaves the note a draft, so nothing is lost.
@@ -53,6 +55,21 @@ the same response twice is a no-op the second time. `first: 100` on both connect
 `--paginate`, since a nested connection (comments inside each thread) has its own cursor that
 --paginate's outer-cursor convention does not reach; a PR with over 100 threads or over 100
 comments in one thread needs a second call, not attempted here.
+
+resolved-threads groups state["notes"] by gh_thread_id -- sync_threads sets gh_thread_id,
+resolved and resolved_by on every note in a thread, not just the root, so a filter can't
+recover per-thread shape and a group-by can. A group's root is its note with reply_to is
+None; the rest are its replies. last_comment_id is max(databaseId) straight from a raw
+REVIEW_THREADS_QUERY payload when one is given (--payload), since a notes[]-based join
+would silently drop a comment GraphQL already has but REST has not synced yet; with no
+payload it falls back to max(gh_id) across the thread's own notes, exact once sync has
+caught up, understated otherwise. Written for fanout_threads.py to fan out one worker per
+resolved thread.
+
+apply-resolutions merges a worker's per-thread resolution objects onto state["resolutions"],
+keyed by thread_id. It never goes through merge_state: that function's VALID_ID_RE and
+PAGE_DENIED_NOTE_FIELDS guard against a browser-pasted note payload, and a resolution object
+is a different shape entirely -- already-trusted output from a worker, not page input.
 
 import merges a page's Copy for agent payload into state.json: the page is a plain local
 file with no server to post a click to, so pasting the copied JSON here is the only way a
@@ -454,6 +471,87 @@ def sync_threads(state, threads):
     return state
 
 
+def _max_ids_by_thread(payload):
+    """{gh_thread_id: max(databaseId)} straight from a raw REVIEW_THREADS_QUERY response --
+    the same nodes sync_threads reads, kept separate from it since sync_threads must not
+    change shape or behaviour."""
+    pull_request = (((payload.get("data") or {}).get("repository") or {})
+                     .get("pullRequest") or {})
+    threads = (pull_request.get("reviewThreads") or {}).get("nodes") or []
+    out = {}
+    for thread in threads:
+        ids = [c.get("databaseId") for c in (thread.get("comments") or {}).get("nodes") or []
+               if c.get("databaseId") is not None]
+        if ids:
+            out[thread.get("id")] = max(ids)
+    return out
+
+
+def resolved_threads(state, payload=None):
+    """Contract (A): one entry per resolved gh_thread_id, for fanout_threads.py to fan out
+    on. Groups state["notes"] by gh_thread_id rather than filtering, since sync_threads
+    stamps gh_thread_id/resolved/resolved_by onto every note in a thread, not just the root.
+    A group is kept when any of its notes is resolved; its root is the note with
+    reply_to is None, everything else is a reply, ordered by created_at. last_comment_id
+    prefers payload's raw databaseId when given -- see _max_ids_by_thread's docstring for
+    why a notes[]-based join can't be trusted -- and falls back to max(gh_id) across the
+    thread's own notes otherwise, exact once sync has caught up, understated otherwise.
+    """
+    groups, order = {}, []
+    for note in state.get("notes", []):
+        thread_id = note.get("gh_thread_id")
+        if thread_id is None:
+            continue
+        if thread_id not in groups:
+            groups[thread_id] = []
+            order.append(thread_id)
+        groups[thread_id].append(note)
+
+    max_ids = _max_ids_by_thread(payload) if payload is not None else {}
+
+    threads = []
+    for thread_id in order:
+        notes = groups[thread_id]
+        if not any(note.get("resolved") for note in notes):
+            continue
+        root = next((note for note in notes if note.get("reply_to") is None), None)
+        if root is None:
+            continue  # no root synced yet -- nothing to anchor path/line/body on
+        replies = sorted((n for n in notes if n is not root), key=lambda n: n.get("created_at") or "")
+
+        if thread_id in max_ids:
+            last_comment_id = max_ids[thread_id]
+        else:
+            gh_ids = [n.get("gh_id") for n in notes if n.get("gh_id") is not None]
+            last_comment_id = max(gh_ids) if gh_ids else None
+
+        threads.append({
+            "thread_id": thread_id,
+            "last_comment_id": last_comment_id,
+            "resolved_by": root.get("resolved_by"),
+            "path": root.get("path"),
+            "line": root.get("line"),
+            "first_comment_at": root.get("created_at"),
+            "body": root.get("body"),
+            "replies": [
+                {"author": r.get("author"), "created_at": r.get("created_at"), "body": r.get("body")}
+                for r in replies
+            ],
+        })
+    return {"threads": threads}
+
+
+def apply_resolutions(state, merged):
+    """Contract (E): merge a worker's {thread_id: resolution} map onto state["resolutions"],
+    in place -- last-write-wins per thread_id, same as merge_state's note upsert, but without
+    merge_state itself: its validation is built for browser-pasted note payloads, the wrong
+    shape for a worker's already-trusted output.
+    """
+    resolutions = state.setdefault("resolutions", {})
+    resolutions.update(merged)
+    return state
+
+
 def payloads_for(state, commit_id):
     """Return [(note_id, payload)] for every local draft note, in notes[] order. A stale
     top-level draft is skipped: its `line` is a coordinate in the file as it was, not as it
@@ -811,6 +909,24 @@ def do_sync_threads(args):
     return 0
 
 
+def do_resolved_threads(args):
+    state = _load_state(args.state)
+    payload = json.loads(Path(args.payload).read_text()) if args.payload else None
+    result = resolved_threads(state, payload)
+    Path(args.out).write_text(json.dumps(result, indent=2) + "\n")
+    print(f"wrote {len(result['threads'])} resolved thread(s) to {args.out}")
+    return 0
+
+
+def do_apply_resolutions(args):
+    state = _load_state(args.state)
+    merged = json.loads(sys.stdin.read())
+    apply_resolutions(state, merged)
+    _save_state(args.state, state)
+    print(f"applied {len(merged)} resolution(s)")
+    return 0
+
+
 def do_import(args):
     """Merge a pasted copy-for-agent payload into state.json."""
     state = _load_state(args.state)
@@ -936,6 +1052,18 @@ def main():
     reanchor_parser.add_argument("--state", required=True)
     reanchor_parser.add_argument("--diff", required=True)
     reanchor_parser.set_defaults(func=do_reanchor)
+
+    resolved_threads_parser = sub.add_parser("resolved-threads")
+    resolved_threads_parser.add_argument("--state", required=True)
+    resolved_threads_parser.add_argument(
+        "--payload", help="raw REVIEW_THREADS_QUERY response, for an exact last_comment_id"
+    )
+    resolved_threads_parser.add_argument("--out", required=True)
+    resolved_threads_parser.set_defaults(func=do_resolved_threads)
+
+    apply_resolutions_parser = sub.add_parser("apply-resolutions")
+    apply_resolutions_parser.add_argument("--state", required=True)
+    apply_resolutions_parser.set_defaults(func=do_apply_resolutions)
 
     deliver_parser = sub.add_parser("deliver")
     deliver_parser.add_argument("--state", required=True)
