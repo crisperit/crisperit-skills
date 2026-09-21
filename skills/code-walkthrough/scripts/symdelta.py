@@ -362,6 +362,87 @@ def dependency_files_changed(repo, base, head, lang="typescript"):
     return bool(changed_basenames & DEPENDENCY_FILES_BY_LANG[lang])
 
 
+PACKAGE_JSON_DEP_KEYS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+
+
+def _read_package_json(repo, ref):
+    """Parsed package.json at `ref`, or None when it's absent or fails to parse as JSON -- both
+    fold into the same conservative "can't compare" signal for callers, since a partially
+    committed manifest tells them nothing more than a ref that predates package.json entirely."""
+    result = run_git(repo, ["show", f"{ref}:package.json"])
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _dep_specs_by_name(data, keys):
+    """name -> the set of every distinct spec string declared for it across `keys`'s sections of
+    a parsed package.json. A set, not a dict.update() merge: the latter lets whichever section is
+    iterated last silently overwrite an earlier section's spec for the same name, so a package
+    declared in two sections with genuinely different specs (dependencies bumped, devDependencies
+    left stale behind it, say) could read as unchanged purely because of section order. A name
+    repeated across sections with the identical spec still collapses to one set element, so that
+    case reads as unchanged rather than as some kind of ambiguity."""
+    specs = defaultdict(set)
+    for key in keys:
+        for name, spec in (data.get(key) or {}).items():
+            specs[name].add(spec)
+    return specs
+
+
+def ts_dependency_incompatible(repo, base, head):
+    """Whether base and head declare TypeScript dependencies incompatibly enough that
+    link_node_modules()'s single node_modules, shared between both worktrees, can't stand in for
+    both. Narrower than the blunt "did a manifest file change" check python/rust still use:
+    additions-only and lockfile-only churn never touch what base source already resolved, and the
+    blunt check cost one real PR its whole TypeScript symbol graph over 25 unrelated files for two
+    package additions. What actually breaks resolution is base source importing something the
+    shared (head-side) node_modules no longer matches -- a package head removed, or a spec head
+    changed.
+
+    Decided from the declared specs in package.json, not from which files changed, so a
+    lockfile-only edit or an unchanged manifest never trips it. Bails when package.json is
+    missing or unparseable at either ref: there is nothing to compare, and guessing would be
+    worse than refusing.
+
+    Known ceiling, not checked here: an added devDependency can still shift base-side resolution
+    two ways this never sees -- ambient global type declarations (`@types/jest` declaring
+    `describe`/`it`/`expect` via `declare global`) change what's visible when analysing base too,
+    and npm's hoisting can re-resolve a shared transitive package to a different version that
+    never appears in package.json at all. Both are properties of node_modules being shared
+    between worktrees, not of this function; the fix is an install per worktree, and that's the
+    cost link_node_modules exists to avoid paying on every run."""
+    base_data, head_data = _read_package_json(repo, base), _read_package_json(repo, head)
+    if base_data is None or head_data is None:
+        return True, (
+            "package.json is missing or unparseable at base or head, so declared TypeScript "
+            "dependencies can't be compared"
+        )
+
+    base_specs = _dep_specs_by_name(base_data, PACKAGE_JSON_DEP_KEYS)
+    head_specs = _dep_specs_by_name(head_data, PACKAGE_JSON_DEP_KEYS)
+    removed = sorted(name for name in base_specs if name not in head_specs)
+    changed = sorted(
+        name for name in base_specs if name in head_specs and head_specs[name] != base_specs[name]
+    )
+    if not removed and not changed:
+        return False, None
+
+    parts = []
+    if removed:
+        parts.append(f"removed: {', '.join(removed)}")
+    if changed:
+        parts.append(f"version changed: {', '.join(changed)}")
+    return True, (
+        f"package.json dependency incompatibility between base and head ({'; '.join(parts)}); "
+        "node_modules is shared between both worktrees (see link_node_modules), so the "
+        "resulting call graph would be unreliable"
+    )
+
+
 def ts_diff_entries(repo, base, head):
     """(status, old_path, new_path) triples from `git diff --name-status -M`; old == new for a
     plain add/modify/delete, so callers never need to branch on shape."""
@@ -863,9 +944,16 @@ def analyse_lsp(repo, base, head, lang):
     their file extensions, dependency manifests, worktree prep and which server extract.py
     spawns via --lang."""
     # Against the empty baseline every manifest reads as added, but there is no before side
-    # for a dependency change to make incomparable, so the refusal below does not apply.
-    if not is_empty_base(repo, base) and dependency_files_changed(repo, base, head, lang):
-        return {"language": None, "reason": DEPENDENCY_REASON[lang]}
+    # for a dependency change to make incomparable, so the refusals below do not apply.
+    if not is_empty_base(repo, base):
+        if lang == "typescript":
+            # Narrower than python/rust's blunt dependency_files_changed: see
+            # ts_dependency_incompatible for why file-level detection over-refuses here.
+            incompatible, reason = ts_dependency_incompatible(repo, base, head)
+            if incompatible:
+                return {"language": None, "reason": reason}
+        elif dependency_files_changed(repo, base, head, lang):
+            return {"language": None, "reason": DEPENDENCY_REASON[lang]}
 
     ok, reason = check_typescript_tooling(repo, lang)
     if not ok:

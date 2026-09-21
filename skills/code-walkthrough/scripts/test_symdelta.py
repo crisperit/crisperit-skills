@@ -773,9 +773,142 @@ def test_dependency_files_changed_true_for_cargo_lock():
         assert symdelta.dependency_files_changed(repo, base, head, "rust") is True
 
 
-def test_analyse_typescript_refuses_when_dependencies_changed():
+# ---- pure-logic tests: TypeScript dependency compatibility decided from declared specs -----
+
+
+def test_ts_dependency_incompatible_false_for_additions_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0", "chalk": "5.0.0"}}\n')
+        head = _commit(repo, "head")
+        assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
+
+
+def test_ts_dependency_incompatible_true_when_a_dependency_is_removed():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {}}\n')
+        head = _commit(repo, "head")
+        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
+        assert incompatible is True
+        assert "removed: left-pad" in reason
+
+
+def test_ts_dependency_incompatible_true_when_a_version_spec_changed():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "2.0.0"}}\n')
+        head = _commit(repo, "head")
+        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
+        assert incompatible is True
+        assert "version changed: left-pad" in reason
+
+
+def test_ts_dependency_incompatible_false_for_lockfile_only_change():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        _write(repo, "package-lock.json", '{"lockfileVersion": 2}\n')
+        base = _commit(repo, "base")
+        _write(repo, "package-lock.json", '{"lockfileVersion": 3}\n')
+        head = _commit(repo, "head")
+        assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
+
+
+def test_ts_dependency_incompatible_true_when_package_json_missing_at_base():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "src/a.ts", "export function a() {}\n")
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        head = _commit(repo, "head")
+        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
+        assert incompatible is True
+        assert "missing or unparseable" in reason
+
+
+def test_ts_dependency_incompatible_true_when_package_json_is_unparseable():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        base = _commit(repo, "base")
+        _write(repo, "package.json", "{not valid json\n")
+        head = _commit(repo, "head")
+        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
+        assert incompatible is True
+        assert "missing or unparseable" in reason
+
+
+def test_ts_dependency_incompatible_true_when_sections_disagree_on_spec():
+    # A dict.update() merge across sections would let devDependencies silently overwrite
+    # dependencies' newer spec here, hiding a real version bump behind section iteration order.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        base = _commit(repo, "base")
+        _write(
+            repo, "package.json",
+            '{"dependencies": {"left-pad": "2.0.0"}, "devDependencies": {"left-pad": "1.0.0"}}\n',
+        )
+        head = _commit(repo, "head")
+        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
+        assert incompatible is True
+        assert "version changed: left-pad" in reason
+
+
+def test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        base = _commit(repo, "base")
+        _write(
+            repo, "package.json",
+            '{"dependencies": {"left-pad": "1.0.0"}, "devDependencies": {"left-pad": "1.0.0"}}\n',
+        )
+        head = _commit(repo, "head")
+        assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
+
+
+# ---- wiring tests: analyse_typescript's null results carry the right remedy (or none) -----
+
+
+def test_analyse_typescript_refuses_when_a_dependency_is_removed():
     # Must short-circuit before any typescript-language-server check, so this needs no tool on
     # PATH and is never skipped.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        _write(repo, "src/a.ts", "export function a() {}\n")
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {}}\n')
+        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
+        head = _commit(repo, "head")
+
+        result = symdelta.analyse_typescript(repo, base, head)
+        assert result["language"] is None
+        assert "left-pad" in result["reason"]
+        assert "remedy" not in result
+
+
+def test_analyse_typescript_does_not_refuse_on_dependency_additions_only():
+    # Change 1's whole point: an added-only dependency must not trip the gate that a removed or
+    # changed one does. Whatever happens next needs a real typescript-language-server, so this
+    # only pins down that the dependency reason specifically is never given.
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
         _init_repo(repo)
@@ -785,10 +918,11 @@ def test_analyse_typescript_refuses_when_dependencies_changed():
         _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
         _write(repo, "src/a.ts", "export function a() { return 1; }\n")
         head = _commit(repo, "head")
+        (repo / "node_modules" / "left-pad").mkdir(parents=True)
 
         result = symdelta.analyse_typescript(repo, base, head)
-        assert result["language"] is None
-        assert "package.json" in result["reason"]
+        if result["language"] is None:
+            assert "dependency incompatibility" not in result["reason"]
 
 
 # ---- pure-logic tests: a hung LSP extractor raises a clean error, not a raw traceback ---
@@ -1399,7 +1533,16 @@ if __name__ == "__main__":
         test_dependency_files_changed_true_for_pyproject_toml,
         test_dependency_files_changed_false_for_python_when_only_ts_lockfile_changed,
         test_dependency_files_changed_true_for_cargo_lock,
-        test_analyse_typescript_refuses_when_dependencies_changed,
+        test_ts_dependency_incompatible_false_for_additions_only,
+        test_ts_dependency_incompatible_true_when_a_dependency_is_removed,
+        test_ts_dependency_incompatible_true_when_a_version_spec_changed,
+        test_ts_dependency_incompatible_false_for_lockfile_only_change,
+        test_ts_dependency_incompatible_true_when_package_json_missing_at_base,
+        test_ts_dependency_incompatible_true_when_package_json_is_unparseable,
+        test_ts_dependency_incompatible_true_when_sections_disagree_on_spec,
+        test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections,
+        test_analyse_typescript_refuses_when_a_dependency_is_removed,
+        test_analyse_typescript_does_not_refuse_on_dependency_additions_only,
         test_check_typescript_tooling_raises_runtime_error_on_timeout,
         test_run_ts_extractor_raises_runtime_error_on_timeout_and_still_cleans_up_the_files_list,
         test_run_in_process_group_handles_getpgid_race_without_crashing,
