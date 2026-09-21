@@ -301,10 +301,14 @@ python3 <skill>/scripts/symdelta.py --repo . --base <base> --head <head> > <scra
 ```
 
 Check `"language"` in the output before spending anything on the section: `null` means the diff
-touched no supported language, or is missing a required tool, with why in `"reason"`. Skip the
-symbols section in that case and say so in one line. A `null` is never licence to fall back to
-name-matched edges; see `references/graphs.md` for why that guess is exactly the failure mode
-this graph exists to avoid.
+touched no supported language, or is missing a required tool, with why in `"reason"`. When the
+result also carries a `"remedy"`, the null is a fixable local tooling problem, not an absent
+graph. Tell the user the problem and the exact command in one line, ask once before running it,
+then re-run symdelta.py and continue. Never run it unasked: `npm ci` rebuilds the user's
+node_modules and a `-g` install mutates their machine. Skip the symbols section and say so in one
+line when there is no `"remedy"`. A `null` is never licence to fall back to name-matched edges;
+see `references/graphs.md` for why that guess is exactly the failure mode this graph exists to
+avoid.
 
 ```bash
 python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \

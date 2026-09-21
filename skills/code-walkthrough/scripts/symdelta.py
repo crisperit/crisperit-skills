@@ -261,6 +261,13 @@ def run_in_process_group(cmd, timeout, what):
     return proc.returncode, out, err
 
 
+LANGUAGE_SERVER_REMEDY = {
+    "typescript": "npm i -g typescript typescript-language-server",
+    "python": "npm i -g pyright",
+    "rust": "rustup component add rust-analyzer",
+}
+
+
 def check_typescript_tooling(repo, lang="typescript"):
     """Preflight-only invocation of the LSP extractor (no files given): does `lang`'s language
     server exist and advertise callHierarchyProvider? Checked before any worktree gets created,
@@ -363,6 +370,11 @@ def dependency_files_changed(repo, base, head, lang="typescript"):
 
 
 PACKAGE_JSON_DEP_KEYS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+# peerDependencies deliberately included: npm 7+ installs peers by default, so a missing one is
+# a real stale-tree symptom. optionalDependencies deliberately excluded: npm may legitimately
+# skip installing one (a platform-specific binary that doesn't match this OS), so a directory
+# absent for that reason is not staleness and must not trigger the "npm ci" remedy.
+NODE_MODULES_PRESENCE_KEYS = ("dependencies", "devDependencies", "peerDependencies")
 
 
 def _read_package_json(repo, ref):
@@ -376,6 +388,17 @@ def _read_package_json(repo, ref):
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def _union_deps(data, keys):
+    """The set of names declared across every section in `keys` of a parsed package.json.
+    A set, not a name->spec dict: callers here only ever need membership, and collapsing to a
+    set sidesteps the same last-section-wins trap _dep_specs_by_name exists to avoid below --
+    there's just nothing here for it to be wrong about, since no spec value is kept."""
+    names = set()
+    for key in keys:
+        names.update((data.get(key) or {}).keys())
+    return names
 
 
 def _dep_specs_by_name(data, keys):
@@ -441,6 +464,106 @@ def ts_dependency_incompatible(repo, base, head):
         "node_modules is shared between both worktrees (see link_node_modules), so the "
         "resulting call graph would be unreliable"
     )
+
+
+def _missing_node_modules_packages(repo, names):
+    """Names with no directory under <repo>/node_modules. A scoped name (e.g. "@scope/name")
+    already joins correctly -- Path("node_modules") / "@scope/name" is just a nested directory --
+    so no special casing is needed for it."""
+    node_modules = Path(repo) / "node_modules"
+    return sorted(name for name in names if not (node_modules / name).is_dir())
+
+
+def _read_package_lock(repo, head):
+    """Parsed package-lock.json at `head`, or None when it's absent or unparseable -- the
+    staleness check below degrades to presence-only in that case rather than guessing, since a
+    yarn or pnpm repo has no npm lockfile to compare against at all, and that must not start
+    failing this preflight over a check it was never able to perform."""
+    result = run_git(repo, ["show", f"{head}:package-lock.json"])
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _locked_version(lock_data, name):
+    """The version package-lock.json resolved `name` to, or None when it has no entry for that
+    name. Tries lockfileVersion 2/3's flat "packages" map first (keyed "node_modules/<name>", or
+    "node_modules/@scope/name" for a scoped package), then falls back to v1's top-level
+    "dependencies" map, so either lockfile shape gets a real comparison rather than one silently
+    reading as "no entry" on the other's format."""
+    packages = lock_data.get("packages")
+    if isinstance(packages, dict):
+        entry = packages.get(f"node_modules/{name}")
+        if isinstance(entry, dict) and "version" in entry:
+            return entry["version"]
+    deps_v1 = lock_data.get("dependencies")
+    if isinstance(deps_v1, dict):
+        entry = deps_v1.get(name)
+        if isinstance(entry, dict) and "version" in entry:
+            return entry["version"]
+    return None
+
+
+def _installed_version(repo, name):
+    """The "version" field of node_modules/<name>/package.json, or None when that file is
+    missing or unparseable -- treated the same as "no entry" by the caller, not as a mismatch,
+    since there's nothing here to compare against."""
+    pkg_path = Path(repo) / "node_modules" / name / "package.json"
+    try:
+        data = json.loads(pkg_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data.get("version")
+
+
+def _stale_node_modules_packages(repo, head, present):
+    """Which names in `present` (already known to have a node_modules directory) have an
+    installed version that disagrees with what package-lock.json resolved head to -- the case a
+    bare directory-exists check can't see:
+    node_modules/foo left at 1.0.0 satisfies presence for a newly declared foo: ^2.0.0, and the
+    graph gets built against the wrong types. Exact-string comparison of two already-resolved
+    versions, never semver range resolution -- that's a package manager's job, not this
+    preflight's. Returns [] outright when the lockfile itself is unusable (see
+    _read_package_lock); a package with no lockfile entry is skipped individually rather than
+    counted as either stale or clean, since there's nothing to compare it against either."""
+    lock_data = _read_package_lock(repo, head)
+    if lock_data is None:
+        return []
+    stale = []
+    for name in sorted(present):
+        locked = _locked_version(lock_data, name)
+        if locked is None:
+            continue
+        installed = _installed_version(repo, name)
+        if installed is not None and installed != locked:
+            stale.append(name)
+    return stale
+
+
+def check_node_modules_coverage(repo, head):
+    """Preflight, run before any worktree is created: the main checkout's node_modules --
+    link_node_modules() symlinks it in rather than running `npm ci` per worktree -- has to
+    actually contain, and match, what head declares, or edges into whatever it's missing or stale
+    silently vanish or resolve against the wrong types, with no warning at all. Measured case:
+    head had just added @restatedev/restate-sdk, node_modules didn't have it yet, and every
+    head-side edge into that package disappeared from the graph with nothing to say why."""
+    data = _read_package_json(repo, head)
+    names = _union_deps(data, NODE_MODULES_PRESENCE_KEYS) if data is not None else set()
+    missing = _missing_node_modules_packages(repo, names)
+    present = names - set(missing)
+    stale = _stale_node_modules_packages(repo, head, present)
+
+    problems = sorted(set(missing) | set(stale))
+    if not problems:
+        return True, None
+    shown = problems[:5]
+    names_str = ", ".join(shown)
+    if len(problems) > 5:
+        names_str += f", and {len(problems) - 5} more"
+    return False, f"node_modules is missing or stale for {names_str}"
 
 
 def ts_diff_entries(repo, base, head):
@@ -955,9 +1078,14 @@ def analyse_lsp(repo, base, head, lang):
         elif dependency_files_changed(repo, base, head, lang):
             return {"language": None, "reason": DEPENDENCY_REASON[lang]}
 
+    if lang == "typescript":
+        ok, reason = check_node_modules_coverage(repo, head)
+        if not ok:
+            return {"language": None, "reason": reason, "remedy": "npm ci"}
+
     ok, reason = check_typescript_tooling(repo, lang)
     if not ok:
-        return {"language": None, "reason": reason}
+        return {"language": None, "reason": reason, "remedy": LANGUAGE_SERVER_REMEDY[lang]}
 
     rename_map = _rename_map(repo, base, head)
     entries = ts_diff_entries(repo, base, head)

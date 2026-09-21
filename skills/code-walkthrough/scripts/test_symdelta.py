@@ -883,6 +883,164 @@ def test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections
         assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
 
 
+# ---- wiring tests: node_modules coverage preflight, before any worktree gets created -------
+
+
+def test_check_node_modules_coverage_true_when_every_dependency_resolves():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        head = _commit(repo, "head")
+        (repo / "node_modules" / "left-pad").mkdir(parents=True)
+
+        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
+
+
+def test_check_node_modules_coverage_true_when_node_modules_missing_and_nothing_declared():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "src/a.ts", "export function a() {}\n")
+        head = _commit(repo, "head")
+
+        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
+
+
+def test_check_node_modules_coverage_catches_a_missing_scoped_package():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(
+            repo, "package.json",
+            '{"dependencies": {"@restatedev/restate-sdk": "1.0.0"}}\n',
+        )
+        head = _commit(repo, "head")
+        # node_modules exists but never got the newly-declared scoped package -- the stale
+        # node_modules case this preflight exists to catch.
+        (repo / "node_modules").mkdir()
+
+        ok, reason = symdelta.check_node_modules_coverage(repo, head)
+        assert ok is False
+        assert "@restatedev/restate-sdk" in reason
+
+
+def test_check_node_modules_coverage_caps_the_reason_at_five_names():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        deps = {f"pkg-{i}": "1.0.0" for i in range(7)}
+        _write(repo, "package.json", json.dumps({"dependencies": deps}) + "\n")
+        head = _commit(repo, "head")
+        (repo / "node_modules").mkdir()
+
+        ok, reason = symdelta.check_node_modules_coverage(repo, head)
+        assert ok is False
+        assert "and 2 more" in reason
+
+
+def test_check_node_modules_coverage_catches_a_missing_peer_dependency():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"peerDependencies": {"react": "18.0.0"}}\n')
+        head = _commit(repo, "head")
+        (repo / "node_modules").mkdir()
+
+        ok, reason = symdelta.check_node_modules_coverage(repo, head)
+        assert ok is False
+        assert "react" in reason
+
+
+def test_check_node_modules_coverage_ignores_a_missing_optional_dependency():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"optionalDependencies": {"fsevents": "2.0.0"}}\n')
+        head = _commit(repo, "head")
+        (repo / "node_modules").mkdir()
+
+        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
+
+
+def test_check_node_modules_coverage_true_when_installed_version_matches_lockfile():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "^1.0.0"}}\n')
+        _write(
+            repo, "package-lock.json",
+            json.dumps({"packages": {"node_modules/left-pad": {"version": "1.3.0"}}}) + "\n",
+        )
+        head = _commit(repo, "head")
+        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.3.0"}\n')
+
+        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
+
+
+def test_check_node_modules_coverage_catches_a_stale_installed_version():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
+        _write(
+            repo, "package-lock.json",
+            json.dumps({"packages": {"node_modules/left-pad": {"version": "2.0.0"}}}) + "\n",
+        )
+        head = _commit(repo, "head")
+        # node_modules/left-pad exists (satisfies the bare presence check) but is still at the
+        # version the lockfile no longer resolves to.
+        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
+
+        ok, reason = symdelta.check_node_modules_coverage(repo, head)
+        assert ok is False
+        assert "left-pad" in reason
+
+
+def test_check_node_modules_coverage_presence_only_when_no_lockfile():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
+        head = _commit(repo, "head")
+        # present, but at a version a lockfile (if one existed) might disagree with -- with no
+        # lockfile to compare against at all, presence is all this preflight can check.
+        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
+
+        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
+
+
+def test_check_node_modules_coverage_presence_only_when_lockfile_is_unparseable():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
+        _write(repo, "package-lock.json", "{not valid json\n")
+        head = _commit(repo, "head")
+        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
+
+        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
+
+
+def test_check_node_modules_coverage_handles_lockfile_version_1_shape():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
+        _write(
+            repo, "package-lock.json",
+            json.dumps(
+                {"lockfileVersion": 1, "dependencies": {"left-pad": {"version": "1.0.0"}}}
+            ) + "\n",
+        )
+        head = _commit(repo, "head")
+        _write(repo, "node_modules/left-pad/package.json", '{"version": "2.0.0"}\n')
+
+        ok, reason = symdelta.check_node_modules_coverage(repo, head)
+        assert ok is False
+        assert "left-pad" in reason
+
+
 # ---- wiring tests: analyse_typescript's null results carry the right remedy (or none) -----
 
 
@@ -923,6 +1081,69 @@ def test_analyse_typescript_does_not_refuse_on_dependency_additions_only():
         result = symdelta.analyse_typescript(repo, base, head)
         if result["language"] is None:
             assert "dependency incompatibility" not in result["reason"]
+
+
+def test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale():
+    # Also needs no tool on PATH: the node_modules preflight runs before check_typescript_tooling.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {}}\n')
+        _write(repo, "src/a.ts", "export function a() {}\n")
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
+        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
+        head = _commit(repo, "head")
+        (repo / "node_modules").mkdir()  # exists, but never got left-pad
+
+        result = symdelta.analyse_typescript(repo, base, head)
+        assert result["language"] is None
+        assert "left-pad" in result["reason"]
+        assert result["remedy"] == "npm ci"
+
+
+def test_analyse_typescript_refuses_with_npm_ci_remedy_when_installed_version_is_stale():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "package.json", '{"dependencies": {}}\n')
+        _write(repo, "src/a.ts", "export function a() {}\n")
+        base = _commit(repo, "base")
+        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
+        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
+        _write(
+            repo, "package-lock.json",
+            json.dumps({"packages": {"node_modules/left-pad": {"version": "2.0.0"}}}) + "\n",
+        )
+        head = _commit(repo, "head")
+        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
+
+        result = symdelta.analyse_typescript(repo, base, head)
+        assert result["language"] is None
+        assert "left-pad" in result["reason"]
+        assert result["remedy"] == "npm ci"
+
+
+def test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails():
+    original_check = symdelta.check_typescript_tooling
+    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (False, "boom")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            _write(repo, "a.py", "def a():\n    pass\n")
+            base = _commit(repo, "base")
+            _write(repo, "a.py", "def a():\n    return 1\n")
+            head = _commit(repo, "head")
+
+            result = symdelta.analyse_python(repo, base, head)
+            assert result == {
+                "language": None,
+                "reason": "boom",
+                "remedy": symdelta.LANGUAGE_SERVER_REMEDY["python"],
+            }
+    finally:
+        symdelta.check_typescript_tooling = original_check
 
 
 # ---- pure-logic tests: a hung LSP extractor raises a clean error, not a raw traceback ---
@@ -1541,8 +1762,22 @@ if __name__ == "__main__":
         test_ts_dependency_incompatible_true_when_package_json_is_unparseable,
         test_ts_dependency_incompatible_true_when_sections_disagree_on_spec,
         test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections,
+        test_check_node_modules_coverage_true_when_every_dependency_resolves,
+        test_check_node_modules_coverage_true_when_node_modules_missing_and_nothing_declared,
+        test_check_node_modules_coverage_catches_a_missing_scoped_package,
+        test_check_node_modules_coverage_caps_the_reason_at_five_names,
+        test_check_node_modules_coverage_catches_a_missing_peer_dependency,
+        test_check_node_modules_coverage_ignores_a_missing_optional_dependency,
+        test_check_node_modules_coverage_true_when_installed_version_matches_lockfile,
+        test_check_node_modules_coverage_catches_a_stale_installed_version,
+        test_check_node_modules_coverage_presence_only_when_no_lockfile,
+        test_check_node_modules_coverage_presence_only_when_lockfile_is_unparseable,
+        test_check_node_modules_coverage_handles_lockfile_version_1_shape,
         test_analyse_typescript_refuses_when_a_dependency_is_removed,
         test_analyse_typescript_does_not_refuse_on_dependency_additions_only,
+        test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale,
+        test_analyse_typescript_refuses_with_npm_ci_remedy_when_installed_version_is_stale,
+        test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails,
         test_check_typescript_tooling_raises_runtime_error_on_timeout,
         test_run_ts_extractor_raises_runtime_error_on_timeout_and_still_cleans_up_the_files_list,
         test_run_in_process_group_handles_getpgid_race_without_crashing,
