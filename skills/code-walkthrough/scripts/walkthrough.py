@@ -31,6 +31,7 @@ from complexity import NOTEWORTHY_DEPTH  # noqa: E402  one owner for "how deep i
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
 from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> conversion
+from sections import render_symbols  # noqa: E402  one owner for the symbol-delta diagram
 from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 
@@ -265,7 +266,7 @@ def rename_note(old, new):
 
 
 def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, complexity=None,
-                 renames=None, explain=False):
+                 renames=None, explain=False, symdelta=None):
     is_open = _open_paths(groups, open_count)
     file_urls, hunk_urls = link_index(links)
     cx = complexity_index(complexity)
@@ -290,6 +291,12 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
                        f'file{"s" if len(paths) != 1 else ""}</span></h3>')
             if why:
                 out.append(f'<p class="wt-why">{_codeify(escape(why))}</p>')
+        # Scoped to one group only past the point where there's more than one: with a single
+        # group the graph would be the global section, character for character.
+        if symdelta and len(groups) > 1:
+            graph = render_symbols(symdelta, explain, paths=paths, inline=True)
+            if graph:
+                out.append(graph.rstrip("\n"))
         for path in paths:
             entry = by_path.get(path) or {}
             file = files[path]
@@ -420,10 +427,11 @@ def main():
         return json.loads(Path(path).read_text()) if path else None
 
     links = optional(args.links)
-    groups = story(order, files, analysis.get("groups"), optional(args.symdelta))
+    symdelta = optional(args.symdelta)
+    groups = story(order, files, analysis.get("groups"), symdelta)
     complexity = optional(args.complexity)
     sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity, renames,
-                                 args.explain))
+                                 args.explain, symdelta))
     return 0
 
 
