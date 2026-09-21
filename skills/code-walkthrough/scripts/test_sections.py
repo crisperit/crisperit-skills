@@ -142,7 +142,9 @@ def test_symbols_html_has_marker_legend_slider_and_three_levels():
     assert '<div class="vd-symbols" data-default="2">' in out
     assert '<h2 class="h2-row"><span>Changes visualization</span>' in out
     # Two levels, so a toggle: it opens on symbols and its label names that, not the switch.
-    assert 'id="vd-level-toggle"' in out
+    # A class, not an id: a per-group graph puts more than one toggle on the page.
+    assert 'class="vd-level-toggle"' in out
+    assert 'id="vd-level-toggle"' not in out
     assert ">symbols</button>" in out
     assert 'aria-label="Detail level: symbols. Activate to show packages."' in out
     assert "aria-pressed" not in out
@@ -161,6 +163,36 @@ def test_symbols_html_never_emits_classdef():
     out = render_symbols(SYMDELTA)
 
     assert "classDef" not in out
+
+
+def test_symbols_inline_has_no_page_marker_heading_or_details_wrapper():
+    out = render_symbols(SYMDELTA, paths=["a"], inline=True)
+
+    assert "<!-- code-walkthrough:symbols -->" not in out
+    assert "<h2" not in out
+    assert "<details" not in out
+    assert "<summary" not in out
+    assert '<div class="vd-symbols vd-symbols-group" data-symbols="2" data-default="2">' in out
+    assert '<div class="vd-ctl">' in out
+    # Both levels still render; only the frame around them differs from the global section.
+    assert '<div class="mermaid" data-level="1" hidden' in out
+    assert '<div class="mermaid" data-level="2" ' in out
+    assert out.rstrip("\n").endswith("</div>")
+
+
+def test_symbols_inline_toggle_is_a_class_not_an_id():
+    out = render_symbols(SYMDELTA, paths=["a"], inline=True)
+
+    assert 'class="vd-level-toggle"' in out
+    assert 'id="vd-level-toggle"' not in out
+
+
+def test_symbols_inline_data_symbols_is_the_changed_symbol_count_in_scope():
+    # a:New and a:Gone are the changed symbols in scope; b:Moved is pulled in as edge context
+    # but never counts, since only a state of new/gone makes a symbol part of the delta.
+    out = render_symbols(SYMDELTA, paths=["a"], inline=True)
+
+    assert 'data-symbols="2"' in out
 
 
 def test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed():
@@ -861,6 +893,9 @@ if __name__ == "__main__":
         test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized,
         test_symbols_html_has_marker_legend_slider_and_three_levels,
         test_symbols_html_never_emits_classdef,
+        test_symbols_inline_has_no_page_marker_heading_or_details_wrapper,
+        test_symbols_inline_toggle_is_a_class_not_an_id,
+        test_symbols_inline_data_symbols_is_the_changed_symbol_count_in_scope,
         test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed,
         test_symbols_note_names_the_undrawn_containment_count_when_nonzero,
         test_symbols_moved_renders_as_prose_not_a_graph_node,

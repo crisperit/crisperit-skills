@@ -337,7 +337,7 @@ def _mermaid_packages(nodes, edges):
     return "\n".join(lines), undrawn_count, ids
 
 
-MAX_SYMBOL_NODES = 400
+MAX_SYMBOL_NODES = 40
 
 
 def _scope_to_paths(nodes, edges, paths):
@@ -606,7 +606,7 @@ def _moved_lines(moved):
     ]
 
 
-def render_symbols(data, explain=False, paths=()):
+def render_symbols(data, explain=False, paths=(), inline=False):
     """The symbol-delta diagram: two pre-rendered `flowchart LR` mermaid diagrams (packages,
     then symbols with their callers), swapped client-side by a toggle. LR, not TB: these
     graphs are dominated by fan-out (one caller reaching several callees), and TB spreads that
@@ -622,7 +622,14 @@ def render_symbols(data, explain=False, paths=()):
     changed symbols have no changed call edge, and dagre lays out every edge-less node in one
     wide rank (measured on a real PR: 25 such nodes side by side, each as wide as its
     identifier, blowing the diagram out to thousands of pixels). A symbol dropped from the
-    graph still has to reach the reader, so _symbols_orphans lists it as text instead."""
+    graph still has to reach the reader, so _symbols_orphans lists it as text instead.
+
+    `inline=True` is a per-walkthrough-group graph rather than the whole-page one: same two
+    levels, same toggle, same legend, only the frame differs -- no `SYMBOLS_MARKER`, no heading,
+    and a `data-symbols` count of changed symbols in scope for the template's dialog button
+    label. The template positions the block off-screen via CSS rather than `display:none`,
+    since mermaid.render() measures a hidden container's labels as zero and collapses the
+    diagram."""
     nodes = data.get("nodes") or []
     if not nodes:
         return ""
@@ -639,9 +646,10 @@ def render_symbols(data, explain=False, paths=()):
     drawn_ids2 = ids2 & drawn2
     level2, file_map2 = _mermaid_symbols_for_level(nodes, drawn_ids2, edges2, explain)
 
-    # Past this many symbol boxes the level is still worth having, just not worth opening
-    # unasked: the page renders a level the first time it is shown, so starting on packages
-    # leaves the big one to a deliberate click. See MAX_SYMBOL_NODES.
+    # Legibility, not layout cost, sets this threshold: measured in Chrome, a symbols level of
+    # ~70 nodes draws 8478px wide, rendering at 0.16x -- 25x9px boxes, ~3px labels, a click a
+    # coin flip between a node and its background. Past MAX_SYMBOL_NODES the level opens on
+    # packages by default instead, leaving the full graph to a deliberate click.
     oversized = len(drawn_ids2) > MAX_SYMBOL_NODES
     default_level = 1 if oversized else 2
 
@@ -674,27 +682,38 @@ def render_symbols(data, explain=False, paths=()):
                  for m in (pkg_map, file_map2)]
     here = default_level - 1
     there = 1 - here
-    return "\n".join([
-        SYMBOLS_MARKER,
-        f'<div class="vd-symbols" data-default="{default_level}">',
-        # Title left, controls right, matching the walkthrough heading. The button names the
-        # level you are looking at rather than the one it switches to, which is why the
-        # slider's caption underneath is gone. No aria-pressed: a label reading "packages" and
-        # a state reading "pressed" say different things, so the accessible name spells out
-        # both the state and what activating does, and the script keeps it in step.
-        f'<h2 class="h2-row"><span>{"Structure" if explain else "Changes visualization"}'
-        '</span><span class="ctl">'
-        f'{legends[here]}'
-        '<button type="button" id="vd-level-toggle" '
-        f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[here].lower()}.'
-        f' Activate to show {LEVEL_NAMES[there].lower()}."'
-        f'>{escape(LEVEL_NAMES[here].lower())}</button></span></h2>',
+
+    # The button names the level you are looking at rather than the one it switches to, which
+    # is why the slider's caption underneath is gone. No aria-pressed: a label reading
+    # "packages" and a state reading "pressed" say different things, so the accessible name
+    # spells out both the state and what activating does, and the script keeps it in step.
+    # A class, not an id: a per-group graph puts more than one of these on the page.
+    toggle = ('<button type="button" class="vd-level-toggle" '
+              f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[here].lower()}.'
+              f' Activate to show {LEVEL_NAMES[there].lower()}."'
+              f'>{escape(LEVEL_NAMES[here].lower())}</button>')
+    body = "\n".join([
         f'<div class="mermaid" data-level="1"{"" if default_level == 1 else " hidden"} '
         f'data-legend="{legend_attrs[0]}" data-ids="{ids_attrs[0]}">{escape(level1)}</div>',
         f'<div class="mermaid" data-level="2"{"" if default_level == 2 else " hidden"} '
         f'data-legend="{legend_attrs[1]}" data-ids="{ids_attrs[1]}">{escape(level2)}</div>',
         f'<p class="note">{note}</p>',
-    ]) + "\n" + orphans_html + moved_html + "</div>\n"
+    ]) + "\n" + orphans_html + moved_html
+
+    if inline:
+        return "\n".join([
+            f'<div class="vd-symbols vd-symbols-group" data-symbols="{len(changed_ids)}" '
+            f'data-default="{default_level}">',
+            f'<div class="vd-ctl">{legends[here]}{toggle}</div>',
+        ]) + "\n" + body + "</div>\n"
+
+    # Title left, controls right, matching the walkthrough heading.
+    return "\n".join([
+        SYMBOLS_MARKER,
+        f'<div class="vd-symbols" data-default="{default_level}">',
+        f'<h2 class="h2-row"><span>{"Structure" if explain else "Changes visualization"}'
+        f'</span><span class="ctl">{legends[here]}{toggle}</span></h2>',
+    ]) + "\n" + body + "</div>\n"
 
 
 _LEGEND_STATE_RE = re.compile(r"^  class \S+ (new|gone)$", re.MULTILINE)

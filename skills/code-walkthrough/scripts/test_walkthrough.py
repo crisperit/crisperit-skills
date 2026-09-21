@@ -421,6 +421,83 @@ def test_group_titles_reach_the_page():
     assert "Everything else" in render_html(groups, files, {})
 
 
+# ---- per-group graphs ----
+
+# Two symbols per file, each with its own edge, so a group scoped to one file draws a graph
+# that does not mention the other file's symbols -- proof the scoping actually happened rather
+# than both groups happening to render the same thing.
+GRAPH_SYMDELTA = {
+    "nodes": [
+        {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
+        {"id": "p:Handle", "label": "Handle", "kind": "symbol", "parent": "p", "depth": 1,
+         "state": "new", "file": "src/api.py"},
+        {"id": "p:HandleCallee", "label": "HandleCallee", "kind": "symbol", "parent": "p",
+         "depth": 1, "state": "new", "file": "src/api.py"},
+        {"id": "p:Get", "label": "Get", "kind": "symbol", "parent": "p", "depth": 1,
+         "state": "new", "file": "src/store.py"},
+        {"id": "p:GetCallee", "label": "GetCallee", "kind": "symbol", "parent": "p", "depth": 1,
+         "state": "new", "file": "src/store.py"},
+    ],
+    "edges": [
+        {"id": "e0", "source": "p:Handle", "target": "p:HandleCallee", "state": "new"},
+        {"id": "e1", "source": "p:Get", "target": "p:GetCallee", "state": "new"},
+    ],
+}
+
+
+def test_symdelta_past_one_group_draws_each_group_its_own_scoped_graph():
+    files = _chain_files("src/api.py", "src/store.py")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
+                                        {"title": "Store", "paths": ["src/store.py"]}], None)
+    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
+
+    assert out.count("vd-symbols-group") == 2
+    api_chunk, store_chunk = out.split('<h3 class="wt-group">')[1:3]
+    assert "HandleCallee" in api_chunk and "GetCallee" not in api_chunk
+    assert "GetCallee" in store_chunk and "HandleCallee" not in store_chunk
+
+
+def test_symdelta_group_graph_data_symbols_matches_its_scoped_count():
+    files = _chain_files("src/api.py", "src/store.py")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
+                                        {"title": "Store", "paths": ["src/store.py"]}], None)
+    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
+
+    api_chunk, store_chunk = out.split('<h3 class="wt-group">')[1:3]
+    assert 'data-symbols="2"' in api_chunk
+    assert 'data-symbols="2"' in store_chunk
+
+
+def test_symdelta_with_a_single_group_draws_no_per_group_graph():
+    # With one group the graph would be the global section, character for character -- nothing
+    # new to show.
+    files = _chain_files("src/api.py", "src/store.py")
+    groups = story(list(files), files, None, None)
+
+    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
+
+    assert "vd-symbols-group" not in out
+
+
+def test_a_group_with_no_symbols_in_scope_gets_no_graph():
+    files = _chain_files("src/api.py", "docs.md")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
+                                        {"title": "Docs", "paths": ["docs.md"]}], None)
+    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
+
+    api_chunk, docs_chunk = out.split('<h3 class="wt-group">')[1:3]
+    assert "vd-symbols-group" in api_chunk
+    assert "vd-symbols-group" not in docs_chunk
+
+
+def test_without_symdelta_no_per_group_graph_at_all():
+    files = _chain_files("src/api.py", "src/store.py")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
+                                        {"title": "Store", "paths": ["src/store.py"]}], None)
+
+    assert "vd-symbols-group" not in render_html(groups, files, {})
+
+
 # ---- complexity ----
 
 def _cx(path, peak, jump=None):

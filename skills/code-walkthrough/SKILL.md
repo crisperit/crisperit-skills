@@ -367,10 +367,12 @@ python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
   > <scratchpad>/section-walkthrough.html
 ```
 
-`--symdelta` orders each group caller-first, `--complexity` adds the complexity chip, `--diff`'s
-rename headers let a moved file show its old path instead of reading as a new addition. All
-optional; pass them when the files exist. It carries every hunk body, no size budget, since
-per-line commenting needs the lines, and cannot omit a file even when `analysis.json` did.
+`--symdelta` orders each group caller-first and, past one group, gives each an icon that opens a
+call graph scoped to its own files in the zoom dialog. `--complexity` adds the complexity chip,
+`--diff`'s rename headers let a moved file show its old path instead of reading as a new
+addition. All optional; pass them when the files exist. It carries every hunk body, no size
+budget, since per-line commenting needs the lines, and cannot omit a file even when
+`analysis.json` did.
 
 Why there is no per-line moved-block marker: `references/rationale.md`.
 

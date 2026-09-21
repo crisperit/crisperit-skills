@@ -196,6 +196,16 @@
   /* .wrap>p sets the prose size and outranks a bare class, so this has to name both or
      a group's one-line why renders at full paragraph size. */
   .wrap>p.wt-why{margin:0 0 10px;color:var(--muted);font-size:var(--fs-xs)}
+  /* Opens a group's symbol graph in the zoom dialog -- the graph itself lives off-screen
+     with the rest of .vd-symbols-group, so this button (built client-side, see the level
+     script) is its only entry point. A small pill in .wt-group's own text row, not the
+     LEGEND/toggle idiom below, which belongs to a standalone control row. */
+  .wt-graph-btn{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);
+    border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 8px;
+    cursor:pointer;font-size:var(--fs-xs);line-height:1.4;transition:background .12s,color .12s}
+  .wt-graph-btn svg{width:14px;height:14px;flex:none}
+  .wt-graph-btn:hover{background:var(--border);color:var(--text)}
+  .wt-graph-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
   /* Complexity chip. Red for risen (must not be missed), purple for fallen, muted grey for the
      neutral states -- a new function's bare count, no change, and removed. Not green: the +N/-N
@@ -223,16 +233,16 @@
      the default state grey said it twice and read as switched off; --accent is this page's
      interactive colour, so the control wears it whatever it says, and hover/press move the
      background instead. */
-  #wt-notes-toggle,#vd-level-toggle{background:var(--panel2);border:1px solid var(--accent);
+  #wt-notes-toggle,.vd-level-toggle{background:var(--panel2);border:1px solid var(--accent);
     color:var(--accent);border-radius:6px;padding:4px 10px;cursor:pointer;
     font:600 var(--fs-xs) system-ui;letter-spacing:.06em;text-transform:uppercase;
     transition:background .2s}
   #wt-notes-toggle:hover,
-  #vd-level-toggle:hover{background:color-mix(in srgb,var(--accent) 14%,var(--panel2))}
+  .vd-level-toggle:hover{background:color-mix(in srgb,var(--accent) 14%,var(--panel2))}
   #wt-notes-toggle:active,
-  #vd-level-toggle:active{background:color-mix(in srgb,var(--accent) 22%,var(--panel2))}
+  .vd-level-toggle:active{background:color-mix(in srgb,var(--accent) 22%,var(--panel2))}
   #wt-notes-toggle:focus-visible,
-  #vd-level-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .vd-level-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Explanations are on by default; pressing the toggle drops this class and takes every
      per-hunk note with it. .hunk-note without the -hunk suffix is the file's one-line role,
      which stays either way. */
@@ -289,6 +299,9 @@
   /* Same, before panZoom() runs or if it fails: without this, .mermaid svg{width:100%} above
      would still upscale FLOW to the panel width. */
   .svgbox-flow .mermaid svg{width:auto;max-width:100%}
+  /* Same reason, for the symbol-delta levels: they share FLOW's prose-scale sizing in
+     panZoom() (see the giant-label comment there), so need the same pre-panZoom fallback. */
+  .vd-symbols .mermaid svg{width:auto;max-width:100%}
   .vd-failed{margin:0;padding:14px 16px;color:var(--yellow)}
   #mermaid-zoom{width:95vw;height:92vh;max-width:95vw;max-height:92vh;padding:0;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;
@@ -296,6 +309,10 @@
   #mermaid-zoom::backdrop{background:rgba(0,0,0,.6)}
   #mermaid-zoom-controls{position:absolute;top:10px;left:10px;z-index:2;display:flex;
     gap:6px;align-items:center;font-size:var(--fs-xs);color:var(--muted)}
+  /* A group's own .vd-ctl (legend + level toggle) moves in here while its graph is open
+     (see openZoom); its own margin is sized for the off-screen container it normally
+     sits in, not this tight overlay bar. */
+  #mermaid-zoom-controls .vd-ctl{margin:0}
   /* position:relative: the node menu positions itself absolutely inside this element for
      the fullscreen clone, same as .svgbox already does for the inline graph. */
   #mermaid-zoom-body{width:100%;height:100%;overflow:hidden;position:relative;
@@ -342,10 +359,10 @@
   /* Brief highlight so "Go to file" is visible arriving at the hunk, not just landing on it. */
   details.hunk.vd-flash{border-color:var(--accent)}
 
-  /* The graph's generated key, inline in the heading row beside the level toggle and only
-     for a level that actually draws such a node (see _symbols_legend). Sentence case on
-     purpose: two uppercase runs side by side in the heading shout. Matches the mermaid
-     `class ... new/gone` sections.py emits: solid accent for new, dashed muted for gone. */
+  /* The graph's generated key, inline beside the level toggle and only for a level that
+     actually draws such a node (see _symbols_legend). Sentence case on purpose: two
+     uppercase runs side by side in the heading shout. Matches the mermaid `class ...
+     new/gone` sections.py emits: solid accent for new, dashed muted for gone. */
   .vd-legend{display:flex;align-items:center;gap:6px;font-size:var(--fs-xs);
     color:var(--muted);text-transform:none;letter-spacing:0}
   .sw{width:11px;height:11px;border-radius:3px;margin-left:10px}
@@ -376,9 +393,21 @@
      the click-to-expand wiring below treats it exactly like a .svgbox rather than needing a
      wrapping panel around both. It carries the panel itself rather than the .panel class,
      which would put one element in two click-to-zoom code paths at once. */
-  .vd-symbols .mermaid{cursor:zoom-in;position:relative;
+  .vd-symbols .mermaid{cursor:zoom-in;position:relative;max-height:min(72vh,720px);
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px}
   .vd-symbols .mermaid:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* Permanently off-screen, not display:none/hidden: mermaid measures label sizes against
+     the container it's given (see renderLevel below), and a hidden container measures
+     everything as 0 and collapses the diagram. Permanent rather than renderLevel's
+     render-then-rehide trick because a group's graph is never shown in place at all -- its
+     .wt-group icon button opens it in the zoom dialog instead (see openZoom). The fixed
+     width gives mermaid a stable box to lay the diagram out against. */
+  .vd-symbols-group{position:absolute;left:-99999px;top:0;width:1200px}
+  /* Same alignment idiom as h2.h2-row .ctl. Doubles as the dialog's own controls row
+     while a group's graph is open: openZoom moves this element into
+     #mermaid-zoom-controls for the duration, then back here on close. */
+  .vd-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0}
   /* The graph's plain-text moved list, under its note */
   .vd-moved{margin:10px 0 0;padding-left:20px;font-size:var(--fs-sm);color:var(--muted)}
   .vd-moved li{margin:4px 0}
@@ -575,7 +604,8 @@
      happens to come later. */
   @media (pointer:coarse){
     #mermaid-zoom-close{width:44px;height:44px;font-size:16px}
-    #vd-level-toggle{min-height:44px;padding:10px 14px}
+    .vd-level-toggle{min-height:44px;padding:10px 14px}
+    .wt-graph-btn{min-height:44px}
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
     #hr-comments-btn{min-height:44px}
@@ -700,6 +730,23 @@
     if (edgeLabels) root.appendChild(edgeLabels);
   }
 
+  // A per-group graph sits right after its <h3 class="wt-group">, with an optional
+  // <p class="wt-why"> in between (walkthrough.py's own contract); walked rather than
+  // looked up by id so the two scripts never have to coordinate on one.
+  function findGroupHeading(root) {
+    let el = root.previousElementSibling;
+    while (el && !el.matches('h3.wt-group')) el = el.previousElementSibling;
+    return el;
+  }
+  // Plain nodes-and-an-edge, aria-hidden: the visible count text beside it, not this
+  // glyph, is what a screen reader needs (see the button's own aria-label below).
+  const GRAPH_ICON_SVG = '<svg viewBox="0 0 20 14" aria-hidden="true" focusable="false">'
+    + '<circle cx="3" cy="3" r="2.5" fill="currentColor"/>'
+    + '<circle cx="3" cy="11" r="2.5" fill="currentColor"/>'
+    + '<circle cx="17" cy="7" r="2.5" fill="currentColor"/>'
+    + '<path d="M5.3 4.1 14.7 6.3M5.3 9.9 14.7 7.7" stroke="currentColor" stroke-width="1.3" fill="none"/>'
+    + '</svg>';
+
   let flowSeq = 0;
   for (const el of document.querySelectorAll('.mermaid:not([data-level])')) {
     try {
@@ -716,83 +763,126 @@
   // sizes against the container it's given, and a `hidden`/display:none container measures
   // everything as 0 and collapses the diagram (measured viewBox "-8 -8 16 16" against a correct
   // "0 0 598.157 494"). Each level is unhidden and moved off-screen -- real layout, just not on
-  // screen -- only for the duration of its own render call.
-  const root = document.querySelector('.vd-symbols');
-  if (!root) return;
-  const toggle = root.querySelector('#vd-level-toggle');
-  const levels = [...root.querySelectorAll('.mermaid[data-level]')];
-  if (!toggle || !levels.length) return;
-  let names = [];
-  try { names = JSON.parse(toggle.dataset.names || '[]'); } catch (_) { names = []; }
-  // sections.py picks the opening level: it drops to packages when the symbols level holds more
-  // boxes than are worth laying out before the reader has asked for them.
-  let level = Number(root.dataset.default) || 2;
-  const rendered = new Set();
-  // Renders run one at a time: mermaid.render() carries shared id/def bookkeeping that two
-  // in-flight calls trip over, and a fast double-click on the toggle is two of them.
+  // screen -- only for the duration of its own render call. A per-group graph's whole
+  // container (.vd-symbols-group) is off-screen permanently instead, so it renders on its own
+  // schedule too: only once the reader clicks that group's graph button, not at load.
+  // Renders still run one at a time, now across every root rather than per root: mermaid's
+  // id/def bookkeeping is shared page-wide, so two in-flight calls from different roots
+  // collide exactly like two clicks on one toggle did before.
   let chain = Promise.resolve();
+  let seq = 0;
+  for (const root of document.querySelectorAll('.vd-symbols')) {
+    const rootId = seq++;
+    const toggle = root.querySelector('.vd-level-toggle');
+    const levels = [...root.querySelectorAll('.mermaid[data-level]')];
+    if (!toggle || !levels.length) continue;
+    let names = [];
+    try { names = JSON.parse(toggle.dataset.names || '[]'); } catch (_) { names = []; }
+    // sections.py picks the opening level: it drops to packages when the symbols level holds
+    // more boxes than are worth laying out before the reader has asked for them.
+    let level = Number(root.dataset.default) || 2;
+    const rendered = new Set();
 
-  // The label is the level you are on, so the accessible name has to carry both that and what
-  // activating does -- a button reading "packages" tells a screen reader nothing on its own.
-  // `level` moves the moment the toggle is clicked, not when the render it queued finishes, so
-  // a second click during a slow first render still flips to the other level rather than
-  // re-requesting the one already on its way.
-  function showLevel(n) { const target = Number(n); level = target; chain = chain.then(() => applyLevel(target)); return chain; }
+    // The label is the level you are on, so the accessible name has to carry both that and what
+    // activating does -- a button reading "packages" tells a screen reader nothing on its own.
+    // `level` moves the moment the toggle is clicked, not when the render it queued finishes, so
+    // a second click during a slow first render still flips to the other level rather than
+    // re-requesting the one already on its way.
+    function showLevel(n) { const target = Number(n); level = target; chain = chain.then(() => applyLevel(target)); return chain; }
 
-  async function applyLevel(n) {
-    // Each level renders the first time it is shown, not all of them up front: an explain-mode
-    // symbols level can carry hundreds of boxes, and mermaid laying that out at load blocks the
-    // page before anyone has switched to it.
-    const target = levels.find(el => el.dataset.level === String(n));
-    if (target && !rendered.has(target)) { rendered.add(target); await renderLevel(target); }
-    levels.forEach(el => { el.hidden = el.dataset.level !== String(n); });
-    const here = (names[n - 1] || '').toLowerCase();
-    const other = (names[n === 1 ? 1 : 0] || '').toLowerCase();
-    toggle.textContent = here;
-    toggle.setAttribute('aria-label',
-      'Detail level: ' + here + '. Activate to show ' + other + '.');
-    // The key belongs to the level that draws those nodes, so it travels with the graph
-    // rather than sitting in the heading explaining states that are not on screen.
-    const stale = toggle.parentNode.querySelector('.vd-legend');
-    if (stale) stale.remove();
-    const shown = levels.find(el => !el.hidden);
-    if (shown && shown.dataset.legend) toggle.insertAdjacentHTML('beforebegin', shown.dataset.legend);
-  }
-  toggle.addEventListener('click', () => { showLevel(level === 1 ? 2 : 1); });
-
-  function fail(el, n) {
-    el.textContent = (names[n - 1] || ('Level ' + n)) + ' failed to render.';
-    el.classList.add('vd-failed');
-  }
-  // A real diagram never comes out this small -- this is the exact signature of the
-  // collapsed-measurement bug this script replaces, so it's treated as a render failure
-  // rather than shipped silently.
-  function degenerate(svg) {
-    const box = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
-    return box.length !== 4 || box.some(Number.isNaN) || box[2] < 32 || box[3] < 32;
-  }
-
-  async function renderLevel(el) {
-    const source = el.textContent;
-    const n = el.dataset.level;
-    el.hidden = false;
-    el.style.position = 'absolute';
-    el.style.left = '-99999px';
-    try {
-      const { svg } = await mermaid.render('vd-level-' + n, source, el);
-      el.innerHTML = svg;
-      reorderEdgeLayers(el);
-      const svgEl = el.querySelector('svg');
-      if (!svgEl || degenerate(svgEl)) fail(el, n);
-    } catch (_) {
-      fail(el, n);
+    async function applyLevel(n) {
+      // Each level renders the first time it is shown, not all of them up front: an explain-mode
+      // symbols level can carry hundreds of boxes, and mermaid laying that out at load blocks the
+      // page before anyone has switched to it.
+      const target = levels.find(el => el.dataset.level === String(n));
+      if (target && !rendered.has(target)) { rendered.add(target); await renderLevel(target); }
+      levels.forEach(el => { el.hidden = el.dataset.level !== String(n); });
+      const here = (names[n - 1] || '').toLowerCase();
+      const other = (names[n === 1 ? 1 : 0] || '').toLowerCase();
+      toggle.textContent = here;
+      toggle.setAttribute('aria-label',
+        'Detail level: ' + here + '. Activate to show ' + other + '.');
+      // The key belongs to the level that draws those nodes, so it travels with the graph
+      // rather than sitting in the heading explaining states that are not on screen.
+      const stale = toggle.parentNode.querySelector('.vd-legend');
+      if (stale) stale.remove();
+      const shown = levels.find(el => !el.hidden);
+      if (shown && shown.dataset.legend) toggle.insertAdjacentHTML('beforebegin', shown.dataset.legend);
+      // A group's toggle can be sitting inside the zoom dialog right now (openZoom moves
+      // .vd-ctl into #mermaid-zoom-controls while that group's graph is open), so a level
+      // switch made there has to redraw the dialog too, or it's left showing the old level
+      // under a toggle now claiming the other.
+      if (shown && toggle.closest('#mermaid-zoom-controls') && window.__vdZoomOpen) {
+        window.__vdZoomOpen(shown);
+      }
     }
-    el.style.position = '';
-    el.style.left = '';
-    el.hidden = true; // showLevel() below unhides only the level the slider actually wants
-  }
+    toggle.addEventListener('click', () => { showLevel(level === 1 ? 2 : 1); });
 
-  await showLevel(level);
+    function fail(el, n) {
+      el.textContent = (names[n - 1] || ('Level ' + n)) + ' failed to render.';
+      el.classList.add('vd-failed');
+    }
+    // A real diagram never comes out this small -- this is the exact signature of the
+    // collapsed-measurement bug this script replaces, so it's treated as a render failure
+    // rather than shipped silently.
+    function degenerate(svg) {
+      const box = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+      return box.length !== 4 || box.some(Number.isNaN) || box[2] < 32 || box[3] < 32;
+    }
+
+    async function renderLevel(el) {
+      const source = el.textContent;
+      const n = el.dataset.level;
+      el.hidden = false;
+      el.style.position = 'absolute';
+      el.style.left = '-99999px';
+      try {
+        // Levels are keyed by root too, not just by n: two roots each showing "level 2" would
+        // otherwise collide on the same mermaid render id.
+        const { svg } = await mermaid.render('vd-level-' + rootId + '-' + n, source, el);
+        el.innerHTML = svg;
+        reorderEdgeLayers(el);
+        const svgEl = el.querySelector('svg');
+        if (!svgEl || degenerate(svgEl)) fail(el, n);
+      } catch (_) {
+        fail(el, n);
+      }
+      el.style.position = '';
+      el.style.left = '';
+      el.hidden = true; // showLevel() below unhides only the level the slider actually wants
+    }
+
+    if (root.classList.contains('vd-symbols-group')) {
+      // Off-screen still reads to a screen reader and sits in the tab order; inert drops
+      // this measure-only container from both. Its .vd-ctl escapes when moved (not cloned)
+      // into the dialog while that group's graph is open -- see openZoom.
+      root.inert = true;
+      // A group's graph draws only once its icon button (below) is clicked, unlike the
+      // global section's default level, which still renders here at load.
+      const heading = findGroupHeading(root);
+      if (heading) {
+        const n = Number(root.dataset.symbols) || 0;
+        const word = n === 1 ? ' symbol' : ' symbols';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'wt-graph-btn';
+        btn.innerHTML = GRAPH_ICON_SVG + '<span>' + n + word + '</span>';
+        const label = heading.cloneNode(true);
+        const count = label.querySelector('.wt-count');
+        if (count) count.remove();
+        btn.setAttribute('aria-label',
+          'Open symbol graph for ' + (label.textContent.trim() || 'this group') + ' (' + n + word + ')');
+        btn.addEventListener('click', async () => {
+          await showLevel(level);
+          const box = levels.find(el => el.dataset.level === String(level));
+          if (box && window.__vdZoomOpen) window.__vdZoomOpen(box);
+        });
+        heading.appendChild(btn);
+      }
+    } else {
+      await showLevel(level);
+    }
+  }
 })();
 </script>
 <script>
@@ -1003,6 +1093,7 @@
     });
   }
   dlg.addEventListener('close',()=>closeNavMenu());
+  dlg.addEventListener('close',restoreGroupControls);
   // Every opener stopPropagation()s or never fires a 'click' at all (panZoom's own
   // suppressClick already swallows a pan-ending click), so this never eats the click that
   // opened the menu.
@@ -1011,8 +1102,7 @@
   });
   // Switching detail level hides the level's box while navMenu/navMenuFor stay set, so the
   // stale menu would otherwise re-appear when that level comes back into view.
-  const levelToggle=document.getElementById('vd-level-toggle');
-  if(levelToggle) levelToggle.addEventListener('click',()=>closeNavMenu());
+  document.querySelectorAll('.vd-level-toggle').forEach(t=>t.addEventListener('click',()=>closeNavMenu()));
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape') return;
     // Peel one layer per Escape: menu, then focus dimming, then let the dialog's own native
@@ -1043,10 +1133,10 @@
     const apply=()=>{ svg.setAttribute('viewBox',view.join(' ')); if(onChange) onChange(); };
     if(mode==='inline'){
       svg.removeAttribute('width'); svg.removeAttribute('height');
-      if(svg.closest('.svgbox-flow')){
-        // FLOW is prose-scale, not a container-filling map: size it from its own viewBox so
-        // it shrinks to fit a narrow screen but never upscales past authored size (the
-        // giant-label bug). maxHeight letterboxes it inside the box's cap.
+      if(svg.closest('.svgbox-flow, .vd-symbols')){
+        // FLOW and the symbol-delta levels are prose-scale, not container-filling maps: size
+        // from their own viewBox so they shrink to fit a narrow screen but never upscale past
+        // authored size (the giant-label bug). maxHeight letterboxes it inside the box's cap.
         svg.style.width=box[2]+'px'; svg.style.maxWidth='100%';
         svg.style.height='auto'; svg.style.maxHeight='min(72vh,720px)';
         svg.style.aspectRatio=box[2]+'/'+box[3];
@@ -1061,8 +1151,25 @@
       svg.style.touchAction='pan-y';
     } else {
       svg.removeAttribute('width'); svg.removeAttribute('height');
+      // This svg is a clone of the inline one, so it carries over the inline branch's
+      // fit-to-viewBox sizing; reset it or it caps the modal render short.
       svg.style.width='100%'; svg.style.height='100%';
+      svg.style.maxWidth=''; svg.style.maxHeight=''; svg.style.aspectRatio='';
       svg.style.touchAction='none';
+      // Always 1:1 -- the dialog only repositions the diagram, never resizes it: preserveAspectRatio's
+      // default 'meet' would otherwise fit the whole viewBox into 100%x100%, and either direction of
+      // that is unusable (measured: upscaled 621x263px node boxes, downscaled 26x9px node boxes).
+      // Anchored at the graph's own origin when it overflows the body, so the reader starts top-left
+      // and pans; centred in the body when it doesn't, so it draws at natural size with empty space
+      // around it instead of stretching. `home` stays the full graph either way, so zooming out
+      // (scaleAt permits up to 40x) still reaches it.
+      const bw=svg.parentElement?svg.parentElement.clientWidth:0;
+      const bh=svg.parentElement?svg.parentElement.clientHeight:0;
+      if(bw>0&&bh>0){
+        const overflow=box[2]>bw||box[3]>bh;
+        view=overflow?[box[0],box[1],bw,bh]:[box[0]+box[2]/2-bw/2,box[1]+box[3]/2-bh/2,bw,bh];
+        apply();
+      }
     }
     const scaleAt=(factor,fx,fy)=>{
       const w=view[2]*factor, h=view[3]*factor;
@@ -1144,13 +1251,13 @@
     // A drag ending over the box still fires a click; swallow it once so panning an inline
     // diagram doesn't also pop the full-screen dialog open.
     svg.addEventListener('click',e=>{ if(suppressClick){ e.stopPropagation(); suppressClick=false; } },true);
-    // A plain click anywhere on a tagged node opens the menu; a click on the graph
-    // background still bubbles to the box's own handler and opens the fullscreen dialog.
-    // Same gesture on every pointer type, so there is nothing hover- or right-click-only
-    // left to be undiscoverable on a phone.
+    // e.target here is the captured svg, not the node: pointerdown above calls
+    // setPointerCapture for panning, and Chrome retargets the click to that capture element.
+    // Recover the node by hit-testing the click point when the target chain doesn't have one.
     svg.addEventListener('click',e=>{
       if(!svg.classList.contains('vd-nav')) return;
-      const node=e.target.closest('[data-path]');
+      const node=e.target.closest('[data-path]')
+        ||(el=>el&&el.closest&&el.closest('[data-path]'))(document.elementFromPoint(e.clientX,e.clientY));
       if(!node) return;
       e.stopPropagation();
       if(navMenuFor===node&&navMenu){ closeNavMenu(); return; } // second tap on the same node closes it
@@ -1177,22 +1284,50 @@
     return box.matches('.mermaid')?box.querySelector('svg')
       :box.querySelector('.mermaid:not([hidden]) svg');
   }
+  let activeGroupCtl=null,activeGroupHome=null; // the group's .vd-ctl currently living in #mermaid-zoom-controls, and where to put it back
+  function restoreGroupControls(){
+    if(!activeGroupCtl) return;
+    activeGroupHome.insertBefore(activeGroupCtl,activeGroupHome.firstChild);
+    activeGroupCtl=null; activeGroupHome=null;
+  }
   function openZoom(box){
     closeNavMenu(); // otherwise the inline menu is left open, hidden behind the dialog
     const svg=visibleSvg(box);
     if(!svg) return;
+    tagNavNodes(box,svg); // a group graph renders on demand (see the level script's button), so this can run ahead of wire()'s own MutationObserver pass
+    const group=box.closest('.vd-symbols-group');
+    if(!dlg.open) dlg.showModal(); // showModal() throws if already open -- the dialog's own level toggle re-opens here to refresh, not to open a second time
     const clone=svg.cloneNode(true);
     clone.__navSource=svg; // focusNavNode/clearNavFocus mirror onto this, so fullscreen focus changes survive the dialog closing
     zbody.replaceChildren(clone);
     const api=panZoom(clone,'modal');
-    zctl.hidden=!api;
-    dlg.showModal();
+    // A group's own legend and level toggle are off-screen with the rest of its container
+    // (.vd-symbols-group), so while its graph is open here they move into the dialog's own
+    // controls row instead -- moved, not cloned, so the toggle's existing click listener
+    // (level script) keeps driving it -- and back out on close, see restoreGroupControls.
+    if(group){
+      const ctl=group.querySelector('.vd-ctl');
+      if(ctl&&ctl.parentNode!==zctl){
+        restoreGroupControls();
+        activeGroupCtl=ctl; activeGroupHome=group;
+        zctl.insertBefore(ctl,zctl.firstChild);
+      }
+    }
+    zctl.hidden=!api&&!group;
   }
   function wire(box){
+    const svg=visibleSvg(box);
+    if(!svg) return;
+    tagNavNodes(box,svg);
+    // A group's graph never sits on screen -- off-screen with the rest of its container,
+    // see .vd-symbols-group -- so it skips the click-to-zoom wiring below; the icon button
+    // built in the level script is its only way into the dialog. Tagging above still runs
+    // unconditionally so the dialog's cloned svg carries the node menu data regardless.
+    if(box.closest('.vd-symbols-group')) return;
     // The click/keydown setup below is one-shot, but mermaid can mutate the box a few times
-    // while rendering, so its current svg is re-read fresh every pass; panZoom's own per-svg
-    // guard makes re-wiring an already-wired svg a cheap no-op.
-    if(!box.dataset.zoomWired&&visibleSvg(box)){
+    // while rendering, so panZoom's own per-svg guard makes re-wiring an already-wired svg a
+    // cheap no-op.
+    if(!box.dataset.zoomWired){
       box.dataset.zoomWired='1';
       box.tabIndex=0;
       box.setAttribute('role','button');
@@ -1202,9 +1337,6 @@
         if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openZoom(box); }
       });
     }
-    const svg=visibleSvg(box);
-    if(!svg) return;
-    tagNavNodes(box,svg);
     if(pzWired.has(svg)) return;
     panZoom(svg,'inline');
   }
@@ -1218,6 +1350,7 @@
   new MutationObserver(wireAll).observe(document.getElementById('plan-content'),
     {childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   wireAll();
+  window.__vdZoomOpen=openZoom; // lets the level script's group-graph button, and its in-dialog level toggle, reuse this instead of a second render path
 })();
 </script>
 <script>
