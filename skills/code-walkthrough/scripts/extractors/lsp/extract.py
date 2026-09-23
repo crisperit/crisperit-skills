@@ -26,6 +26,7 @@ import os
 import posixpath
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -95,6 +96,29 @@ SERVER_CMD = LANGUAGES["typescript"]["server_cmd"]
 DOC_SYMBOL_FIRST_FILE_RETRIES = LANGUAGES["typescript"]["first_file_retries"]
 
 _RUST_IMPL_RE = re.compile(r"^impl(?:<[^>]*>)?\s+(.+)$")
+
+
+def _npm_global_bin_dir():
+    """Where `npm i -g` would have put a binary, or None if npm itself isn't here. Both
+    typescript-language-server and pyright (LANGUAGE_SERVER_REMEDY's npm installs, in
+    symdelta.py) land there; a real install that never made it onto PATH is a different failure
+    than one that never happened, and check_language_server tells the two apart below."""
+    try:
+        result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return str(Path(result.stdout.strip()) / "bin")
+
+
+# Per-language lookup for the PATH-trap check: where the server would already be sitting if
+# installed but not on PATH. No entry for rust -- rustup's own layout isn't a single well-known
+# directory the way npm's global bin dir is, so it keeps the plain "not found" reason.
+KNOWN_INSTALL_DIRS = {
+    "typescript": _npm_global_bin_dir,
+    "python": _npm_global_bin_dir,
+}
 
 
 def _read(path):
@@ -199,6 +223,13 @@ def check_language_server(repo, lang="typescript"):
     profile = LANGUAGES[lang]
     tool = profile["server_cmd"][0]
     if shutil.which(tool) is None:
+        locate = KNOWN_INSTALL_DIRS.get(lang)
+        install_dir = locate() if locate else None
+        if install_dir and (Path(install_dir) / tool).exists():
+            return False, (
+                f"{tool} is installed in {install_dir} but that directory is not on PATH; "
+                f'add it, e.g. export PATH="{install_dir}:$PATH"'
+            )
         return False, f"{tool} not found on PATH"
 
     client = LSPClient(profile["server_cmd"], cwd=str(repo))
@@ -225,7 +256,16 @@ def check_language_server(repo, lang="typescript"):
 
     caps = resp.get("result", {}).get("capabilities", {})
     if not caps.get("callHierarchyProvider"):
-        return False, f"{tool} does not advertise callHierarchyProvider"
+        reason = f"{tool} does not advertise callHierarchyProvider"
+        # A missing/broken node_modules (e.g. a worktree whose symlink from link_node_modules
+        # is dangling) makes typescript-language-server silently drop callHierarchyProvider
+        # instead of erroring, which otherwise reads as a server/tooling problem.
+        if lang == "typescript" and not (Path(repo) / "node_modules").exists():
+            reason += (
+                f"; {repo}/node_modules is missing or a broken link, so it could not load "
+                "TypeScript"
+            )
+        return False, reason
     return True, None
 
 
@@ -266,6 +306,11 @@ def extract_edges(root, rel_files, lang="typescript"):
         seen = set()
         edges = []
         doc_symbol_cache = {}
+        # Tallied to tell a real failure (server resolved nothing) apart from a normal empty
+        # diff (everything resolved, just no changed edges) -- see the raises after the loop.
+        files_with_symbols = 0
+        symbols_tried = 0
+        symbols_with_callhierarchy = 0
         # Two separate readiness gates, each set True the first time its own request returns a
         # real result: rust-analyzer answers documentSymbol before prepareCallHierarchy is warm
         # (chq_ready), and prepareCallHierarchy itself before outgoingCalls/incomingCalls have
@@ -321,11 +366,13 @@ def extract_edges(root, rel_files, lang="typescript"):
             if not doc_syms:
                 continue
             doc_symbol_cache[file_uri] = doc_syms
+            files_with_symbols += 1
 
             for sym, parent_name in _flatten_symbols_with_parent(doc_syms):
                 # Query at selectionRange, not range: range.start lands off-token (e.g. on a
                 # decorator or modifier) and silently returns empty.
                 pos = sym["selectionRange"]["start"]
+                symbols_tried += 1
                 attempts = 1 if chq_ready else retries
                 items = []
                 for attempt in range(attempts):
@@ -341,6 +388,7 @@ def extract_edges(root, rel_files, lang="typescript"):
                         time.sleep(DOC_SYMBOL_RETRY_DELAY)
                 if not items:
                     continue
+                symbols_with_callhierarchy += 1
                 item = items[0]
                 from_sym = _qualify_from_tree(sym, parent_name, lang)
 
@@ -382,6 +430,20 @@ def extract_edges(root, rel_files, lang="typescript"):
                         continue
                     add_edge(from_file, qualify_target(frm), rel, from_sym)
 
+        # existing empty is the base side of an all-new diff (rel_files filtered to what's on
+        # disk at this ref) -- already legitimate, so only raise when there was something to
+        # resolve and the server came back empty for all of it.
+        if existing and files_with_symbols == 0:
+            raise RuntimeError(
+                f"{lang}: {' '.join(profile['server_cmd'])} opened {len(existing)} file(s) and "
+                "returned no documentSymbol result for any of them"
+            )
+        if symbols_tried and symbols_with_callhierarchy == 0:
+            raise RuntimeError(
+                f"{lang}: documentSymbol resolved but prepareCallHierarchy returned nothing for "
+                f"all {symbols_tried} symbol(s) tried"
+            )
+
         return edges
     finally:
         client.shutdown()
@@ -420,7 +482,13 @@ def main():
         print(reason, file=sys.stderr)
         return 1
 
-    for edge in extract_edges(root, rel_files, lang):
+    try:
+        edges = extract_edges(root, rel_files, lang)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    for edge in edges:
         print(json.dumps(edge))
     return 0
 

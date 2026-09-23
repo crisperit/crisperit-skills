@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Inline the vendored JS a built page actually uses.
 
-One placeholder. Mermaid is 3.2MB, so a page with no `class="mermaid"` block should not
-carry it. An unused placeholder stays in the file as an
-inert HTML comment, which is why it is safe to leave unfilled rather than erroring.
+Each placeholder below is only filled when the page actually contains the marker it needs:
+Mermaid is 3.2MB and hljs is 128K, so an explain-only or diagram-only page does not carry
+either just because the template has both placeholders. An unfilled placeholder stays in
+the file as an inert HTML comment, which is why it is safe to leave unfilled rather than
+erroring.
 
 Idempotent: a placeholder that is already gone is skipped, so re-splicing an existing page
 does not double the payload.
@@ -15,6 +17,7 @@ import sys
 # placeholder -> (marker the page must contain to need it, asset filenames in load order)
 ASSETS = {
     "<!-- MERMAID_JS -->": ('class="mermaid"', ["mermaid.min.js"]),
+    "<!-- HLJS_JS -->": ('class="diff"', ["highlight.min.js"]),
 }
 
 

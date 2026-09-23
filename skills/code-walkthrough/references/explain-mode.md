@@ -61,12 +61,24 @@ less of their own PR.
 
 SKILL.md step 3 carries the rule for resolving `<explain>` itself. What the flag does once
 resolved: the page renders plain code with the file's own line numbers instead of green `+` rows,
-"Scope: 6 files, 1400 lines" instead of add/remove arithmetic, "What this is" and "Structure" for
-the headings, and a graph with no new/gone colouring or legend. Same pipeline either way, only
-the wording and colouring change.
+"Scope: 6 files, 1400 lines" instead of add/remove arithmetic, "Structure" instead of "Changes
+visualization" for the page-level symbols heading, and a graph with no new/gone colouring or
+legend. OVERVIEW keeps the same heading in both modes. Same pipeline either way, only the
+wording and colouring change.
+
+The structure view (2b4) follows the same rule: "How it fits together" instead of "System
+change" for its heading, "N components in M columns" instead of a per-state count in its summary
+strip, and no state badges, member state chips, removed boxes, or gone edges -- every one of
+those reads as a change against a baseline, and explain mode's baseline is empty, so all of it
+would be reporting on the trick rather than the code.
 
 All three renderers have to agree: a page with diff-coloured headings over plain-code hunks is
 worse than either mode on its own.
 
 Scope the symbols graph too. Against the empty baseline every symbol in the repository is new, so
 `sections.py --paths` takes the same pathspec the diff used; `references/graphs.md` has the rest.
+The structure view needs the same scoping, for the same reason: against a real ref pair,
+`structure.py`'s own `git diff` is already bounded to the files that actually changed, but the
+empty baseline turns every file in the repo into a changed file, so without `--paths` the
+component set balloons past the 30-component cap with code the page was never about. Pass
+`structure.py --paths` the same pathspec the diff used.

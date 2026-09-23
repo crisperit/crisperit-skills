@@ -31,8 +31,8 @@ diff --git a/README.md b/README.md
 ANALYSIS = {
     "target": "master...HEAD",
     "verdict": "Session loading gained a refresh fallback.",
-    "what_changed": "`loadSession` now falls back to the refresh token.\n\nThe title changed.",
-    "how_it_works": "`store.get` reads the access token from the cookie jar.",
+    "overview": ("`loadSession` now falls back to the refresh token.\n\nThe title changed."
+                "\n\n`store.get` reads the access token from the cookie jar."),
     "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]',
     "files": [{"path": "src/auth.py", "role": "r", "hunks": [{"header": "@@", "note": "n"}]}],
 }
@@ -83,7 +83,7 @@ def test_html_escapes_prose_before_promoting_backticks():
     # A branch name or commit subject from someone else's PR reaches this prose. Escaping after
     # wrapping would let `<img src=x onerror=alert(1)>` become a live element the moment the
     # browser parses the page, before any script runs.
-    hostile = {**ANALYSIS, "what_changed": "broke `<img src=x onerror=alert(1)>` here"}
+    hostile = {**ANALYSIS, "overview": "broke `<img src=x onerror=alert(1)>` here"}
     out = html(hostile)
 
     assert "<img src=x" not in out
@@ -118,14 +118,23 @@ def test_pasted_sections_are_never_re_escaped():
     assert "&amp;lt;" not in out
 
 
-def test_symbols_pastes_verbatim_with_no_heading_added():
-    # Mirrors the explorer paste: section-symbols.html carries its own <h2>CHANGES VISUALIZATION</h2>,
-    # so render.py adds nothing around it.
-    symbols = '<h2>CHANGES VISUALIZATION</h2>\n<div class="vd-symbols"></div>'
-    out = html(symbols=symbols)
+def test_symbols_pastes_verbatim_inside_a_collapsed_details_at_the_end():
+    # Mirrors the explorer paste: section-symbols.html carries its own <h2>CHANGES
+    # VISUALIZATION</h2> and its own marker comment, so render.py adds nothing around the
+    # content itself -- only the wrapping <details>, and only at the very end of the page.
+    symbols = ('<!-- code-walkthrough:symbols -->\n<h2>CHANGES VISUALIZATION</h2>\n'
+               '<div class="vd-symbols"></div>')
+    out = html(symbols=symbols,
+               walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
 
     assert symbols in out
     assert out.count("CHANGES VISUALIZATION") == 1
+    assert '<details class="collapse">' in out
+    assert "<summary>Package graph</summary>" in out
+    # validate_analysis.py's --sections gate looks for this marker in the rendered file.
+    assert "<!-- code-walkthrough:symbols -->" in out
+    assert out.index("wt-body") < out.index('<details class="collapse">')
+    assert out.index('<details class="collapse">') < out.index('class="foot"')
 
 
 def test_an_empty_flow_drops_the_whole_section():
@@ -237,10 +246,55 @@ def test_flow_diagram_breaks_a_long_identifier_end_to_end():
     assert "&lt;br" not in html_out
 
 
-def test_an_empty_how_it_works_drops_the_whole_section():
-    out = html({**ANALYSIS, "how_it_works": ""})
+def test_an_empty_overview_drops_the_whole_section():
+    out = html({**ANALYSIS, "overview": ""})
 
-    assert "<h2>How it works</h2>" not in out
+    assert "<h2>Overview</h2>" not in out
+
+
+def test_overview_heading_is_the_same_in_both_modes():
+    # The old "What changed" / "What this is" swap is gone: a cold reader needs the same shape
+    # of topic whether the target is a change or an area, so one heading covers both.
+    assert "<h2>Overview</h2>" in html()
+    assert "<h2>Overview</h2>" in html(explain=True)
+
+
+def test_a_bullet_block_renders_as_a_list():
+    out = html({**ANALYSIS, "overview": "Lead sentence.\n\n- first idea\n- second idea"})
+
+    assert "<ul><li>first idea</li><li>second idea</li></ul>" in out
+    assert "<p>Lead sentence.</p>" in out
+
+
+def test_a_lead_with_no_blank_line_before_its_bullets_still_gets_its_own_p():
+    # No "\n\n" between the lead and the bullets -- the failure mode a missing blank line
+    # used to cause: the lead must stay a <p> and must not become one of the <li>s.
+    out = html({**ANALYSIS, "overview": "Lead sentence.\n- first idea\n- second idea"})
+
+    assert "<p>Lead sentence.</p>" in out
+    assert "<ul><li>first idea</li><li>second idea</li></ul>" in out
+    assert "<li>Lead sentence.</li>" not in out
+
+
+def test_bullets_split_by_a_blank_line_still_merge_into_one_list():
+    out = html({**ANALYSIS, "overview": "Lead sentence.\n\n- first idea\n\n- second idea"})
+
+    assert "<ul><li>first idea</li><li>second idea</li></ul>" in out
+    assert out.count("<ul>") == 1
+
+
+def test_a_mixed_block_treats_plain_lines_as_their_own_items():
+    out = html({**ANALYSIS, "overview": "- bulleted\nplain line too"})
+
+    assert "<ul><li>bulleted</li><li>plain line too</li></ul>" in out
+
+
+def test_escaping_still_happens_inside_a_list_item():
+    hostile = {**ANALYSIS, "overview": "- broke `<img src=x onerror=alert(1)>` here"}
+    out = html(hostile)
+
+    assert "<img src=x" not in out
+    assert "<li>broke <code>&lt;img src=x onerror=alert(1)&gt;</code> here</li>" in out
 
 
 def test_an_empty_section_file_inserts_nothing_not_even_its_note():
@@ -288,7 +342,7 @@ def test_a_missing_verdict_drops_only_its_fact_block():
 def test_prose_paragraphs_stay_separate():
     out = html()
 
-    # what_changed holds two paragraphs separated by a blank line; one <p> would lose the break.
+    # overview holds multiple paragraphs separated by a blank line; one <p> would lose the break.
     assert "<p><code>loadSession</code> now falls back to the refresh token.</p>" in out
     assert "<p>The title changed.</p>" in out
 
@@ -317,8 +371,60 @@ def test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic():
     assert "<b>Scope</b>" in out and "<b>Changed</b>" not in out
     assert "2 files, 2 lines" in out
     assert "(net " not in out
-    assert "<h2>What this is</h2>" in out and "<h2>What changed</h2>" not in out
+    assert "<h2>Overview</h2>" in out  # same heading as the non-explain page
     assert "<b>Summary</b>" in out and "<b>Verdict</b>" not in out
+
+
+# ---- story map ----
+
+def test_story_map_replaces_flow_and_lands_right_after_overview():
+    order, files = parsed()
+    analysis = {**ANALYSIS,
+                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
+                           {"title": "Docs", "paths": ["README.md"]}]}
+    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
+
+    assert "<h2>Story map</h2>" in out
+    assert "<h2>Flow</h2>" not in out
+    assert "svgbox-flow" not in out
+    assert '<div class="map">' in out
+    assert out.index("<h2>Overview</h2>") < out.index("<h2>Story map</h2>")
+
+
+def test_structure_section_lands_between_the_story_map_and_the_walkthrough():
+    # Mirrors the symbols-section paste test below: render.py adds nothing around
+    # section-structure.html's own content, only places it -- between the story map and the
+    # walkthrough, per render_html's own ordering.
+    order, files = parsed()
+    analysis = {**ANALYSIS,
+                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
+                           {"title": "Docs", "paths": ["README.md"]}]}
+    structure = '<!-- code-walkthrough:structure -->\n<div class="vd-structure"><h2>System change</h2></div>'
+    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order, structure=structure,
+                      walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
+
+    assert '<div class="vd-structure">' in out
+    assert out.index("<h2>Story map</h2>") < out.index('<div class="vd-structure">') \
+        < out.index("wt-body")
+
+
+def test_an_empty_structure_section_inserts_nothing():
+    order, files = parsed()
+    out = render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, structure="   \n")
+    assert "vd-structure" not in out
+
+
+def test_a_single_group_keeps_the_flow_diagram():
+    # No map to draw with one group (see walkthrough.render_story), so FLOW stays exactly as
+    # it did before the story map existed.
+    order, files = parsed()
+    analysis = {**ANALYSIS,
+                "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
+    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
+
+    assert "<h2>Flow</h2>" in out
+    assert "<h2>Story map</h2>" not in out
+    assert '<div class="map">' not in out
 
 
 if __name__ == "__main__":
@@ -332,7 +438,7 @@ if __name__ == "__main__":
         test_html_promotes_backticks_in_every_prose_field,
         test_html_escapes_the_mermaid_source,
         test_pasted_sections_are_never_re_escaped,
-        test_symbols_pastes_verbatim_with_no_heading_added,
+        test_symbols_pastes_verbatim_inside_a_collapsed_details_at_the_end,
         test_an_empty_flow_drops_the_whole_section,
         test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams,
         test_flow_tb_leaves_a_non_lr_diagram_alone,
@@ -345,7 +451,8 @@ if __name__ == "__main__":
         test_wrap_flow_labels_breaks_a_long_identifier_in_a_bare_edge_label,
         test_wrap_flow_labels_reaches_a_node_and_an_edge_label_on_the_same_line,
         test_flow_diagram_breaks_a_long_identifier_end_to_end,
-        test_an_empty_how_it_works_drops_the_whole_section,
+        test_an_empty_overview_drops_the_whole_section,
+        test_overview_heading_is_the_same_in_both_modes,
         test_an_empty_section_file_inserts_nothing_not_even_its_note,
         test_no_text_size_control_is_emitted_at_all,
         test_the_walkthrough_heading_carries_only_the_explanations_toggle,
@@ -354,6 +461,10 @@ if __name__ == "__main__":
         test_footer_carries_the_target_and_a_stamp_but_no_local_path,
         test_no_links_json_means_no_links,
         test_html_footer_link_is_safe_to_click_from_a_file_url,
+        test_story_map_replaces_flow_and_lands_right_after_overview,
+        test_structure_section_lands_between_the_story_map_and_the_walkthrough,
+        test_an_empty_structure_section_inserts_nothing,
+        test_a_single_group_keeps_the_flow_diagram,
     ]
     for test in tests:
         test()

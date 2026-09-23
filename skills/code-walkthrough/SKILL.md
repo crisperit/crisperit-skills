@@ -128,8 +128,7 @@ concurrently with the annotation agents keeps it off the critical path (`referen
 {
   "target": "master...HEAD",
   "verdict": "one line for the facts strip: the change in a breath",
-  "what_changed": "2 to 4 sentences on what the change accomplishes and why",
-  "how_it_works": "machinery a cold reader needs, or \"\" when nothing needs it",
+  "overview": "lead (1-2 sentences) + 3-5 one-line bullets of organizing ideas -- shape in references/fanout.md",
   "flow_mermaid": "flowchart LR ..., or \"\" when there is no flow worth drawing",
   "files": [
     {
@@ -142,7 +141,10 @@ concurrently with the annotation agents keeps it off the critical path (`referen
     {
       "title": "Hot-reload the rate-limit config",
       "why": "optional one line on why this theme reads here",
-      "paths": ["pkg/thing.py"]
+      "paths": ["pkg/thing.py"],
+      "flow_mermaid": "optional, one small diagram for this group",
+      "hop": "optional, 2-6 words naming the hand-off to the next stop",
+      "side": "optional, true for a supporting group off the main line"
     }
   ]
 }
@@ -152,10 +154,33 @@ This file is the whole of your judgment. Nothing downstream writes prose: `rende
 `walkthrough.py` place these strings and build every other part of the output from `raw.diff`.
 So a field left blank is a section that will not appear, not a section someone else will fill in.
 
+`overview` is the one heading the page shows in both modes, "Overview" whether the target is a
+change or an area. It has two parts: a lead of one or two sentences saying what this is (or what
+the change is) and who or what uses it, no file names in the lead, then three to five bullets, one
+line each, carrying the organizing ideas only -- a bullet names a symbol or path only when that
+name IS the idea, and most should name none. Nothing sits below that altitude: the detail a reader
+wants next already lives in a group's `why` and in the hunk notes, not here, and reaching for
+completeness at this level is exactly the failure mode this schema exists to prevent. Shape and a
+worked example: `references/fanout.md`.
+
 `groups` is the reading order, the one part of the walkthrough that needs you rather than the
 diff: only someone who read the change knows which files belong to which theme and which theme a
-reviewer should meet first. Write one group per theme, in reading order, titled as the theme
+reviewer should meet first. Write one group per theme, **in story order, not just reading
+order** -- the list's own order is what the page's story map draws as stops one after another,
+so a group earlier in the list reads as happening earlier in the story. Title it as the theme
 rather than as a directory.
+
+When there are two or more groups, the story map replaces the page's one top-level `flow_mermaid`
+diagram (the story order already shows the shape a flow diagram would), so leave the top-level
+`flow_mermaid` blank in that case. With a single group there is no map to draw, so the top-level
+`flow_mermaid` still carries the page's one flow diagram exactly as before.
+
+Two optional fields per group serve the map. `hop` is 2 to 6 words naming the hand-off to the
+NEXT stop in the story (e.g. `"gated by \`defineTool\`"`), carrying one backticked identifier
+that has to appear in `raw.diff`; the gate checks both. The last group that isn't a `side` group
+has no next stop to name, so it must not carry a `hop`. `side: true` marks a supporting group
+that sits off the main line -- docs, local dev setup, anything that doesn't advance the story --
+and the map lists it separately rather than in the chain.
 
 Keep the groups wide. Aim for three to five whatever the file count, and never more than six:
 a group is a theme a reviewer holds in their head, not a stage in the data flow. Tracing the
@@ -170,26 +195,35 @@ last. Leave `groups` out entirely and the whole walkthrough becomes one such gro
 forget still renders in a trailing "Everything else" group, so a partial grouping is safe to
 ship. The gate rejects a group with no title, a path not in the diff, or a file in two groups.
 
-**Mark identifiers with backticks** in `verdict`, `what_changed`, `how_it_works`,
+A group's own `flow_mermaid` is optional: one small diagram for that group, `sequenceDiagram` or
+`flowchart LR`, your pick per group. Default to a sequence; fall back to a flowchart only when
+the group genuinely has no order to show, a theme like error handling or config plumbing where
+participants and an ordered exchange would have to be invented. Keep it to about 8 steps at most,
+and omit the field entirely rather than draw something you had to guess. Same label rules as the
+top-level `flow_mermaid` below.
+
+**Mark identifiers with backticks** in `verdict`, `overview`,
 every `role` and every `note`: paths, function/method/type/class names, config
 keys, metric names, literal values. Markdown passes them through as inline code; the HTML
-renderer promotes them to `<code>` after escaping.
+renderer promotes them to `<code>` after escaping. In `overview` specifically, most sentences
+should carry no backticked symbol at all -- density, not the markup, is what produced the wall
+this schema exists to prevent.
 
 **`flow_mermaid` node labels are 2 to 6 words naming the step**, not a sentence explaining it;
-the reasoning belongs in `how_it_works`. **An edge carries a label only when the arrow itself is
-the action or transition**, 1 to 4 words, verb-led; a plain sequential step needs none.
+the reasoning belongs in `overview`. **An edge carries a label only when the arrow itself is
+the action or transition**, 1 to 4 words, verb-led; a plain sequential step needs none. A
+group's own `flow_mermaid` follows the same two rules.
 
 One entry per file in `raw.diff`, one `hunks` entry per `@@` hunk in that file, every `role`
 non-blank. A hunk's `note` explains the code, not the diff, and is often correctly left blank
 when the lines say it on their face. Full note-writing rules and bad/good pairs:
 `references/fanout.md`.
 
-`verdict` is yours, not a subagent's, by default: a batch agent sees one slice and cannot write
-it, and the prose agent never sees the graphs. On the fan-out route `fanout.py merge` carries it
-through from `prose.json` when present, so write it into `analysis.json` yourself after merging
-and before the gate; missing it does not fail the gate, but it costs the facts strip. Step 2b's
-grouping subagent is the one exception: it writes it too, with the main thread reviewing rather
-than authoring it.
+`verdict` is the prose agent's, alongside `overview`: a batch agent sees one slice and cannot
+write it, so it waits for the one subagent that sees the whole change. On the fan-out route
+`fanout.py merge` carries it through from `prose.json`; on the small-diff route the one
+subagent that writes step 2's whole `analysis.json` writes it directly. Missing it does not
+fail the gate, but it costs the facts strip.
 
 ## 2a. Fan out, only for a big diff
 
@@ -206,9 +240,10 @@ python3 <skill>/scripts/fanout.py split --diff <scratchpad>/raw.diff \
    `role` and `note` in its own pre-seeded fragment.
 2. Then one subagent on a stronger model (sonnet class), since it needs the whole change in view
    and nothing downstream can check its judgment, writes `<scratchpad>/prose.json` with `target`,
-   `what_changed`, `how_it_works` and `flow_mermaid`, from the fragments and the numstat. Under
-   about 2000 lines, also hand it `<scratchpad>/raw.diff` and tell it to read it. Full brief:
-   `references/fanout.md`.
+   `overview` and `verdict`, from the fragments and the numstat. Under
+   about 2000 lines, also hand it `<scratchpad>/raw.diff` and tell it to read it. It never
+   writes `flow_mermaid`: that field belongs to whichever group ends up alone once step 2b
+   decides the groups. Full brief: `references/fanout.md`.
 3. Merge:
 
    ```bash
@@ -250,8 +285,14 @@ step and regenerate from scratch instead.
 
 After step 2a's merge, spawn one subagent on a stronger model (sonnet class), since it needs the
 whole change in view and nothing downstream can check its judgment, with the merged `(path,
-role)` pairs plus the graph summaries; it returns `groups` and `verdict` for you
-to write into `analysis.json` and review rather than author.
+role)` pairs plus the graph summaries; it returns `groups`, in story order, for you to write
+into `analysis.json` and review rather than author.
+
+Tell it that each group it writes may also carry `hop` and `side`, same rules as described
+above under `groups`, and its own optional `flow_mermaid`. When it settles on two or more
+groups, tell it to leave the top-level `flow_mermaid` blank -- the story map replaces it; when
+it settles on exactly one group, it writes that one group's `flow_mermaid` (if any) as the
+top-level `flow_mermaid` too, since there is no map to carry it instead.
 
 ```bash
 python3 <skill>/scripts/validate_analysis.py --diff <scratchpad>/raw.diff \
@@ -300,25 +341,43 @@ does not exist, so this runs two-dot under the hood without any separate handlin
 python3 <skill>/scripts/symdelta.py --repo . --base <base> --head <head> > <scratchpad>/symdelta.json
 ```
 
-Check `"language"` in the output before spending anything on the section: `null` means the diff
-touched no supported language, or is missing a required tool, with why in `"reason"`. When the
-result also carries a `"remedy"`, the null is a fixable local tooling problem, not an absent
-graph. Tell the user the problem and the exact command in one line, ask once before running it,
-then re-run symdelta.py and continue. Never run it unasked: `npm ci` rebuilds the user's
-node_modules and a `-g` install mutates their machine. Skip the symbols section and say so in one
-line when there is no `"remedy"`. A `null` is never licence to fall back to name-matched edges;
-see `references/graphs.md` for why that guess is exactly the failure mode this graph exists to
-avoid.
+Check `"language"` in the output before spending anything further on this step: `null` means the
+diff touched no supported language, or is missing a required tool, with why in `"reason"`.
+`sections.py` puts that on the page itself now -- a short note where the graph would have been,
+reason and remedy included -- so there is no separate line to relay by hand. When the result
+carries a `"remedy"`, it is a command that fixes the local tooling, and it still needs asking
+before you run it: `npm ci` rebuilds the user's node_modules and a `-g` install mutates their
+machine. Tell the user the problem and the exact command in one line, ask once, then re-run
+symdelta.py and continue. `references/graphs.md` has each language server's install command and
+the `--doctor` command for checking a machine's setup, so neither is restated here. A `null` is
+never licence to fall back to name-matched edges; see `references/graphs.md` for why that guess
+is exactly the failure mode this graph exists to avoid.
+
+When `"language"` is `null`, there is a second option beyond fixing the local tooling: offer to
+build the graph yourself by reading the code instead of the compiler doing it. This is one ask,
+not automatic, and the page will label whatever it draws as inferred rather than compiler-resolved
+so the reader can weigh it accordingly. If the user agrees, write one JSON object per line to a
+scratch file, in the extractor's own wire shape (`FromFile`, `FromSym`, `ToFile`, `ToSym`, repo-
+relative paths, `Type.method` for a method), then re-run symdelta.py against it:
+
+```bash
+python3 <skill>/scripts/symdelta.py --repo . --base <base> --head <head> \
+  --llm-head-edges <scratchpad>/llm-edges-head.jsonl > <scratchpad>/symdelta.json
+```
+
+This is still not licence to name-match; the LLM tier reads the actual call sites, it does not
+guess from identifier names.
 
 ```bash
 python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
-  --format html <explain> --paths <paths> > <scratchpad>/section-symbols.html
+  --format html <explain> [--paths <paths>] > <scratchpad>/section-symbols.html
 ```
 
-Shows two levels, packages then symbols, with a toggle between them; each is laid out the first
-time it is shown, so a large symbols level costs nothing until someone switches to it. Pass the
-file to `render.py`'s `--symbols <path>`; it inserts nothing when the file is empty or the flag is
-omitted.
+Shows packages only at this, the page level: a symbols level laid out across a whole page is
+unreadable on a big diff, so that detail now lives per group instead, drawn inline by
+`walkthrough.py` in step 2d (with its own toggle between packages and symbols, scoped to that
+group's files). Pass this file to `render.py`'s `--symbols <path>`; it inserts nothing when the
+file is empty or the flag is omitted.
 
 `<paths>` is the files and directories the page is about, the same pathspec the diff used, space
 separated. The graph keeps symbols under those paths plus whatever their edges reach one hop out.
@@ -337,6 +396,35 @@ Set `XDG_CACHE_HOME` yourself if `~/.cache` is read-only in your sandbox; `symde
 and caches its extractor binary there. The per-language profiles, the method-qualification rules
 that differ per server, the name-collision problem this graph avoids, and the runtime budget on
 a large repo: `references/graphs.md`.
+
+## 2b4. Build the structure view, only when the target names two refs
+
+Unlike 2b2 and 2b3, this one needs `analysis.json`'s own `groups` to colour components by story
+stop, so run it after step 2b's gate has passed, not alongside the fan-out. It still needs
+`<scratchpad>/symdelta.json` from 2b3, whatever that script's own `"language"` came back as:
+structure.py parses the two refs itself (tree-sitter for TypeScript/JS, a tiny stdlib-only Go
+helper for Go) and only reads symdelta.json for call edges between the components it finds.
+
+```bash
+python3 <skill>/scripts/structure.py --repo . --base <base> --head <head> \
+  --symdelta <scratchpad>/symdelta.json --analysis <scratchpad>/analysis.json \
+  [--paths <paths>] --out <scratchpad>/structure.json
+
+python3 <skill>/scripts/sections.py --kind structure --data <scratchpad>/structure.json \
+  --format html <explain> > <scratchpad>/section-structure.html
+```
+
+`"language"` in `structure.json` is `null` when the diff touched no supported language
+(TypeScript/JS or Go) or the ref pair carries a dependency-manifest change neither language's
+parser can safely diff across; `sections.py` puts the reason on the page as a short note, the
+same as symdelta's own `null`. Otherwise the page gets a column layout of the real
+classes/interfaces/functions the diff touched -- caller-first, left to right, like a group's own
+call-graph tab -- coloured by story group, capped at 30 components (`dropped` in the output says
+how many were cut to fit). `<paths>` is the same pathspec 2b3's symbols graph uses: against a
+real ref pair `structure.py`'s own `git diff` is already bounded to the changed files, but
+explain mode's empty baseline makes every file in the repo count as changed, so pass it there
+too. Omit it for a real diff, where the delta is already the scope. Pass the rendered file to
+`render.py`'s `--structure <path>`; it lands between the story map and the walkthrough.
 
 ## 2c. Build the links
 
@@ -362,7 +450,8 @@ commit or a repo with no web remote produces links that 404. Nothing here needs 
 
 Generated, not written: `analysis.json` supplies each file's `role`, each hunk's `note`, and the
 `groups` that set the reading order; the script supplies the paths, counts, bars, nesting,
-fences, escaping, and the order inside each group.
+fences, escaping, and the order inside each group. A group's own `flow_mermaid`, when it has one,
+renders inline right after its `why` paragraph.
 
 ```bash
 python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
@@ -371,8 +460,9 @@ python3 <skill>/scripts/walkthrough.py --analysis <scratchpad>/analysis.json \
   > <scratchpad>/section-walkthrough.html
 ```
 
-`--symdelta` orders each group caller-first and, past one group, gives each an icon that opens a
-call graph scoped to its own files in the zoom dialog. `--complexity` adds the complexity chip,
+`--symdelta` orders each group caller-first and, past one group, gives each its own call graph
+scoped to its own files, as a `call graph` tab beside `flow` when the group has both (just the
+one diagram, no tabs, when it has only one). `--complexity` adds the complexity chip,
 `--diff`'s rename headers let a moved file show its old path instead of reading as a new
 addition. All optional; pass them when the files exist. It carries every hunk body, no size
 budget, since per-line commenting needs the lines, and cannot omit a file even when
@@ -602,12 +692,18 @@ python3 <skill>/scripts/render.py --analysis <scratchpad>/analysis.json \
   --walkthrough <scratchpad>/section-walkthrough.html \
   --state <scratchpad>/state.json \
   [--symbols <scratchpad>/section-symbols.html] \
+  [--structure <scratchpad>/section-structure.html] \
   [--links <scratchpad>/links.json] [--title "Code walkthrough: <slug>"] <explain> \
   > <scratchpad>/code-walkthrough-<slug>.html
 ```
 
-Omit `--symbols` when 2b3 did not run or returned `language: null`, `--links` when 2c did not
-run. An empty section file inserts nothing, not even its heading.
+Omit `--symbols` when 2b3 did not run, `--structure` when 2b4 did not run, `--links` when 2c did
+not run -- a `language: null` note still counts as having run, since the section file it
+produced is not empty. An empty section file inserts nothing, not even its heading. `render.py`
+derives the story map from `analysis.json`'s own `groups` -- nothing new to pass here -- and
+swaps it in for the top-level flow diagram once there are two or more; `--structure`, when
+passed, lands between the story map and the walkthrough; `--symbols`, when passed, lands inside
+a collapsed `<details>` at the very end of the page instead of up near Flow.
 
 ### `<explain>`
 
@@ -653,8 +749,10 @@ stays small.
 ## 5. Open it, only when the HTML page was built
 
 The page is a plain local file: `xdg-open <out>.html`. Notes typed into it live in
-`localStorage` on this file's origin; nothing round-trips to `state.json` until the user opens
-the Comments panel and pastes the Copy for agent payload back to this session, see step 7.
+`localStorage` on this file's origin; nothing round-trips to `state.json` on its own. The
+Comments panel's two copy buttons are the only way out: Copy gh command posts straight to GitHub
+(a later sync pulls the posted comments back into `state.json`), and Copy for agent copies the
+same comments as feedback text to paste back into this session, see step 7.
 
 ### 5b. Hosting, only when the user asks for it in words
 
@@ -681,11 +779,13 @@ Copy for agent payload and asks for it to be delivered, step 7.
 
 ## 7. Turn notes into PR comments, when the user asks
 
-The page has no server to post a click to. The user opens the Comments button and clicks Copy for
-agent, then pastes the JSON here; or runs the `gh` command Copy gh command printed, in which case
-this step is already done. Explain mode never has a PR, so the page offers only Copy for agent
-there. Then `notes.py import` the pasted JSON, one `deliver` per id it names, and one `submit` to
-publish them as a single review rather than loose comments.
+The page has no server to post a click to. When there is a pushed PR, the user runs the `gh`
+command Copy gh command printed -- one heredoc per postable comment plus one
+`resolveReviewThread` mutation per thread marked Resolve conversation -- in which case posting is
+already done. Explain mode never has a PR, so the page offers only Copy for agent there. Copy for
+agent copies the same comments as plain text (`Feedback:` then one `path:line` and its body per
+comment, in page order): read it as feedback to act on directly in this conversation, not a
+payload to machine-import, since it carries no ids.
 
-Commands, how `deliver` re-anchors a note against the current diff, refreshing after a sync, what
-to show the user before posting, and why this one is never automatic: `references/pr-comments.md`.
+How the `gh` command payload is built, what to show the user before posting, and why posting is
+never automatic: `references/pr-comments.md`.

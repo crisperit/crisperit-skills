@@ -67,8 +67,7 @@ index aaa1111..ccc3333 100644
 
 ANALYSIS = {
     "target": "master...HEAD",
-    "what_changed": "does a thing",
-    "how_it_works": "",
+    "overview": "does a thing",
     "flow_mermaid": "",
     "files": [{"path": "x.py", "role": "does a thing",
                "hunks": [{"header": "@@ -10,2 +10,3 @@", "note": "swaps the line"}]}],
@@ -505,6 +504,58 @@ def test_render_without_state_leaves_the_placeholder_untouched():
 
     assert "<!-- HR_STATE -->" in out
     assert 'id="hr-state"' not in out
+
+
+def test_notes_toggle_also_hides_group_why_and_its_panel():
+    """The show-notes toggle rule must also drop a group's why line, alongside the existing
+    per-hunk notes it already hid. The group's whole diagram panel (flow, call graph, or
+    both behind a tab bar) is a separate rule -- see the off-screen test below -- since it
+    must not use display:none."""
+    text = TEMPLATE_PATH.read_text()
+    rule_match = re.search(
+        r"body:not\(\.show-notes\) \.hunk-note-hunk,\n\s*"
+        r"body:not\(\.show-notes\) \.wt-why\{display:none\}", text)
+    assert rule_match, "the show-notes toggle no longer hides .wt-why"
+
+
+def test_notes_toggle_moves_the_group_panel_off_screen_not_display_none():
+    """A group's diagram panel (.wt-panel) holds a mermaid block that renders eagerly at
+    load: display:none on it when a reader's stored toggle state starts off would make
+    mermaid measure it as zero and collapse the diagram permanently (see the CSS comment
+    above the rule). It must go off-screen instead, scoped to a group's own panel so the
+    page-level FLOW above the Walkthrough heading, which carries no .wt-panel, is never
+    affected."""
+    text = TEMPLATE_PATH.read_text()
+    rule_match = re.search(
+        r"body:not\(\.show-notes\) h3\.wt-group ~ \.wt-panel\{([^}]*)\}", text)
+    assert rule_match, "the scoped group-panel off-screen rule is missing"
+    rule_body = rule_match.group(1)
+    assert "display:none" not in rule_body
+    assert "position:absolute" in rule_body and "left:-99999px" in rule_body
+
+
+def test_inactive_tab_panel_goes_off_screen_not_display_none():
+    """The tab bar's inactive panel (.wt-tabpanel.wt-tab-off) may still hold an unrendered
+    call-graph diagram (see wireGroupTabs' lazy render), so it must use the same off-screen
+    technique as the group panel above rather than display:none, or mermaid measures its
+    labels as zero and collapses the diagram permanently the first time that tab is picked."""
+    text = TEMPLATE_PATH.read_text()
+    rule_match = re.search(r"\.wt-tabpanel\.wt-tab-off\{([^}]*)\}", text)
+    assert rule_match, "the inactive-tab off-screen rule is missing"
+    rule_body = rule_match.group(1)
+    assert "display:none" not in rule_body
+    assert "position:absolute" in rule_body and "left:-99999px" in rule_body
+
+
+def test_vd_ctl_hidden_attribute_has_a_specificity_override():
+    """.vd-ctl's own display:flex is an author-normal rule, which always beats the UA
+    stylesheet's [hidden]{display:none} regardless of specificity (cascade origin is
+    resolved before specificity) -- the same footgun .dl[hidden]{display:none} already works
+    around elsewhere in this template. Without an equivalent override, wireGroupTabs setting
+    ctl.hidden while the flow tab is active would leave the level toggle visible anyway."""
+    text = TEMPLATE_PATH.read_text()
+    assert re.search(r"\.wt-tabs \.vd-ctl\[hidden\]\{display:none\}", text), (
+        "no specificity override for .vd-ctl[hidden] inside .wt-tabs")
 
 
 if __name__ == "__main__":

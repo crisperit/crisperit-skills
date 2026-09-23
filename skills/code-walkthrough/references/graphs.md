@@ -1,7 +1,7 @@
 # The symbol-delta graph
 
-Background for steps 2b2 and 2b3. Read it when the graph looks wrong, when deciding whether to
-trust a `language: null` result, or when the fleet-wide runtime is the thing you're planning
+Background for steps 2b2, 2b3 and 2b4. Read it when the graph looks wrong, when deciding whether
+to trust a `language: null` result, or when the fleet-wide runtime is the thing you're planning
 around.
 
 Both scripts treat `--base` as the merge base of the two refs, matching `git diff base...head`,
@@ -23,7 +23,7 @@ the author does not know what `4 cx +1` means. A file whose complexity this chan
 function the change did not move gets no chip at all, since a static number on untouched code is
 noise that outranked real findings on a measured run.
 
-## `symdelta.py`: two tiers, and why it resolves calls instead of matching names
+## `symdelta.py`: three tiers, and why it resolves calls instead of matching names
 
 Never background this with `&` and `wait`: the Bash tool treats any command containing `&` as a
 background one, stops waiting, and burns its whole timeout before the harness gives up on it.
@@ -39,18 +39,36 @@ the symbol graph; when it returns `language: null` the page gets no graph at all
 known and accepted gap, not a fallback to draw. A `null` is never licence to fall back to
 name-matched edges; that guess is exactly the failure mode this graph exists to avoid.
 
-Two tiers. Go uses a native extractor built on `go/packages`, extracting the whole repo, about 3
-seconds on a 1255-file repo. Everything else goes over LSP `callHierarchy`, querying only the
+There is a third, opt-in tier for exactly that gap: `--llm-head-edges` (and `--llm-base-edges`)
+take a file of hand-supplied call edges, in the extractor's own wire shape, and feed them through
+the same node-building, merge and preset pipeline as the other two tiers. This is not the
+name-matching fallback the previous paragraph rules out. Name-matching is a mechanical guess that
+produced `billing.Error -> auth.String` between two symbols that never call each other, with no
+way for a reader to tell which edges to distrust. The LLM tier reads the actual call sites instead
+of matching identifiers, and every page it appears on is stamped with a caveat naming it as
+inferred, not compiler-resolved, so the reader can discount it deliberately rather than trust it
+by default. It is still worse than a real graph: a wrong edge is worse than no edge, which is why
+it is opt-in, asked for once per diff, and never the default when `language` is `null`.
+
+The two mechanical tiers resolve calls with real tooling, not a reader. Go uses a native
+extractor built on `go/packages`, extracting the whole repo regardless of the diff's size: 2.65s
+wall (11.05s user, 488% cpu) on a 1534-file repo, extractor binary alone, given a populated
+`GOMODCACHE`. See "Cache location and runtime budget" below for why a full `symdelta.py` run costs
+much more than that. Everything else goes over LSP `callHierarchy`, querying only the
 symbols in the files the diff changed, in both directions. Each LSP language is a profile in
 `extractors/lsp/extract.py`'s `LANGUAGES` table (server command, languageId, vendor directories,
 retry budget, qualification strategy), selected with `--lang`:
 
-| Language | Extensions | Server | Measured |
-|---|---|---|---|
-| Go | `.go` | `go/packages`, native | 4.6s on a 20-file diff |
-| TypeScript | `.ts`, `.tsx` | `typescript-language-server` | 20.4s on a 27-file diff |
-| Python | `.py` | `pyright-langserver` | 20.1s on a toy repo |
-| Rust | `.rs` | `rust-analyzer` | 23.2s on a toy crate |
+| Language | Extensions | Server | Install | Measured |
+|---|---|---|---|---|
+| Go | `.go` | `go/packages`, native | comes with the Go toolchain | 2.65s on a 1534-file repo, whole-repo extraction, independent of diff size |
+| TypeScript | `.ts`, `.tsx` | `typescript-language-server` | `npm i -g typescript typescript-language-server` | 20.4s on a 27-file diff |
+| Python | `.py` | `pyright-langserver` | `npm i -g pyright` | 20.1s on a toy repo |
+| Rust | `.rs` | `rust-analyzer` | `rustup component add rust-analyzer` | 23.2s on a toy crate |
+
+`symdelta.py --doctor` checks all four on the machine it runs on: server present, callHierarchy
+advertised, and the exact fix when either isn't -- no diff, base or head needed. Run it first
+when a `language: null` result looks like a setup problem rather than an unsupported diff.
 
 Extracting a whole repo is cheap with `go/packages` and far too slow over LSP, and it would be
 wasted anyway: an edge between two symbols that both went unchanged cannot itself have changed.
@@ -58,7 +76,16 @@ So the LSP tier queries `outgoingCalls` for new calls the changed code makes, an
 `incomingCalls` for new calls into it from code that did not change.
 
 Each LSP language needs its server on PATH. Missing it, `symdelta.py` returns `language: null`
-naming the missing tool rather than degrading.
+naming the missing tool rather than degrading. For typescript-language-server and pyright,
+`check_language_server` checks npm's global bin dir before giving up: a real install that never
+made it onto PATH gets a PATH fix as its remedy, not the `npm i -g` line above, which would
+reinstall over the same binary and change nothing.
+
+A hand probe that sends a bare `initialize` without declaring `textDocument.callHierarchy` in
+its own capabilities gets `callHierarchyProvider: None` back even from a server that supports
+call hierarchy fine, so that result alone is not evidence the server lacks it. `extract.py`'s
+own `check_language_server` declares that capability before asking, so `extract.py <repo>
+--lang <name>` is what actually settles whether a given server supports call hierarchy.
 
 Qualifying a method to `Type.method` differs per server, and getting it wrong silently merges a
 method with a same-named free function. For a symbol found via `documentSymbol` the container is
@@ -89,6 +116,95 @@ A mixed-language diff picks the language with the most changed files, and says s
 reason. This cuts deeper than reduced granularity on a mixed diff: the changed files in the
 language it did not pick get no graph either.
 
+## `structure.py`: real symbols, not symdelta's own node state
+
+symdelta.json's own node `state` answers "did the LSP see a call edge appear", not "did this
+symbol exist on base", so a modified function that only gains a new caller comes back "new"
+even though it was already there. `structure.py` answers existence itself instead: it parses
+the file at both refs directly and diffs declared symbols -- classes, interfaces and top-level
+functions/methods, never a local closure -- so its own `new`/`changed`/`moved`/`removed`/
+`unchanged` states are trustworthy on their own, independent of whatever symdelta.json says.
+
+Two parse tiers, both stdlib-plus-one-dependency rather than a language server: TypeScript/JS
+through a lazily-loaded tree-sitter grammar (bundled with graphify, loaded from its own venv when
+no standalone install exists), Go through a tiny stdlib-only helper program under
+`extractors/go/structure` (`go/parser` over one file's content via stdin, no `go/packages`, no
+module resolution -- it never needs the repo's own dependencies to compile, unlike symdelta's Go
+extractor). Missing the tree-sitter grammar, or the `go` toolchain, is the same `language: null`
+outcome as symdelta's own missing-tool case, named in `"reason"`.
+
+Call edges are symdelta.json's, rolled up from symbol to component level by matching each edge
+endpoint's `(file, top-level name)` against what this script itself parsed; an edge with either
+end unresolved (a nested closure, a symbol in a file this script didn't touch) is dropped rather
+than guessed at. `implements`/`extends` targets are a class's own heritage clause names, not
+component ids -- there is no cross-file type index here, so `sections.py`'s renderer resolves a
+target to a component by name, first match wins on a collision, and drops it silently when
+nothing in the capped set carries that name.
+
+Every component whose file `is_test_path()` classifies as a test is dropped before the cap, not
+after: a test file earns no slot in the 30-component budget at a real component's expense. Past
+that, capped at 30 components (`MAX_COMPONENTS`): a round-robin by call-edge degree across each
+`analysis.json` group keeps the busiest few from every theme rather than the first 30 found, and
+`dropped` in the output says how many the cap itself cut (test files dropped earlier don't count
+against that number).
+
+A component that survives the cap with no call edge and no resolved implements/extends edge
+moves into a top-level `also_touched` field (plain names, sorted), out of `components` -- it has
+nothing to draw a box or a line for. Every remaining component carries `row`: its 0-based
+position within its own `column`, from a 3-sweep barycenter ordering over call and
+implements/extends edges (ported from the approved mockup's own `_barycenter_order`), so
+`sections.py` can draw a column top-to-bottom in an order that keeps a caller close to its
+nearest callee instead of alphabetical or arrival order.
+
+## LSP tier guards
+
+`extract_edges` carries two zero guards, mirroring the Go extractor's own check below, since a
+language server can be running and answering requests while resolving nothing useful, which
+looks identical on the wire to a diff with genuinely no call edges. It tallies how many files
+returned a non-empty `documentSymbol` result and how many symbols returned a non-empty
+`prepareCallHierarchy` result, and raises after the loop in exactly two cases.
+
+Every file opened returned no `documentSymbol` result at all: the server is up but indexing
+nothing, most often a wrong project root, a missing `tsconfig.json`/`pyproject.toml`, or a
+server that never finished its cold-load warmup within the retry budget. The message names the
+language, the server command, and how many files were opened and got nothing.
+
+Every symbol that did get a `documentSymbol` result then exhausted `prepareCallHierarchy`'s own
+retry budget with no item back: `documentSymbol` works, call hierarchy does not. Those retries
+exist specifically to survive a server that answers `documentSymbol` before call hierarchy is
+warm (rust-analyzer's `chq_ready` gate, above); running out of them for every symbol tried is a
+real failure, not a slow warmup.
+
+Neither guard fires when symbols and call hierarchy both resolve but the diff's changed symbols
+call nothing new -- a normal, common result -- nor when `existing` (the diff's files that
+actually exist at this ref) is itself empty, the ordinary base side of an all-new diff.
+
+## Go workspaces
+
+A repo whose root has a `go.work` (a multi-module workspace, one `go.mod` per submodule) needs
+two extra things the plain single-module case does not.
+
+`GOFLAGS=-mod=mod`, set to keep `go build`/`go/packages` from touching `go.sum` in a read-only
+sandbox, is illegal once Go is in workspace mode: `go: -mod may only be set to readonly or vendor
+when in workspace mode`. Both the extractor (`main.go`) and the process that launches it
+(`run_extractor` in `symdelta.py`) check for `go.work` at the target root before setting it, and
+skip it when present, since the environment `run_extractor` builds is what the extractor process
+inherits.
+
+The single `module` line in `root/go.mod` that used to gate which packages count as in-repo does
+not exist at a workspace root, so that filter used to drop every package and emit an empty graph.
+The extractor now reads `go.work`'s `use` directives instead, both the block form and the
+single-line form, resolves each named directory's own `go.mod`, and treats a package as in-repo
+if its path matches any of those module paths. A `use` entry with no readable `go.mod` is skipped,
+not fatal, since a stale entry should not take down an otherwise-working run.
+
+Both of those are why the extractor now also checks for zero: after visiting every loaded
+package, if none passed the in-repo filter with type information resolved, it writes what it
+loaded and the first few package errors to stderr and exits 1, instead of exiting 0 with an empty
+graph and no explanation. `analyse_go` in `symdelta.py` turns that failure into `language: null`
+with the reason, rather than letting it propagate and take the whole symbols section down with
+no note at all.
+
 ## Cache location and runtime budget
 
 `symdelta.py` builds and caches its extractor binary under `$XDG_CACHE_HOME/code-walkthrough`
@@ -99,8 +215,14 @@ per boot rather than per machine. Point `XDG_CACHE_HOME` somewhere durable, or a
 `~/.cache/code-walkthrough`, to keep the binary for good. A build failure surfaces as a build
 error, not a language mismatch, and is easy to misread as one.
 
-Budget for it: on a 1256-file Go repo this took 10m19s with the extractor binary already built
-and cached, which was two thirds of a 15-minute run. The cost is not the build, it is
-`go/packages` typechecking the whole module and its dependency tree once per ref. Start it
-first, in its own call alongside the fan-out spawns, and expect it rather than any other step to
-set the wall clock on a large repo.
+Budget for it: `build_extractor` and `run_extractor` both point `GOMODCACHE` at
+`CACHE_DIR/mod-cache`, a private module cache, rather than the developer's own warm one. Go needs
+write access to its module cache, and in an agent sandbox the developer's `GOMODCACHE` is
+typically not writable, the same reason `CACHE_DIR` itself falls back to the temp dir above. The
+tradeoff that budget buys: a target repo's dependency tree is not already sitting in the private
+cache, so it gets fetched into it during the run, once per ref. On a 1256-file Go repo, a full run
+took 10m19s with the extractor binary already built and cached, two thirds of a 15-minute total.
+That figure is the full run, dependency fetch included, not the extractor's own typechecking,
+which given a populated module cache is seconds regardless of repo size (see the Go row above).
+Start the full run first, in its own call alongside the fan-out spawns, and expect it rather than
+any other step to set the wall clock on a large repo.

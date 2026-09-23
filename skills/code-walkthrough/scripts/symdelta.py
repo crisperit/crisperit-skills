@@ -40,6 +40,9 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from links import resolve_base, run_git  # noqa: E402  one owner for git helpers (subprocess + merge-base)
 from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
 
+sys.path.insert(0, str(SCRIPT_DIR / "extractors" / "lsp"))
+from extract import LANGUAGES as LSP_LANGUAGES, check_language_server  # noqa: E402  --doctor reuses this capability probe rather than writing a second one
+
 EXTRACTOR_DIR = SCRIPT_DIR / "extractors" / "go"
 
 
@@ -170,7 +173,10 @@ def run_extractor(worktree_path):
     env = os.environ.copy()
     env["GOCACHE"] = str(CACHE_DIR / "build-cache")
     env["GOMODCACHE"] = str(CACHE_DIR / "mod-cache")
-    env["GOFLAGS"] = "-mod=mod"
+    # -mod may only be readonly or vendor in workspace mode: "go: -mod may only be set to
+    # readonly or vendor when in workspace mode".
+    if not (Path(worktree_path) / "go.work").exists():
+        env["GOFLAGS"] = "-mod=mod"
     env["GOPROXY"] = "off"
     env["GOSUMDB"] = "off"
     try:
@@ -267,6 +273,22 @@ LANGUAGE_SERVER_REMEDY = {
     "rust": "rustup component add rust-analyzer",
 }
 
+# extract.py's check_language_server appends this when the binary is on disk but its directory
+# never made it onto PATH (see KNOWN_INSTALL_DIRS there) -- reinstalling via LANGUAGE_SERVER_REMEDY
+# would be a no-op, so that reason carries its own remedy instead.
+_PATH_TRAP_REMEDY_RE = re.compile(r"^(.+); add it, e\.g\. (.+)$")
+
+
+def _split_path_trap(reason):
+    """(reason, remedy) with the embedded PATH fix pulled back out of `reason` into its own
+    remedy, or (reason, None) unchanged when `reason` isn't that shape. Splitting rather than
+    just extracting the remedy matters: leaving the fix inside `reason` too would print it
+    twice, once as the reason and once as the remedy, in both the page note and --doctor."""
+    m = _PATH_TRAP_REMEDY_RE.match(reason)
+    if not m:
+        return reason, None
+    return m.group(1), m.group(2)
+
 
 def check_typescript_tooling(repo, lang="typescript"):
     """Preflight-only invocation of the LSP extractor (no files given): does `lang`'s language
@@ -307,8 +329,11 @@ def link_node_modules(repo, worktree_path):
     only contains tracked files and node_modules is gitignored. Symlinking the main checkout's
     copy in (read-only import resolution, never written to) avoids an `npm ci` per worktree --
     only valid when package.json/package-lock.json didn't change between base and head, which
-    dependency_files_changed() enforces before this is ever called."""
-    src = Path(repo) / "node_modules"
+    dependency_files_changed() enforces before this is ever called.
+
+    Resolves `repo`: os.symlink embeds `src` verbatim, so a relative repo (e.g. the "." SKILL.md's
+    own recap flow passes) would point the worktree's node_modules at itself, not the real one."""
+    src = Path(repo).resolve() / "node_modules"
     dst = Path(worktree_path) / "node_modules"
     if src.is_dir() and not dst.exists():
         os.symlink(src, dst, target_is_directory=True)
@@ -1058,7 +1083,13 @@ def _finish(base, head, base_edges, head_edges, rename_map, language, resolver):
 def analyse_go(repo, base, head):
     build_extractor()
     rename_map = _rename_map(repo, base, head)
-    base_edges, head_edges = _run_in_worktrees(repo, base, head, run_extractor, run_extractor)
+    try:
+        base_edges, head_edges = _run_in_worktrees(repo, base, head, run_extractor, run_extractor)
+    except RuntimeError as exc:
+        # A toolchain/setup problem (build_extractor above) still raises; this is the extractor
+        # itself failing on this repo (e.g. the silent-zero guard tripping), which the reader
+        # gets as a page note instead of an empty symbols section.
+        return {"language": None, "reason": str(exc)}
     return _finish(base, head, base_edges, head_edges, rename_map, "go", "go/packages")
 
 
@@ -1085,7 +1116,9 @@ def analyse_lsp(repo, base, head, lang):
 
     ok, reason = check_typescript_tooling(repo, lang)
     if not ok:
-        return {"language": None, "reason": reason, "remedy": LANGUAGE_SERVER_REMEDY[lang]}
+        reason, path_trap_remedy = _split_path_trap(reason)
+        return {"language": None, "reason": reason,
+                "remedy": path_trap_remedy or LANGUAGE_SERVER_REMEDY[lang]}
 
     rename_map = _rename_map(repo, base, head)
     entries = ts_diff_entries(repo, base, head)
@@ -1098,9 +1131,16 @@ def analyse_lsp(repo, base, head, lang):
             return run_ts_extractor(worktree_path, rel_files, lang)
         return run
 
-    base_edges, head_edges = _run_in_worktrees(
-        repo, base, head, extractor_for(base_files), extractor_for(head_files)
-    )
+    try:
+        base_edges, head_edges = _run_in_worktrees(
+            repo, base, head, extractor_for(base_files), extractor_for(head_files)
+        )
+    except RuntimeError as exc:
+        # Tooling/dependency preflights above still raise; this is the LSP tier itself failing
+        # on this repo (e.g. one of extract_edges's own zero guards tripping), surfaced as a
+        # page note. No remedy: there's no single fix for "resolved nothing," and
+        # _symdelta_failure_text's --doctor pointer only shows when remedy is set.
+        return {"language": None, "reason": str(exc)}
     return _finish(base, head, base_edges, head_edges, rename_map, lang, "lsp/callHierarchy")
 
 
@@ -1121,7 +1161,35 @@ ANALYSERS = {
 }
 
 
-def analyse(repo, base, head):
+_LLM_EDGE_FIELDS = ("FromFile", "FromSym", "ToFile", "ToSym")
+
+
+def _load_llm_edges(path):
+    """Parse a --llm-head-edges/--llm-base-edges file: one JSON object per line, in the
+    extractor's own wire shape (FromFile/FromSym/ToFile/ToSym). These edges are hand-supplied by
+    an LLM reading the code, not witnessed by any compiler, so a malformed line is rejected with
+    its line number rather than silently dropped -- that would trade one silent-zero bug for
+    another."""
+    edges = []
+    with open(path) as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"{path}:{lineno}: invalid JSON: {exc}")
+            if not isinstance(obj, dict) or set(obj) != set(_LLM_EDGE_FIELDS):
+                raise RuntimeError(
+                    f"{path}:{lineno}: expected an object with exactly "
+                    f"{_LLM_EDGE_FIELDS}, got {obj!r}"
+                )
+            edges.append(obj)
+    return edges
+
+
+def analyse(repo, base, head, llm_head_edges=None, llm_base_edges=None):
     for ref in (base, head):
         verify = run_git(repo, ["rev-parse", "--verify", f"{ref}^{{commit}}"])
         if verify.returncode != 0:
@@ -1134,6 +1202,18 @@ def analyse(repo, base, head):
     base = resolve_base(repo, base, head)
 
     lang, reason = detect_language(repo, base, head)
+
+    if llm_head_edges:
+        # This always runs as a second, separate invocation after the mechanical tier declined,
+        # so it never overrides a working extractor. detect_language works off file extensions
+        # alone, so lang can still name a real language even when the analyser bailed for an
+        # unrelated reason, and reusing it here is honest; only a genuinely unrecognised diff
+        # falls back to "unknown" rather than guessing.
+        rename_map = _rename_map(repo, base, head)
+        head_edges = _load_llm_edges(llm_head_edges)
+        base_edges = _load_llm_edges(llm_base_edges) if llm_base_edges else []
+        return _finish(base, head, base_edges, head_edges, rename_map, lang or "unknown", "llm")
+
     if lang is None:
         return {"language": None, "reason": reason}
 
@@ -1143,15 +1223,68 @@ def analyse(repo, base, head):
     return result
 
 
+def doctor_report():
+    """One line per language, no diff/base/head needed: is the tool present, does it advertise
+    callHierarchy, and the exact fix when it doesn't (including the PATH-trap diagnosis
+    check_language_server makes). Go isn't an LSP server, so it gets its own toolchain/build
+    check instead of being forced through the LSP shape."""
+    lines = []
+
+    if shutil.which("go") is None:
+        lines.append("go: toolchain not found on PATH")
+    else:
+        try:
+            build_extractor()
+            lines.append("go: toolchain OK, extractor builds")
+        except RuntimeError as exc:
+            lines.append(f"go: toolchain found, extractor build failed: {exc}")
+
+    for lang in ("typescript", "python", "rust"):
+        tool = LSP_LANGUAGES[lang]["server_cmd"][0]
+        try:
+            ok, reason = check_language_server(".", lang)
+        except OSError as exc:
+            # shutil.which found it, but spawning it (LSPClient's Popen) still failed -- a
+            # present-but-broken binary, not a missing one. check_language_server only guards
+            # the initialize round-trip with try/except, not the spawn itself.
+            lines.append(f"{lang}: {tool} found but failed to start: {exc}")
+            continue
+        if ok:
+            lines.append(f"{lang}: OK ({tool} advertises callHierarchy)")
+            continue
+        reason, path_trap_remedy = _split_path_trap(reason)
+        remedy = path_trap_remedy or LANGUAGE_SERVER_REMEDY[lang]
+        lines.append(f"{lang}: {reason}. Fix: {remedy}")
+
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", required=True)
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--head", required=True)
+    parser.add_argument("--repo")
+    parser.add_argument("--base")
+    parser.add_argument("--head")
+    parser.add_argument("--doctor", action="store_true",
+                        help="check every language's tooling and exit; no --repo/--base/--head needed")
+    parser.add_argument("--llm-head-edges",
+                        help="skip the mechanical extractor and build the graph from this JSONL "
+                             "file of hand-supplied call edges instead (one JSON object per "
+                             "line: FromFile, FromSym, ToFile, ToSym)")
+    parser.add_argument("--llm-base-edges",
+                        help="same shape as --llm-head-edges, for the base ref; omit for an "
+                             "empty baseline (right for explain mode)")
     args = parser.parse_args()
 
+    if args.doctor:
+        print(doctor_report())
+        return 0
+
+    if not (args.repo and args.base and args.head):
+        parser.error("--repo, --base and --head are required unless --doctor is given")
+
     try:
-        result = analyse(args.repo, args.base, args.head)
+        result = analyse(args.repo, args.base, args.head,
+                          llm_head_edges=args.llm_head_edges, llm_base_edges=args.llm_base_edges)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

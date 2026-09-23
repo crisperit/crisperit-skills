@@ -55,6 +55,37 @@ def test_missing_vendored_asset_reports_error_and_leaves_page_alone(tmp_path):
     assert page.read_text() == original
 
 
+def test_fills_the_hljs_placeholder_on_a_diff_page(tmp_path):
+    skill = fake_skill(tmp_path / "skill", **{"highlight.min.js": "HLJSJS"})
+    page = tmp_path / "page.html"
+    page.write_text('<pre class="diff">+x</pre><script><!-- HLJS_JS --></script>')
+    _report, error = splice_assets.splice(page, skill)
+    out = page.read_text()
+    assert error is None
+    assert "HLJSJS" in out
+
+
+def test_page_with_no_diff_block_leaves_the_hljs_placeholder_alone(tmp_path):
+    skill = fake_skill(tmp_path / "skill", **{"highlight.min.js": "HLJSJS"})
+    page = tmp_path / "page.html"
+    page.write_text("<p>explain mode only</p><script><!-- HLJS_JS --></script>")
+    _report, error = splice_assets.splice(page, skill)
+    out = page.read_text()
+    assert error is None
+    assert "HLJSJS" not in out
+    assert "<!-- HLJS_JS -->" in out
+
+
+def test_resplicing_hljs_does_not_double_the_payload(tmp_path):
+    skill = fake_skill(tmp_path / "skill", **{"highlight.min.js": "HLJSJS"})
+    page = tmp_path / "page.html"
+    page.write_text('<pre class="diff">+x</pre><script><!-- HLJS_JS --></script>')
+    splice_assets.splice(page, skill)
+    first = page.read_text()
+    splice_assets.splice(page, skill)
+    assert page.read_text() == first
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -63,6 +94,9 @@ if __name__ == "__main__":
         test_page_with_no_mermaid_block_leaves_the_placeholder_alone,
         test_resplicing_does_not_double_the_payload,
         test_missing_vendored_asset_reports_error_and_leaves_page_alone,
+        test_fills_the_hljs_placeholder_on_a_diff_page,
+        test_page_with_no_diff_block_leaves_the_hljs_placeholder_alone,
+        test_resplicing_hljs_does_not_double_the_payload,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as tmp:

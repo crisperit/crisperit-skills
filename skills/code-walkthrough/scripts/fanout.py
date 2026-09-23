@@ -18,8 +18,7 @@ cheap model often only sees one side of a rename. It does not check coverage:
 validate_analysis.py does that, and it must be run on the merged file.
 
 Fragment shape, one per batch: {"files": [ <analysis.json files[] entries> ]}
-prose.json: {"target", "what_changed", "how_it_works", "flow_mermaid", "verdict",
-"section_notes"}
+prose.json: {"target", "overview", "flow_mermaid", "verdict", "section_notes"}
 
 Stdlib only, no network.
 """
@@ -38,7 +37,7 @@ from validate_analysis import (  # noqa: E402  shares the path-resolution rules
 )
 
 BOUNDARY = re.compile(r"^diff --git ", re.M)
-PROSE_KEYS = ("target", "what_changed", "how_it_works", "flow_mermaid", "verdict", "section_notes")
+PROSE_KEYS = ("target", "overview", "flow_mermaid", "verdict", "section_notes")
 # render.py reads the prose keys with `analysis.get(key) or <empty>`, so each default here has
 # to match that falsy shape: section_notes is a dict, the rest are strings. merge() carries
 # section_notes through opaquely regardless of what's in it or whether anything reads it yet.

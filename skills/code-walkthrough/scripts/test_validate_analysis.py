@@ -9,7 +9,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from validate_analysis import (  # noqa: E402
     EMPTY_NOTE_FLOOR,
+    OVERVIEW_BLOB_MAX_CHARS,
     _empty_note_floor,
+    _overview_blob,
     check_rendered,
     check_sections,
     is_test_path,
@@ -41,8 +43,7 @@ Binary files a/logo.png and b/logo.png differ
 
 GOOD = {
     "target": "master...HEAD",
-    "what_changed": "Renames the thing.",
-    "how_it_works": "",
+    "overview": "Renames the thing.",
     "flow_mermaid": "",
     "files": [
         {
@@ -258,11 +259,129 @@ def test_a_group_with_no_title_or_no_paths_fails():
     assert any("groups[1] has no paths" in p for p in problems)
 
 
+def test_a_group_flow_mermaid_passes_when_blank_or_absent():
+    # Optional: a group with no flow_mermaid at all, or an explicit blank one, is not a problem.
+    good = copy.deepcopy(GOOD)
+    good["groups"] = [{"title": "The rename", "paths": ["pkg/thing.py"]},
+                      {"title": "Artwork", "paths": ["logo.png"], "flow_mermaid": ""}]
+
+    assert validate(DIFF, good) == []
+
+
+def test_a_group_flow_mermaid_passes_with_a_real_diagram():
+    good = copy.deepcopy(GOOD)
+    good["groups"] = [{"title": "The rename", "paths": ["pkg/thing.py"],
+                       "flow_mermaid": 'flowchart LR\n  A["old"] --> B["new"]'}]
+
+    assert validate(DIFF, good) == []
+
+
+def test_a_group_flow_mermaid_not_starting_with_a_known_kind_fails():
+    bad = copy.deepcopy(GOOD)
+    bad["groups"] = [{"title": "The rename", "paths": ["pkg/thing.py"],
+                      "flow_mermaid": "graph LR\n  A --> B"}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[0].flow_mermaid" in p and "flowchart or sequenceDiagram" in p
+               for p in problems)
+
+
+def test_a_group_flow_mermaid_over_the_line_cap_fails():
+    bad = copy.deepcopy(GOOD)
+    lines = "\n".join(f"  n{i} --> n{i + 1}" for i in range(13))
+    bad["groups"] = [{"title": "The rename", "paths": ["pkg/thing.py"],
+                      "flow_mermaid": f"flowchart LR\n{lines}"}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[0].flow_mermaid" in p and "line cap" in p for p in problems)
+
+
+def test_a_group_flow_mermaid_that_is_not_a_string_fails():
+    # A subagent handing back a list instead of a string must not slip past _blank, which
+    # would read "not a string" as "blank" and skip validation entirely -- and the unvalidated
+    # value would go on to crash walkthrough.py's own .strip() call.
+    bad = copy.deepcopy(GOOD)
+    bad["groups"] = [{"title": "The rename", "paths": ["pkg/thing.py"],
+                      "flow_mermaid": ["flowchart LR"]}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[0].flow_mermaid" in p and "must be a string" in p for p in problems)
+
+
+# ---- hop / side (story map) ----
+
+def test_hop_over_six_words_fails():
+    bad = copy.deepcopy(GOOD)
+    bad["groups"] = [{"title": "A", "paths": ["pkg/thing.py"],
+                      "hop": "this hop has entirely way too many words here"},
+                     {"title": "B", "paths": ["gone.py", "logo.png"]}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[0].hop" in p and "word cap" in p for p in problems)
+
+
+def test_hop_backticked_identifier_missing_from_diff_fails():
+    bad = copy.deepcopy(GOOD)
+    bad["groups"] = [{"title": "A", "paths": ["pkg/thing.py"],
+                      "hop": "leads to `nonexistentSymbol`"},
+                     {"title": "B", "paths": ["gone.py", "logo.png"]}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[0].hop" in p and "does not appear" in p for p in problems)
+
+
+def test_hop_with_an_identifier_in_the_diff_passes():
+    # "added" is a real identifier on pkg/thing.py's own second hunk (+added).
+    good = copy.deepcopy(GOOD)
+    good["groups"] = [{"title": "A", "paths": ["pkg/thing.py"], "hop": "feeds the `added` line"},
+                      {"title": "B", "paths": ["gone.py", "logo.png"]}]
+
+    assert validate(DIFF, good) == []
+
+
+def test_side_not_a_boolean_fails():
+    bad = copy.deepcopy(GOOD)
+    bad["groups"] = [{"title": "A", "paths": ["pkg/thing.py"], "side": "yes"},
+                     {"title": "B", "paths": ["gone.py", "logo.png"]}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[0].side" in p and "must be a boolean" in p for p in problems)
+
+
+def test_last_group_with_a_hop_fails():
+    # The last stop in the story has no next stop for a hop to name.
+    bad = copy.deepcopy(GOOD)
+    bad["groups"] = [{"title": "A", "paths": ["pkg/thing.py"], "hop": "feeds the `added` line"},
+                     {"title": "B", "paths": ["gone.py", "logo.png"],
+                      "hop": "feeds the `added` line"}]
+
+    problems = validate(DIFF, bad)
+
+    assert any("groups[1]" in p and "must not have a hop" in p for p in problems)
+    assert not any("groups[0]" in p and "must not have a hop" in p for p in problems)
+
+
+def test_side_group_after_the_last_stop_may_still_carry_a_hop():
+    # "side" groups sit off the main line and are skipped when the gate looks for the last
+    # stop, so one trailing a hop-carrying main-line group is not the failure above.
+    good = copy.deepcopy(GOOD)
+    good["groups"] = [{"title": "A", "paths": ["pkg/thing.py"]},
+                      {"title": "Docs", "paths": ["gone.py", "logo.png"], "side": True,
+                       "hop": "feeds the `added` line"}]
+
+    assert validate(DIFF, good) == []
+
+
 def _ident_analysis(note):
     return {
         "target": "x",
-        "what_changed": "renames a variable",
-        "how_it_works": "",
+        "overview": "renames a variable",
         "flow_mermaid": "",
         "files": [{
             "path": "pkg/mod.py",
@@ -310,7 +429,7 @@ index 1111111..2222222 100644
 
 def _guard_analysis(note):
     return {
-        "target": "x", "what_changed": "flips a guard", "how_it_works": "", "flow_mermaid": "",
+        "target": "x", "overview": "flips a guard", "flow_mermaid": "",
         "files": [{
             "path": "pkg/guard.go",
             "role": "flips the nil guard",
@@ -360,7 +479,7 @@ index 1111111..2222222 100644
 
 def test_a_match_against_a_context_line_only_still_fails():
     analysis = {
-        "target": "x", "what_changed": "bumps counter", "how_it_works": "", "flow_mermaid": "",
+        "target": "x", "overview": "bumps counter", "flow_mermaid": "",
         "files": [{
             "path": "pkg/other.py",
             "role": "bumps a counter",
@@ -394,7 +513,7 @@ def test_a_whitespace_only_hunk_is_skipped():
     # The changed lines carry no identifiers at all, so there is nothing to hold the
     # note to; failing it would be a false positive.
     analysis = {
-        "target": "x", "what_changed": "reindents", "how_it_works": "", "flow_mermaid": "",
+        "target": "x", "overview": "reindents", "flow_mermaid": "",
         "files": [{
             "path": "pkg/ws.py",
             "role": "reindents a block",
@@ -433,7 +552,7 @@ index 1111111..2222222 100644
 
 def _rename_analysis(note):
     return {
-        "target": "x", "what_changed": "exports a function", "how_it_works": "",
+        "target": "x", "overview": "exports a function",
         "flow_mermaid": "",
         "files": [FILLER_FILE, {
             "path": "pkg/errors.go",
@@ -466,7 +585,7 @@ index 1111111..2222222 100644
 
 def test_empty_note_on_a_qualifier_drop_hunk_passes():
     analysis = {
-        "target": "x", "what_changed": "drops a package qualifier", "how_it_works": "",
+        "target": "x", "overview": "drops a package qualifier",
         "flow_mermaid": "",
         "files": [FILLER_FILE, {
             "path": "pkg/kind.go",
@@ -493,7 +612,7 @@ def test_empty_note_on_a_hunk_adding_a_brand_new_identifier_passes():
     # This is exactly the case the old per-hunk churn test got wrong: a hunk that adds a
     # real new symbol is not churn, but blank is legal on any hunk now, so it must pass.
     analysis = {
-        "target": "x", "what_changed": "adds a resolver", "how_it_works": "",
+        "target": "x", "overview": "adds a resolver",
         "flow_mermaid": "",
         "files": [FILLER_FILE, {
             "path": "corelib/ratelimit/uid.go",
@@ -518,7 +637,7 @@ index 1111111..2222222 100644
 
 def test_empty_note_on_a_pure_removal_hunk_passes():
     analysis = {
-        "target": "x", "what_changed": "deletes a helper", "how_it_works": "",
+        "target": "x", "overview": "deletes a helper",
         "flow_mermaid": "",
         "files": [FILLER_FILE, {
             "path": "pkg/gone.go",
@@ -562,6 +681,39 @@ def test_validate_fails_when_almost_every_note_is_blank():
     problems = validate(DIFF, bad)
 
     assert any("floor" in p for p in problems)
+
+
+def test_a_short_unstructured_overview_passes():
+    bad = copy.deepcopy(GOOD)
+    bad["overview"] = "Renames the thing, nothing else changes."
+
+    assert validate(DIFF, bad) == []
+
+
+def test_a_long_unbroken_overview_fails_the_blob_gate():
+    bad = copy.deepcopy(GOOD)
+    bad["overview"] = "x" * (OVERVIEW_BLOB_MAX_CHARS + 1)
+
+    problems = validate(DIFF, bad)
+
+    assert any("blob" in p for p in problems)
+
+
+def test_overview_blob_passes_with_a_blank_line_break():
+    assert _overview_blob("x" * (OVERVIEW_BLOB_MAX_CHARS + 1) + "\n\ny") == []
+
+
+def test_overview_blob_passes_with_a_bullet_line():
+    assert _overview_blob("- " + "x" * OVERVIEW_BLOB_MAX_CHARS) == []
+
+
+def test_overview_blob_names_the_length():
+    text = "x" * (OVERVIEW_BLOB_MAX_CHARS + 1)
+
+    problems = _overview_blob(text)
+
+    assert len(problems) == 1
+    assert str(len(text)) in problems[0]
 
 
 if __name__ == "__main__":
