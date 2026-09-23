@@ -8,7 +8,7 @@
     {
       "name": "crisperit-skills",
       "description": "code-walkthrough: turn a diff, branch, PR, or existing code into a local HTML walkthrough page you can comment on",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "source": "./",
       "author": {
         "name": "crisperit"
