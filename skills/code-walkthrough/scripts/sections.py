@@ -771,9 +771,8 @@ def render_symbols(data, explain=False, paths=(), inline=False):
             f'<h2>{"Structure" if explain else "Changes visualization"}</h2>',
         ]) + "\n" + body + "</div>\n"
 
-    ids2, edges2 = _symbols_scope(nodes, edges)
-    drawn2 = _edge_endpoint_ids(edges2)
-    drawn_ids2 = ids2 & drawn2
+    _, edges2 = _symbols_scope(nodes, edges)
+    drawn_ids2 = _edge_endpoint_ids(edges2)
     level2, file_map2 = _mermaid_symbols_for_level(nodes, drawn_ids2, edges2, explain)
 
     # Legibility, not layout cost, sets this threshold: measured in Chrome, a symbols level of
@@ -784,7 +783,7 @@ def render_symbols(data, explain=False, paths=(), inline=False):
     default_level = 1 if oversized else 2
 
     changed_ids = _changed_symbol_ids(nodes)
-    orphan_ids = changed_ids - drawn2
+    orphan_ids = changed_ids - drawn_ids2
 
     note = _symbols_note(
         len(nodes), len(edges), len(changed_ids) - len(orphan_ids), len(orphan_ids), undrawn_count,

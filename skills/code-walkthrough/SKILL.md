@@ -370,7 +370,7 @@ guess from identifier names.
 
 ```bash
 python3 <skill>/scripts/sections.py --kind symbols --data <scratchpad>/symdelta.json \
-  --format html <explain> --paths <paths> > <scratchpad>/section-symbols.html
+  --format html <explain> [--paths <paths>] > <scratchpad>/section-symbols.html
 ```
 
 Shows packages only at this, the page level: a symbols level laid out across a whole page is
@@ -408,7 +408,7 @@ helper for Go) and only reads symdelta.json for call edges between the component
 ```bash
 python3 <skill>/scripts/structure.py --repo . --base <base> --head <head> \
   --symdelta <scratchpad>/symdelta.json --analysis <scratchpad>/analysis.json \
-  --paths <paths> --out <scratchpad>/structure.json
+  [--paths <paths>] --out <scratchpad>/structure.json
 
 python3 <skill>/scripts/sections.py --kind structure --data <scratchpad>/structure.json \
   --format html <explain> > <scratchpad>/section-structure.html
