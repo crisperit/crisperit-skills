@@ -104,13 +104,12 @@ def test_merge_orders_by_the_diff_and_carries_prose():
         one.write_text(json.dumps({"files": [{"path": "big.py", "role": "r", "hunks": []}]}))
 
         result = merge(DIFF, [str(two), str(one)], {
-            "target": "main...HEAD", "what_changed": "w",
-            "how_it_works": "", "flow_mermaid": "",
+            "target": "main...HEAD", "overview": "w", "flow_mermaid": "",
         })
 
         assert [f["path"] for f in result["files"]] == ["a.py", "big.py", "c.py"]
         assert result["target"] == "main...HEAD"
-        assert result["what_changed"] == "w"
+        assert result["overview"] == "w"
 
 
 def test_merge_keeps_an_invented_file_so_the_gate_can_name_it():

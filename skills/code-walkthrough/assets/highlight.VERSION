@@ -1,0 +1,1 @@
+highlight.js 11.12.0, vendored from https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/highlight.min.js on 2026-09-22. BSD-3-Clause. Common bundle (~40 languages), exposes globalThis.hljs via a classic script tag. Vendored so review pages render with no network.

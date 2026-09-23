@@ -54,9 +54,8 @@ arithmetic, a string from `analysis.json`, or a section file pasted byte for byt
 | Section | Markup | Source |
 |---|---|---|
 | Facts strip | `.facts` with up to three `.fact` blocks | file count and net delta from `raw.diff`, the target, `verdict` |
-| WHAT CHANGED | `h2` + one `p` per paragraph | `what_changed`, omitted when blank |
+| OVERVIEW | `h2` + one `p` per paragraph | `overview`, omitted when blank; same heading in both modes |
 | FLOW | `h2` + `.panel.svgbox` wrapping `pre.mermaid` | `flow_mermaid`, omitted when blank |
-| HOW IT WORKS | `h2` + one `p` per paragraph | `how_it_works`, omitted when blank |
 | WALKTHROUGH | `h2` + `section-walkthrough.html` | `walkthrough.py` |
 | Footer | `.foot` | target, timestamp, PR link from `links.json` |
 
@@ -64,6 +63,13 @@ Notes on the rows that look arbitrary:
 
 - **No FILE MAP section.** A panel listing the same paths directly above the same paths is one
   section too many, so the walkthrough `summary` carries the inventory.
+- **No per-group FLOW row.** A group's own `flow_mermaid` lives inside WALKTHROUGH, not as a
+  page-level row: `walkthrough.py` builds one panel per group, directly under that group's `why`
+  paragraph, holding both its flow diagram and its inline call-graph behind a tab bar when it has
+  both (`flow`/`call graph`, `flow` the default) -- and no tab bar, just the one diagram, when it
+  has only one of them. The flow tab reuses the same `.panel.svgbox` + `pre.mermaid` shape as the
+  top-level FLOW above; the call-graph tab carries the packages/symbols level toggle the inline
+  symbols block already builds, shown in the tab bar itself while that tab is active.
 - **Section files are pasted, never regenerated.** Their escaping is already correct, so
   escaping again renders `&amp;lt;` on the page, and retyping a diagram is how a legend drifts
   from its arrows. `validate_analysis.py --sections` checks each one's marker survived.

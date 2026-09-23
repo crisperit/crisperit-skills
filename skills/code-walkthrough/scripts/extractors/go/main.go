@@ -14,10 +14,9 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// modulePath reads the `module <path>` directive from root/go.mod. Packages under this prefix
-// belong to the module being analysed; everything else is a dependency.
-func modulePath(root string) (string, error) {
-	f, err := os.Open(filepath.Join(root, "go.mod"))
+// readModule reads the `module <path>` directive from dir/go.mod.
+func readModule(dir string) (string, error) {
+	f, err := os.Open(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return "", fmt.Errorf("reading go.mod: %w", err)
 	}
@@ -32,7 +31,75 @@ func modulePath(root string) (string, error) {
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("reading go.mod: %w", err)
 	}
-	return "", fmt.Errorf("no module directive found in %s", filepath.Join(root, "go.mod"))
+	return "", fmt.Errorf("no module directive found in %s", filepath.Join(dir, "go.mod"))
+}
+
+// modulePaths returns the module path of every module rooted in this repo, paired with the
+// packages.Load pattern needed to reach it. When root/go.work exists, that is one
+// "./<dir>/..." pattern per directory named by a `use` directive (block or single-line form)
+// that has a readable go.mod; a stale entry is skipped from both lists rather than failing
+// the run. A single "./..." from the workspace root itself is not enough: it only resolves
+// modules that are themselves `use` entries, which the root usually is not. Outside
+// workspace mode there is just root's own go.mod and the single "./..." pattern. Packages
+// under any of the returned module prefixes belong to the repo being analysed; everything
+// else is a dependency.
+func modulePaths(root string) (mods, patterns []string, err error) {
+	workPath := filepath.Join(root, "go.work")
+	if _, err := os.Stat(workPath); err != nil {
+		mod, err := readModule(root)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []string{mod}, []string{"./..."}, nil
+	}
+	dirs, err := workUseDirs(workPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, dir := range dirs {
+		mod, err := readModule(filepath.Join(root, dir))
+		if err != nil {
+			continue
+		}
+		mods = append(mods, mod)
+		patterns = append(patterns, "./"+filepath.ToSlash(filepath.Clean(dir))+"/...")
+	}
+	return mods, patterns, nil
+}
+
+// workUseDirs parses go.work's `use` directives (block or single-line form) and returns the
+// listed directories verbatim; it does not check whether each has a go.mod.
+func workUseDirs(workPath string) ([]string, error) {
+	f, err := os.Open(workPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading go.work: %w", err)
+	}
+	defer f.Close()
+	var dirs []string
+	inBlock := false
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		switch {
+		case line == "":
+			continue
+		case line == "use (":
+			inBlock = true
+		case inBlock && line == ")":
+			inBlock = false
+		case inBlock:
+			dirs = append(dirs, line)
+		case strings.HasPrefix(line, "use "):
+			dirs = append(dirs, strings.TrimSpace(strings.TrimPrefix(line, "use ")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading go.work: %w", err)
+	}
+	return dirs, nil
 }
 
 type Edge struct {
@@ -55,19 +122,33 @@ func symName(fn *types.Func) string {
 
 func main() {
 	root := os.Args[1]
-	mod, err := modulePath(root)
+	mods, patterns, err := modulePaths(root)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "extractor:", err)
 		os.Exit(1)
+	}
+	inRepo := func(pkgPath string) bool {
+		for _, m := range mods {
+			if pkgPath == m || strings.HasPrefix(pkgPath, m+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	env := append(os.Environ(), "GOPROXY=off")
+	// -mod may only be readonly or vendor in workspace mode: "go: -mod may only be set to
+	// readonly or vendor when in workspace mode".
+	if _, err := os.Stat(filepath.Join(root, "go.work")); err != nil {
+		env = append(env, "GOFLAGS=-mod=mod")
 	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
 			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports,
 		Dir:   root,
 		Tests: true,
-		Env:   append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod"),
+		Env:   env,
 	}
-	pkgs, err := packages.Load(cfg, "./...")
+	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		panic(err)
 	}
@@ -79,10 +160,14 @@ func main() {
 	}
 	seen := map[Edge]bool{}
 	out := json.NewEncoder(os.Stdout)
+	matched := 0
+	var loadErrs []packages.Error
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.TypesInfo == nil || (p.PkgPath != mod && !strings.HasPrefix(p.PkgPath, mod+"/")) {
+		loadErrs = append(loadErrs, p.Errors...)
+		if p.TypesInfo == nil || !inRepo(p.PkgPath) {
 			return
 		}
+		matched++
 		for _, f := range p.Syntax {
 			fpath := rel(p.Fset.Position(f.Pos()).Filename)
 			if fpath == "" || strings.HasPrefix(fpath, "/") {
@@ -137,4 +222,14 @@ func main() {
 			_ = token.NoPos
 		}
 	})
+	if matched == 0 {
+		fmt.Fprintf(os.Stderr, "extractor: loaded %d packages, 0 in-repo with type info\n", len(pkgs))
+		for i, e := range loadErrs {
+			if i >= 5 {
+				break
+			}
+			fmt.Fprintln(os.Stderr, "extractor:", e)
+		}
+		os.Exit(1)
+	}
 }

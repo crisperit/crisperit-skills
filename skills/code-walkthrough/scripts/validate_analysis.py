@@ -12,14 +12,16 @@ below), so the gate no longer second-guesses which hunks earn one. A non-blank n
 share an identifier with its own hunk's added/removed lines, so a note can't be invented
 without reading the hunk. Across the whole diff, too many blank notes still fails: see
 EMPTY_NOTE_FLOOR.
+An overview with no blank-line break and no bullet line also fails once it runs past
+OVERVIEW_BLOB_MAX_CHARS: a short one needs no structure, so this gates the wall-of-prose
+case, not sentence count or the presence of bullets.
 With --rendered, also checks the produced recap mentions every file path.
 
 Schema (see code-walkthrough/SKILL.md step 2):
 
   {
     "target": "master...HEAD",
-    "what_changed": "2 to 4 sentences on what the change accomplishes and why",
-    "how_it_works": "machinery a cold reader needs, or \"\" when nothing needs it",
+    "overview": "lead (1-2 sentences) + 3-5 one-line bullets of organizing ideas",
     "flow_mermaid": "flowchart LR ... , or \"\" when there is no flow worth drawing",
     "files": [
       {
@@ -32,7 +34,11 @@ Schema (see code-walkthrough/SKILL.md step 2):
       {
         "title": "Hot-reload the rate-limit config",
         "why": "optional one line on why this theme reads here",
-        "paths": ["pkg/thing.py"]
+        "paths": ["pkg/thing.py"],
+        "flow_mermaid": "optional, flowchart LR or sequenceDiagram, at most 12 lines",
+        "hop": "optional, 2-6 words naming the hand-off to the next stop, one backticked "
+               "identifier that must appear in the diff",
+        "side": "optional, true for a supporting group off the main line (docs, dev setup)"
       }
     ]
   }
@@ -41,10 +47,15 @@ A binary or mode-only change has an empty "hunks" list; the file entry is still
 required, so the reader can tell "nothing to show" from "forgot to look".
 
 "groups" is optional and carries the reading order: which files form one theme, and
-which theme a reviewer should read first. Only the grouping and the group order are
-judgment; the order within a group is derived from the import graph. A file left out
-of every group still renders, in a trailing catch-all, so a forgotten group cannot
-hide it from the reader.
+which theme a reviewer should read first -- the list order IS the story order, not just a
+reading convenience. Only the grouping and the group order are judgment; the order within a
+group is derived from the import graph. A file left out of every group still renders, in a
+trailing catch-all, so a forgotten group cannot hide it from the reader.
+
+A group may also carry "hop" (the hand-off to the next main-line stop; a backticked
+identifier inside it must appear in raw.diff) and "side" (true for a supporting group, e.g.
+docs or dev setup, that sits off the main line). The last group that isn't a side group must
+not carry a hop -- there is no next stop for it to name.
 
 Stdlib only, no network. Exits 1 and prints one plain line per problem.
 """
@@ -60,7 +71,16 @@ HUNK_PREFIX = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)")
 # The post-image blob sha, used by state.py to invalidate a file's hunk hashes when anything
 # in the file changes, not just the edited hunk.
 INDEX_LINE = re.compile(r"^index [0-9a-fA-F]+\.\.([0-9a-fA-F]+)")
-REQUIRED_KEYS = ("target", "what_changed", "how_it_works", "flow_mermaid", "files")
+REQUIRED_KEYS = ("target", "overview", "flow_mermaid", "files")
+# A group's own flow_mermaid is optional (see _validate_group_flow) and small by design: it is
+# a per-group aid, not the page's one flow diagram, so a diagram that needed more than this is
+# the subagent inventing a flow rather than describing a genuinely short one.
+GROUP_FLOW_MAX_LINES = 12
+GROUP_FLOW_KINDS = ("flowchart", "sequenceDiagram")
+# A hop names one hand-off, not a sentence about it; see _validate_hop.
+HOP_MIN_WORDS = 2
+HOP_MAX_WORDS = 6
+HOP_BACKTICK = re.compile(r"`([^`]+)`")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 MIN_IDENTIFIER_LEN = 4
@@ -71,6 +91,10 @@ MIN_IDENTIFIER_LEN = 4
 # floor catches the failure mode that's actually worth catching -- an agent blanking almost
 # every note -- for the cost of one division instead of per-hunk cleverness.
 EMPTY_NOTE_FLOOR = 0.8
+# A genuinely short overview needs no structure, so this gates length, not shape: it only
+# catches the wall-of-prose failure (no lead/bullets break at all) once it runs long enough
+# to be the thing a reader has to climb rather than skim.
+OVERVIEW_BLOB_MAX_CHARS = 600
 # Syntax in more than one of C-family/Python/Go, so matching one proves nothing about a hunk.
 # Extend only with another word that's syntax in two or more of those; a per-language table
 # belongs in symdelta.py, not here.
@@ -241,6 +265,21 @@ def _identifiers(text):
     return set(_identifier_pieces(text))
 
 
+def _overview_blob(overview):
+    """Flag an overview with no blank-line break and no bullet line, once it's long enough
+    that the missing break is the wall-of-prose failure rather than a short one-liner."""
+    if "\n\n" in overview:
+        return []
+    if any(line.strip().startswith("- ") for line in overview.splitlines()):
+        return []
+    if len(overview) <= OVERVIEW_BLOB_MAX_CHARS:
+        return []
+    return [
+        f"overview is a {len(overview)}-char unbroken blob, no blank-line break and no "
+        f"bullet line -- split it into a lead and 3-5 bullets"
+    ]
+
+
 def _empty_note_floor(hunks):
     """Fail when too large a share of hunks in the whole diff have an empty note.
     See EMPTY_NOTE_FLOOR for why this replaced per-hunk churn detection."""
@@ -267,8 +306,10 @@ def validate(diff_text, analysis):
     for key in REQUIRED_KEYS:
         if key not in analysis:
             problems.append(f"missing top-level key: {key}")
-    if _blank(analysis.get("what_changed")):
-        problems.append("what_changed is empty")
+    if _blank(analysis.get("overview")):
+        problems.append("overview is empty")
+    else:
+        problems += _overview_blob(analysis["overview"])
 
     if not isinstance(analysis.get("files"), list):
         problems.append("files must be a list")
@@ -336,12 +377,61 @@ def validate(diff_text, analysis):
         if path not in diff_hunks:
             problems.append(f"{path}: in files[] but not changed in the diff")
 
-    problems += _validate_groups(analysis.get("groups"), diff_hunks)
+    problems += _validate_groups(analysis.get("groups"), diff_hunks, diff_text)
     problems += _empty_note_floor(all_hunks)
     return problems
 
 
-def _validate_groups(groups, diff_hunks):
+def _validate_group_flow(index, flow_mermaid):
+    """Checks a non-blank group flow_mermaid: its first non-blank line must name one of
+    GROUP_FLOW_KINDS, and it must not exceed GROUP_FLOW_MAX_LINES (see that constant for why)."""
+    lines = [line for line in flow_mermaid.splitlines() if line.strip()]
+    if not lines:
+        return []
+    problems = []
+    if not lines[0].strip().startswith(GROUP_FLOW_KINDS):
+        problems.append(
+            f"groups[{index}].flow_mermaid does not start with {' or '.join(GROUP_FLOW_KINDS)}"
+        )
+    if len(lines) > GROUP_FLOW_MAX_LINES:
+        problems.append(
+            f"groups[{index}].flow_mermaid is {len(lines)} lines, over the "
+            f"{GROUP_FLOW_MAX_LINES}-line cap"
+        )
+    return problems
+
+
+def _validate_hop(index, hop, diff_ids):
+    """Checks a non-blank group hop: HOP_MIN_WORDS to HOP_MAX_WORDS words, at least one
+    backticked identifier, and every backticked identifier inside it has to appear in
+    raw.diff (`diff_ids`, tokenised the same language-independent way as a hunk note's own
+    identifier check) -- a hop names a real hand-off, not an invented one."""
+    problems = []
+    words = hop.split()
+    if len(words) > HOP_MAX_WORDS:
+        problems.append(
+            f"groups[{index}].hop is {len(words)} words, over the {HOP_MAX_WORDS}-word cap"
+        )
+    elif len(words) < HOP_MIN_WORDS:
+        problems.append(
+            f"groups[{index}].hop is {len(words)} word{'s' if len(words) != 1 else ''}, "
+            f"under the {HOP_MIN_WORDS}-word floor"
+        )
+    identifiers = HOP_BACKTICK.findall(hop)
+    if not identifiers:
+        problems.append(
+            f"groups[{index}].hop has no backticked identifier -- name the thing being handed off"
+        )
+    for identifier in identifiers:
+        if identifier.strip() and _identifiers(identifier).isdisjoint(diff_ids):
+            problems.append(
+                f"groups[{index}].hop backticked identifier `{identifier}` does not appear "
+                "in the diff"
+            )
+    return problems
+
+
+def _validate_groups(groups, diff_hunks, diff_text):
     """Groups are optional, but a group that exists has to be usable: a title to print, paths
     that are really in the diff, and no path claimed twice. A file in no group is not an error,
     the renderer sweeps those into a catch-all, which is what keeps a partial grouping safe to
@@ -351,12 +441,36 @@ def _validate_groups(groups, diff_hunks):
     if not isinstance(groups, list):
         return ["groups must be a list"]
     problems, claimed = [], {}
+    diff_ids = None  # tokenised lazily -- most analyses carry no hop at all
+    last_main_line = None
     for i, group in enumerate(groups):
         if not isinstance(group, dict):
             problems.append(f"groups[{i}] is not an object")
             continue
         if _blank(group.get("title")):
             problems.append(f"groups[{i}] has no title")
+        flow = group.get("flow_mermaid")
+        if flow is not None:
+            # Checked ahead of _blank: _blank treats any non-string as blank, which would wave
+            # a list or dict through as "nothing to validate" instead of flagging the wrong
+            # type -- and that value reaching walkthrough.py crashes on its own `.strip()` call.
+            if not isinstance(flow, str):
+                problems.append(f"groups[{i}].flow_mermaid must be a string")
+            elif not _blank(flow):
+                problems += _validate_group_flow(i, flow)
+        side = group.get("side")
+        if side is not None and not isinstance(side, bool):
+            problems.append(f"groups[{i}].side must be a boolean")
+        hop = group.get("hop")
+        if hop is not None:
+            if _blank(hop):
+                problems.append(f"groups[{i}].hop must be a non-empty string")
+            else:
+                if diff_ids is None:
+                    diff_ids = _identifiers(diff_text)
+                problems += _validate_hop(i, hop, diff_ids)
+        if side is not True:
+            last_main_line = i
         paths = group.get("paths")
         if not isinstance(paths, list) or not paths:
             problems.append(f"groups[{i}] has no paths")
@@ -368,6 +482,13 @@ def _validate_groups(groups, diff_hunks):
                 problems.append(f"{path}: in both group {claimed[path]} and group {i}")
             else:
                 claimed[path] = i
+    if last_main_line is not None:
+        last = groups[last_main_line]
+        if isinstance(last, dict) and not _blank(last.get("hop")):
+            problems.append(
+                f"groups[{last_main_line}] is the last stop in the story and must not have a "
+                "hop -- a hop names the hand-off to the NEXT stop"
+            )
     return problems
 
 

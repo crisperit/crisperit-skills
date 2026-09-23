@@ -31,11 +31,19 @@ from complexity import NOTEWORTHY_DEPTH  # noqa: E402  one owner for "how deep i
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
 from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> conversion
+from sections import _wrap_flow_labels  # noqa: E402  one owner for mermaid long-label wrapping
 from sections import render_symbols  # noqa: E402  one owner for the symbol-delta diagram
 from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 
 DEFAULT_OPEN = 3
+# A file whose diff is smaller than this many changed lines expands by default regardless of
+# its position in the reading order -- a one-line fix buried in group 4 gains nothing from
+# staying collapsed just because it isn't among the first few files.
+SMALL_DIFF_LINES = 80
+# The story map's fixed palette, --g1..--g6 in the template, cycling by group index so a
+# seventh group repeats the first colour rather than needing a seventh variable.
+GROUP_PALETTE_SIZE = 6
 # Complexity worth a chip when this change did not move it. McCabe's own "consider
 # restructuring" line, and it is what keeps the chip a signal: without it, the measured 13-file
 # commit put a chip on all 13, including "1 cx" on four new one-line getters. With it, three
@@ -111,12 +119,17 @@ def caller_depth(symdelta, paths):
 
 
 def story(order, files, groups, symdelta):
-    """[(title, why, [paths])] in the order a reviewer should read them.
+    """[(title, why, [paths], flow_mermaid, hop, side)] in the order a reviewer should read
+    them -- the same order render_story() draws as the page's story map, so a group's index
+    here is its stop number there.
 
     Which files belong together, and which theme comes first, is judgment and comes from
     analysis.json. The order inside a theme is mechanical: caller depth, then size, with tests
     and generated files sinking to the bottom of their own theme rather than the bottom of the
-    page, so a test still sits next to the code it covers.
+    page, so a test still sits next to the code it covers. `flow_mermaid` is the group's own
+    optional small diagram, carried through opaquely; a synthetic catch-all group never has one.
+    `hop` (the hand-off to the next stop) and `side` (true for a supporting group off the main
+    line) are carried through the same way, defaulting to "" and False.
 
     A file the groups missed is swept into a trailing catch-all rather than dropped: a stale
     analysis.json must not be able to hide a file from the reader.
@@ -138,12 +151,60 @@ def story(order, files, groups, symdelta):
             continue
         seen.update(paths)
         out.append((group.get("title") or "", group.get("why") or "",
-                    sorted(paths, key=reading_key)))
+                    sorted(paths, key=reading_key), group.get("flow_mermaid") or "",
+                    group.get("hop") or "", bool(group.get("side"))))
 
     rest = [p for p in order if p not in seen]
     if rest:
-        out.append(("Everything else" if out else "", "", sorted(rest, key=reading_key)))
+        out.append(("Everything else" if out else "", "", sorted(rest, key=reading_key), "",
+                    "", False))
     return out
+
+
+def render_story(groups):
+    """The story map: one stop per group from `story()`, in story order, plain HTML/CSS with
+    no JS of its own -- a vertical spine on a phone, horizontal from the template's own
+    900px breakpoint (see the CSS). A main-line stop links to its group heading at
+    `#wt-group-N` and carries `id="story-N"`, the landing spot that heading's own "back to the
+    story" link (render_html, `has_story`) points at. A side group renders the same stop
+    markup but sits below the line instead of in the chain, with no hop before or after it.
+
+    "" when there is nothing to draw: a single group has no story to map, so render.py falls
+    back to the old top-level flow diagram instead (see render.py's render_html).
+    """
+    if len(groups) < 2:
+        return ""
+
+    def stop(gi, title, why, paths, hop, side):
+        n = gi + 1
+        count = f'{len(paths)} file{"s" if len(paths) != 1 else ""}'
+        meta = f"{count} · {_codeify(escape(why))}" if why else count
+        html = (f'<a class="stop" id="story-{n}" href="#wt-group-{n}" style="--c:'
+                f'{_group_color(gi)}"><span class="n">{n}</span>'
+                f'<span class="t">{_codeify(escape(title))}</span>'
+                f'<span class="m">{meta}</span></a>')
+        return html, hop, side
+
+    stops = [stop(gi, title, why, paths, hop, side)
+             for gi, (title, why, paths, _flow, hop, side) in enumerate(groups)]
+
+    main = [html for html, _hop, side in stops if not side]
+    main_hops = [hop for _html, hop, side in stops if not side]
+    spine = []
+    for i, html in enumerate(main):
+        spine.append(html)
+        if i < len(main) - 1 and main_hops[i]:
+            spine.append(f'<div class="hop">{_codeify(escape(main_hops[i]))}</div>')
+
+    side_stops = [html for html, _hop, side in stops if side]
+
+    out = ['<div class="map">', '<div class="spine">'] + spine + ['</div>']
+    if side_stops:
+        out.append('<div class="side"><span class="lbl">Supports the story</span>')
+        out.extend(side_stops)
+        out.append('</div>')
+    out.append('</div>')
+    return "\n".join(out) + "\n"
 
 
 def link_index(links):
@@ -178,12 +239,14 @@ def _notes_for(entry, hunks):
     return notes + [""] * (len(hunks) - len(notes))
 
 
-def _open_paths(groups, count):
-    """The paths to render expanded: the first few in reading order. Size used to decide this,
-    because the diff recorded nothing about importance; now that the groups carry a reading
-    order, the front of that order is the better answer and the one the reader starts at."""
-    flat = [path for _title, _why, paths in groups for path in paths]
-    return set(flat[:max(0, count)])
+def _open_paths(groups, count, files):
+    """The paths to render expanded: the first few in reading order, plus every file whose own
+    diff is small (see SMALL_DIFF_LINES) regardless of where it falls in that order."""
+    flat = [path for _title, _why, paths, _flow, _hop, _side in groups for path in paths]
+    is_open = set(flat[:max(0, count)])
+    is_open.update(path for path in flat
+                   if files[path]["added"] + files[path]["removed"] < SMALL_DIFF_LINES)
+    return is_open
 
 
 def complexity_index(complexity):
@@ -265,9 +328,63 @@ def rename_note(old, new):
     return "/".join(part for part in (prefix, middle, suffix) if part)
 
 
+def _group_color(index):
+    """The palette variable for a group at this 0-based index, cycling through --g1..--g6.
+    Shared by render_html's group heading and render_story's stop so the two colour the same
+    group identically -- the whole point of the two-way nav between them."""
+    return f"var(--g{(index % GROUP_PALETTE_SIZE) + 1})"
+
+
+def _flow_box(flow_mermaid):
+    """The group flow diagram, in the same `.panel.svgbox` + `pre.mermaid` shape render.py
+    uses for the top-level FLOW, so panZoom() and the CSS fit it to its own viewBox instead of
+    stretching it like the bigger stacked diagrams below. No LR-to-TB rewrite here, unlike
+    FLOW: a small group diagram needs no phone-width rescue, and rewriting a sequenceDiagram's
+    leading token would just break it."""
+    escaped_flow = escape(_wrap_flow_labels(flow_mermaid))
+    return ('<div class="panel svgbox svgbox-flow" tabindex="0" role="button"'
+            ' aria-label="Expand diagram to full size">'
+            f'<pre class="mermaid">{escaped_flow}</pre></div>')
+
+
+def _group_panel(index, flow_mermaid, graph_html):
+    """One panel per group, directly under its `why` line: a tab bar switching between the
+    flow diagram and the call graph when the group has both, so the two read as views of one
+    thing instead of two unrelated affordances -- and no tab bar at all, just the one
+    diagram, when the group has only one of them, since a tab bar holding a single tab is
+    noise. `graph_html` is `render_symbols(..., inline=True)`'s own `.vd-symbols` block,
+    unopened here: its packages/symbols level toggle rides inside the call-graph tabpanel and
+    the level script moves it up into `.wt-tabs` once, rather than this function tearing that
+    block apart to relocate it itself.
+
+    The graph tabpanel starts `hidden` -- plain markup for a page with no JS -- and the level
+    script replaces that with the off-screen (never `display:none`) treatment once it wires
+    the tabs, the same reason the inline symbols block already avoids `display:none`: mermaid
+    measures a hidden container's labels as zero and collapses the diagram permanently."""
+    if flow_mermaid and graph_html:
+        flow_id, graph_id = f"wt-tab-flow-{index}", f"wt-tab-graph-{index}"
+        flow_panel_id, graph_panel_id = f"wt-tabpanel-flow-{index}", f"wt-tabpanel-graph-{index}"
+        return "\n".join([
+            '<div class="wt-panel">',
+            '<div class="wt-tabs" role="tablist" aria-label="diagram views">',
+            f'<button type="button" class="wt-tab" role="tab" id="{flow_id}" '
+            f'data-tab="flow" aria-selected="true" aria-controls="{flow_panel_id}">flow</button>',
+            f'<button type="button" class="wt-tab" role="tab" id="{graph_id}" '
+            f'data-tab="graph" aria-selected="false" tabindex="-1" '
+            f'aria-controls="{graph_panel_id}">call graph</button>',
+            '</div>',
+            f'<div class="wt-tabpanel" role="tabpanel" id="{flow_panel_id}" '
+            f'aria-labelledby="{flow_id}">{_flow_box(flow_mermaid)}</div>',
+            f'<div class="wt-tabpanel" role="tabpanel" id="{graph_panel_id}" '
+            f'aria-labelledby="{graph_id}" hidden>{graph_html}</div>',
+            '</div>',
+        ])
+    return f'<div class="wt-panel">{_flow_box(flow_mermaid) if flow_mermaid else graph_html}</div>'
+
+
 def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, complexity=None,
                  renames=None, explain=False, symdelta=None):
-    is_open = _open_paths(groups, open_count)
+    is_open = _open_paths(groups, open_count, files)
     file_urls, hunk_urls = link_index(links)
     cx = complexity_index(complexity)
     renames = renames or {}
@@ -283,20 +400,39 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     # No legend here: the chip reads "load_session 2->9 branches" in words and carries the
     # long form in its title, so a legend here would only add a paragraph of vocabulary
     # between the reader and the first file.
+    # A story map only exists once there is more than one stop to draw (see render_story), so
+    # a lone group keeps its plain heading -- no id, colour or back-link to a map that isn't
+    # on the page.
+    has_story = len(groups) > 1
     out = ["<!-- code-walkthrough:walkthrough -->"]
-    for title, why, paths in groups:
+    for gi, (title, why, paths, flow_mermaid, _hop, _side) in enumerate(groups):
         if title:
-            out.append(f'<h3 class="wt-group">{_codeify(escape(title))} '
+            n = gi + 1
+            if has_story:
+                heading_attrs = f' id="wt-group-{n}" style="--c:{_group_color(gi)}"'
+                badge = (f'<a class="wt-badge-link" href="#story-{n}" '
+                          f'aria-label="Back to stop {n} in the story" '
+                          f'title="Back to the story"><span class="wt-badge">{n}</span></a> ')
+            else:
+                heading_attrs, badge = "", ""
+            out.append(f'<h3 class="wt-group"{heading_attrs}>{badge}'
+                       f'{_codeify(escape(title))} '
                        f'<span class="wt-count">{len(paths)} '
-                       f'file{"s" if len(paths) != 1 else ""}</span></h3>')
+                       f'file{"s" if len(paths) != 1 else ""}</span> '
+                       # Filled and kept live client-side (updateGroupViewed in the
+                       # template): viewed state lives in the reader's own localStorage.
+                       f'<span class="wt-viewed"></span></h3>')
             if why:
                 out.append(f'<p class="wt-why">{_codeify(escape(why))}</p>')
+        flow = flow_mermaid.strip()
+        graph = ""
         # Scoped to one group only past the point where there's more than one: with a single
         # group the graph would be the global section, character for character.
         if symdelta and len(groups) > 1:
-            graph = render_symbols(symdelta, explain, paths=paths, inline=True)
-            if graph:
-                out.append(graph.rstrip("\n"))
+            rendered = render_symbols(symdelta, explain, paths=paths, inline=True)
+            graph = rendered.rstrip("\n") if rendered else ""
+        if flow or graph:
+            out.append(_group_panel(gi, flow, graph))
         for path in paths:
             entry = by_path.get(path) or {}
             file = files[path]
@@ -334,6 +470,11 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
                 # .hunk-path's textContent as the literal PR-comment path, which must stay pure.
                 out.append(f'      <span class="hunk-was">moved from {escape(old_path)}'
                            f'</span>')
+            # GitHub-style Viewed checkbox: wireViewedCheckboxes reads the path from this
+            # hunk's own .hunk-path rather than a duplicate attribute here; checking it
+            # collapses the file and persists to localStorage the same way comments do.
+            out.append('      <label class="hunk-viewed" title="Mark this file as viewed">'
+                       '<input type="checkbox" class="hunk-viewed-cb"> Viewed</label>')
             out.append("    </span>")
             out.append("  </summary>")
             # Complexity chips are furniture, not identity, so they get their own quiet row

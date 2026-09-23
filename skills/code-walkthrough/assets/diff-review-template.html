@@ -10,6 +10,12 @@
     --text:#e6e9ef; --muted:#9aa3b2; --accent:#7aa2f7; --green:#9ece6a;
     --yellow:#e0af68; --red:#f7768e; --cyan:#7dcfff; --purple:#bb9af7;
     --markbg:rgba(224,175,104,.28);
+    /* The story map's fixed palette (walkthrough.py's _group_color cycles through these by
+       index), built from the six named colours above rather than six new literals, so light
+       mode's redefinition of those below repaints the map too, with no separate light values
+       to keep in sync here. */
+    --g1:var(--accent); --g2:var(--yellow); --g3:var(--green);
+    --g4:var(--purple); --g5:var(--cyan); --g6:var(--red);
     --mono:ui-monospace,'JetBrains Mono','Fira Code',Menlo,Consolas,monospace;
     /* One type scale. Every font-size below points at a step, so a size change happens here
        once rather than in thirty rules, and the mobile block overrides the steps instead of
@@ -58,6 +64,8 @@
      line-height carries a bit more of the load; put a max-width back here if it ever reads too
      long on a very wide screen. */
   .wrap>p{font-size:var(--fs-base);line-height:1.7}
+  .wrap>ul{font-size:var(--fs-base);line-height:1.7;padding-left:20px}
+  .wrap>ul li{margin:4px 0}
   h1{font-size:var(--fs-xl);margin:0 0 4px}
   .sub{color:var(--muted);margin:0 0 28px;font-size:var(--fs-sm)}
   h2{font-size:var(--fs-md);letter-spacing:.08em;text-transform:uppercase;
@@ -132,6 +140,7 @@
          an 80-120 char Go line fit; soft-wrapping is the real fix and is a separate change. */
       --fs-code:12px}
     .wrap>p{line-height:1.65}
+    .wrap>ul{line-height:1.65;padding-left:18px}
     h2{margin:26px 0 10px}
     body{padding:20px 14px 48px}
   }
@@ -180,6 +189,14 @@
   details.hunk .hunk-count .hunk-count-resolved{color:var(--green)}
   details.hunk .hunk-was{flex:0 0 100%;color:var(--muted);font-size:var(--fs-xs);
     overflow-wrap:anywhere;white-space:normal}
+  /* GitHub-style Viewed checkbox, last in the row after .hunk-stat's own margin-left:auto has
+     already pushed that group to the right -- flex:none keeps it its own width beside it. The
+     label wraps the input so a click on either toggles it; wireViewedCheckboxes stops that
+     click from also bubbling into the summary's own open/close toggle. */
+  details.hunk .hunk-viewed{flex:none;display:inline-flex;align-items:center;gap:4px;
+    font-size:var(--fs-xs);color:var(--muted);cursor:pointer;user-select:none}
+  details.hunk .hunk-viewed-cb{accent-color:var(--accent);cursor:pointer;margin:0}
+  details.hunk .hunk-viewed-cb:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Complexity chips, moved out of the summary into their own quiet row -- no card, no
      border, just muted inline furniture below the path a reader already read. */
   details.hunk .hunk-meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
@@ -192,20 +209,94 @@
      section rather than as another section. */
   .wt-group{display:flex;gap:8px;align-items:baseline;margin:24px 0 6px;padding:0;border:0;
     font-size:var(--fs-sm);color:var(--text)}
-  .wt-group .wt-count{color:var(--muted);font-size:var(--fs-xs);font-weight:400}
+  .wt-group .wt-count,.wt-group .wt-viewed{color:var(--muted);font-size:var(--fs-xs);font-weight:400}
+  /* The group's own number, coloured to match its story-map stop (walkthrough.py sets --c on
+     the h3 itself, from the same palette index render_story used for that stop). */
+  .wt-badge{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;
+    background:var(--c);color:var(--bg);font-weight:700;font-size:var(--fs-xs)}
+  /* Back-link to this group's own stop in the story map above (only exists once has_story is
+     true -- walkthrough.py never emits this wrapper for a single, map-less group). */
+  .wt-badge-link{display:inline-block;border-radius:50%}
+  .wt-badge-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* .wrap>p sets the prose size and outranks a bare class, so this has to name both or
      a group's one-line why renders at full paragraph size. */
   .wrap>p.wt-why{margin:0 0 10px;color:var(--muted);font-size:var(--fs-xs)}
-  /* Opens a group's symbol graph in the zoom dialog -- the graph itself lives off-screen
-     with the rest of .vd-symbols-group, so this button (built client-side, see the level
-     script) is its only entry point. A small pill in .wt-group's own text row, not the
-     LEGEND/toggle idiom below, which belongs to a standalone control row. */
-  .wt-graph-btn{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);
-    border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 8px;
-    cursor:pointer;font-size:var(--fs-xs);line-height:1.4;transition:background .12s,color .12s}
-  .wt-graph-btn svg{width:14px;height:14px;flex:none}
-  .wt-graph-btn:hover{background:var(--border);color:var(--text)}
-  .wt-graph-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* Story map: the reading order's own stops, one per group in story order, main line first
+     with hop labels between consecutive stops, side (supporting) groups listed below it
+     instead of in the chain. Vertical spine on a phone, horizontal from 900px up, the same
+     breakpoint .cols already uses. */
+  .map{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:16px;margin-bottom:20px}
+  .spine{display:flex;flex-direction:column;gap:0}
+  .stop{display:block;text-decoration:none;color:inherit;background:var(--panel2);
+    border:1px solid var(--border);border-left:4px solid var(--c);border-radius:8px;
+    padding:10px 12px;transition:transform .15s}
+  .stop:hover{transform:translateY(-2px);border-color:var(--c)}
+  .stop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* The stop a group's own back-link (.wt-badge-link) lands on. A plain, non-animated
+     box-shadow rather than a fade: it needs no reduced-motion override of its own, and it
+     stays lit for as long as the reader is actually looking at this stop (the URL still names
+     it), not just for however long an animation happened to run. */
+  .stop:target{box-shadow:0 0 0 3px var(--c)}
+  .stop .n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;
+    background:var(--c);color:var(--bg);font-weight:700;font-size:var(--fs-xs);
+    margin-right:6px;vertical-align:1px}
+  .stop .t{font-weight:600;font-size:var(--fs-sm)}
+  .stop .m{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:3px}
+  .hop{display:flex;align-items:center;gap:8px;padding:4px 0 4px 16px;color:var(--muted);
+    font-size:var(--fs-xs)}
+  .hop::before{content:"";width:2px;height:22px;background:var(--border)}
+  .hop code{font-size:var(--fs-xs)}
+  .map .side{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
+  .map .side .lbl{display:block;color:var(--muted);font-size:var(--fs-xs);margin-bottom:6px}
+  @media(min-width:900px){
+    .spine{flex-direction:row;align-items:stretch}
+    .spine .stop{flex:1 1 0;min-width:0}
+    .spine .hop{flex:0 1 auto;min-width:64px;max-width:160px;flex-direction:column;
+      justify-content:center;text-align:center;padding:0 4px}
+    .spine .hop code{white-space:nowrap}
+    .spine .hop::before{width:100%;height:2px}
+    .map .side{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .map .side .lbl{margin:0;flex:0 0 auto}
+    .map .side .stop{flex:0 1 280px}
+  }
+
+  /* section-symbols.html, moved to the page's end and collapsed (see render.py): a generic
+     disclosure, same idiom as details.hunk's triangle-plus-label summary but plain text, no
+     path or stat to lay out. */
+  details.collapse{margin-top:36px}
+  details.collapse>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm)}
+  details.collapse>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* One panel per group, directly under its .wt-why: a tab bar switches between the flow
+     diagram and the call graph when a group has both, so the two read as views of one thing
+     rather than two unrelated affordances. Just the one diagram, no tab bar, when a group has
+     only one of them -- a tab bar holding a single tab is noise (see walkthrough.py's
+     _group_panel). */
+  .wt-tabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+  .wt-tab{background:var(--panel2);border:1px solid var(--border);color:var(--muted);
+    border-radius:6px 6px 0 0;padding:6px 12px;cursor:pointer;font-size:var(--fs-xs);
+    font-weight:600}
+  .wt-tab[aria-selected="true"]{background:var(--panel);border-color:var(--accent);
+    color:var(--accent)}
+  .wt-tab:hover{color:var(--text)}
+  .wt-tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* The packages/symbols level toggle belongs to the call-graph tab, not a third tab of its
+     own; the level script moves .vd-ctl in here once, and this pushes it to the row's other
+     end so it doesn't read as a third button beside flow/call graph. */
+  .wt-tabs .vd-ctl{margin:0 0 0 auto}
+  /* .vd-ctl's own display:flex is an author-normal rule and always beats the UA stylesheet's
+     [hidden]{display:none}, cascade origin before specificity -- same reason .dl[hidden]
+     above needs its own override. Without this, toggling .hidden on .vd-ctl while the flow
+     tab is active (see wireGroupTabs) would leave the level toggle visible and clickable. */
+  .wt-tabs .vd-ctl[hidden]{display:none}
+  /* JS-controlled counterpart of `hidden` for a tabpanel that may still need to render a
+     mermaid diagram while inactive (see the level script): `display:none` measures every
+     label as zero and collapses the diagram permanently, so the inactive tab goes off-screen
+     instead, same technique as .svgbox-flow's own notes-toggle rule below. `inert`, set
+     alongside by the same script, is what actually drops it from the tab order and the
+     accessibility tree -- off-screen alone does not. */
+  .wt-tabpanel.wt-tab-off{position:absolute;left:-99999px;top:0;width:1200px}
 
   /* Complexity chip. Red for risen (must not be missed), purple for fallen, muted grey for the
      neutral states -- a new function's bare count, no change, and removed. Not green: the +N/-N
@@ -244,9 +335,17 @@
   #wt-notes-toggle:focus-visible,
   .vd-level-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Explanations are on by default; pressing the toggle drops this class and takes every
-     per-hunk note with it. .hunk-note without the -hunk suffix is the file's one-line role,
-     which stays either way. */
-  body:not(.show-notes) .hunk-note-hunk{display:none}
+     per-hunk note with it, plus a group's own why line and its whole diagram panel.
+     .hunk-note without the -hunk suffix is the file's one-line role, which stays either way.
+     `h3.wt-group ~` keeps this off the page-level FLOW diagram above the Walkthrough heading,
+     which carries no .wt-panel and stays visible either way; that diagram, and a group's own
+     default tab, both render eagerly at load (the startOnLoad loop and the level script run
+     regardless of this toggle), so the panel goes off-screen rather than display:none, or a
+     reader who loaded with explanations off ships it permanently collapsed. */
+  body:not(.show-notes) .hunk-note-hunk,
+  body:not(.show-notes) .wt-why{display:none}
+  body:not(.show-notes) h3.wt-group ~ .wt-panel{position:absolute;left:-99999px;top:0;
+    width:1200px}
   /* The file name is the link to the file on the PR. Text colour is kept and only the
      underline carries the accent: 45 paths repainted blue is a wall of link, and the path is
      still the thing being read. Same muted decoration the note links use. */
@@ -259,10 +358,29 @@
   .hunk-note a,.dstat a{text-decoration-color:color-mix(in srgb,var(--accent) 45%,transparent)}
   .hunk-note a{margin-left:6px;white-space:nowrap}
 
-  .diff .a{color:var(--green)}
-  .diff .d{color:var(--red)}
+  /* Row tint, GitHub-style, not just the text: display:block on an inline span makes it a
+     full row, and width:max-content/min-width:100% is what lets that row's background still
+     fill (and extend past) the viewport once the hunk scrolls sideways. Selectors stay flat
+     class matches, not a `.diff >` combinator, because .fb-item's quoted-hunk snippets below
+     reuse these same classes one level deeper. */
+  /* walkthrough.py joins line spans with a literal "\n"; once .a/.d/.c/.h go display:block,
+     each bare newline text node becomes its own anonymous block and renders as a blank row.
+     line-height:0 here collapses those; line-height:1.6 below restores real height on the spans. */
+  .diff{line-height:0}
+  .diff .a,.diff .d,.diff .c,.diff .h{display:block;width:max-content;min-width:100%;line-height:1.6}
+  /* GitHub-style: the row background alone marks added/removed, text stays var(--text) so
+     hljs tokens (or their absence, on a language hljs doesn't tokenise) read normally. */
+  .diff .a{background:color-mix(in srgb,var(--green) 14%,transparent)}
+  .diff .d{background:color-mix(in srgb,var(--red) 14%,transparent)}
   .diff .h{color:var(--purple)}
-  .diff .c{color:var(--muted)}
+  /* hljs token colours, mapped onto this page's own vars rather than a vendored theme --
+     scoped to .diff so it can't bleed into pre.mermaid or a prose <code>. */
+  .diff .hljs-keyword,.diff .hljs-literal,.diff .hljs-type{color:var(--purple)}
+  .diff .hljs-string,.diff .hljs-regexp{color:var(--green)}
+  .diff .hljs-number{color:var(--yellow)}
+  .diff .hljs-comment{color:var(--muted);font-style:italic}
+  .diff .hljs-title,.diff .hljs-title.function_,.diff .hljs-built_in{color:var(--cyan)}
+  .diff .hljs-attr,.diff .hljs-variable,.diff .hljs-meta{color:var(--yellow)}
 
   pre.mermaid{background:none;border:none;padding:0;text-align:center;
     font-family:inherit;min-height:80px}
@@ -318,6 +436,11 @@
   #mermaid-zoom-body{width:100%;height:100%;overflow:hidden;position:relative;
     padding:20px;box-sizing:border-box}
   #mermaid-zoom-body svg{max-width:none;margin:0 auto;display:block}
+  /* The structure clone's own transform-origin lives inline (set in JS, alongside the transform
+     itself), but it needs position:absolute at a fixed top-left so translate(0,0) scale(1)
+     starts flush with the body's own padding box instead of wherever static flow would place a
+     block child. */
+  #mermaid-zoom-body .vds-sys{position:absolute;top:0;left:0;min-width:0;cursor:grab}
   #mermaid-zoom-close{position:absolute;top:10px;right:10px;z-index:3;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);
     border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;
@@ -397,20 +520,100 @@
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px}
   .vd-symbols .mermaid:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-  /* Permanently off-screen, not display:none/hidden: mermaid measures label sizes against
-     the container it's given (see renderLevel below), and a hidden container measures
-     everything as 0 and collapses the diagram. Permanent rather than renderLevel's
-     render-then-rehide trick because a group's graph is never shown in place at all -- its
-     .wt-group icon button opens it in the zoom dialog instead (see openZoom). The fixed
-     width gives mermaid a stable box to lay the diagram out against. */
-  .vd-symbols-group{position:absolute;left:-99999px;top:0;width:1200px}
-  /* Same alignment idiom as h2.h2-row .ctl. Doubles as the dialog's own controls row
-     while a group's graph is open: openZoom moves this element into
-     #mermaid-zoom-controls for the duration, then back here on close. */
+  /* Same alignment idiom as h2.h2-row .ctl. Doubles as the call-graph tab's own control row
+     once the level script moves it into .wt-tabs, and as the dialog's controls row while a
+     group's graph is zoomed: openZoom moves this element into #mermaid-zoom-controls for the
+     duration, then back to wherever it currently lives on close. */
   .vd-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0}
   /* The graph's plain-text moved list, under its note */
   .vd-moved{margin:10px 0 0;padding-left:20px;font-size:var(--fs-sm);color:var(--muted)}
   .vd-moved li{margin:4px 0}
+
+  /* System structure view (scripts/sections.py render_structure): real components in call-depth
+     columns, coloured by story group like the story map above, with call/implements edges drawn
+     over the boxes' own screen geometry by a small script below rather than mermaid -- dagre has
+     no notion of "column by caller depth", the one layout this view exists to draw. */
+  .vd-structure{margin:0 0 20px}
+  .vds-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+  .vds-chips button{font:inherit;font-size:var(--fs-xs);background:var(--panel2);
+    color:var(--muted);border:1px solid var(--border);border-left:4px solid var(--c,var(--border));
+    border-radius:6px;padding:5px 10px;cursor:pointer}
+  .vds-chips button[aria-pressed="true"]{color:var(--text);background:var(--panel);
+    border-color:var(--c,var(--accent))}
+  .vds-chips button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .vds-scroll{overflow-x:auto;background:var(--panel);border:1px solid var(--border);
+    border-radius:12px;-webkit-overflow-scrolling:touch}
+  .vds-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* The diagram container itself is the full-size control, same idiom .svgbox/.vd-symbols
+     .mermaid use above: zoom-in cursor at rest, its own focus-visible ring, click/Enter/Space
+     opens #mermaid-zoom (see wire()/openZoom() in the template script). A box's own
+     cursor:pointer below wins over this on hover, same as a mermaid node's cursor wins over
+     its ancestor .svgbox there. */
+  .vds-sys{position:relative;min-width:640px;padding:16px 48px 20px 26px;cursor:zoom-in}
+  .vds-sys:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .vds-sys svg.vds-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
+    overflow:visible}
+  /* --vds-outpad is drawEdges()'s own reserved headroom for edges routed over a shelf above the
+     columns (a skip-column or backward call); the transition is suspended for the write that
+     sets it (see drawEdges) so a measurement never lands mid-animation. */
+  .vds-cols{display:flex;gap:0 60px;align-items:flex-start;
+    margin-top:var(--vds-outpad,0px);transition:margin-top .15s}
+  .vds-col{flex:1 1 200px;min-width:180px}
+  .vds-hint{font-size:var(--fs-xs);color:var(--muted);margin:0 0 8px;font-style:italic}
+  .vds-comp{position:relative;z-index:1;display:block;background:var(--panel2);
+    border:1px solid var(--border);border-left:4px solid var(--c,var(--border));
+    border-radius:8px;padding:7px 9px;margin:0 0 16px;font-size:var(--fs-xs);
+    transition:opacity .2s,border-color .2s;cursor:pointer}
+  .vds-comp:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .vds-comp b{display:block;font-family:var(--mono);font-size:var(--fs-xs);color:var(--text);
+    word-break:break-word}
+  .vds-comp .vds-file{display:block;color:var(--muted);font-family:var(--mono);font-size:11px;
+    margin-top:2px;word-break:break-word}
+  .vds-comp .vds-members{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+  .vds-comp .vds-members i{font-style:normal;font-family:var(--mono);font-size:11px;
+    background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 5px;
+    color:var(--muted)}
+  .vds-comp .vds-members i.n{border-color:var(--green);color:var(--green)}
+  .vds-comp .vds-members i.c{border-color:var(--yellow);color:var(--yellow)}
+  .vds-comp .vds-members i.r{border-color:var(--red);color:var(--red);text-decoration:line-through}
+  .vds-badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:4px;padding:0 5px;
+    margin:0 0 3px}
+  .vds-comp.new .vds-badge{color:var(--green);border:1px solid var(--green)}
+  .vds-comp.chg .vds-badge{color:var(--yellow);border:1px solid var(--yellow)}
+  .vds-comp.mov .vds-badge{color:var(--cyan);border:1px solid var(--cyan)}
+  .vds-comp.gone .vds-badge{color:var(--red);border:1px solid var(--red)}
+  .vds-comp.unc .vds-badge{color:var(--muted);border:1px solid var(--border)}
+  /* Same dashed-and-dimmed convention as .sw-gone / .hunk-cx.gone: a removed component is a
+     structural fact, not a warning, and the strikethrough is a second, non-colour signal. */
+  .vds-comp.gone{border-style:dashed;opacity:.85}
+  .vds-comp.gone b{text-decoration:line-through;text-decoration-color:var(--red)}
+  /* Set by the filter-chip script below, never by the chips' own CSS: a chip only knows which
+     group it names, not which boxes match it. */
+  .vds-comp.vds-dim{opacity:.22}
+
+  /* Hairline by default, full strength only for the box you're on (see the structure script's
+     hover/focus/sticky-focus refresh()). Dots share the class .vds-e so they dim/light in
+     lockstep with their path -- only fill/stroke differ, via the higher-specificity .vds-dot
+     rules below. */
+  .vds-e{fill:none;stroke-width:1.3;opacity:.32;transition:opacity .18s,stroke-width .18s}
+  .vds-sys.vds-active .vds-e{opacity:.05}
+  .vds-sys.vds-active .vds-e.vds-lit{opacity:1;stroke-width:2.2}
+  .vds-e-call{stroke:var(--green)}
+  .vds-e-gone{stroke:var(--red);stroke-dasharray:5 4}
+  .vds-e-impl{stroke:var(--muted);stroke-dasharray:1.5 4;stroke-linecap:round}
+  /* Endpoint dots where an edge meets a box, in the edge's own colour. */
+  .vds-dot.vds-e{stroke:none}
+  .vds-dot.vds-e-call{fill:var(--green)}
+  .vds-dot.vds-e-gone{fill:var(--red)}
+  .vds-dot.vds-e-impl{fill:var(--muted)}
+  .vds-legend{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0 0;font-size:var(--fs-xs);
+    color:var(--muted)}
+  .vds-legend span{display:inline-flex;align-items:center;gap:6px}
+  .vds-legend svg{width:28px;height:8px}
+  .vds-swipe{font-size:var(--fs-xs);color:var(--muted);margin:6px 0 0}
+  @media(min-width:900px){.vds-swipe{display:none}}
+  .vds-also{font-size:var(--fs-xs);color:var(--muted);margin:10px 0 0;line-height:1.7}
+  .vds-also code{background:none;border:none;padding:0;color:var(--text)}
 
   .fb-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
     padding:8px 10px;font-size:var(--fs-xs)}
@@ -629,7 +832,10 @@
   .dl[hidden]{display:none}
   .dl.anchor{border-left:3px solid var(--accent);margin-left:-3px;padding-left:9px;
     background:color-mix(in srgb,var(--text) 5%,var(--panel2))}
-  .snippet-controls{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px}
+  /* Explicit, not inherited: the thread-snippet wrapper carries .diff too (for row colouring),
+     so .diff's line-height:0 would otherwise leak in via .linklike's font:inherit and collapse
+     these buttons/links' line box. */
+  .snippet-controls{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px;line-height:1.6}
   .linklike{background:none;border:none;color:var(--accent);text-decoration:underline;
     text-underline-offset:2px;cursor:pointer;font:inherit;font-size:var(--fs-xs);padding:0}
   .linklike:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -646,8 +852,10 @@
     border-right:1px solid var(--border);color:var(--muted);text-align:right;user-select:none}
   /* Lives inside <pre class="diff">, so it inherits its monospace and its white-space:pre.
      The font is reset because this is prose, and white-space for the same reason: left on pre a
-     note never wrapped, it ran off to the right (a row 382px wide holding 855px of content). */
-  .dline-note{display:block;margin:6px 0;white-space:normal;
+     note never wrapped, it ran off to the right (a row 382px wide holding 855px of content).
+     line-height is reset too -- .diff's own line-height:0 (for collapsing its "\n" row
+     separators) would otherwise collapse this prose onto one overlapping line. */
+  .dline-note{display:block;margin:6px 0;white-space:normal;line-height:1.6;
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
@@ -657,8 +865,7 @@
      happens to come later. */
   @media (pointer:coarse){
     #mermaid-zoom-close{width:44px;height:44px;font-size:16px}
-    .vd-level-toggle{min-height:44px;padding:10px 14px}
-    .wt-graph-btn{min-height:44px}
+    .vd-level-toggle,.wt-tab{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
     #hr-comments-btn{min-height:44px}
@@ -666,6 +873,9 @@
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
     .fb-reply-input,.fb-actions button{min-height:44px}
+    .stop{min-height:44px}
+    .vds-chips button{min-height:44px;padding:10px 14px}
+    details.collapse>summary{min-height:44px;display:flex;align-items:center}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */
@@ -696,8 +906,8 @@
   </div>
   <div id="hr-comments-body">
     <p id="hr-comments-help">Copy gh command posts these yourself, right now, when there is a
-      pushed PR to post to. Copy for agent hands the same comments to the assistant instead --
-      the only way when there is no PR, and the only path with anchor resolution.</p>
+      pushed PR to post to. Copy for agent copies the same comments as plain text instead, to
+      paste to the assistant -- the only way when there is no PR.</p>
     <ul id="hr-comments-list"></ul>
     <div id="hr-comments-actions" class="fb-actions">
       <button type="button" id="hr-comments-gh-btn" class="fb-ghost">Copy gh command</button>
@@ -734,6 +944,7 @@
 </dialog>
 
 <script><!-- MERMAID_JS --></script>
+<script><!-- HLJS_JS --></script>
 <script>
 (async () => {
   if (!window.mermaid) return;
@@ -797,22 +1008,54 @@
     if (edgeLabels) root.appendChild(edgeLabels);
   }
 
-  // A per-group graph sits right after its <h3 class="wt-group">, with an optional
-  // <p class="wt-why"> in between (walkthrough.py's own contract); walked rather than
-  // looked up by id so the two scripts never have to coordinate on one.
-  function findGroupHeading(root) {
-    let el = root.previousElementSibling;
-    while (el && !el.matches('h3.wt-group')) el = el.previousElementSibling;
-    return el;
+  // Standard two-tab ARIA pattern for a group's .wt-panel (walkthrough.py's _group_panel):
+  // click or an arrow key selects a tab, shows its panel and pushes the other off-screen
+  // (never display:none -- see .wt-tab-off) rather than removing it, and the call-graph tab
+  // renders its diagram the first time it is actually chosen instead of at load. `ensureShown`
+  // is the enclosing per-root showLevel, passed in rather than looked up, since it closes over
+  // that root's own `level`/`toggle`/`levels` state.
+  function wireGroupTabs(panel, tabs, graphRoot, ensureShown) {
+    const tabEls = [...tabs.querySelectorAll('.wt-tab')];
+    const flowTab = tabEls.find(t => t.dataset.tab === 'flow');
+    const graphTab = tabEls.find(t => t.dataset.tab === 'graph');
+    if (!flowTab || !graphTab) return;
+    const flowPanel = panel.querySelector('#' + flowTab.getAttribute('aria-controls'));
+    const graphPanel = panel.querySelector('#' + graphTab.getAttribute('aria-controls'));
+    if (!flowPanel || !graphPanel) return;
+    // Moved once, permanently, rather than shuttled back and forth on every tab switch: only
+    // its own hidden attribute needs to change after this, driven by which tab is active.
+    const ctl = graphRoot.querySelector('.vd-ctl');
+    if (ctl) tabs.appendChild(ctl);
+    let graphOpened = false;
+
+    function showPanel(tab, tabPanel, active) {
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+      tabPanel.classList.toggle('wt-tab-off', !active);
+      tabPanel.inert = !active;
+      tabPanel.hidden = false; // JS owns visibility from here on, not the static markup
+    }
+
+    async function activate(tab, focusIt) {
+      const isGraph = tab === graphTab;
+      showPanel(flowTab, flowPanel, !isGraph);
+      showPanel(graphTab, graphPanel, isGraph);
+      if (ctl) ctl.hidden = !isGraph;
+      if (focusIt) tab.focus();
+      if (isGraph && !graphOpened) { graphOpened = true; await ensureShown(); }
+    }
+
+    flowTab.addEventListener('click', () => activate(flowTab, false));
+    graphTab.addEventListener('click', () => activate(graphTab, false));
+    tabEls.forEach((tab, i) => {
+      tab.addEventListener('keydown', e => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        activate(tabEls[i === 0 ? 1 : 0], true);
+      });
+    });
+    activate(flowTab, false);
   }
-  // Plain nodes-and-an-edge, aria-hidden: the visible count text beside it, not this
-  // glyph, is what a screen reader needs (see the button's own aria-label below).
-  const GRAPH_ICON_SVG = '<svg viewBox="0 0 20 14" aria-hidden="true" focusable="false">'
-    + '<circle cx="3" cy="3" r="2.5" fill="currentColor"/>'
-    + '<circle cx="3" cy="11" r="2.5" fill="currentColor"/>'
-    + '<circle cx="17" cy="7" r="2.5" fill="currentColor"/>'
-    + '<path d="M5.3 4.1 14.7 6.3M5.3 9.9 14.7 7.7" stroke="currentColor" stroke-width="1.3" fill="none"/>'
-    + '</svg>';
 
   let flowSeq = 0;
   for (const el of document.querySelectorAll('.mermaid:not([data-level])')) {
@@ -830,9 +1073,9 @@
   // sizes against the container it's given, and a `hidden`/display:none container measures
   // everything as 0 and collapses the diagram (measured viewBox "-8 -8 16 16" against a correct
   // "0 0 598.157 494"). Each level is unhidden and moved off-screen -- real layout, just not on
-  // screen -- only for the duration of its own render call. A per-group graph's whole
-  // container (.vd-symbols-group) is off-screen permanently instead, so it renders on its own
-  // schedule too: only once the reader clicks that group's graph button, not at load.
+  // screen -- only for the duration of its own render call. A per-group graph draws on its own
+  // schedule too: only once the reader actually picks its call-graph tab, not at load (see
+  // wireGroupTabs above).
   // Renders still run one at a time, now across every root rather than per root: mermaid's
   // id/def bookkeeping is shared page-wide, so two in-flight calls from different roots
   // collide exactly like two clicks on one toggle did before.
@@ -919,34 +1162,14 @@
       el.hidden = true; // showLevel() below unhides only the level the slider actually wants
     }
 
-    if (root.classList.contains('vd-symbols-group')) {
-      // Off-screen still reads to a screen reader and sits in the tab order; inert drops
-      // this measure-only container from both. Its .vd-ctl escapes when moved (not cloned)
-      // into the dialog while that group's graph is open -- see openZoom.
-      root.inert = true;
-      // A group's graph draws only once its icon button (below) is clicked, unlike the
-      // global section's default level, which still renders here at load.
-      const heading = findGroupHeading(root);
-      if (heading) {
-        const n = Number(root.dataset.symbols) || 0;
-        const word = n === 1 ? ' symbol' : ' symbols';
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'wt-graph-btn';
-        btn.innerHTML = GRAPH_ICON_SVG + '<span>' + n + word + '</span>';
-        const label = heading.cloneNode(true);
-        const count = label.querySelector('.wt-count');
-        if (count) count.remove();
-        btn.setAttribute('aria-label',
-          'Open symbol graph for ' + (label.textContent.trim() || 'this group') + ' (' + n + word + ')');
-        btn.addEventListener('click', async () => {
-          await showLevel(level);
-          const box = levels.find(el => el.dataset.level === String(level));
-          if (box && window.__vdZoomOpen) window.__vdZoomOpen(box);
-        });
-        heading.appendChild(btn);
-      }
+    const panel = root.closest('.wt-panel');
+    const tabs = panel && panel.querySelector('.wt-tabs');
+    if (tabs) {
+      wireGroupTabs(panel, tabs, root, () => showLevel(level));
     } else {
+      // Either the page-level section (no .wt-panel at all) or a group whose graph is the
+      // only diagram it has (a .wt-panel with no tab bar -- see _group_panel): both show
+      // their default level in place from the start, so both render here at load.
       await showLevel(level);
     }
   }
@@ -1119,22 +1342,23 @@
     target.classList.add('vd-flash');
     setTimeout(()=>target.classList.remove('vd-flash'),1400);
   }
-  function openNavMenu(root,container,node,x,y){
+  // Shared menu builder+positioner: any box-like control (a package/symbol node here, a
+  // structure component box in the later structure script) that wants a small "path label +
+  // action buttons" popup calls this instead of hand-rolling its own. `items` is
+  // [{action, icon, label, run}]; the popup closes itself and calls the matched item's `run()`
+  // on click. Exported (see window.__vdOpenMenu below) so the structure script -- a separate
+  // IIFE, loaded later in the page -- can reuse it instead of a second menu implementation.
+  function openMenu(container,opener,path,items,x,y){
     closeNavMenu();
-    navMenuFor=node;
-    const path=node.dataset.path, hunk=navFindHunk(path);
-    // Naming which file it lands on matters for a directory: it is one of several, not the one.
-    const fileLabel=hunk&&hunk.querySelector('.hunk-path').textContent.trim()===path
-      ?'Go to file':'Go to first file';
+    navMenuFor=opener;
     // A plain container, not role="menu": its buttons are already tabbable, and a real ARIA
     // menu needs arrow-key roving focus and containment this doesn't implement.
     const menu=document.createElement('div');
     menu.className='vd-menu';
     let markup='<div class="vd-menu-path">'+navEscapeHtml(path)+'</div>';
-    if(hunk) markup+='<button type="button" data-a="file"><span class="vd-menu-ic">&#8594;</span>'+fileLabel+'</button>';
-    markup+='<button type="button" data-a="focus"><span class="vd-menu-ic">&#9678;</span>Focus downstream</button>';
-    if(root.classList.contains('vd-focusing'))
-      markup+='<button type="button" data-a="clear"><span class="vd-menu-ic">&#215;</span>Clear focus</button>';
+    items.forEach(it=>{
+      markup+='<button type="button" data-a="'+it.action+'"><span class="vd-menu-ic">'+it.icon+'</span>'+it.label+'</button>';
+    });
     menu.innerHTML=markup;
     container.appendChild(menu);
     const r=container.getBoundingClientRect(), m=menu.getBoundingClientRect();
@@ -1150,14 +1374,25 @@
     menu.addEventListener('click',e=>{
       e.stopPropagation();
       const b=e.target.closest('button'); if(!b) return;
-      const a=b.dataset.a; closeNavMenu();
-      if(a==='file') navGoToFile(path);
-      else if(a==='focus') focusNavNode(root,node);
-      else clearNavFocus(root);
+      const item=items.find(it=>it.action===b.dataset.a);
+      closeNavMenu();
+      if(item) item.run();
     });
     menu.addEventListener('keydown',e=>{
       if(e.key==='Enter'||e.key===' ') e.stopPropagation();
     });
+  }
+  function openNavMenu(root,container,node,x,y){
+    const path=node.dataset.path, hunk=navFindHunk(path);
+    // Naming which file it lands on matters for a directory: it is one of several, not the one.
+    const fileLabel=hunk&&hunk.querySelector('.hunk-path').textContent.trim()===path
+      ?'Go to file':'Go to first file';
+    const items=[];
+    if(hunk) items.push({action:'file',icon:'&#8594;',label:fileLabel,run:()=>navGoToFile(path)});
+    items.push({action:'focus',icon:'&#9678;',label:'Focus downstream',run:()=>focusNavNode(root,node)});
+    if(root.classList.contains('vd-focusing'))
+      items.push({action:'clear',icon:'&#215;',label:'Clear focus',run:()=>clearNavFocus(root)});
+    openMenu(container,node,path,items,x,y);
   }
   dlg.addEventListener('close',()=>closeNavMenu());
   dlg.addEventListener('close',restoreGroupControls);
@@ -1351,46 +1586,94 @@
     return box.matches('.mermaid')?box.querySelector('svg')
       :box.querySelector('.mermaid:not([hidden]) svg');
   }
-  let activeGroupCtl=null,activeGroupHome=null; // the group's .vd-ctl currently living in #mermaid-zoom-controls, and where to put it back
+  // The group's .vd-ctl currently living in #mermaid-zoom-controls, and where to put it back:
+  // its original next sibling (or null, meaning it was the last child), not just its parent,
+  // so restoring puts it back at the same end of .wt-tabs it was appended to rather than in
+  // front of the tab buttons.
+  let activeGroupCtl=null,activeGroupHome=null,activeGroupNext=null;
   function restoreGroupControls(){
     if(!activeGroupCtl) return;
-    activeGroupHome.insertBefore(activeGroupCtl,activeGroupHome.firstChild);
-    activeGroupCtl=null; activeGroupHome=null;
+    activeGroupHome.insertBefore(activeGroupCtl,activeGroupNext);
+    activeGroupCtl=null; activeGroupHome=null; activeGroupNext=null;
+  }
+  // System structure view (a later, separate script -- see "System structure view" below):
+  // it is HTML boxes plus an svg overlay, not one <svg>, so it clones and wires itself rather
+  // than going through visibleSvg/panZoom below. This only clones+opens the dialog; the actual
+  // pan/zoom wiring is window.__vdsWireClone, exported by that script the same way this
+  // function itself is exported as window.__vdZoomOpen below.
+  function openStructureZoom(sys){
+    closeNavMenu();
+    const clone=sys.cloneNode(true);
+    // No box-wired flag to strip here: the structure script's own wireInstance() tracks wired
+    // boxes in a WeakSet keyed by element identity, not a DOM attribute, so these freshly
+    // cloned box elements read as unwired on their own.
+    // Strip the container's own zoom-opening semantics from the clone: it sits inside the
+    // already-open dialog, so "expand to full size" on it would do nothing useful, same reason
+    // this function otherwise only ever clones the innermost <svg>, never the wired .svgbox
+    // around it.
+    clone.removeAttribute('tabindex'); clone.removeAttribute('role');
+    clone.removeAttribute('aria-label'); delete clone.dataset.zoomWired;
+    // Strip layout leftovers drawEdges() baked into the ORIGINAL sys's inline style (columnGap,
+    // left/right padding, --vds-outpad) -- sized for that element's own width, which the clone
+    // (position:absolute, shrink-to-fit, no min-width) does not share.
+    clone.style.removeProperty('padding-left'); clone.style.removeProperty('padding-right');
+    clone.style.removeProperty('--vds-outpad');
+    const cloneCols=clone.querySelector('.vds-cols');
+    if(cloneCols) cloneCols.style.removeProperty('column-gap');
+    zbody.replaceChildren(clone);
+    if(!dlg.open) dlg.showModal();
+    zctl.hidden=true; // no group legend/level toggle to show for this diagram type
+    // Torn down on close, not left to the next open to replace: these listeners are bound to
+    // the shared #mermaid-zoom-body, not this clone, so they'd otherwise keep intercepting
+    // wheel/drag on whatever the dialog shows next.
+    const cleanup=window.__vdsWireClone(clone,zbody);
+    dlg.addEventListener('close',()=>cleanup.disconnect(),{once:true});
   }
   function openZoom(box){
+    if(box.classList.contains('vds-sys')) return openStructureZoom(box);
     closeNavMenu(); // otherwise the inline menu is left open, hidden behind the dialog
     const svg=visibleSvg(box);
     if(!svg) return;
-    tagNavNodes(box,svg); // a group graph renders on demand (see the level script's button), so this can run ahead of wire()'s own MutationObserver pass
-    const group=box.closest('.vd-symbols-group');
+    tagNavNodes(box,svg); // a group's call-graph tab renders on first pick (see wireGroupTabs), so this can run ahead of wire()'s own MutationObserver pass
+    // .vd-ctl belongs to the call-graph tab only; box.closest('.vd-symbols') is what tells its
+    // mermaid boxes apart from the flow box, which never sits inside .vd-symbols and shares
+    // only the outer .wt-panel with it -- .wt-panel alone would also pull the level toggle
+    // into the dialog when zooming flow.
+    const panel=box.closest('.wt-panel');
+    const ctl=panel&&box.closest('.vd-symbols')&&panel.querySelector('.vd-ctl');
     if(!dlg.open) dlg.showModal(); // showModal() throws if already open -- the dialog's own level toggle re-opens here to refresh, not to open a second time
     const clone=svg.cloneNode(true);
     clone.__navSource=svg; // focusNavNode/clearNavFocus mirror onto this, so fullscreen focus changes survive the dialog closing
     zbody.replaceChildren(clone);
     const api=panZoom(clone,'modal');
-    // A group's own legend and level toggle are off-screen with the rest of its container
-    // (.vd-symbols-group), so while its graph is open here they move into the dialog's own
-    // controls row instead -- moved, not cloned, so the toggle's existing click listener
-    // (level script) keeps driving it -- and back out on close, see restoreGroupControls.
-    if(group){
-      const ctl=group.querySelector('.vd-ctl');
-      if(ctl&&ctl.parentNode!==zctl){
-        restoreGroupControls();
-        activeGroupCtl=ctl; activeGroupHome=group;
-        zctl.insertBefore(ctl,zctl.firstChild);
-      }
+    // A group's own legend and level toggle sit in its .wt-tabs (see wireGroupTabs), so while
+    // its graph is open here they move into the dialog's own controls row instead -- moved,
+    // not cloned, so the toggle's existing click listener (level script) keeps driving it --
+    // and back out on close, see restoreGroupControls.
+    if(ctl&&ctl.parentNode!==zctl){
+      restoreGroupControls();
+      activeGroupCtl=ctl; activeGroupHome=ctl.parentNode; activeGroupNext=ctl.nextSibling;
+      zctl.insertBefore(ctl,zctl.firstChild);
     }
-    zctl.hidden=!api&&!group;
+    zctl.hidden=!api&&!ctl;
   }
   function wire(box){
+    // The structure view's own container: click on empty space or Enter/Space opens the
+    // dialog, exactly like the zoom-control setup below, but with no inner <svg> to find --
+    // box clicks below this stopPropagation() before a click ever reaches here.
+    if(box.classList.contains('vds-sys')){
+      if(!box.dataset.zoomWired){
+        box.dataset.zoomWired='1';
+        box.addEventListener('click',()=>openZoom(box));
+        box.addEventListener('keydown',e=>{
+          if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openZoom(box); }
+        });
+      }
+      return;
+    }
     const svg=visibleSvg(box);
     if(!svg) return;
     tagNavNodes(box,svg);
-    // A group's graph never sits on screen -- off-screen with the rest of its container,
-    // see .vd-symbols-group -- so it skips the click-to-zoom wiring below; the icon button
-    // built in the level script is its only way into the dialog. Tagging above still runs
-    // unconditionally so the dialog's cloned svg carries the node menu data regardless.
-    if(box.closest('.vd-symbols-group')) return;
     // The click/keydown setup below is one-shot, but mermaid can mutate the box a few times
     // while rendering, so panZoom's own per-svg guard makes re-wiring an already-wired svg a
     // cheap no-op.
@@ -1408,7 +1691,7 @@
     panZoom(svg,'inline');
   }
   function wireAll(){
-    document.querySelectorAll('.svgbox, .vd-symbols .mermaid').forEach(wire);
+    document.querySelectorAll('.svgbox, .vd-symbols .mermaid, .vds-sys').forEach(wire);
   }
   // mermaid renders asynchronously after startOnLoad, so watch for the svg to
   // appear instead of assuming it exists when this script runs. `hidden` is watched too: a
@@ -1418,6 +1701,8 @@
     {childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   wireAll();
   window.__vdZoomOpen=openZoom; // lets the level script's group-graph button, and its in-dialog level toggle, reuse this instead of a second render path
+  window.__vdOpenMenu=openMenu; // lets the structure script's own box menu reuse this instead of a second menu implementation
+  window.__vdGoToFile=navGoToFile; // ditto, for its "Go to walkthrough" item
 })();
 </script>
 <script>
@@ -1491,6 +1776,20 @@
   function markPendingResolve(id){ pendingResolveSet.add(id); persistPendingResolve(); }
   function clearPendingResolve(id){ if(pendingResolveSet.delete(id)) persistPendingResolve(); }
 
+  // Viewed files, from the per-file checkbox below: same localStorage scheme as
+  // pendingResolveSet above, a page-scoped key holding a plain array of paths -- the two are
+  // exactly the same shape of fact.
+  function loadViewedSet(){
+    try{
+      const raw=localStorage.getItem('hr-viewed:'+state.meta.id);
+      return raw?new Set(JSON.parse(raw)):new Set();
+    }catch(e){ return new Set(); }
+  }
+  let viewedSet=loadViewedSet();
+  function persistViewed(){
+    try{ localStorage.setItem('hr-viewed:'+state.meta.id, JSON.stringify([...viewedSet])); }catch(e){}
+  }
+
   // Mirrors notes.py's own resolve mutation shape (see the module docstring): the thread id
   // travels as a variable, never interpolated into the query string.
   const RESOLVE_THREAD_MUTATION=
@@ -1515,6 +1814,28 @@
       }
       return !n.stale;
     });
+  }
+
+  // "path:line", "path:start-end" for a multi-line thread (start_line/line, GitHub's own
+  // range-comment shape, should a synced thread ever carry one -- nothing authored on this
+  // page does), or just "line"/"" when a synced general comment carries no path.
+  function agentLocation(n){
+    if(!n.path) return n.line!=null?String(n.line):'';
+    if(n.start_line!=null&&n.line!=null&&n.start_line!==n.line) return n.path+':'+n.start_line+'-'+n.line;
+    return n.line!=null?n.path+':'+n.line:n.path;
+  }
+
+  // Plain text, not the JSON this replaced: the agent reads this directly as feedback to act
+  // on, so it reads like a person wrote it, with room to type more below (see the trailing
+  // newline). Order is page order, not creation order -- `order` is the same document-position
+  // counter wireLine assigns while walking the diff top to bottom, file by file, line by line.
+  function agentFeedbackText(notes){
+    const ordered=notes.slice().sort((a,b)=>(a.order||0)-(b.order||0));
+    const entries=ordered.map(n=>{
+      const where=agentLocation(n);
+      return where?where+'\n'+n.body:n.body;
+    });
+    return 'Feedback:\n'+entries.join('\n\n')+'\n';
   }
 
   // Fallback for navigator.clipboard, which is undefined on plenty of file:// pages (gated
@@ -1595,6 +1916,20 @@
     span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(); } });
   }
 
+  // Extension (no dot) and, for extension-less files, lowercase basename -> hljs language
+  // name, capped to what the vendored common bundle ships (see assets/highlight.VERSION).
+  const HLJS_LANG_BY_NAME={
+    js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',
+    ts:'typescript',tsx:'typescript',py:'python',pyi:'python',rb:'ruby',go:'go',rs:'rust',
+    java:'java',c:'c',h:'c',cpp:'cpp',cc:'cpp',cxx:'cpp',hpp:'cpp',hh:'cpp',cs:'csharp',
+    php:'php',pl:'perl',pm:'perl',lua:'lua',kt:'kotlin',kts:'kotlin',swift:'swift',r:'r',
+    sql:'sql',sh:'bash',bash:'bash',zsh:'bash',yml:'yaml',yaml:'yaml',json:'json',
+    xml:'xml',html:'xml',htm:'xml',css:'css',scss:'scss',less:'less',md:'markdown',
+    markdown:'markdown',ini:'ini',vb:'vbnet',graphql:'graphql',gql:'graphql',
+    m:'objectivec',mm:'objectivec',wasm:'wasm',diff:'diff',patch:'diff',
+    makefile:'makefile',dockerfile:'dockerfile',
+  };
+
   function wireHunk(pre){
     const details=pre.closest('details.hunk');
     const pathEl=details&&details.querySelector('.hunk-path');
@@ -1605,6 +1940,30 @@
     if(!parsed) return; // header didn't parse: leave this hunk's lines uncommentable rather than numbering them wrongly
     const hunkId=path+'\t'+parsed.prefix; // byte-identical to state.py's hunks[].id: same (path, prefix) key
     let oldN=parsed.oldStart, newN=parsed.newStart;
+    // Must run before the wireLine loop below: wireLine prepends a .dline-num badge element,
+    // and rewriting innerHTML after that would wipe it out.
+    if(window.hljs){
+      const base=path.slice(path.lastIndexOf('/')+1).toLowerCase();
+      const ext=base.includes('.')?base.slice(base.lastIndexOf('.')+1):'';
+      const lang=HLJS_LANG_BY_NAME[ext]||HLJS_LANG_BY_NAME[base];
+      if(lang&&hljs.getLanguage(lang)){
+        for(const span of [...pre.children]){
+          if(span.classList.contains('h')) continue;
+          const text=span.textContent;
+          try{
+            // ponytail: per-line, not per-hunk -- a multi-line string/comment can mis-colour
+            // past its first line (hljs v11 dropped the continuation arg). Whole-hunk highlight
+            // + re-split on markers would fix it, only worth it if this bites in practice.
+            if(span.classList.contains('c')){
+              span.innerHTML=hljs.highlight(text,{language:lang,ignoreIllegals:true}).value;
+            }else{
+              const marker=text[0].replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+              span.innerHTML=marker+hljs.highlight(text.slice(1),{language:lang,ignoreIllegals:true}).value;
+            }
+          }catch(e){ /* one bad line stays plain rather than breaking the rest of the hunk */ }
+        }
+      }
+    }
     for(const span of [...pre.children]){
       // GitHub anchors a comment to one side of the diff: added/context lines are the new
       // file (RIGHT, numbered off newStart), removed lines are the old file (LEFT, off oldStart).
@@ -2311,6 +2670,52 @@
     dirtyBanner.hidden = !(state.meta&&state.meta.dirty);
   }
 
+  // Group totals for the "N/M viewed" count beside each .wt-group heading (walkthrough.py
+  // ships the span empty, see there). The DOM carries no explicit group->file link, so this
+  // walks siblings from one heading to the next, stopping at the next heading.
+  function groupFileHunks(heading){
+    const hunks=[];
+    for(let el=heading.nextElementSibling; el&&!el.matches('h3.wt-group'); el=el.nextElementSibling){
+      if(el.matches('details.hunk')) hunks.push(el);
+    }
+    return hunks;
+  }
+
+  function updateGroupViewed(){
+    document.querySelectorAll('h3.wt-group').forEach(heading=>{
+      const out=heading.querySelector('.wt-viewed');
+      const hunks=groupFileHunks(heading);
+      if(!out||!hunks.length) return;
+      const viewed=hunks.filter(d=>{
+        const cb=d.querySelector('.hunk-viewed-cb');
+        return cb&&cb.checked;
+      }).length;
+      out.textContent=viewed+'/'+hunks.length+' viewed';
+    });
+  }
+
+  // Checking collapses the file, GitHub's own Viewed behaviour; unchecking leaves it open --
+  // the reader may already be looking at it again, so nothing should force it shut.
+  function wireViewedCheckboxes(){
+    document.querySelectorAll('.hunk-viewed').forEach(label=>{
+      // Stops the click before it reaches the <summary> ancestor and toggles the block --
+      // same fix as the "summary a" listener further down, just for this control.
+      label.addEventListener('click',e=>e.stopPropagation());
+      const cb=label.querySelector('.hunk-viewed-cb');
+      const details=label.closest('details.hunk');
+      const pathEl=details&&details.querySelector('.hunk-path');
+      const path=pathEl?pathEl.textContent.trim():'';
+      if(!cb||!details||!path) return;
+      if(viewedSet.has(path)){ cb.checked=true; details.open=false; }
+      cb.addEventListener('change',()=>{
+        if(cb.checked){ viewedSet.add(path); details.open=false; } else viewedSet.delete(path);
+        persistViewed();
+        updateGroupViewed();
+      });
+    });
+    updateGroupViewed();
+  }
+
   // A row inside a collapsed <details class="hunk"> isn't focusable, so .focus() below would
   // be a silent no-op -- walk every ancestor <details> open first.
   function openAncestorDetails(el){
@@ -2442,7 +2847,7 @@
       reveal.hidden=true;
       const notes=notesForAgent();
       if(!notes.length){ status.textContent='No comments ready to copy yet.'; return; }
-      copyText(JSON.stringify({notes:notes},null,2),()=>{
+      copyText(agentFeedbackText(notes),()=>{
         status.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.';
       });
     });
@@ -2475,6 +2880,7 @@
   document.querySelectorAll('pre.diff').forEach(wireHunk);
   wireCommentsPanel();
   wireResolutionDialog();
+  wireViewedCheckboxes();
   render();
 })();
 </script>
@@ -2488,8 +2894,9 @@ document.querySelectorAll('summary a').forEach(a => {
 });
 </script>
 <script>
-// Per-hunk explanations, on by default, from the one toggle in the Walkthrough heading. The
-// file role lines are not affected -- see the body:not(.show-notes) rule in the stylesheet.
+// Explanations -- per-hunk notes, a group's why line and its whole diagram panel -- on by
+// default, from the one toggle in the Walkthrough heading. The file role lines are not
+// affected -- see the body:not(.show-notes) rule in the stylesheet.
 // Persisted so a reader who turned the prose off keeps it off across the next recap they open;
 // file:// and a sandboxed share host both throw on localStorage, hence the try/catch on every
 // access. Read against an explicit '0' rather than a truthy '1', so a reader who has never
@@ -2559,6 +2966,466 @@ document.querySelectorAll('summary a').forEach(a => {
   };
   btn.addEventListener('click',()=>{ on=!on; apply(); });
   apply();
+})();
+</script>
+<script>
+// System structure view (scripts/sections.py render_structure): draws the edges between
+// .vds-comp boxes as an svg overlay, from each box's real screen geometry -- there is no dagre
+// layout to read positions off here, unlike the mermaid graphs above, so this reads the DOM
+// instead. Routing, the box menu and the dialog pan/zoom are ported from the approved mockup
+// (gen_mockup_structure_v4.py / mockup-structure-v4.html), minus its ?autotest/?focusdemo/
+// ?zoomdemo/?geomcheck hooks. The box menu and "Go to walkthrough" reuse window.__vdOpenMenu/
+// __vdGoToFile, exported by the nav script above, instead of a second menu implementation; the
+// container's own click/Enter/Space-opens-#mermaid-zoom behaviour is wired by that same
+// script's wire()/wireAll()/openZoom(), not here -- this script only draws, and exports
+// window.__vdsWireClone for openZoom's .vds-sys branch to wire the dialog clone.
+(function(){
+  const ns = 'http://www.w3.org/2000/svg';
+
+  function edgesOf(sys){
+    try { return JSON.parse(sys.dataset.edges || '[]'); } catch (e) { return []; }
+  }
+  function instances(){
+    return [...document.querySelectorAll('.vds-sys')];
+  }
+  function relRect(el, originRect){
+    const r = el.getBoundingClientRect();
+    return {
+      left: r.left - originRect.left, right: r.right - originRect.left,
+      top: r.top - originRect.top, bottom: r.bottom - originRect.top,
+      width: r.width, height: r.height,
+    };
+  }
+
+  // Rounds a polyline (only horizontal/vertical segments) into an SVG path -- deterministic,
+  // no layout engine, just geometry: shorten each side of a corner by up to `r` and replace it
+  // with a quadratic curve.
+  function roundedPath(pts, r){
+    if (pts.length < 2) return '';
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    let d = `M${pts[0][0]},${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+      const d1 = Math.min(r, dist(p0, p1) / 2), d2 = Math.min(r, dist(p1, p2) / 2);
+      const l1 = dist(p0, p1) || 1, l2 = dist(p1, p2) || 1;
+      const ax = p1[0] - (p1[0] - p0[0]) / l1 * d1, ay = p1[1] - (p1[1] - p0[1]) / l1 * d1;
+      const bx = p1[0] + (p2[0] - p1[0]) / l2 * d2, by = p1[1] + (p2[1] - p1[1]) / l2 * d2;
+      d += ` L${ax},${ay} Q${p1[0]},${p1[1]} ${bx},${by}`;
+    }
+    const last = pts[pts.length - 1];
+    d += ` L${last[0]},${last[1]}`;
+    return d;
+  }
+
+  // Every anchor's y must land strictly inside its OWN box, never on its border or past it.
+  // Default: spread across the box's middle 64% (0.18-0.82 of its height); fall back to a
+  // tighter, evenly-compressed spread bounded to [top+MARGIN, bottom-MARGIN] only if the
+  // default would pack anchors closer than MIN_SPACE apart.
+  function spreadYs(top, height, n){
+    const MARGIN = 10, MIN_SPACE = 8;
+    const lo = top + MARGIN, hi = Math.max(lo, top + height - MARGIN);
+    let ys;
+    if (n <= 1) {
+      ys = [(lo + hi) / 2];
+    } else {
+      const defLo = top + height * 0.18, defHi = top + height * 0.82;
+      const defSpacing = (defHi - defLo) / (n - 1);
+      if (defSpacing >= MIN_SPACE) {
+        ys = Array.from({ length: n }, (_, i) => defLo + (defHi - defLo) * i / (n - 1));
+      } else {
+        const span = Math.min(MIN_SPACE * (n - 1), hi - lo);
+        const mid = (lo + hi) / 2, start = mid - span / 2;
+        ys = Array.from({ length: n }, (_, i) => start + span * i / (n - 1));
+      }
+    }
+    return ys.map(y => Math.min(hi, Math.max(lo, y)));
+  }
+
+  function drawEdges(sys){
+    const svg = sys.querySelector('svg.vds-edges');
+    if (!svg) return;
+    const edges = edgesOf(sys);
+    svg.innerHTML = '';
+    if (!edges.length) return;
+
+    const boxes = [...sys.querySelectorAll('.vds-comp')];
+    // Component id lives in data-cid, not a plain `id`: the dialog clones this whole diagram
+    // wholesale for the full-size view, and two elements sharing one `id` while it's open is
+    // invalid markup a data attribute avoids.
+    const boxOrder = new Map(boxes.map((b, i) => [b.dataset.cid, i]));
+    const dcolOf = new Map(boxes.map(b => [b.dataset.cid, Number(b.dataset.dcol)]));
+    const cols = [...sys.querySelectorAll('.vds-cols > .vds-col')];
+
+    // Classify first (dcol is static, no measuring needed yet), so the top shelf and the
+    // near-lane gutters can be sized before any box position is measured -- reserving space
+    // after measuring would invalidate every rect just taken.
+    const adjacent = [], outside = [];
+    edges.forEach((e, idx) => {
+      if (!boxOrder.has(e.from) || !boxOrder.has(e.to)) return;
+      const rec = { ...e, idx, sd: dcolOf.get(e.from), td: dcolOf.get(e.to) };
+      (rec.td === rec.sd + 1 ? adjacent : outside).push(rec);
+    });
+    const outPad = outside.length ? 18 + (outside.length - 1) * 8 : 0;
+    // .vds-cols transitions margin-top for a nice grow when outPad changes (e.g. a resize
+    // recomputing it) -- but a measurement taken right after setting --vds-outpad can land
+    // mid-animation. Suspend the transition for exactly this write, restore it once boxRel is
+    // captured below, so the change and the measurement land at the SAME (final) layout.
+    const colsEl = sys.querySelector('.vds-cols');
+    const prevColsTransition = colsEl.style.transition;
+    colsEl.style.transition = 'none';
+    sys.style.setProperty('--vds-outpad', outPad + 'px');
+
+    // Tally how many edges will need a near-lane in each (gutter, side) pool -- purely from
+    // column indices, no measuring required -- so a crowded gutter can widen itself before
+    // anything downstream is measured.
+    const CLEAR = 11, SPACE = 8;
+    const poolCounts = new Map();
+    function tally(g, side){
+      const k = g + '|' + side;
+      poolCounts.set(k, (poolCounts.get(k) || 0) + 1);
+    }
+    adjacent.forEach(e => { tally(e.sd, 'from'); tally(e.sd, 'to'); });
+    outside.forEach(e => {
+      tally(e.sd <= cols.length - 2 ? e.sd : 'R', 'from');
+      tally(e.td >= 1 ? e.td - 1 : 'L', 'to');
+    });
+    function spreadFor(k){
+      const n = poolCounts.get(k) || 1;
+      return CLEAR + Math.max(0, n - 1) * SPACE + 4; // +4: buffer past the last lane
+    }
+    let maxGutterHalf = 0;
+    for (let g = 0; g < cols.length - 1; g++) {
+      maxGutterHalf = Math.max(maxGutterHalf, spreadFor(g + '|from'), spreadFor(g + '|to'));
+    }
+    const curGap = parseFloat(getComputedStyle(colsEl).columnGap) || 0;
+    const neededGap = maxGutterHalf * 2;
+    if (neededGap > curGap) colsEl.style.columnGap = neededGap + 'px';
+    const curPadL = parseFloat(getComputedStyle(sys).paddingLeft) || 0;
+    const curPadR = parseFloat(getComputedStyle(sys).paddingRight) || 0;
+    const neededPadL = spreadFor('L|to'), neededPadR = spreadFor('R|from');
+    if (neededPadL > curPadL) sys.style.paddingLeft = neededPadL + 'px';
+    if (neededPadR > curPadR) sys.style.paddingRight = neededPadR + 'px';
+
+    // Now measure, after every reservation above has been applied.
+    const sysRect = sys.getBoundingClientRect();
+    const colRel = cols.map(c => relRect(c, sysRect));
+    const boxRel = new Map(boxes.map(b => [b.dataset.cid, relRect(b, sysRect)]));
+    colsEl.style.transition = prevColsTransition;
+    const colsTopY = Math.min(...colRel.map(c => c.top));
+    const shelfBase = colsTopY - 12; // clears the tallest box top by >=12px
+
+    // "Near lanes": a pool per (gutter, side). 'from' hugs the gutter's LEFT boundary (the
+    // column whose boxes exit rightward into it), 'to' the RIGHT boundary the same way. 'L'/'R'
+    // are virtual gutters living in the side padding, for a source/target with no column on
+    // that side. The widening above guarantees every pool fits within its half of the gutter
+    // (or its padding strip), so no extra clamp is needed here.
+    const nearPools = new Map();
+    function reserveNear(g, side, sortKey, setX){
+      const k = g + '|' + side;
+      if (!nearPools.has(k)) nearPools.set(k, []);
+      nearPools.get(k).push({ sortKey, setX });
+    }
+    function gutterEdge(g, side){
+      if (g === 'L') return side === 'from' ? 0 : colRel[0].left;
+      if (g === 'R') return side === 'from' ? colRel[cols.length - 1].right : sysRect.width;
+      return side === 'from' ? colRel[g].right : colRel[g + 1].left;
+    }
+    function resolveNear(){
+      nearPools.forEach((items, key) => {
+        const [gRaw, side] = key.split('|');
+        const g = (gRaw === 'L' || gRaw === 'R') ? gRaw : Number(gRaw);
+        const base = gutterEdge(g, side);
+        items.sort((a, b) => a.sortKey - b.sortKey);
+        items.forEach((it, i) => it.setX(side === 'from' ? base + CLEAR + i * SPACE : base - CLEAR - i * SPACE));
+      });
+    }
+
+    // Anchor spread: every edge leaving/entering a given box side gets its own point along
+    // that side instead of the vertical middle. Left/right only -- no edge attaches to a top
+    // or bottom border.
+    const sideAnchors = new Map(); // "boxId|side" -> [{sortKey, setter}]
+    function reserveAnchor(boxId, side, sortKey, setter){
+      const k = boxId + '|' + side;
+      if (!sideAnchors.has(k)) sideAnchors.set(k, []);
+      sideAnchors.get(k).push({ sortKey, setter });
+    }
+    function resolveAnchors(){
+      sideAnchors.forEach((items, key) => {
+        const [boxId, side] = key.split('|');
+        const rect = boxRel.get(boxId);
+        items.sort((a, b) => a.sortKey - b.sortKey);
+        const ys = spreadYs(rect.top, rect.height, items.length);
+        items.forEach((it, i) => { it.setter(side === 'left' ? rect.left : rect.right, ys[i]); });
+      });
+    }
+
+    const built = []; // { e, points() } resolved after lanes+anchors settle
+    adjacent.forEach(e => {
+      const a = {};
+      reserveAnchor(e.from, 'right', boxOrder.get(e.to), (x, y) => { a.x1 = x; a.y1 = y; });
+      reserveAnchor(e.to, 'left', boxOrder.get(e.from), (x, y) => { a.x2 = x; a.y2 = y; });
+      // Both stubs sit in the same gutter (e.sd): a right-side stub into a lane hugging the
+      // source's column, a short jog at the mid-height between the two anchors, then a
+      // left-side stub out of a lane hugging the target's column.
+      const near = {};
+      reserveNear(e.sd, 'from', boxOrder.get(e.from), x => { near.x1 = x; });
+      reserveNear(e.sd, 'to', boxOrder.get(e.to), x => { near.x2 = x; });
+      built.push({
+        e, points: () => {
+          const jogY = (a.y1 + a.y2) / 2;
+          return [[a.x1, a.y1], [near.x1, a.y1], [near.x1, jogY], [near.x2, jogY], [near.x2, a.y2], [a.x2, a.y2]];
+        },
+      });
+    });
+    // Outside routing (skip-column, same-column, or backward): right-side stub into a lane
+    // beside the source's own column, straight up that lane (never through a column's box
+    // stack), across a shared shelf above every column, straight down a lane beside the
+    // target's own column, then a left-side stub in.
+    outside.forEach((e, i) => {
+      const a = {};
+      reserveAnchor(e.from, 'right', e.idx, (x, y) => { a.x1 = x; a.y1 = y; });
+      reserveAnchor(e.to, 'left', e.idx, (x, y) => { a.x2 = x; a.y2 = y; });
+      const srcGutter = e.sd <= cols.length - 2 ? e.sd : 'R';
+      const dstGutter = e.td >= 1 ? e.td - 1 : 'L';
+      const near = {};
+      reserveNear(srcGutter, 'from', e.idx, x => { near.x1 = x; });
+      reserveNear(dstGutter, 'to', e.idx, x => { near.x2 = x; });
+      const shelfY = shelfBase - i * 8;
+      built.push({
+        e, points: () => [
+          [a.x1, a.y1], [near.x1, a.y1], [near.x1, shelfY],
+          [near.x2, shelfY], [near.x2, a.y2], [a.x2, a.y2],
+        ],
+      });
+    });
+
+    resolveNear();
+    resolveAnchors();
+
+    const defs = document.createElementNS(ns, 'defs');
+    for (const [k, color] of [['call', 'var(--green)'], ['gone', 'var(--red)'], ['impl', 'var(--muted)']]) {
+      defs.innerHTML += `<marker id="vds-m-${k}-${sys.dataset.iid}" viewBox="0 0 8 8" refX="8" refY="4" `
+        + `markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="${color}"/></marker>`;
+    }
+    svg.appendChild(defs);
+    built.forEach(({ e, points }) => {
+      const kind = e.state === 'gone' ? 'gone' : (e.kind === 'call' ? 'call' : 'impl');
+      const pts = points();
+      const p = document.createElementNS(ns, 'path');
+      p.setAttribute('d', roundedPath(pts, 7));
+      p.setAttribute('class', 'vds-e vds-e-' + kind);
+      p.dataset.from = e.from; p.dataset.to = e.to;
+      p.setAttribute('marker-end', `url(#vds-m-${kind}-${sys.dataset.iid})`);
+      svg.appendChild(p);
+      // Endpoint dots: where the edge actually meets the box border.
+      [pts[0], pts[pts.length - 1]].forEach(pt => {
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', pt[0]); c.setAttribute('cy', pt[1]); c.setAttribute('r', 2.75);
+        c.setAttribute('class', 'vds-e vds-dot vds-e-' + kind);
+        c.dataset.from = e.from; c.dataset.to = e.to;
+        svg.appendChild(c);
+      });
+    });
+  }
+
+  // ---------- hover/focus/sticky-focus + chip filter ----------
+  const chips = [...document.querySelectorAll('.vds-chip')];
+  let hoverId = null, stickyId = null;
+
+  function applyChipFilterOn(sys){
+    const pressed = chips.find(c => c.getAttribute('aria-pressed') === 'true');
+    const g = pressed ? pressed.dataset.g : 'all';
+    sys.querySelectorAll('.vds-comp').forEach(b => b.classList.toggle('vds-dim', g !== 'all' && b.dataset.g !== g));
+  }
+  function refresh(){
+    const activeId = stickyId || hoverId;
+    instances().forEach(sys => {
+      sys.classList.toggle('vds-active', !!activeId);
+      const edges = edgesOf(sys);
+      const paths = [...sys.querySelectorAll('.vds-e')];
+      if (activeId) {
+        const related = new Set([activeId]);
+        edges.forEach(e => { if (e.from === activeId || e.to === activeId) { related.add(e.from); related.add(e.to); } });
+        sys.querySelectorAll('.vds-comp').forEach(b => b.classList.toggle('vds-dim', !related.has(b.dataset.cid)));
+        paths.forEach(p => p.classList.toggle('vds-lit', p.dataset.from === activeId || p.dataset.to === activeId));
+      } else {
+        paths.forEach(p => p.classList.remove('vds-lit'));
+        applyChipFilterOn(sys);
+      }
+    });
+  }
+  chips.forEach(chip => chip.addEventListener('click', () => {
+    chips.forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
+    refresh();
+  }));
+
+  // ---------- box click menu, reusing the nav script's shared openMenu/navGoToFile ----------
+  function menuHostFor(sys){
+    // Inside the dialog the menu must position against #mermaid-zoom-body (unscaled), never
+    // the zoomed .vds-sys clone itself -- appending into a CSS-scaled ancestor would scale the
+    // menu along with it.
+    return sys.closest('#mermaid-zoom-body') || sys;
+  }
+  function openBoxMenu(sys, box, x, y){
+    const id = box.dataset.cid, path = box.dataset.path;
+    const items = [
+      { action: 'walkthrough', icon: '&#8594;', label: 'Go to walkthrough', run: () => window.__vdGoToFile(path) },
+    ];
+    if (stickyId === id) {
+      items.push({ action: 'clear', icon: '&#215;', label: 'Clear focus', run: () => { stickyId = null; refresh(); } });
+    } else {
+      items.push({ action: 'focus', icon: '&#9678;', label: 'Focus', run: () => { stickyId = id; hoverId = null; refresh(); } });
+      if (stickyId) items.push({ action: 'clear', icon: '&#215;', label: 'Clear focus', run: () => { stickyId = null; refresh(); } });
+    }
+    window.__vdOpenMenu(menuHostFor(sys), box, path, items, x, y);
+  }
+  // Tracks which .vds-comp elements already have their listeners attached. A WeakSet keyed by
+  // element identity, not a data-wired DOM attribute: cloneNode(true) (see openStructureZoom in
+  // the nav script) copies attributes but never listeners, so a DOM-attribute guard would have
+  // told wireInstance the clone's boxes were already wired -- when in fact they carry no
+  // listeners of their own at all -- and left the whole dialog's box menu dead. A WeakSet has no
+  // such copy to go stale: the clone's box elements are new objects the set has never seen.
+  const wiredBoxes = new WeakSet();
+  function wireInstance(sys){
+    sys.querySelectorAll('.vds-comp').forEach(box => {
+      if (wiredBoxes.has(box)) return;
+      wiredBoxes.add(box);
+      box.addEventListener('click', e => {
+        e.stopPropagation();
+        openBoxMenu(sys, box, e.clientX, e.clientY);
+      });
+      box.addEventListener('keydown', e => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        e.stopPropagation(); // else it also bubbles to the container's own Enter/Space-opens-dialog handler
+        const r = box.getBoundingClientRect();
+        openBoxMenu(sys, box, r.right, r.top);
+      });
+      box.addEventListener('mouseenter', () => { if (!stickyId) { hoverId = box.dataset.cid; refresh(); } });
+      box.addEventListener('mouseleave', () => { if (!stickyId) { hoverId = null; refresh(); } });
+      box.addEventListener('focusin', () => { if (!stickyId) { hoverId = box.dataset.cid; refresh(); } });
+      box.addEventListener('focusout', () => { if (!stickyId) { hoverId = null; refresh(); } });
+    });
+  }
+
+  // ---------- CSS pan+zoom for the dialog clone ----------
+  // The structure diagram is HTML boxes plus an svg overlay, not one <svg>, so there is no
+  // shared viewBox to rewrite the way the template's own panZoom() does for a mermaid graph.
+  // Instead the whole cloned .vds-sys gets one CSS transform (translate + scale, origin
+  // top-left): wheel zooms around the cursor, pointer drag pans, and a small-drag threshold
+  // suppresses the trailing click so a drag that starts on a box doesn't also pop its menu --
+  // same split as the template's own moved/suppressClick tracking.
+  function wireModalPanZoom(clone, body){
+    let x = 0, y = 0, k = 1;
+    const MIN_K = 0.25, MAX_K = 6;
+    clone.style.transformOrigin = '0 0';
+    const apply = () => { clone.style.transform = `translate(${x}px,${y}px) scale(${k})`; };
+    apply();
+
+    // body is the shared #mermaid-zoom-body, reused across opens, so these listeners must not
+    // outlive this one; the controller aborts them all at once on dialog close.
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    body.addEventListener('wheel', e => {
+      e.preventDefault();
+      const r = body.getBoundingClientRect();
+      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+      const factor = e.deltaY > 0 ? 1 / 1.15 : 1.15;
+      const newK = Math.min(MAX_K, Math.max(MIN_K, k * factor));
+      if (newK === k) return;
+      // Keep the point under the cursor fixed: its position in the clone's own (unscaled)
+      // coordinate space is (cx-x)/k before the change, so solve for the new x that puts it
+      // back under the cursor at the new scale.
+      x = cx - (cx - x) * (newK / k);
+      y = cy - (cy - y) * (newK / k);
+      k = newK;
+      apply();
+    }, { passive: false, signal });
+
+    let drag = null, moved = false, suppressClick = false, capturedId = null;
+    body.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      drag = { x: e.clientX, y: e.clientY, ox: x, oy: y };
+      moved = false;
+    }, { signal });
+    body.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!moved && Math.hypot(dx, dy) > 4) {
+        moved = true;
+        // Deferred to a real drag: capturing on pointerdown retargets the eventual click to
+        // body in Chrome, so a plain box click never reaches its own listener (wireInstance).
+        try { body.setPointerCapture(e.pointerId); capturedId = e.pointerId; } catch (_) {}
+      }
+      x = drag.ox + dx; y = drag.oy + dy;
+      apply();
+    }, { signal });
+    const endDrag = () => {
+      if (capturedId != null) {
+        try { body.releasePointerCapture(capturedId); } catch (_) {}
+        capturedId = null;
+      }
+      if (moved) suppressClick = true;
+      drag = null; moved = false;
+    };
+    body.addEventListener('pointerup', endDrag, { signal });
+    body.addEventListener('pointercancel', endDrag, { signal });
+    // Capture phase: fires before the box's own bubble-phase click listener (which opens its
+    // menu), so a drag that ended over a box never also opens that box's menu.
+    body.addEventListener('click', e => {
+      if (suppressClick) { e.stopPropagation(); suppressClick = false; }
+    }, { capture: true, signal });
+
+    return {
+      controller,
+      // Never measure box/gutter positions while a CSS scale is applied -- getBoundingClientRect
+      // would return already-scaled pixels, and drawEdges (which measures screen pixels, then
+      // relies on the ancestor transform to scale its own output) would double-scale
+      // everything. Drop to identity, redraw at natural size, restore whatever pan/zoom was
+      // live before the call.
+      redraw(){
+        const sx = x, sy = y, sk = k;
+        x = 0; y = 0; k = 1; apply();
+        drawEdges(clone);
+        x = sx; y = sy; k = sk; apply();
+      },
+    };
+  }
+
+  // ---------- boot: wire+draw every inline diagram already on the page ----------
+  let iidSeq = 0;
+  document.querySelectorAll('.vds-sys').forEach(sys => {
+    sys.dataset.iid = 'i' + (iidSeq++);
+    wireInstance(sys);
+    drawEdges(sys);
+    new ResizeObserver(() => drawEdges(sys)).observe(sys);
+  });
+  refresh();
+
+  // Exported for openZoom()'s .vds-sys branch (see the nav script above): wires the fullscreen
+  // clone's box menu and pan/zoom, redraws its edges once the dialog's own layout has
+  // committed, and keeps them attached across a dialog resize. Mirrors window.__vdZoomOpen's
+  // own one-function-does-the-rest shape.
+  window.__vdsWireClone = function(clone, body){
+    clone.dataset.iid = 'z' + (iidSeq++); // distinct from the inline original's own marker ids
+    wireInstance(clone);
+    const pz = wireModalPanZoom(clone, body);
+    // showModal() opening a `display:none` subtree has shown a real, reproducible race: a
+    // forced synchronous reflow (getBoundingClientRect, which drawEdges calls) can still see a
+    // narrower pre-settle layout in the same tick. rAF guarantees the dialog's own layout has
+    // actually been produced first.
+    requestAnimationFrame(() => { pz.redraw(); refresh(); });
+    // Keep edges attached if the dialog itself is resized (e.g. the OS window changes size
+    // while it's open) -- redraw() already resets to identity before measuring and restores
+    // the live pan/zoom afterwards, so a resize never has to know or care what scale/offset
+    // was active.
+    const ro = new ResizeObserver(() => pz.redraw());
+    ro.observe(body);
+    // Bundled so openStructureZoom's single dialog 'close' handler tears down both: the
+    // ResizeObserver and the pan/zoom listeners wireModalPanZoom bound to the shared body.
+    return { disconnect(){ ro.disconnect(); pz.controller.abort(); } };
+  };
 })();
 </script>
 </body>

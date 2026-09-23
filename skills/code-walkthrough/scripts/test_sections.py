@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from sections import (  # noqa: E402
     LABEL_WRAP_TARGET,
+    STRUCTURE_MARKER,
     ZWSP,
     LINK_COLOR_GONE,
     LINK_COLOR_NEW,
@@ -24,9 +25,12 @@ from sections import (  # noqa: E402
     _symbols_legend,
     _symbols_orphans,
     _symbols_scope,
+    _structure_implements_edges,
+    render_structure,
     render_symbols,
     wrap_label,
 )
+from walkthrough import _group_color  # noqa: E402  the colours render_structure must match
 
 # ---- symdelta.py fixtures: nodes/edges shaped exactly like build_graph's own output --------
 
@@ -105,12 +109,14 @@ def test_symbols_scoped_out_of_existence_renders_no_section():
 
 
 def test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized():
-    out = render_symbols(SYMDELTA)
+    # The default-level flip is an inline-only concern now: a group's own symbols level can
+    # still be too big to open unasked, even though the page-level graph never draws one at all.
+    out = render_symbols(SYMDELTA, inline=True)
     assert 'data-default="2"' in out
     assert '<div class="mermaid" data-level="1" hidden ' in out
 
     big = _oversized_delta()
-    out = render_symbols(big, explain=True)
+    out = render_symbols(big, explain=True, inline=True)
     assert 'data-default="1"' in out
     assert '<div class="mermaid" data-level="2" hidden ' in out
     assert "too many to open unasked" in out
@@ -135,12 +141,88 @@ def test_symbols_returns_nothing_when_there_are_no_nodes():
     assert render_symbols({}) == ""
 
 
-def test_symbols_html_has_marker_legend_slider_and_three_levels():
+def test_symbols_null_language_shows_a_note_with_reason_and_remedy():
+    data = {"language": None, "reason": "typescript-language-server not found on PATH",
+            "remedy": "npm i -g typescript typescript-language-server"}
+    out = render_symbols(data)
+    assert out.startswith("<!-- code-walkthrough:symbols -->")
+    assert "typescript-language-server not found on PATH" in out
+    assert "npm i -g typescript typescript-language-server" in out
+    assert "--doctor" in out
+    assert '<p class="note">' in out
+
+
+def test_symbols_null_language_shows_a_note_with_no_remedy():
+    # A dependency-incompatibility refusal has no remedy and nothing to do with
+    # language-server setup, so the --doctor pointer (which only checks that) is dropped too.
+    data = {"language": None,
+            "reason": "package.json or a JS lockfile changed between base and head"}
+    out = render_symbols(data)
+    assert "package.json or a JS lockfile changed between base and head" in out
+    assert "Fix:" not in out
+    assert "--doctor" not in out
+
+
+def test_symbols_null_language_note_escapes_reason_and_remedy():
+    data = {"language": None, "reason": "found <script>alert(1)</script> & broke",
+            "remedy": 'export PATH="a<b>c&d:$PATH"'}
+    out = render_symbols(data)
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+    assert "a&lt;b&gt;c&amp;d" in out
+
+
+def test_symbols_no_supported_language_reads_as_a_fact_not_a_fix():
+    data = {"language": None,
+            "reason": "no supported files (.go, .py, .rs, .ts, .tsx) changed between a and b"}
+    out = render_symbols(data)
+    assert out.startswith("<!-- code-walkthrough:symbols -->")
+    assert "No call graph:" in out
+    assert "Fix:" not in out
+    assert "--doctor" not in out
+
+
+def test_symbols_null_language_inline_group_tab_stays_empty():
+    # A group's own call-graph tab just doesn't exist when there's nothing to show; the
+    # page-level note above already explained why, once.
+    data = {"language": None, "reason": "boom", "remedy": "fix it"}
+    assert render_symbols(data, inline=True) == ""
+
+
+def test_symbols_llm_resolver_shows_the_caveat_page_level_and_inline():
+    # resolver == "llm" is a graph that IS shown, unlike language: None above; the caveat marks
+    # it as inferred rather than compiler-resolved instead of hiding it.
+    data = {**SYMDELTA, "resolver": "llm"}
+    for out in (render_symbols(data), render_symbols(data, inline=True)):
+        assert '<p class="note">' in out
+        assert "inferred" in out and "not resolved by a compiler" in out
+
+
+def test_symbols_mechanical_resolver_has_no_llm_caveat():
+    data = {**SYMDELTA, "resolver": "go/packages"}
+    assert "inferred" not in render_symbols(data)
+    assert "inferred" not in render_symbols(data, inline=True)
+
+
+def test_symbols_page_level_has_marker_heading_and_packages_only():
+    # No toggle, no symbols level: that detail now lives per group instead (inline=True below).
     out = render_symbols(SYMDELTA)
 
     assert out.startswith("<!-- code-walkthrough:symbols -->")
-    assert '<div class="vd-symbols" data-default="2">' in out
-    assert '<h2 class="h2-row"><span>Changes visualization</span>' in out
+    assert out.count('<div class="mermaid"') == 1
+    assert '<h2>Changes visualization</h2>' in out
+    assert "vd-level-toggle" not in out
+    assert "data-level" not in out
+    assert "data-default" not in out
+    assert "vd-legend" not in out
+    assert "flowchart LR" in out
+    assert "flowchart TB" not in out
+
+
+def test_symbols_inline_has_legend_slider_and_two_levels():
+    out = render_symbols(SYMDELTA, inline=True)
+
+    assert "<!-- code-walkthrough:symbols -->" not in out
     # Two levels, so a toggle: it opens on symbols and its label names that, not the switch.
     # A class, not an id: a per-group graph puts more than one toggle on the page.
     assert 'class="vd-level-toggle"' in out
@@ -159,8 +241,9 @@ def test_symbols_html_has_marker_legend_slider_and_three_levels():
 
 def test_symbols_html_never_emits_classdef():
     # Regression guard: classDef used to leak into the HTML page and override its own light/dark
-    # node theming (see the comment above LINK_COLOR_NEW/GONE in sections.py).
-    out = render_symbols(SYMDELTA)
+    # node theming (see the comment above LINK_COLOR_NEW/GONE in sections.py). inline=True to
+    # cover both levels' source in one pass.
+    out = render_symbols(SYMDELTA, inline=True)
 
     assert "classDef" not in out
 
@@ -198,7 +281,9 @@ def test_symbols_inline_data_symbols_is_the_changed_symbol_count_in_scope():
 def test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed():
     # a and b are both top-level packages -- no containment relationship between them -- so
     # undrawn_count is 0 here and the note says nothing about it (see the nonzero case below).
-    out = render_symbols(SYMDELTA)
+    # A group's symbols level, hence inline=True: the page-level note carries no drawn/listed
+    # split at all (see test_symbols_page_level_note_has_no_drawn_listed_split below).
+    out = render_symbols(SYMDELTA, inline=True)
 
     note = out.split('<p class="note">', 1)[1].split("</p>", 1)[0]
     assert note == (
@@ -216,7 +301,7 @@ def test_symbols_note_names_the_undrawn_containment_count_when_nonzero():
     edges = SYMDELTA["edges"] + [{"id": "e1", "source": "a:New", "target": "a/inner:D", "state": "new"}]
     data = {**SYMDELTA, "nodes": nodes, "edges": edges}
 
-    out = render_symbols(data)
+    out = render_symbols(data, inline=True)
 
     note = out.split('<p class="note">', 1)[1].split("</p>", 1)[0]
     assert (
@@ -227,16 +312,38 @@ def test_symbols_note_names_the_undrawn_containment_count_when_nonzero():
     assert "×" not in level1
 
 
+def test_symbols_page_level_note_has_no_drawn_listed_split():
+    # The page-level graph never holds a symbol back as an orphan -- it never draws a symbol at
+    # all -- so its note is just the packages/relations count, plus the same undrawn-containment
+    # sentence _mermaid_packages itself can report.
+    nodes = SYMDELTA["nodes"] + [
+        {"id": "a/inner", "label": "inner", "kind": "pkg", "parent": "a", "depth": 1},
+        {"id": "a/inner:D", "label": "D", "kind": "symbol", "parent": "a/inner", "depth": 1,
+         "state": "new", "file": "a/inner/d.go"},
+    ]
+    edges = SYMDELTA["edges"] + [{"id": "e1", "source": "a:New", "target": "a/inner:D", "state": "new"}]
+    data = {**SYMDELTA, "nodes": nodes, "edges": edges}
+
+    out = render_symbols(data)
+
+    note = out.split('<p class="note">', 1)[1].split("</p>", 1)[0]
+    assert note == (
+        "Showing 3 packages, 3 relations between them. "
+        "1 relations between a package and a package inside it are not drawn because the "
+        "containment box already shows them."
+    )
+
+
 def test_symbols_moved_renders_as_prose_not_a_graph_node():
     # The `vd-moved` prose list is the sole channel for a package-level move: a package-level
-    # move edge was tried on the level-1 diagram and reverted because it broke the containment
+    # move edge was tried on the packages diagram and reverted because it broke the containment
     # layout (see render_symbols).
     out = render_symbols(SYMDELTA)
 
     assert '<ul class="vd-moved">' in out
     assert "2 call sites moved, a/old -&gt; b" in out
-    level1 = out.split('data-level="1"', 1)[1].split(">", 1)[1].split("</div>", 1)[0]
-    assert "call sites moved" not in level1
+    diagram = out.split('<div class="mermaid"', 1)[1].split(">", 1)[1].split("</div>", 1)[0]
+    assert "call sites moved" not in diagram
 
 
 def test_mermaid_packages_level1_never_draws_a_dashed_move_edge():
@@ -244,8 +351,8 @@ def test_mermaid_packages_level1_never_draws_a_dashed_move_edge():
     # render_symbols must not feed it into _mermaid_packages at all, let alone as a `-.->` edge.
     out = render_symbols(SYMDELTA)
 
-    level1 = out.split('data-level="1"', 1)[1].split(">", 1)[1].split("</div>", 1)[0]
-    assert "-.->" not in level1
+    diagram = out.split('<div class="mermaid"', 1)[1].split(">", 1)[1].split("</div>", 1)[0]
+    assert "-.->" not in diagram
 
 
 SYMDELTA_WITH_ORPHAN = {
@@ -260,8 +367,9 @@ SYMDELTA_WITH_ORPHAN = {
 def test_symbols_orphan_symbol_is_listed_instead_of_drawn():
     # b:Lonely is new (so it's a "changed" symbol that has to be shown) but touches no edge in
     # the symbols level's edge set -- exactly the disconnected-node case that blew that level
-    # out to thousands of pixels wide on a real PR.
-    out = render_symbols(SYMDELTA_WITH_ORPHAN)
+    # out to thousands of pixels wide on a real PR. A group's own symbols level, hence
+    # inline=True: the page-level graph never draws or lists individual symbols at all.
+    out = render_symbols(SYMDELTA_WITH_ORPHAN, inline=True)
 
     level2 = out.split('data-level="2"', 1)[1].split("</div>", 1)[0]
     assert "Lonely" not in level2
@@ -311,8 +419,9 @@ def test_mermaid_symbols_for_level_draws_normally_when_something_qualifies():
 
 
 def test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram():
-    # b:Lonely is the only changed symbol and has no edge at all, so both level 2 and level 3
-    # end up with nothing to draw -- exactly the all-orphaned case the placeholder exists for.
+    # b:Lonely is the only changed symbol and has no edge at all, so the symbols level ends up
+    # with nothing to draw -- exactly the all-orphaned case the placeholder exists for. A
+    # group's own symbols level, hence inline=True.
     data = {
         "nodes": [
             {"id": "b", "label": "b", "kind": "pkg", "parent": None, "depth": 0},
@@ -322,7 +431,7 @@ def test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram(
         "edges": [],
     }
 
-    out = render_symbols(data)
+    out = render_symbols(data, inline=True)
 
     level2 = out.split('data-level="2"', 1)[1].split("</div>", 1)[0]
     assert "Nothing to draw at this detail level" in level2
@@ -350,17 +459,19 @@ def test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes():
 
 def test_symbols_html_level1_data_ids_maps_package_boxes_to_their_directory():
     # A package box has no file of its own, but it does have a path, which is what the node
-    # menu resolves to the package's first hunk in the walkthrough.
+    # menu resolves to the package's first hunk in the walkthrough. The page-level graph is
+    # packages only, so its one diagram carries this map directly, no data-level split needed.
     out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE})
 
-    attr = out.split('data-level="1"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
+    attr = out.split('data-ids="', 1)[1].split('"', 1)[0]
     ids = json.loads(attr.replace("&quot;", '"'))
     assert set(ids.values()) == {"a"}
     assert all(k.startswith("P") for k in ids)
 
 
 def test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes():
-    out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE})
+    # A group's own symbols level, hence inline=True.
+    out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE}, inline=True)
 
     attr = out.split('data-level="2"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
     ids = json.loads(attr.replace("&quot;", '"'))
@@ -376,7 +487,7 @@ def test_symbols_html_data_ids_survives_a_quote_in_a_file_path():
         {"id": "a:G", "label": "G", "kind": "symbol", "parent": "a", "depth": 1,
          "state": "new", "file": "a/g.go"},
     ]
-    out = render_symbols({"nodes": nodes, "edges": _ONE_EDGE})
+    out = render_symbols({"nodes": nodes, "edges": _ONE_EDGE}, inline=True)
 
     attr = out.split('data-level="2"', 1)[1].split('data-ids="', 1)[1].split('"', 1)[0]
     assert '"' not in attr  # every quote became &quot;, so none can end the attribute early
@@ -857,32 +968,275 @@ def test_symbols_cli_rejects_a_kind_other_than_symbols():
 
 def test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node():
     # It used to be one static row under the heading, explaining both states even on a package
-    # view that has neither on screen.
-    out = render_symbols(SYMDELTA)
+    # view that has neither on screen. A group's own two-level graph, hence inline=True: the
+    # page-level graph is packages only and never carries a legend at all (see
+    # test_symbols_page_level_has_marker_heading_and_packages_only).
+    out = render_symbols(SYMDELTA, inline=True)
 
-    # The heading starts on the level the page opens on (symbols), which does draw both.
-    heading = out.split('class="h2-row"')[1].split("</h2>")[0]
-    assert "sw-new" in heading and "sw-gone" in heading
+    ctl = out.split('<div class="vd-ctl">', 1)[1].split("</div>", 1)[0]
+    assert "sw-new" in ctl and "sw-gone" in ctl
     level1 = out.split('data-level="1"', 1)[1].split(">", 1)[0]
     assert "sw-new" not in level1  # the package level draws no new/gone node
     level2 = out.split('data-level="2"', 1)[1].split(">", 1)[0]
     assert "sw-new" in level2 and "sw-gone" in level2
 
 
-def test_explain_drops_the_new_gone_colouring_the_empty_baseline_makes_meaningless():
+def test_explain_renames_the_page_level_heading_to_structure():
     out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE}, explain=True)
 
-    assert ">structure<" not in out  # the toggle still names the detail level, not the section
-    assert "Structure</span>" in out and "Changes visualization" not in out
+    assert "<h2>Structure</h2>" in out
+    assert "Changes visualization" not in out
+
+
+def test_explain_drops_the_new_gone_colouring_the_empty_baseline_makes_meaningless():
+    # A group's own symbols level, hence inline=True: new/gone colouring, the legend, and the
+    # drawn/listed note wording are all symbols-level concepts now.
+    out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE}, explain=True,
+                         inline=True)
+
     assert "  class " not in out and "linkStyle" not in out
     assert "vd-legend" not in out
     assert "changed symbols drawn as nodes" not in out
     assert "symbols drawn as nodes" in out
 
 
+# ---- structure.py's render_structure: structure.json fixture, shaped like structure.py's own
+# analyse() output --------------------------------------------------------------------------
+
+STRUCTURE = {
+    "language": "go",
+    "components": [
+        {"id": "a/x.go:Foo", "name": "Foo", "kind": "struct", "file": "a/x.go", "state": "new",
+         "members": [{"name": "Run", "state": "new"}], "group": 0, "column": 0},
+        {"id": "b/y.go:Bar", "name": "Bar", "kind": "struct", "file": "b/y.go", "state": "changed",
+         "members": [{"name": "Call", "state": "changed"}, {"name": "Old", "state": "unchanged"}],
+         "group": 1, "column": 1},
+        {"id": "c/z.go:Baz", "name": "Baz", "kind": "struct", "file": "c/z.go", "state": "removed",
+         "members": [{"name": "Gone", "state": "removed"}], "group": None, "column": 1},
+    ],
+    "edges": [
+        {"from": "a/x.go:Foo", "to": "b/y.go:Bar"},
+        {"from": "c/z.go:Baz", "to": "a/x.go:Foo", "state": "gone"},
+    ],
+    "implements": [{"from": "b/y.go:Bar", "to": "Foo", "kind": "implements"}],
+    "dropped": 0,
+}
+
+
+def test_structure_marker_is_the_first_line():
+    assert render_structure(STRUCTURE).startswith(STRUCTURE_MARKER)
+
+
+def test_structure_null_language_renders_a_reason_note_not_a_view():
+    data = {"language": None, "reason": "no changed files in a supported language"}
+    out = render_structure(data)
+    assert STRUCTURE_MARKER in out
+    assert "<h2>System change</h2>" in out
+    assert "No structure view: no changed files in a supported language." in out
+
+
+def test_structure_explain_null_language_renames_the_heading():
+    out = render_structure({"language": None, "reason": "x"}, explain=True)
+    assert "<h2>How it fits together</h2>" in out
+    assert "System change" not in out
+
+
+def test_structure_no_components_renders_nothing():
+    assert render_structure({"language": "go", "components": []}) == ""
+
+
+def test_structure_bare_dict_renders_nothing():
+    # A bare {} (no structure.json produced at all) must not be read as `language: null`
+    # structure.py actually returned -- see render_structure's own docstring.
+    assert render_structure({}) == ""
+
+
+def test_structure_review_mode_shows_badges_members_removed_box_and_gone_edge():
+    out = render_structure(STRUCTURE)
+    assert "vds-badge" in out
+    assert "vds-members" in out
+    assert 'vds-comp gone"' in out
+    assert "Baz" in out
+    assert "vds-e-gone" in out or "&quot;state&quot;: &quot;gone&quot;" in out
+
+
+def test_structure_explain_mode_drops_badges_members_removed_boxes_and_gone_edges():
+    out = render_structure(STRUCTURE, explain=True)
+    assert "vds-badge" not in out
+    assert "vds-members" not in out
+    assert "Baz" not in out  # removed component dropped outright, not just unstyled
+    assert "&quot;state&quot;: &quot;gone&quot;" not in out
+    assert "<h2>How it fits together</h2>" in out
+    assert "2 components in 2 columns." in out
+
+
+def test_structure_group_colouring_matches_group_color():
+    out = render_structure(STRUCTURE)
+    assert f"--c:{_group_color(0)}" in out
+    assert f"--c:{_group_color(1)}" in out
+
+
+def test_structure_filter_chips_one_per_story_stop():
+    out = render_structure(STRUCTURE)
+    assert 'data-g="all"' in out
+    assert 'data-g="0"' in out
+    assert 'data-g="1"' in out
+    # Baz carries group None and must not earn a stop of its own.
+    assert out.count('class="vds-chip"') == 3
+
+
+def test_structure_no_group_data_renders_no_chips():
+    data = {"language": "go", "components": [
+        {"id": "x:F", "name": "F", "kind": "function", "file": "x.go", "state": "new",
+         "members": [], "group": None, "column": 0},
+    ], "edges": [], "implements": [], "dropped": 0}
+    out = render_structure(data)
+    assert "vds-chips" not in out
+
+
+def test_structure_dropped_count_surfaced_when_positive():
+    dropped = {**STRUCTURE, "dropped": 2}
+    out = render_structure(dropped)
+    assert "2 components dropped to fit the diagram." in out
+    assert "dropped" not in render_structure(STRUCTURE)
+
+
+def test_structure_implements_edge_resolves_target_by_name():
+    out = render_structure(STRUCTURE)
+    assert "implements" in out  # the legend line for the implements edge from Bar to Foo
+
+
+def test_structure_implements_edge_with_no_matching_name_is_dropped():
+    data = {**STRUCTURE, "implements": [{"from": "b/y.go:Bar", "to": "NoSuchType",
+                                         "kind": "implements"}]}
+    out = render_structure(data)
+    assert "implements" not in out
+
+
+def test_structure_hostile_component_id_cannot_break_out_of_the_id_attribute():
+    data = {"language": "go", "components": [
+        {"id": 'a" onmouseover="alert(1)', "name": 'Foo" onmouseover="alert(2)',
+         "kind": "struct", "file": "a.go", "state": "new", "members": [], "group": None,
+         "column": 0},
+    ], "edges": [], "implements": [], "dropped": 0}
+    out = render_structure(data)
+    assert 'onmouseover="alert(1)"' not in out
+    assert 'onmouseover="alert(2)"' not in out  # the display name gets the same &quot; pass
+    assert "&quot;" in out
+    assert 'aria-label="Open menu for Foo&quot; onmouseover=&quot;alert(2)"' in out
+
+
+def test_structure_implements_name_collision_resolves_by_shown_order_not_set_order():
+    # Two same-named components; whichever sorts first in structure.py's own (column, file,
+    # name) order -- the order `shown` already carries -- must win, every run, regardless of
+    # PYTHONHASHSEED. Checked both ways by reversing `shown` and confirming the winner flips.
+    components = [
+        {"id": "a.go:Dup", "name": "Dup", "kind": "struct", "file": "a.go", "state": "new",
+         "members": [], "group": None, "column": 0},
+        {"id": "b.go:Dup", "name": "Dup", "kind": "struct", "file": "b.go", "state": "new",
+         "members": [], "group": None, "column": 1},
+        {"id": "c.go:Impl", "name": "Impl", "kind": "struct", "file": "c.go", "state": "new",
+         "members": [], "group": None, "column": 1},
+    ]
+    implements = [{"from": "c.go:Impl", "to": "Dup", "kind": "implements"}]
+    kept_ids = {c["id"] for c in components}
+
+    resolved = _structure_implements_edges(implements, components, kept_ids)
+    assert resolved == [{"from": "c.go:Impl", "to": "a.go:Dup", "kind": "implements"}]
+
+    reversed_resolved = _structure_implements_edges(implements, list(reversed(components)), kept_ids)
+    assert reversed_resolved == [{"from": "c.go:Impl", "to": "b.go:Dup", "kind": "implements"}]
+
+
+def test_structure_member_chips_carry_a_marker_not_just_colour():
+    out = render_structure(STRUCTURE)
+    assert ">+Run<" in out  # new member
+    assert ">~Call<" in out  # changed member
+    assert ">Old<" in out  # unchanged member carries no marker, the neutral baseline
+
+
+def test_structure_explain_mode_also_surfaces_dropped_count():
+    dropped = {**STRUCTURE, "dropped": 3}
+    out = render_structure(dropped, explain=True)
+    assert "3 components dropped to fit the diagram." in out
+
+
+def test_structure_chip_labels_use_group_titles_when_present():
+    data = {**STRUCTURE, "groups": [{"index": 0, "title": "Tools"}, {"index": 1, "title": "Contracts"}]}
+    out = render_structure(data)
+    assert ">1 Tools</button>" in out
+    assert ">2 Contracts</button>" in out
+
+
+def test_structure_chip_falls_back_to_ordinal_when_one_title_is_missing():
+    data = {**STRUCTURE, "groups": [{"index": 0, "title": "Tools"}]}  # group 1 has no entry
+    out = render_structure(data)
+    assert ">1 Tools</button>" in out
+    assert ">2</button>" in out
+
+
+def test_structure_chip_title_promotes_a_backticked_identifier_to_code():
+    data = {**STRUCTURE, "groups": [{"index": 0, "title": "The `run_workflow` tool"}]}
+    out = render_structure(data)
+    assert ">1 The <code>run_workflow</code> tool</button>" in out
+
+
+def test_structure_chip_falls_back_to_ordinal_with_no_groups_key_at_all():
+    out = render_structure(STRUCTURE)  # the fixture carries no top-level "groups" at all
+    assert ">1</button>" in out
+    assert ">2</button>" in out
+
+
+def test_structure_no_column_headings():
+    out = render_structure(STRUCTURE)
+    assert "<h5>" not in out
+    assert "Column 1" not in out
+
+
+def test_structure_callers_on_the_left_note_present():
+    out = render_structure(STRUCTURE)
+    assert '<p class="vds-hint">Callers on the left, callees on the right.</p>' in out
+
+
+def test_structure_also_touched_note_is_rendered_and_escaped():
+    data = {**STRUCTURE, "also_touched": ["helper", "<script>"]}
+    out = render_structure(data)
+    assert "Also touched: <code>helper</code>, <code>&lt;script&gt;</code>" in out
+    assert "<script>" not in out  # would break out of the note otherwise
+
+
+def test_structure_no_also_touched_renders_no_note():
+    out = render_structure(STRUCTURE)  # the fixture carries no also_touched at all
+    assert "vds-also" not in out
+
+
+def test_structure_boxes_carry_role_button_and_an_escaped_data_path():
+    data = {"language": "go", "components": [
+        {"id": "a.go:Foo", "name": "Foo", "kind": "struct", "file": 'a" onclick="x().go',
+         "state": "new", "members": [], "group": None, "column": 0},
+    ], "edges": [], "implements": [], "dropped": 0}
+    out = render_structure(data)
+    assert 'role="button"' in out
+    # The hostile quote in the file path is neutralised inside the attribute...
+    assert 'data-path="a&quot; onclick=&quot;x().go"' in out
+    # ...so the attribute can't be broken out of to inject a live onclick handler.
+    assert 'data-path="a" onclick="x().go"' not in out
+
+
+def test_structure_container_carries_the_zoom_aria_label():
+    out = render_structure(STRUCTURE)
+    assert ('<div class="vds-sys" tabindex="0" role="button" '
+            'aria-label="Expand diagram to full size"') in out
+
+
 if __name__ == "__main__":
     tests = [
         test_symbols_returns_nothing_when_there_are_no_nodes,
+        test_symbols_null_language_shows_a_note_with_reason_and_remedy,
+        test_symbols_null_language_shows_a_note_with_no_remedy,
+        test_symbols_null_language_note_escapes_reason_and_remedy,
+        test_symbols_no_supported_language_reads_as_a_fact_not_a_fix,
+        test_symbols_null_language_inline_group_tab_stays_empty,
         test_scope_to_paths_keeps_the_far_end_of_an_edge_that_leaves_the_scope,
         test_scope_to_paths_drops_what_no_edge_reaches,
         test_scope_to_paths_matches_on_a_path_segment_not_a_string_prefix,
@@ -891,13 +1245,15 @@ if __name__ == "__main__":
         test_symbols_with_dot_scope_renders_a_nonempty_section,
         test_symbols_scoped_out_of_existence_renders_no_section,
         test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized,
-        test_symbols_html_has_marker_legend_slider_and_three_levels,
+        test_symbols_page_level_has_marker_heading_and_packages_only,
+        test_symbols_inline_has_legend_slider_and_two_levels,
         test_symbols_html_never_emits_classdef,
         test_symbols_inline_has_no_page_marker_heading_or_details_wrapper,
         test_symbols_inline_toggle_is_a_class_not_an_id,
         test_symbols_inline_data_symbols_is_the_changed_symbol_count_in_scope,
         test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed,
         test_symbols_note_names_the_undrawn_containment_count_when_nonzero,
+        test_symbols_page_level_note_has_no_drawn_listed_split,
         test_symbols_moved_renders_as_prose_not_a_graph_node,
         test_mermaid_packages_level1_never_draws_a_dashed_move_edge,
         test_symbols_orphan_symbol_is_listed_instead_of_drawn,
@@ -949,6 +1305,36 @@ if __name__ == "__main__":
         test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order,
         test_symbols_cli_rejects_a_kind_other_than_symbols,
         test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node,
+        test_explain_renames_the_page_level_heading_to_structure,
+        test_symbols_llm_resolver_shows_the_caveat_page_level_and_inline,
+        test_symbols_mechanical_resolver_has_no_llm_caveat,
+        test_structure_marker_is_the_first_line,
+        test_structure_null_language_renders_a_reason_note_not_a_view,
+        test_structure_explain_null_language_renames_the_heading,
+        test_structure_no_components_renders_nothing,
+        test_structure_bare_dict_renders_nothing,
+        test_structure_review_mode_shows_badges_members_removed_box_and_gone_edge,
+        test_structure_explain_mode_drops_badges_members_removed_boxes_and_gone_edges,
+        test_structure_group_colouring_matches_group_color,
+        test_structure_filter_chips_one_per_story_stop,
+        test_structure_no_group_data_renders_no_chips,
+        test_structure_dropped_count_surfaced_when_positive,
+        test_structure_implements_edge_resolves_target_by_name,
+        test_structure_implements_edge_with_no_matching_name_is_dropped,
+        test_structure_hostile_component_id_cannot_break_out_of_the_id_attribute,
+        test_structure_implements_name_collision_resolves_by_shown_order_not_set_order,
+        test_structure_member_chips_carry_a_marker_not_just_colour,
+        test_structure_explain_mode_also_surfaces_dropped_count,
+        test_structure_chip_labels_use_group_titles_when_present,
+        test_structure_chip_falls_back_to_ordinal_when_one_title_is_missing,
+        test_structure_chip_title_promotes_a_backticked_identifier_to_code,
+        test_structure_chip_falls_back_to_ordinal_with_no_groups_key_at_all,
+        test_structure_no_column_headings,
+        test_structure_callers_on_the_left_note_present,
+        test_structure_also_touched_note_is_rendered_and_escaped,
+        test_structure_no_also_touched_renders_no_note,
+        test_structure_boxes_carry_role_button_and_an_escaped_data_path,
+        test_structure_container_carries_the_zoom_aria_label,
     ]
     for test in tests:
         test()

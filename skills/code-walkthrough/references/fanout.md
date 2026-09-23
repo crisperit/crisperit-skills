@@ -92,11 +92,33 @@ everything.
 
 One subagent, on a stronger model (sonnet class) since it needs the whole change in view and
 nothing downstream can check its judgment, writes `<scratchpad>/prose.json` with `target`,
-`what_changed`, `how_it_works` and `flow_mermaid`, from the fragments and the numstat. Under
-about 2000 lines, hand it `<scratchpad>/raw.diff` too and tell it to read it, since that removes
-the guessing; above that, fragments and the numstat only, never `raw.diff`, the size this split
-exists to protect. Either way it may open specific files in the repo when a fragment note is not
-enough to explain the machinery.
+`overview` and `verdict`, from the fragments and the numstat. Under about 2000 lines, hand
+it `<scratchpad>/raw.diff` too and tell it to read it, since that removes the guessing; above
+that, fragments and the numstat only, never `raw.diff`, the size this split exists to protect.
+Either way it may open specific files in the repo when a fragment note is not enough to explain
+the machinery. It never writes `flow_mermaid`: with two or more groups the story map replaces
+it, and with one group the grouping subagent (below) is the one that knows that and writes it,
+since it runs after this one and is the only one to see the final group count.
+
+Tell it what `overview` is for: a lead of one or two sentences saying what this is (or what the
+change is) and who or what uses it, no file names in the lead, then three to five bullets, one
+line each, carrying the organizing ideas only. A bullet may name one symbol or path when that
+name IS the idea; most should name none -- density, not the markup, is what produced the wall
+this schema replaces. Nothing goes below that altitude: the detail a reader wants next already
+lives in each file's `role`, each hunk's `note`, and a group's `why`, and reaching for
+completeness here is exactly the failure this brief exists to head off.
+
+Worked example, the shape wanted, as prose (it becomes one JSON string, the lead first, then the
+bullets, one `\n` between bullets; the renderer tells the lead from the bullets by where the
+first `- ` line starts, not by a blank line, so this reads fine with or without one):
+
+    Rate limiting now reads its thresholds from live config instead of compile-time constants,
+    so an operator can tighten a limit without redeploying.
+
+    - Thresholds load once at startup and refresh on a config change event
+    - A stale config falls back to the last good values rather than zero
+    - `RateLimiter` swaps its polling loop for a debounced watcher
+    - Metrics moved out to their own package, so the limiter stays free of reporting concerns
 
 Tell it, on either brief: every identifier in the prose is copied from the source, never
 reconstructed from what a name in that language usually looks like, so an exported
@@ -105,7 +127,7 @@ lowercase. A signature change is claimed only when it is visibly in the diff, ne
 function of that name plausibly gained a parameter elsewhere.
 
 Tell it to reply with `prose.json`'s path and a count of fields filled, never their content. An
-agent that pastes `what_changed` back into its own report is exactly how that prose ends up in
+agent that pastes `overview` back into its own report is exactly how that prose ends up in
 the main thread's context a second time; the file is the deliverable, the reply is a receipt.
 
 ## Merging
@@ -123,12 +145,28 @@ step exists: `references/rationale.md`.
 
 After the merge, one subagent, on a stronger model (sonnet class) since it needs the whole change
 in view and nothing downstream can check its judgment, gets the `(path, role)` pairs from the
-merged analysis, plus `symdelta.counts`/`symdelta.moved`. It returns `groups` and `verdict`;
+merged analysis, plus `symdelta.counts`/`symdelta.moved`. It returns `groups`, in story order;
 write what it returns into `analysis.json` before the gate, and review it rather than author it
 yourself. This is a deliberate tradeoff: `groups` is the reading order a
 human follows and is the least safe field here to hand off, but a `(path, role)` list plus the
 graph summary is enough to group from, and it moves 40 to 50 seconds off what the main thread
 would otherwise spend writing groups, notes and gate patches by hand.
+
+Tell it each group may also carry its own `flow_mermaid`: one small diagram, `sequenceDiagram` or
+`flowchart LR`, its pick per group. Default to a sequence; fall back to a flowchart only when the
+group genuinely has no order to show, a theme like error handling or config plumbing where
+participants and an ordered exchange would have to be invented. At most about 8 steps, and omit
+the field rather than draw something it had to guess.
+
+Tell it about the two fields that drive the story map. `hop`, 2 to 6 words with one backticked
+identifier that has to appear in `raw.diff`, names the hand-off to the NEXT group in the list --
+the last group that isn't a `side` group must not have one, since there is no next stop for it
+to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
+the story) that the map lists off the main line rather than in the chain. And tell it about the
+top-level `flow_mermaid` it is now responsible for: leave it blank when it settles on two or
+more groups (the story map replaces it), but when it settles on exactly one group, copy that
+group's own `flow_mermaid` (if it wrote one) up to the top level too, since a single group has
+no map to carry it instead.
 
 `validate_analysis.py` prints one plain line per problem and exits non-zero: a file present in
 the diff but missing from `files[]`, a blank `role`, an invented file or hunk, and a filled-in
@@ -136,7 +174,11 @@ the diff but missing from `files[]`, a blank `role`, an invented file or hunk, a
 check tokenises with `[A-Za-z_][A-Za-z0-9_]*`, splits camelCase and snake_case, compares
 case-insensitively, ignores context lines, and skips a hunk whose changed lines carry no
 identifiers at all. It is deliberately language independent: `symdelta.py` already owns the
-per-language token split, and duplicating it here is the thing to avoid.
+per-language token split, and duplicating it here is the thing to avoid. A group's `hop` runs
+through the same tokeniser, checked against the whole diff rather than one hunk, since a
+hand-off can point at either side of a group boundary; `hop` also fails over six words, `side`
+fails when it isn't a plain boolean, and the last group that isn't a `side` group fails if it
+carries a `hop` at all.
 
 ### The empty-note floor, and why the old per-hunk churn check is gone
 

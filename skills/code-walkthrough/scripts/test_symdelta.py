@@ -3,6 +3,8 @@
 git/go needed); the rest build a throwaway git repo under tempfile.TemporaryDirectory() and
 leave nothing behind. The end-to-end Go test is skipped when `go` isn't on PATH."""
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -883,6 +885,30 @@ def test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections
         assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
 
 
+# ---- wiring tests: link_node_modules must not symlink a relative target --------------------
+
+
+def test_link_node_modules_resolves_a_relative_repo_path():
+    # A relative repo, embedded verbatim in the symlink target, would point the worktree's
+    # node_modules at itself instead of the real one -- worktree and repo live in different dirs.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        (repo / "node_modules").mkdir(parents=True)
+        worktree = Path(tmp) / "worktree"
+        worktree.mkdir()
+
+        cwd = os.getcwd()
+        os.chdir(repo)
+        try:
+            symdelta.link_node_modules(".", worktree)
+        finally:
+            os.chdir(cwd)
+
+        dst = worktree / "node_modules"
+        assert dst.exists()
+        assert os.path.isabs(os.readlink(dst))
+
+
 # ---- wiring tests: node_modules coverage preflight, before any worktree gets created -------
 
 
@@ -1146,6 +1172,153 @@ def test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails():
         symdelta.check_typescript_tooling = original_check
 
 
+def test_split_path_trap_pulls_the_remedy_out_of_the_reason():
+    # The remedy must not stay inside `reason` too -- callers show both fields together, and
+    # leaving it in both places would print the same `export PATH=...` line twice.
+    reason = ('pyright-langserver is installed in /opt/npm/bin but that directory is not on '
+              'PATH; add it, e.g. export PATH="/opt/npm/bin:$PATH"')
+    trimmed, remedy = symdelta._split_path_trap(reason)
+    assert trimmed == 'pyright-langserver is installed in /opt/npm/bin but that directory is not on PATH'
+    assert remedy == 'export PATH="/opt/npm/bin:$PATH"'
+
+
+def test_split_path_trap_returns_the_reason_unchanged_with_no_remedy_for_a_plain_reason():
+    reason = "pyright-langserver not found on PATH"
+    assert symdelta._split_path_trap(reason) == (reason, None)
+
+
+def test_analyse_lsp_uses_the_path_trap_remedy_instead_of_a_reinstall():
+    # LANGUAGE_SERVER_REMEDY's `npm i -g` would be a no-op on a binary that's already installed;
+    # a PATH-trap reason carries its own fix, and that must win, with the fix pulled out of the
+    # reason so it isn't shown twice.
+    path_trap_reason = ('pyright-langserver is installed in /opt/npm/bin but that directory is '
+                         'not on PATH; add it, e.g. export PATH="/opt/npm/bin:$PATH"')
+    original_check = symdelta.check_typescript_tooling
+    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (False, path_trap_reason)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            _write(repo, "a.py", "def a():\n    pass\n")
+            base = _commit(repo, "base")
+            _write(repo, "a.py", "def a():\n    return 1\n")
+            head = _commit(repo, "head")
+
+            result = symdelta.analyse_python(repo, base, head)
+            assert result == {
+                "language": None,
+                "reason": 'pyright-langserver is installed in /opt/npm/bin but that directory '
+                          'is not on PATH',
+                "remedy": 'export PATH="/opt/npm/bin:$PATH"',
+            }
+    finally:
+        symdelta.check_typescript_tooling = original_check
+
+
+# ---- --doctor: no diff, base or head needed ---------------------------------------------
+
+
+def test_doctor_report_is_ok_for_every_language_when_everything_checks_out():
+    original_which = symdelta.shutil.which
+    original_build = symdelta.build_extractor
+    original_check = symdelta.check_language_server
+    symdelta.shutil.which = lambda tool: "/usr/bin/go" if tool == "go" else None
+    symdelta.build_extractor = lambda: None
+    symdelta.check_language_server = lambda repo, lang: (True, None)
+    try:
+        report = symdelta.doctor_report()
+    finally:
+        symdelta.shutil.which = original_which
+        symdelta.build_extractor = original_build
+        symdelta.check_language_server = original_check
+
+    lines = report.splitlines()
+    assert lines[0] == "go: toolchain OK, extractor builds"
+    assert any(line.startswith("typescript: OK") for line in lines)
+    assert any(line.startswith("python: OK") for line in lines)
+    assert any(line.startswith("rust: OK") for line in lines)
+
+
+def test_doctor_report_names_the_go_toolchain_as_missing():
+    original_which = symdelta.shutil.which
+    symdelta.shutil.which = lambda tool: None
+    try:
+        report = symdelta.doctor_report()
+    finally:
+        symdelta.shutil.which = original_which
+
+    assert report.splitlines()[0] == "go: toolchain not found on PATH"
+
+
+def test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy():
+    original_which = symdelta.shutil.which
+    original_check = symdelta.check_language_server
+    symdelta.shutil.which = lambda tool: None
+
+    def fake_check(repo, lang):
+        if lang == "typescript":
+            return False, ('typescript-language-server is installed in /opt/npm/bin but that '
+                            'directory is not on PATH; add it, e.g. '
+                            'export PATH="/opt/npm/bin:$PATH"')
+        return False, f"{lang} tool not found on PATH"
+
+    symdelta.check_language_server = fake_check
+    try:
+        report = symdelta.doctor_report()
+    finally:
+        symdelta.shutil.which = original_which
+        symdelta.check_language_server = original_check
+
+    by_lang = {line.split(":", 1)[0]: line for line in report.splitlines()}
+    assert 'export PATH="/opt/npm/bin:$PATH"' in by_lang["typescript"]
+    # And named exactly once -- check_language_server's reason already carries the fix, so
+    # printing the split-out remedy too must not repeat that same PATH line.
+    assert by_lang["typescript"].count('export PATH="/opt/npm/bin:$PATH"') == 1
+    assert symdelta.LANGUAGE_SERVER_REMEDY["python"] in by_lang["python"]
+
+
+def test_doctor_report_survives_a_present_but_broken_binary():
+    # shutil.which finds it, but spawning it still raises OSError (e.g. not executable) --
+    # check_language_server only guards the initialize round-trip, not the spawn itself, so
+    # doctor_report must catch this rather than losing the whole report to one bad language.
+    original_which = symdelta.shutil.which
+    original_check = symdelta.check_language_server
+    symdelta.shutil.which = lambda tool: None
+
+    def fake_check(repo, lang):
+        if lang == "typescript":
+            raise OSError("Exec format error")
+        return True, None
+
+    symdelta.check_language_server = fake_check
+    try:
+        report = symdelta.doctor_report()
+    finally:
+        symdelta.shutil.which = original_which
+        symdelta.check_language_server = original_check
+
+    by_lang = {line.split(":", 1)[0]: line for line in report.splitlines()}
+    assert "failed to start" in by_lang["typescript"]
+    assert by_lang["python"].strip().endswith("OK (pyright-langserver advertises callHierarchy)")
+
+
+def test_main_doctor_flag_needs_no_repo_base_or_head():
+    original_argv = sys.argv
+    original_doctor_report = symdelta.doctor_report
+    symdelta.doctor_report = lambda: "stubbed doctor output"
+    sys.argv = ["symdelta.py", "--doctor"]
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = symdelta.main()
+    finally:
+        sys.argv = original_argv
+        symdelta.doctor_report = original_doctor_report
+
+    assert rc == 0
+    assert buf.getvalue().strip() == "stubbed doctor output"
+
+
 # ---- pure-logic tests: a hung LSP extractor raises a clean error, not a raw traceback ---
 
 
@@ -1307,6 +1480,32 @@ def test_run_extractor_raises_runtime_error_on_timeout():
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
             assert "600" in str(exc) and "/tmp/some-worktree" in str(exc)
+    finally:
+        symdelta.subprocess.run = original_run
+
+
+def test_run_extractor_omits_goflags_when_go_work_exists_and_sets_it_otherwise():
+    # -mod=mod is illegal once Go is in workspace mode ("go: -mod may only be set to readonly
+    # or vendor when in workspace mode"), so this must track go.work's presence, not be constant.
+    original_run = symdelta.subprocess.run
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    symdelta.subprocess.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            (worktree / "go.work").write_text("go 1.21\n\nuse ./a\n")
+            symdelta.run_extractor(worktree)
+            assert "GOFLAGS" not in captured["env"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            symdelta.run_extractor(worktree)
+            assert captured["env"]["GOFLAGS"] == "-mod=mod"
     finally:
         symdelta.subprocess.run = original_run
 
@@ -1518,6 +1717,123 @@ def test_end_to_end_ts_repo_reports_a_cross_file_call():
         # the extractor's own worktrees must not leak into the repo's worktree list
         worktrees = _git(repo, "worktree", "list")
         assert worktrees.strip().splitlines() == [worktrees.strip().splitlines()[0]]
+
+
+def test_analyse_go_returns_null_language_when_the_extractor_fails():
+    # A RuntimeError out of run_extractor (e.g. the silent-zero guard tripping) used to
+    # propagate to main() and exit 1 with symdelta.json never written at all, taking the whole
+    # symbols section down with no note. build_extractor failures (toolchain/setup problems)
+    # must still raise, so only run_extractor is faked here.
+    original_build = symdelta.build_extractor
+    original_run = symdelta.run_extractor
+    symdelta.build_extractor = lambda: None
+    symdelta.run_extractor = lambda worktree_path: (_ for _ in ()).throw(
+        RuntimeError("extractor: loaded 3 packages, 0 in-repo with type info")
+    )
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            _write(repo, "go.mod", "module example.com/x\n\ngo 1.21\n")
+            _write(repo, "pkg/a.go", "package pkg\n\nfunc A() {}\n")
+            base = _commit(repo, "base")
+            _write(repo, "pkg/a.go", "package pkg\n\nfunc A() {}\n\nfunc B() {}\n")
+            head = _commit(repo, "head")
+
+            result = symdelta.analyse_go(repo, base, head)
+            assert result == {
+                "language": None,
+                "reason": "extractor: loaded 3 packages, 0 in-repo with type info",
+            }
+    finally:
+        symdelta.build_extractor = original_build
+        symdelta.run_extractor = original_run
+
+
+def test_analyse_lsp_returns_null_language_when_the_extractor_fails():
+    # A RuntimeError out of run_ts_extractor (e.g. extract_edges's own zero guards tripping)
+    # used to propagate to main() and exit 1 with symdelta.json never written at all. No remedy
+    # here, unlike analyse_go's counterpart -- analyse_lsp's own comment explains why.
+    original_check = symdelta.check_typescript_tooling
+    original_run = symdelta.run_ts_extractor
+    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (True, None)
+    symdelta.run_ts_extractor = lambda worktree_path, rel_files, lang="typescript": (
+        _ for _ in ()
+    ).throw(RuntimeError("LSP extractor failed on /tmp/x: python: 0 of 2 files yielded any symbols"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            _write(repo, "a.py", "def a():\n    pass\n")
+            base = _commit(repo, "base")
+            _write(repo, "a.py", "def a():\n    return 1\n")
+            head = _commit(repo, "head")
+
+            result = symdelta.analyse_python(repo, base, head)
+            assert result == {
+                "language": None,
+                "reason": "LSP extractor failed on /tmp/x: python: 0 of 2 files yielded any symbols",
+            }
+            assert "remedy" not in result
+    finally:
+        symdelta.check_typescript_tooling = original_check
+        symdelta.run_ts_extractor = original_run
+
+
+def test_llm_head_edges_malformed_line_errors_with_the_line_number():
+    with tempfile.TemporaryDirectory() as tmp:
+        edges_path = Path(tmp) / "bad.jsonl"
+        edges_path.write_text('{"FromFile": "a.go", "FromSym": "A", "ToFile": "a.go"}\n')
+        try:
+            symdelta._load_llm_edges(str(edges_path))
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert f"{edges_path}:1:" in str(exc)
+
+
+def test_llm_head_edges_produces_a_graph_with_llm_resolver():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {}\n\nfunc Callee() {}\n")
+        base = _commit(repo, "base")
+        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n")
+        head = _commit(repo, "head")
+
+        edges_path = repo / "llm-edges.jsonl"
+        edges_path.write_text(json.dumps({
+            "FromFile": "pkg/a.go", "FromSym": "Caller", "ToFile": "pkg/a.go", "ToSym": "Callee",
+        }) + "\n")
+
+        result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
+
+        assert result["language"] == "go"  # detect_language still names the real language
+        assert result["resolver"] == "llm"
+        assert result["counts"]["edges_new"] == 1
+        assert any(
+            e["source"] == "pkg:Caller" and e["target"] == "pkg:Callee" for e in result["edges"]
+        )
+
+
+def test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected():
+    # The whole point of this tier is that the mechanical one declined; detect_language finding
+    # no supported extension at all must not refuse the LLM path too.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "readme.md", "hello\n")
+        base = _commit(repo, "base")
+        _write(repo, "readme.md", "hello world\n")
+        head = _commit(repo, "head")
+
+        edges_path = repo / "llm-edges.jsonl"
+        edges_path.write_text(json.dumps({
+            "FromFile": "a", "FromSym": "A", "ToFile": "b", "ToSym": "B",
+        }) + "\n")
+
+        result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
+        assert result["language"] == "unknown"
+        assert result["resolver"] == "llm"
 
 
 def test_end_to_end_go_repo_reports_added_and_removed_symbols():
@@ -1762,6 +2078,7 @@ if __name__ == "__main__":
         test_ts_dependency_incompatible_true_when_package_json_is_unparseable,
         test_ts_dependency_incompatible_true_when_sections_disagree_on_spec,
         test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections,
+        test_link_node_modules_resolves_a_relative_repo_path,
         test_check_node_modules_coverage_true_when_every_dependency_resolves,
         test_check_node_modules_coverage_true_when_node_modules_missing_and_nothing_declared,
         test_check_node_modules_coverage_catches_a_missing_scoped_package,
@@ -1778,12 +2095,21 @@ if __name__ == "__main__":
         test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale,
         test_analyse_typescript_refuses_with_npm_ci_remedy_when_installed_version_is_stale,
         test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails,
+        test_split_path_trap_pulls_the_remedy_out_of_the_reason,
+        test_split_path_trap_returns_the_reason_unchanged_with_no_remedy_for_a_plain_reason,
+        test_analyse_lsp_uses_the_path_trap_remedy_instead_of_a_reinstall,
+        test_doctor_report_is_ok_for_every_language_when_everything_checks_out,
+        test_doctor_report_names_the_go_toolchain_as_missing,
+        test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy,
+        test_doctor_report_survives_a_present_but_broken_binary,
+        test_main_doctor_flag_needs_no_repo_base_or_head,
         test_check_typescript_tooling_raises_runtime_error_on_timeout,
         test_run_ts_extractor_raises_runtime_error_on_timeout_and_still_cleans_up_the_files_list,
         test_run_in_process_group_handles_getpgid_race_without_crashing,
         test_run_in_process_group_kills_the_whole_group_not_just_the_direct_child,
         test_build_extractor_raises_runtime_error_on_timeout,
         test_run_extractor_raises_runtime_error_on_timeout,
+        test_run_extractor_omits_goflags_when_go_work_exists_and_sets_it_otherwise,
         test_resolve_cache_dir_uses_xdg_cache_home_when_set,
         test_resolve_cache_dir_falls_back_to_dot_cache_when_xdg_unset,
         test_resolve_cache_dir_xdg_cache_home_wins_even_when_dot_cache_exists,
@@ -1794,6 +2120,11 @@ if __name__ == "__main__":
         test_ts_files_by_side_filters_by_given_extensions,
         test_bad_ref_fails_with_nonzero_exit,
         test_analyse_does_not_crash_on_an_orphan_baseline,
+        test_analyse_go_returns_null_language_when_the_extractor_fails,
+        test_analyse_lsp_returns_null_language_when_the_extractor_fails,
+        test_llm_head_edges_malformed_line_errors_with_the_line_number,
+        test_llm_head_edges_produces_a_graph_with_llm_resolver,
+        test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected,
         test_end_to_end_ts_repo_reports_a_cross_file_call,
         test_end_to_end_go_repo_reports_added_and_removed_symbols,
         test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking,
