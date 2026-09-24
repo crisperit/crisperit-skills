@@ -20,7 +20,7 @@ The target arrives as prose as often as a ref, so read the words:
 
 | What the user said | Target |
 |---|---|
-| nothing | working tree plus staged changes, `git diff HEAD` |
+| nothing | working tree plus staged changes, snapshotted as a second ref so it diffs as `git diff HEAD <snap>`, see below |
 | "this PR", "my PR", "the PR", "this pull request" | the current branch's PR, see below |
 | `123`, `#123`, a PR URL | that PR |
 | "this branch", "my branch", "what this branch adds" | `<base>...HEAD` three-dot |
@@ -58,6 +58,33 @@ before spending.
 Read `references/explain-mode.md` now, before step 2 writes anything: the baseline commands, the
 three size bands that decide whether to proceed, mention the cost, or stop and offer cuts, and
 what `--explain` changes downstream.
+
+### Working tree target: a snapshot commit as the second ref
+
+"nothing" names no second ref either: the working tree and the index are not commits. Give it
+one with a snapshot, so `<head>` is the snapshot and `<base>` is `HEAD`, and every step
+downstream that needs two refs runs instead of skipping.
+
+```bash
+idx=$(mktemp); cp "$(git rev-parse --git-path index)" "$idx"
+GIT_INDEX_FILE=$idx git add -A --ignore-errors 2>/dev/null
+snap=$(git commit-tree "$(GIT_INDEX_FILE=$idx git write-tree)" -p HEAD -m "code-walkthrough snapshot")
+rm "$idx"
+```
+
+`--ignore-errors` matters in a sandbox, where a mounted dotfile can show up as an untracked
+unsupported file type and would otherwise abort the add; the trailing `2>/dev/null` quiets that
+same case but also hides a genuine staging failure, so if a snapshot ever looks incomplete, rerun
+the `add` without the redirect to see why. The real index, working tree and every ref are
+untouched: `snap` is a commit object nothing points at, so it never shows up in `git log` or `git
+branch`. It sits as a loose object until a later `git gc` prunes it, not cleaned up the moment
+this session ends. Step 2's `raw.diff` and numstat then come from `git diff HEAD <snap>` rather
+than plain `git diff HEAD`, which also picks up untracked files that plain `git diff HEAD`
+misses. The page's title and output slug still say "working", not the snapshot's sha; only
+`<base>`/`<head>` downstream change.
+
+Step 2c's links still skip themselves for this target: `snap` is never pushed, so `head_pushed`
+comes back false the same way it does for any other unpushed head.
 
 ### "This PR", and three-dot over two-dot
 
@@ -103,7 +130,9 @@ not "nothing changed", so the same bail applies, worded for that case.
 
 Write it to the session scratchpad, never the git working tree (a stray review page there
 pollutes commits and PRs). A branch, range or path target: `git diff <target> >
-<scratchpad>/raw.diff`, stats from `git diff --numstat <target>`. A PR target: `gh pr diff <n> >
+<scratchpad>/raw.diff`, stats from `git diff --numstat <target>`. The working tree target diffs
+against its snapshot commit instead: `git diff HEAD <snap> > <scratchpad>/raw.diff`, stats from
+`git diff --numstat HEAD <snap>`. A PR target: `gh pr diff <n> >
 <scratchpad>/raw.diff`, stats from `gh pr view <n> --json files --jq '.files[] |
 "\(.additions)\t\(.deletions)\t\(.path)"'`, the PR equivalent of numstat.
 
@@ -316,7 +345,10 @@ check, and the empty-note floor's reasoning: `references/fanout.md`.
 Two things the gate does not check, so check them yourself: a hunk entry the fragment appended
 for a deleted file's `hunks` list, and the `verdict` key.
 
-## 2b2. Build the complexity chart, only when the target names two refs
+## 2b2. Build the complexity chart
+
+Every target names two refs by this point, a working-tree target's via the snapshot commit from
+step 1, so this step always runs.
 
 ```bash
 python3 <skill>/scripts/complexity.py --repo . --base <base> --head <head> \
@@ -329,10 +361,11 @@ has no before; the chip already treats a function with no before as new either w
 the worst genuinely complex function per file (`resolve_symbol_merges 27 branches`) instead of
 drawing a before/after arrow. Nothing here needs adjusting for this mode.
 
-## 2b3. Build the symbol-delta graph, only when the target names two refs
+## 2b3. Build the symbol-delta graph
 
-The only graph either output carries besides the flow diagram. Same condition as 2b2: a
-working-tree diff has no second ref. Issue this as its own Bash call, `dangerouslyDisableSandbox:
+The only graph either output carries besides the flow diagram. Same as 2b2: every target names
+two refs by now, including a working-tree target via its snapshot commit. Issue this as its own
+Bash call, `dangerouslyDisableSandbox:
 true`, in the same message as the fan-out spawns and 2b2's call. In explain mode `<base>` is the
 empty baseline: `resolve_base` already falls back to the base itself when three-dot's merge-base
 does not exist, so this runs two-dot under the hood without any separate handling.
@@ -397,7 +430,7 @@ and caches its extractor binary there. The per-language profiles, the method-qua
 that differ per server, the name-collision problem this graph avoids, and the runtime budget on
 a large repo: `references/graphs.md`.
 
-## 2b4. Build the structure view, only when the target names two refs
+## 2b4. Build the structure view
 
 Unlike 2b2 and 2b3, this one needs `analysis.json`'s own `groups` to colour components by story
 stop, so run it after step 2b's gate has passed, not alongside the fan-out. It still needs

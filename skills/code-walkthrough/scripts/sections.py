@@ -51,6 +51,26 @@ def _html_note(text):
     return _codeify(escape(text))
 
 
+_MAX_BUTTON_LABEL = "Expand diagram to full size"
+
+# One button, pasted verbatim into every diagram's header row (this module's own two, plus
+# render.py's page-level FLOW and walkthrough.py's per-group tab strip, which both import this
+# rather than growing a second copy). Icon only, wording carried by aria-label/title alone,
+# reusing wire()'s own label from the template so the two affordances read as one.
+_MAX_BUTTON_HTML = (
+    f'<button type="button" class="vd-max-btn" aria-label="{_MAX_BUTTON_LABEL}" '
+    f'title="{_MAX_BUTTON_LABEL}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" '
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+    'aria-hidden="true" focusable="false"><path d="M8 3H5a2 2 0 0 0-2 2v3"/>'
+    '<path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/>'
+    '<path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>'
+)
+
+
+def _diagram_max_button():
+    return _MAX_BUTTON_HTML
+
+
 _MM_UNSAFE_RE = re.compile(r'[()"`]')
 
 # The two pre-rendered detail levels. Index 0 is what the page shows first. There were three:
@@ -466,11 +486,14 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges, explain=False):
     for the legend's new/gone check, unless `explain` is set. Edges have no per-edge classDef at all, only
     `linkStyle <index>`, so they're styled by their position in the diagram instead.
 
-    Returns `(mermaid_text, id_to_file)`: the second is the mermaid `S<n>` id of every symbol
-    node mapped to its file path, for the page's node menu to resolve a click to a file. A
-    package box carries no single file of its own, so it is never a key here."""
+    Returns `(mermaid_text, id_to_file, id_to_loc)`: the second is the mermaid `S<n>` id of
+    every symbol node mapped to its file path, for the page's node menu to resolve a click to a
+    file. A package box carries no single file of its own, so it is never a key in either map.
+    The third maps a node's id to its line range and side, `{"start", "end", "side"}`, for
+    nodes that carry both a `range` and a `file` -- the LLM edge tier's symbols never do, since
+    that tier is position-less by schema."""
     if not symbol_ids:
-        return "flowchart LR", {}
+        return "flowchart LR", {}, {}
     by_id = {n["id"]: n for n in nodes}
     pkg_by_id = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
 
@@ -552,7 +575,14 @@ def _mermaid_symbols(nodes, symbol_ids, kept_edges, explain=False):
     edge_pairs = [(e["source"], e["target"]) for e in kept_edges]
     lines.extend(_chain_components_lines(symbol_ids, edge_pairs, mm_id))
     id_to_file = {nid: by_id[sid]["file"] for sid, nid in mm_id.items() if by_id[sid].get("file")}
-    return "\n".join(lines), id_to_file
+    # side mirrors wireHunk's LEFT/RIGHT: a gone symbol's range is BASE-side (drawn on the
+    # diff's left), anything else is HEAD-side.
+    id_to_loc = {
+        nid: {"start": by_id[sid]["range"][0], "end": by_id[sid]["range"][1],
+              "side": "LEFT" if by_id[sid].get("state") == "gone" else "RIGHT"}
+        for sid, nid in mm_id.items() if by_id[sid].get("range") and by_id[sid].get("file")
+    }
+    return "\n".join(lines), id_to_file, id_to_loc
 
 
 def _symbols_note_text(node_count, edge_count, drawn_count, listed_count, undrawn_count,
@@ -650,7 +680,7 @@ def _mermaid_symbols_for_level(nodes, symbol_ids, kept_edges, explain=False):
     that legitimately has nothing to draw. One placeholder node keeps it a valid diagram, with
     no id to map since it draws nothing real."""
     if not symbol_ids:
-        return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]', {}
+        return f'flowchart LR\n  N0["{_EMPTY_LEVEL_LABEL}"]', {}, {}
     return _mermaid_symbols(nodes, symbol_ids, kept_edges, explain)
 
 
@@ -765,15 +795,17 @@ def render_symbols(data, explain=False, paths=(), inline=False):
             f'<div class="mermaid" data-ids="{ids_attr}">{escape(level1)}</div>',
             f'<p class="note">{note}</p>',
         ]) + "\n" + caveat_html + moved_html
+        heading = "Structure" if explain else "Changes visualization"
         return "\n".join([
             SYMBOLS_MARKER,
             '<div class="vd-symbols">',
-            f'<h2>{"Structure" if explain else "Changes visualization"}</h2>',
+            f'<h2 class="h2-row"><span>{heading}</span><span class="ctl">'
+            f'{_diagram_max_button()}</span></h2>',
         ]) + "\n" + body + "</div>\n"
 
     _, edges2 = _symbols_scope(nodes, edges)
     drawn_ids2 = _edge_endpoint_ids(edges2)
-    level2, file_map2 = _mermaid_symbols_for_level(nodes, drawn_ids2, edges2, explain)
+    level2, file_map2, loc_map2 = _mermaid_symbols_for_level(nodes, drawn_ids2, edges2, explain)
 
     # Legibility, not layout cost, sets this threshold: measured in Chrome, a symbols level of
     # ~70 nodes draws 8478px wide, rendering at 0.16x -- 25x9px boxes, ~3px labels, a click a
@@ -804,6 +836,11 @@ def render_symbols(data, explain=False, paths=(), inline=False):
     # first file. Same escape/&quot; idiom as data-names above.
     ids_attrs = [escape(json.dumps(m, sort_keys=True)).replace('"', "&quot;")
                  for m in (pkg_map, file_map2)]
+    # data-lines only on level 2: level 1 draws packages, which own no line range of their own.
+    # Omitted outright when empty, same as every other conditional attribute on this page,
+    # rather than shipping an empty `{}` the script would have to special-case.
+    lines_json = escape(json.dumps(loc_map2, sort_keys=True)).replace('"', "&quot;")
+    lines_attr = f' data-lines="{lines_json}"' if loc_map2 else ""
     here = default_level - 1
     there = 1 - here
 
@@ -820,7 +857,7 @@ def render_symbols(data, explain=False, paths=(), inline=False):
         f'<div class="mermaid" data-level="1"{"" if default_level == 1 else " hidden"} '
         f'data-legend="{legend_attrs[0]}" data-ids="{ids_attrs[0]}">{escape(level1)}</div>',
         f'<div class="mermaid" data-level="2"{"" if default_level == 2 else " hidden"} '
-        f'data-legend="{legend_attrs[1]}" data-ids="{ids_attrs[1]}">{escape(level2)}</div>',
+        f'data-legend="{legend_attrs[1]}" data-ids="{ids_attrs[1]}"{lines_attr}>{escape(level2)}</div>',
         f'<p class="note">{note}</p>',
     ]) + "\n" + (
         f'<p class="note">{_llm_caveat()}</p>\n' if data.get("resolver") == "llm" else ""
@@ -1196,10 +1233,12 @@ def render_structure(data, explain=False):
         legend,
     ])
 
+    heading = "How it fits together" if explain else "System change"
     return "\n".join([
         STRUCTURE_MARKER,
         '<div class="vd-structure">',
-        f'<h2>{"How it fits together" if explain else "System change"}</h2>',
+        f'<h2 class="h2-row"><span>{heading}</span><span class="ctl">'
+        f'{_diagram_max_button()}</span></h2>',
     ]) + "\n" + body + "\n</div>\n"
 
 

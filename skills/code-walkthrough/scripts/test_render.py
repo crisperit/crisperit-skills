@@ -422,9 +422,20 @@ def test_a_single_group_keeps_the_flow_diagram():
                 "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
     out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
 
-    assert "<h2>Flow</h2>" in out
+    assert '<h2 class="h2-row"><span>Flow</span>' in out
     assert "<h2>Story map</h2>" not in out
     assert '<div class="map">' not in out
+
+
+def test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox():
+    order, files = parsed()
+    analysis = {**ANALYSIS,
+                "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
+    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
+    heading = out.split('<span>Flow</span>')[1].split("</h2>")[0]
+
+    assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in heading
+    assert out.index("</h2>") < out.index("svgbox-flow")
 
 
 if __name__ == "__main__":
@@ -465,6 +476,7 @@ if __name__ == "__main__":
         test_structure_section_lands_between_the_story_map_and_the_walkthrough,
         test_an_empty_structure_section_inserts_nothing,
         test_a_single_group_keeps_the_flow_diagram,
+        test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
     ]
     for test in tests:
         test()

@@ -180,6 +180,11 @@ def test_bumping_script_version_invalidates_the_ref_based_cache():
         regen.SCRIPT_VERSION["symdelta"] = original
 
 
+def test_symdelta_script_version_is_bumped_for_the_range_field():
+    # symdelta.py's node shape gained "range"; a cache entry from before that must not survive.
+    assert regen.SCRIPT_VERSION["symdelta"] == 2
+
+
 def test_complexity_command_carries_every_argument_complexity_requires():
     required_flags = _required_flags(complexity.main)
 
@@ -410,6 +415,7 @@ if __name__ == "__main__":
         test_two_identical_hunks_in_one_file_resolve_first_unmatched_wins,
         test_ref_based_analysers_cache_hit_depends_only_on_base_and_head,
         test_bumping_script_version_invalidates_the_ref_based_cache,
+        test_symdelta_script_version_is_bumped_for_the_range_field,
         test_complexity_command_carries_every_argument_complexity_requires,
         test_fill_seeds_prefills_role_and_note_and_flags_a_fully_carried_batch,
         test_fill_seeds_leaves_an_unmatched_hunk_blank_and_does_not_skip_the_batch,

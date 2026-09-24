@@ -549,6 +549,136 @@ def test_build_graph_two_root_files_with_same_symbol_name_stay_distinct():
     assert a_handler["parent"] == "(root)"
 
 
+# ---- pure-logic tests: decl_ranges and symbol node "range" ------------------------------
+
+
+def _edge_with_range(from_file, from_sym, from_start, from_end, to_file, to_sym, to_start, to_end):
+    return {
+        "FromFile": from_file, "FromSym": from_sym, "FromStart": from_start, "FromEnd": from_end,
+        "ToFile": to_file, "ToSym": to_sym, "ToStart": to_start, "ToEnd": to_end,
+    }
+
+
+def test_decl_ranges_keeps_only_positive_int_starts_and_defaults_bad_ends():
+    edges = [
+        _edge_with_range("a/x.go", "Good", 10, 20, "a/y.go", "Callee", 5, 5),
+        {"FromFile": "a/x.go", "FromSym": "Missing", "ToFile": "a/y.go", "ToSym": "Callee"},
+        _edge_with_range("a/x.go", "ZeroStart", 0, 5, "a/y.go", "Callee", 5, 5),
+        _edge_with_range("a/x.go", "NegStart", -1, 5, "a/y.go", "Callee", 5, 5),
+        _edge_with_range("a/x.go", "StrStart", "10", 5, "a/y.go", "Callee", 5, 5),
+        _edge_with_range("a/x.go", "NoEnd", 7, None, "a/y.go", "Callee", 5, 5),
+        _edge_with_range("a/x.go", "BackwardsEnd", 7, 3, "a/y.go", "Callee", 5, 5),
+    ]
+    ranges = symdelta.decl_ranges(edges)
+
+    def r(sym):
+        return ranges.get(("a/x.go", symdelta.sym_id("a/x.go", sym)))
+
+    assert r("Good") == (10, 20)
+    assert r("Missing") is None
+    assert r("ZeroStart") is None
+    assert r("NegStart") is None
+    assert r("StrStart") is None  # extractor emits real ints; a string start is untrusted
+    assert r("NoEnd") == (7, 7)
+    assert r("BackwardsEnd") == (7, 7)
+
+
+def test_decl_ranges_first_seen_wins_across_edges():
+    edges = [
+        _edge_with_range("a/x.go", "Caller", 10, 20, "a/y.go", "Callee", 5, 5),
+        _edge_with_range("a/x.go", "Caller", 100, 200, "a/y.go", "Callee", 50, 50),
+    ]
+    ranges = symdelta.decl_ranges(edges)
+    assert ranges[("a/x.go", symdelta.sym_id("a/x.go", "Caller"))] == (10, 20)
+
+
+def test_build_graph_attaches_head_range_to_new_symbols():
+    final_new = [["pkg/a.go", "Caller", "pkg/a.go", "Callee"]]
+    head_ranges = {
+        ("pkg/a.go", "pkg:Caller"): (3, 8),
+        ("pkg/a.go", "pkg:Callee"): (10, 10),
+    }
+    nodes, _, _, _ = symdelta.build_graph(final_new, [], head_ranges=head_ranges)
+    by_id = {n["id"]: n for n in nodes if n["kind"] == "symbol"}
+    assert by_id["pkg:Caller"]["range"] == [3, 8]
+    assert by_id["pkg:Callee"]["range"] == [10, 10]
+
+
+def test_build_graph_attaches_base_range_to_gone_symbols():
+    final_gone = [["pkg/a.go", "OldCaller", "pkg/a.go", "OldCallee"]]
+    base_ranges = {
+        ("pkg/a.go", "pkg:OldCaller"): (1, 4),
+        ("pkg/a.go", "pkg:OldCallee"): (6, 6),
+    }
+    nodes, _, _, _ = symdelta.build_graph([], final_gone, base_ranges=base_ranges)
+    by_id = {n["id"]: n for n in nodes if n["kind"] == "symbol"}
+    assert by_id["pkg:OldCaller"]["range"] == [1, 4]
+    assert by_id["pkg:OldCallee"]["range"] == [6, 6]
+
+
+def test_build_graph_changed_symbol_uses_head_range_not_base():
+    # Helper exists on both sides (state "changed") -- the surfaced range is HEAD's, since only
+    # a "gone" node's range is BASE-side.
+    final_new = [["pkg/a.go", "Helper", "pkg/b.go", "NewTarget"]]
+    final_gone = [["pkg/a.go", "Helper", "pkg/c.go", "OldTarget"]]
+    head_ranges = {("pkg/a.go", "pkg:Helper"): (20, 25)}
+    base_ranges = {("pkg/a.go", "pkg:Helper"): (1, 5)}
+    nodes, _, _, _ = symdelta.build_graph(
+        final_new, final_gone, head_ranges=head_ranges, base_ranges=base_ranges
+    )
+    helper = next(n for n in nodes if n["id"] == "pkg:Helper")
+    assert helper["state"] == "changed"
+    assert helper["range"] == [20, 25]
+
+
+def test_build_graph_merge_target_gets_range_keyed_on_its_head_file():
+    # Helper moves from pkg/internal to pkg: one call is unchanged (collapses away), a second is
+    # genuinely new, so Helper survives as one "changed" node at its head package (see
+    # test_build_graph_merges_a_symbol_that_moved_package_and_changed_its_calls). Its range must
+    # come from head_ranges keyed on the HEAD file/sid the merge resolves to, not the pre-move one.
+    new = [
+        ["pkg/a.go", "Helper", "pkg/b.go", "Target"],
+        ["pkg/a.go", "Helper", "pkg/c.go", "NewTarget"],
+    ]
+    gone = [
+        ["pkg/internal/a.go", "Helper", "pkg/b.go", "Target"],
+        ["pkg/internal/a.go", "Helper", "pkg/d.go", "OldTarget"],
+    ]
+    final_new, final_gone, moved, moved_pairs = symdelta.move_collapse(new, gone)
+    head_ranges = {("pkg/a.go", "pkg:Helper"): (2, 9)}
+    nodes, _, _, _ = symdelta.build_graph(
+        final_new, final_gone, moved_pairs=moved_pairs, head_ranges=head_ranges
+    )
+    helper = next(n for n in nodes if n["id"] == "pkg:Helper")
+    assert helper["state"] == "changed"
+    assert helper["range"] == [2, 9]
+
+
+def test_build_graph_symbol_with_no_range_entry_gets_no_range_key():
+    nodes, _, _, _ = symdelta.build_graph([["pkg/a.go", "Caller", "pkg/a.go", "Callee"]], [])
+    caller = next(n for n in nodes if n["id"] == "pkg:Caller")
+    assert "range" not in caller
+
+
+def test_build_graph_same_sid_from_two_files_uses_the_first_files_range():
+    # sym_id's own docstring accepts a same-package, same-name collision across two files as a
+    # display simplification: both collapse onto one sid/one node, and sym_file keeps the first
+    # file seen. The range map keys on (file, sid), not sid alone, so the lookup for that node
+    # must land on the first file's range, never the second file's.
+    final_new = [
+        ["pkg/one.go", "String", "pkg/callee.go", "Callee"],
+        ["pkg/two.go", "String", "pkg/callee.go", "Callee"],
+    ]
+    head_ranges = {
+        ("pkg/one.go", "pkg:String"): (1, 2),
+        ("pkg/two.go", "pkg:String"): (100, 200),
+    }
+    nodes, _, _, _ = symdelta.build_graph(final_new, [], head_ranges=head_ranges)
+    string_node = next(n for n in nodes if n["id"] == "pkg:String")
+    assert string_node["file"] == "pkg/one.go"
+    assert string_node["range"] == [1, 2]
+
+
 # ---- pure-logic tests: CACHE_DIR's fallback chain ---------------------------------------
 
 
@@ -1836,6 +1966,28 @@ def test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected(
         assert result["resolver"] == "llm"
 
 
+def test_llm_tier_symbol_nodes_carry_no_range():
+    # The LLM tier's wire shape is validated against _LLM_EDGE_FIELDS, which has no *Start/*End
+    # keys at all -- position-less by schema, so its nodes must never carry a fabricated range.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {}\n\nfunc Callee() {}\n")
+        base = _commit(repo, "base")
+        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n")
+        head = _commit(repo, "head")
+
+        edges_path = repo / "llm-edges.jsonl"
+        edges_path.write_text(json.dumps({
+            "FromFile": "pkg/a.go", "FromSym": "Caller", "ToFile": "pkg/a.go", "ToSym": "Callee",
+        }) + "\n")
+
+        result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
+        symbol_nodes = [n for n in result["nodes"] if n["kind"] == "symbol"]
+        assert symbol_nodes  # sanity: this tier did produce symbol nodes
+        assert all("range" not in n for n in symbol_nodes)
+
+
 def test_end_to_end_go_repo_reports_added_and_removed_symbols():
     if shutil.which("go") is None:
         print("skip (no `go` on PATH): test_end_to_end_go_repo_reports_added_and_removed_symbols")
@@ -1876,6 +2028,52 @@ def test_end_to_end_go_repo_reports_added_and_removed_symbols():
         # the extractor's own worktrees must not leak into the repo's worktree list
         worktrees = _git(repo, "worktree", "list")
         assert worktrees.strip().splitlines() == [worktrees.strip().splitlines()[0]]
+
+
+def test_end_to_end_go_repo_reports_symbol_ranges_for_new_changed_and_gone_symbols():
+    # Depends on the Go extractor (extractors/go/main.go) emitting FromStart/FromEnd/ToStart/
+    # ToEnd on the wire; a failure here with an empty/absent "range" means the extractor isn't
+    # emitting positions yet, not a bug in this test.
+    if shutil.which("go") is None:
+        print(
+            "skip (no `go` on PATH): "
+            "test_end_to_end_go_repo_reports_symbol_ranges_for_new_changed_and_gone_symbols"
+        )
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(repo, "go.mod", "module example.com/range-module\n\ngo 1.21\n")
+        _write(
+            repo,
+            "pkg/a.go",
+            "package pkg\n\nfunc Caller() {\n\tCallee()\n\tOldCallee()\n}\n\n"
+            "func Callee() {}\n\nfunc OldCallee() {}\n",
+        )
+        base = _commit(repo, "base")
+        _write(
+            repo,
+            "pkg/a.go",
+            "package pkg\n\nfunc Caller() {\n\tCallee()\n\tNewCallee()\n}\n\n"
+            "func Callee() {}\n\nfunc NewCallee() {}\n",
+        )
+        head = _commit(repo, "head")
+
+        result = _run_symdelta(repo, base, head)
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        nodes = {n["id"]: n for n in payload["nodes"] if n["kind"] == "symbol"}
+
+        # Caller: "func Caller() {" on line 3 of the HEAD fixture above, closing "}" on line 6.
+        assert nodes["pkg:Caller"]["range"] == [3, 6]
+        # NewCallee: single-line "func NewCallee() {}" on line 10 of the HEAD fixture.
+        assert nodes["pkg:NewCallee"]["range"] == [10, 10]
+        # OldCallee only exists at BASE, on line 10 of the BASE fixture -- its range must be the
+        # BASE-side declaration, not absent and not HEAD's (it has none at HEAD).
+        assert nodes["pkg:OldCallee"]["state"] == "gone"
+        assert nodes["pkg:OldCallee"]["range"] == [10, 10]
 
 
 def test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking():
@@ -2057,6 +2255,14 @@ if __name__ == "__main__":
         test_pkg_of_root_file_uses_sentinel_not_empty_string,
         test_sym_id_root_file_is_qualified_and_never_starts_with_a_bare_colon,
         test_build_graph_two_root_files_with_same_symbol_name_stay_distinct,
+        test_decl_ranges_keeps_only_positive_int_starts_and_defaults_bad_ends,
+        test_decl_ranges_first_seen_wins_across_edges,
+        test_build_graph_attaches_head_range_to_new_symbols,
+        test_build_graph_attaches_base_range_to_gone_symbols,
+        test_build_graph_changed_symbol_uses_head_range_not_base,
+        test_build_graph_merge_target_gets_range_keyed_on_its_head_file,
+        test_build_graph_symbol_with_no_range_entry_gets_no_range_key,
+        test_build_graph_same_sid_from_two_files_uses_the_first_files_range,
         test_detect_language_tie_break_is_honest_and_deterministic,
         test_detect_language_routes_py_files_to_python,
         test_detect_language_works_against_an_orphan_baseline_with_no_merge_base,
@@ -2125,8 +2331,10 @@ if __name__ == "__main__":
         test_llm_head_edges_malformed_line_errors_with_the_line_number,
         test_llm_head_edges_produces_a_graph_with_llm_resolver,
         test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected,
+        test_llm_tier_symbol_nodes_carry_no_range,
         test_end_to_end_ts_repo_reports_a_cross_file_call,
         test_end_to_end_go_repo_reports_added_and_removed_symbols,
+        test_end_to_end_go_repo_reports_symbol_ranges_for_new_changed_and_gone_symbols,
         test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking,
         test_end_to_end_go_repo_root_level_symbol_uses_the_root_sentinel,
         test_end_to_end_ts_repo_root_level_symbol_uses_the_root_sentinel,
