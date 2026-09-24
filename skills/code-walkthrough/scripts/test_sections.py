@@ -26,6 +26,7 @@ from sections import (  # noqa: E402
     _symbols_orphans,
     _symbols_scope,
     _structure_implements_edges,
+    _structure_members_html,
     render_structure,
     render_symbols,
     wrap_label,
@@ -1152,7 +1153,40 @@ def test_structure_member_chips_carry_a_marker_not_just_colour():
     out = render_structure(STRUCTURE)
     assert ">+Run<" in out  # new member
     assert ">~Call<" in out  # changed member
-    assert ">Old<" in out  # unchanged member carries no marker, the neutral baseline
+    assert ">Old<" not in out  # unchanged, so it's folded into the summary chip below
+    assert ">+1 unchanged<" in out
+
+
+def test_structure_unchanged_members_collapse_into_one_summary_chip():
+    data = {"language": "go", "components": [
+        {"id": "a.go:T", "name": "T", "kind": "struct", "file": "a.go", "state": "changed",
+         "members": [
+             {"name": "New", "state": "new"},
+             {"name": "Changed", "state": "changed"},
+             {"name": "One", "state": "unchanged"},
+             {"name": "Two", "state": "unchanged"},
+             {"name": "Three", "state": "unchanged"},
+         ], "group": None, "column": 0},
+        {"id": "b.go:U", "name": "U", "kind": "struct", "file": "b.go", "state": "new",
+         "members": [{"name": "Run", "state": "new"}], "group": None, "column": 1},
+    ], "edges": [], "implements": [], "dropped": 0}
+    out = render_structure(data)
+    # touched chips kept, in declared order
+    assert out.index(">+New<") < out.index(">~Changed<")
+    # T's 3 unchanged members collapse into a single summary chip naming all three on hover
+    assert out.count("unchanged</i>") == 1
+    assert ">+3 unchanged<" in out
+    assert 'title="One, Two, Three"' in out
+    assert ">One<" not in out and ">Two<" not in out and ">Three<" not in out
+    # U has zero unchanged members: no summary chip for it, only its touched one
+    assert ">+Run<" in out
+
+
+def test_structure_all_unchanged_members_render_only_the_summary_chip():
+    out = _structure_members_html(
+        [{"name": "One", "state": "unchanged"}, {"name": "Two", "state": "unchanged"}]
+    )
+    assert out == '<span class="vds-members"><i class="o" title="One, Two">+2 unchanged</i></span>'
 
 
 def test_structure_explain_mode_also_surfaces_dropped_count():
@@ -1315,6 +1349,8 @@ if __name__ == "__main__":
         test_structure_bare_dict_renders_nothing,
         test_structure_review_mode_shows_badges_members_removed_box_and_gone_edge,
         test_structure_explain_mode_drops_badges_members_removed_boxes_and_gone_edges,
+        test_structure_unchanged_members_collapse_into_one_summary_chip,
+        test_structure_all_unchanged_members_render_only_the_summary_chip,
         test_structure_group_colouring_matches_group_color,
         test_structure_filter_chips_one_per_story_stop,
         test_structure_no_group_data_renders_no_chips,

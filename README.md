@@ -5,79 +5,71 @@ code-walkthrough.
 
 ## code-walkthrough
 
-Point it at a git diff, a commit range, a branch, a GitHub PR, or an area of
-code with no change to it at all, "explain the auth flow", "how does billing
-work". It produces a self-contained HTML walkthrough page you open locally.
+Turns a diff, a PR, or a part of the codebase you want explained into a page
+you read top down, from the big picture to the exact lines.
+
+[![Scrolling through a walkthrough of lazygit PR #5702](docs/demo/walkthrough.gif)](https://crisperit.github.io/crisperit-skills/demo/lazygit-5702.html)
+
+**[Open the live example](https://crisperit.github.io/crisperit-skills/demo/lazygit-5702.html)**,
+lazygit PR [#5702](https://github.com/jesseduffield/lazygit/pull/5702), "Make the
+side panels configurable": 30 files, +1008 -179, one `/code-walkthrough` run.
+Click any diff line to leave a comment.
 
 ```
 /code-walkthrough                          # working tree plus staged changes
 /code-walkthrough this branch              # main...HEAD
 /code-walkthrough 123                      # that PR
 /code-walkthrough HEAD~3..HEAD
-/code-walkthrough explain the auth flow    # diffed against an empty baseline
+/code-walkthrough explain the auth flow    # code as it stands, no change needed
 ```
 
 ### Why
 
 Agents write code faster than anyone can read it now, so reading and
 responding is the bottleneck, not writing. A unified diff is a bad surface to
-read on, and it is the surface everyone defaults to.
+read on. It hands you 30 files in alphabetical order and leaves you to build
+the picture yourself, bottom up.
 
-What you mark on the page comes back as instructions. Hand the whole set to
-the agent to act on, or post them to the PR. That loop is the point.
+When you explain a change to someone, you say what it does, then the steps it
+takes, then what it touches, and only then point at lines. code-walkthrough
+builds the page in that order, so by the time you reach a line of code you
+already know where it sits.
 
-When I review a PR by hand I do the same three things every time, and the
-diff helps with none of them:
+### Top down, one question per level
 
-**1. I estimate coupling by reading what imports what.** That is how you
-find the blast radius of a change, and doing it by hand across seven files
-is slow and easy to get wrong. code-walkthrough derives the import and call
-graph by parsing the code itself, not by asking a model to guess it from
-the diff text, and draws it at two levels. Packages first:
+1. **Overview: what changed, and why.** Two sentences and a few bullets, no
+   file names. On the example: lazygit's side panels stop being a fixed five
+   and become a list you configure.
+2. **Story map: in what order does it happen.** The files grouped into three
+   to five themes, drawn as stops in the order the story runs. Each hop names
+   the function that hands off to the next stop. On the example: declare the
+   config, derive the layout, build and live-reload it, prove it end to end.
+3. **System change: what does it touch.** The types and functions the diff
+   touched, callers on the left and callees on the right, coloured by story
+   stop. Parsed from the code at both refs; no model is involved. Go and
+   TypeScript for now.
+4. **Call graph: how far does it reach.** Per theme, the call graph resolved
+   by the compiler or a language server, at package and symbol level. That
+   shows the blast radius: which new function is called from everywhere and
+   which is a leaf.
+5. **Code: the lines, with the reason beside them.** Each file gets a one line
+   role and each hunk a note on what the code does. Inside a theme, callers
+   come before callees.
+6. **Respond: send it back.** Comment on any line. Copy for agent hands the
+   whole set to the assistant to act on, Copy gh command prints the calls to
+   post them as PR review comments. The page has no server, so nothing leaves
+   it unless you copy it. The page is a local file and only gets hosted if
+   you ask.
 
-![Package level relations](docs/images/coupling-packages.png)
+If you work something out in your head on every review that could live on this
+page, open an issue.
 
-Then the same graph at symbol level, so you can see which new function actually
-has fan-out and which are leaves:
+### What a run costs
 
-![Symbol level relations](docs/images/coupling-symbols.png)
-
-**2. I group the changed files by feature and read them in that order.** A
-GitHub file list is alphabetical, which is never the order the change makes
-sense in. So code-walkthrough groups the files into themes, puts the theme
-a reviewer needs first at the top, and orders files inside a group caller
-before callee.
-
-![Walkthrough grouped by feature](docs/images/reading-order.png)
-
-**3. I take notes per line, then send them somewhere.** Comments sit on the
-diff lines they are about. The page has no server, so nothing posts itself.
-The Comments panel gives you two exits: Copy for agent, which hands the whole
-set to the assistant to act on, and Copy gh command, which prints the gh
-calls to post them as PR review comments yourself. Nothing leaves the page
-unless you copy it.
-
-![Commenting on a diff line](docs/images/line-comment.png)
-
-Anything else a reviewer works out in their head could go on the page instead.
-If you have a habit like these three, open an issue.
-
-### The rest of the page
-
-A facts strip, a summary, and a mermaid flow diagram of the change:
-
-![Top of the walkthrough page](docs/images/overview.png)
-
-Each file carries a one-line role, each hunk a note on what the code does, above
-the diff itself:
-
-![Annotated file in the walkthrough](docs/images/annotated-file.png)
-
-The screenshots above come from a small demo Python service, on a branch adding
-recurring expenses and a budget forecast.
-
-Nothing is published. The page stays a local file unless you ask for it to be
-hosted.
+The example PR took about 7 minutes and roughly 490k tokens, all on Sonnet
+subagents, in one measured run. The per-hunk reading fans out to parallel
+subagents; the main session only orchestrates, and neither the diff nor the
+page ever enters its context. The graphs come from parsers and take seconds.
 
 ### Prerequisites
 

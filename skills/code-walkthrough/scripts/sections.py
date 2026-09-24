@@ -881,19 +881,34 @@ _MEMBER_STATE_CLASS = {"new": "n", "changed": "c", "unchanged": "o", "removed": 
 # also keeps its own strikethrough (a shape cue, in the CSS); unchanged gets no glyph at all --
 # blank is itself the fourth, distinct state, not a fifth colour.
 _MEMBER_STATE_GLYPH = {"new": "+", "changed": "~", "removed": "−"}
+# Caps how many unchanged names the title lists -- a type with dozens of untouched members (a Go
+# receiver, say) shouldn't balloon the attribute; past this many it just says how many more, same
+# idea as apply_cap's own dropped count in structure.py.
+_MAX_UNCHANGED_TITLE_NAMES = 20
 
 
 def _structure_members_html(members):
-    """Member chips, one per `_member_states` entry, coded n/c/o/r for new/changed/unchanged/
-    removed -- text (a leading glyph) and shape (removed's strikethrough) both carry the state,
-    never colour alone."""
+    """Member chips, one per touched (`_member_states` state != unchanged) entry, coded n/c/r
+    for new/changed/removed -- text (a leading glyph) and shape (removed's strikethrough) both
+    carry the state, never colour alone. Unchanged members collapse into one "+N unchanged" chip
+    (muted, same styling as an unadorned chip) instead of a chip each; their names move to that
+    chip's title so they stay discoverable on hover."""
     if not members:
         return ""
+    touched = [m for m in members if m.get("state") != "unchanged"]
+    unchanged = [m for m in members if m.get("state") == "unchanged"]
     chips = "".join(
         f'<i class="{_MEMBER_STATE_CLASS.get(m.get("state"), "o")}">'
         f'{_MEMBER_STATE_GLYPH.get(m.get("state"), "")}{escape(m.get("name") or "")}</i>'
-        for m in members
+        for m in touched
     )
+    if unchanged:
+        names = [m.get("name") or "" for m in unchanged]
+        shown = ", ".join(names[:_MAX_UNCHANGED_TITLE_NAMES])
+        if len(names) > _MAX_UNCHANGED_TITLE_NAMES:
+            shown += ", …"
+        title = escape(shown).replace('"', "&quot;")
+        chips += f'<i class="o" title="{title}">+{len(unchanged)} unchanged</i>'
     return f'<span class="vds-members">{chips}</span>'
 
 

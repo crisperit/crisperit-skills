@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "crisperit-skills",
-      "description": "code-walkthrough: turn a diff, branch, PR, or existing code into a local HTML walkthrough page you can comment on",
+      "description": "code-walkthrough: turn a diff, branch, PR, or existing code into a top-down walkthrough page: overview, story map, structure and call graphs, annotated diff, and line comments you hand back to the agent",
       "version": "0.8.0",
       "source": "./",
       "author": {
