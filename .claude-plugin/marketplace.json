@@ -8,7 +8,7 @@
     {
       "name": "crisperit-skills",
       "description": "code-walkthrough: turn a diff, branch, PR, or existing code into a top-down walkthrough page: overview, story map, structure and call graphs, annotated diff, and line comments you hand back to the agent",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "source": "./",
       "author": {
         "name": "crisperit"
