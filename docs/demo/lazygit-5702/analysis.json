@@ -1,0 +1,480 @@
+{
+  "target": "9f6db03...c6b8220 (lazygit #5702)",
+  "overview": "Lazygit's side panels were a fixed set of five (status, files, branches, commits, stash); this lets anyone editing their config reorder them, group several into tabs on one panel, hide the optional ones, or split a tab out into its own panel.\n- A side panel is now a list of tab names (`SidePanel`) rather than one fixed name, so tabs can be grouped onto a shared panel or split into their own\n- `files`, `branches`, and `commits` stay mandatory because other code focuses them directly; every other panel can be hidden or reordered\n- Jump-to-panel keys bind positionally to however many panels are configured, instead of assuming exactly five\n- Editing the config file and refocusing the terminal window reloads the panel layout live, re-applying the current repo's config while keeping the focused panel in place\n- Panel sizing rules like the compact status and stash heights now key off the tab actually showing, not the panel's window name",
+  "flow_mermaid": "",
+  "verdict": "Side panel layout moves from five hardcoded windows to a user-configurable, live-reloadable list of panels and tabs.",
+  "section_notes": {},
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "role": "Adds a contributor guideline to pause and surface mid-implementation decisions rather than deciding solo.",
+      "hunks": [
+        {
+          "header": "@@ -138,6 +138,22 @@ commit. If you have two independent refinements for the same target, make",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "path": "docs-master/Config.md",
+      "role": "Documents the new `gui.sidePanels` config key, its layout rules, and valid tab names.",
+      "hunks": [
+        {
+          "header": "@@ -110,6 +110,21 @@ gui:",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "path": "pkg/config/side_panel.go",
+      "role": "Defines the `SidePanel` type and the list of valid tab names backing the new `gui.sidePanels` config.",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,54 @@",
+          "note": "`SidePanel` is a list of tab names; `MarshalYAML` writes it in flow style `[a, b]`, and `JSONSchema` restricts entries to `ValidSidePanelTabs`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/config/user_config.go",
+      "role": "Wires the new `SidePanels` field into `GuiConfig` and seeds its default panel/tab layout.",
+      "hunks": [
+        {
+          "header": "@@ -109,6 +109,11 @@ type GuiConfig struct {",
+          "note": "`GuiConfig` gains `SidePanels []SidePanel`, read from the `sidePanels` yaml key, ordering top-level panels and their grouped tabs."
+        },
+        {
+          "header": "@@ -848,6 +853,13 @@ func GetDefaultConfigForPlatform(platform string) *UserConfig {",
+          "note": "`GetDefaultConfigForPlatform` seeds `SidePanels` with the current layout: `status`; `files`/`worktrees`/`submodules`; `branches`/`remotes`/`tags`; `commits`/`reflog`; `stash`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/config/user_config_validation.go",
+      "role": "Validates the new `gui.sidePanels` config and drops the now-stale assumption that `jumpToBlock` always has 5 entries.",
+      "hunks": [
+        {
+          "header": "@@ -58,6 +58,42 @@ func (config *UserConfig) Validate() error {",
+          "note": "`validateSidePanels` rejects empty or duplicate/unknown tab names and requires `files`, `branches`, `commits` to stay present since code focuses them directly."
+        },
+        {
+          "header": "@@ -141,16 +177,7 @@ func validateKeybindingsRecurse(path string, node any) error {",
+          "note": "`validateKeybindings` drops the check that `Universal.JumpToBlock` must have exactly 5 elements, since panel count is no longer fixed."
+        }
+      ]
+    },
+    {
+      "path": "pkg/config/user_config_validation_test.go",
+      "role": "Updates the relaxed `jumpToBlock` length test cases and adds coverage for `sidePanels` validation.",
+      "hunks": [
+        {
+          "header": "@@ -134,11 +134,12 @@ func TestUserConfigValidate_enums(t *testing.T) {",
+          "note": "`jumpToBlock` cases for `1,2,3` and `1,2,3,4,5,6` now expect `valid: true`, matching the dropped fixed-length-5 requirement."
+        },
+        {
+          "header": "@@ -324,6 +325,42 @@ func TestUserConfigValidate_spinnerFrames(t *testing.T) {",
+          "note": "`TestUserConfigValidate_sidePanels` covers reordering, hiding, and promoting tabs, and rejects empty/duplicate/unknown names or a missing `files`/`branches`/`commits`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gocui/gui.go",
+      "role": "Adds a replayable `FocusEvents` channel so terminal focus events can be recorded and replayed like keys and mouse events.",
+      "hunks": [
+        {
+          "header": "@@ -103,6 +103,7 @@ type replayedEvents struct {",
+          "note": "`replayedEvents` gains a `FocusEvents` channel of `*TcellFocusEventWrapper` so recordings can replay terminal focus/unfocus events."
+        },
+        {
+          "header": "@@ -245,6 +246,7 @@ func NewGui(opts NewGuiOpts) (*Gui, error) {",
+          "note": "`NewGui` initializes the new `FocusEvents` channel alongside `Keys`, `Resizes`, and `MouseEvents` for recording playback."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gocui/tcell_driver.go",
+      "role": "Implements `TcellFocusEventWrapper` so terminal focus/unfocus events round-trip through gocui's event-replay system.",
+      "hunks": [
+        {
+          "header": "@@ -266,6 +266,22 @@ func (wrapper TcellResizeEventWrapper) toTcellEvent() tcell.Event {",
+          "note": "`TcellFocusEventWrapper` wraps `tcell.EventFocus`'s `Focused` bool with a `Timestamp`; `toTcellEvent` rebuilds it via `tcell.NewEventFocus`."
+        },
+        {
+          "header": "@@ -277,6 +293,8 @@ func (g *Gui) pollEvent() GocuiEvent {",
+          "note": "`pollEvent` adds a `case` on `g.ReplayedEvents.FocusEvents`, converting replayed focus events back to a `tcell.Event`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/controllers/helpers/window_arrangement_helper.go",
+      "role": "Threads a per-window active-tab lookup through window sizing so grouped side panels size by whichever tab is currently shown, not by the window's fixed first-tab name.",
+      "hunks": [
+        {
+          "header": "@@ -50,6 +50,11 @@ type WindowArrangementArgs struct {",
+          "note": "`ActiveViewForWindow` returns a window's currently selected tab, so the `status`/`stash` height special-cases key off the active tab rather than the window's first-tab name."
+        },
+        {
+          "header": "@@ -86,20 +91,21 @@ func (self *WindowArrangementHelper) GetWindowDimensions(informationStr string,",
+          "note": "Populates the new `ActiveViewForWindow` field with `self.windowHelper.GetViewNameForWindow` so `GetWindowDimensions` can resolve each window's active tab."
+        },
+        {
+          "header": "@@ -403,14 +409,15 @@ func getExtrasWindowSize(args WindowArrangementArgs) int {",
+          "note": "`getDefaultStashWindowBox` now takes a `window` param and sizes that box directly instead of hardcoding `\"stash\"`, since stash may not be a panel's first tab."
+        },
+        {
+          "header": "@@ -421,6 +428,16 @@ func getDefaultStashWindowBox(args WindowArrangementArgs) *boxlayout.Box {",
+          "note": "`sidePanelChildren` now derives `windows` from `sideWindowNames(args.UserConfig)` and a `boxForEachWindow` helper, replacing the fixed five-window list."
+        },
+        {
+          "header": "@@ -436,13 +453,7 @@ func sidePanelChildren(args WindowArrangementArgs) func(width int, height int) [",
+          "note": "Full/half screen mode now builds boxes via `boxForEachWindow(fullHeightBox)` instead of listing `status`, `files`, `branches`, `commits`, `stash` literally."
+        },
+        {
+          "header": "@@ -456,16 +467,23 @@ func sidePanelChildren(args WindowArrangementArgs) func(width int, height int) [",
+          "note": "`normalBox` switches on `args.ActiveViewForWindow(window)`: only a window actually showing `status` or `stash` gets their special height, not just one named after them."
+        },
+        {
+          "header": "@@ -487,12 +505,6 @@ func sidePanelChildren(args WindowArrangementArgs) func(width int, height int) [",
+          "note": "The squashed layout also switches to `boxForEachWindow(squashedSidePanelBox)`, dropping the hardcoded window list so it follows the configured panels too."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/controllers/helpers/window_arrangement_helper_test.go",
+      "role": "Adds test coverage for configurable, grouped, and hidden side panels driven by the new gui.sidePanels config.",
+      "hunks": [
+        {
+          "header": "@@ -24,15 +24,18 @@ func TestGetWindowDimensions(t *testing.T) {",
+          "note": "Default test args now set `ActiveViewForWindow` to `func(window) string { return window }`, matching prior behavior where each window's active tab equals its own name."
+        },
+        {
+          "header": "@@ -121,6 +124,152 @@ func TestGetWindowDimensions(t *testing.T) {",
+          "note": "New cases set `UserConfig.Gui.SidePanels` to promote `worktrees` into its own panel, omit `stash` to hide it, and group `stash` with `branches` while `ActiveViewForWindow` reports `branches` active, so the panel gets full height instead of stash's compact size."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/controllers/helpers/window_helper.go",
+      "role": "Derives the side window list from user config instead of a hardcoded set, so reordering, hiding, or regrouping tabs in gui.sidePanels takes effect.",
+      "hunks": [
+        {
+          "header": "@@ -3,6 +3,7 @@ package helpers",
+          "note": ""
+        },
+        {
+          "header": "@@ -135,5 +136,13 @@ func (self *WindowHelper) WindowForView(viewName string) string {",
+          "note": "`SideWindows` now delegates to the new `sideWindowNames`, which maps `userConfig.Gui.SidePanels` to each panel's first tab (`panel[0]`), so window order and membership follow the `gui.sidePanels` config."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/controllers/jump_to_side_window_controller.go",
+      "role": "Lets jump-to-panel keybindings degrade gracefully when the number of configured keys and side panels differ.",
+      "hunks": [
+        {
+          "header": "@@ -1,10 +1,7 @@",
+          "note": ""
+        },
+        {
+          "header": "@@ -30,19 +27,23 @@ func (self *JumpToSideWindowController) Context() types.Context {",
+          "note": "Loop bound is `min(len(windows), len(jumpKeys))`, replacing the exact-length `log.Fatal` check, so mismatched counts no longer crash."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/controllers/remotes_controller.go",
+      "role": "Keeps a remote's branches context in the same window as its parent when drilling into a remote.",
+      "hunks": [
+        {
+          "header": "@@ -140,6 +140,7 @@ func (self *RemotesController) enter(remote *models.Remote) error {",
+          "note": "`remoteBranchesContext.SetWindowName` now inherits the parent's `GetWindowName()`, so remote branches land in the same panel window as remotes."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/gui.go",
+      "role": "Applies the new `gui.sidePanels` config on repo load and live reload, and builds panel tab maps dynamically from it.",
+      "hunks": [
+        {
+          "header": "@@ -357,6 +357,7 @@ func (gui *Gui) onNewRepo(startArgs appTypes.StartArgs, contextKey types.Context",
+          "note": "Config reload now calls `gui.reloadSidePanels()` before `resetKeybindings`, so `gui.sidePanels` changes take effect without restarting."
+        },
+        {
+          "header": "@@ -581,8 +582,9 @@ func (gui *Gui) resetState(startArgs appTypes.StartArgs) types.Context {",
+          "note": "Repo switch now calls `gui.applySidePanelConfig()` instead of building `WindowViewNameMap` inline, since a per-repo config can reorder panels."
+        },
+        {
+          "header": "@@ -622,14 +624,15 @@ func (gui *Gui) resetState(startArgs appTypes.StartArgs) types.Context {",
+          "note": "`State` literal drops the inline `WindowViewNameMap` field; `gui.applySidePanelConfig()` after construction now sets it via `assignSidePanelWindows`."
+        },
+        {
+          "header": "@@ -660,13 +663,19 @@ func (gui *Gui) getViewBufferManagerForView(view *gocui.View) *tasks.ViewBufferM",
+          "note": "`initialWindowViewNameMap` becomes a `gui` method so it can add each `SidePanels` entry's `sidePanelViewNames[panel[0]]` as that window's default view."
+        },
+        {
+          "header": "@@ -836,45 +845,19 @@ func (gui *Gui) initGocui(headless bool, test integrationTypes.IntegrationTest)",
+          "note": "`viewTabMap` builds tabs from `gui.c.UserConfig().Gui.SidePanels` and `sidePanelTabTitles()` instead of hardcoded `branches`/`commits`/`files` maps, skipping single-tab panels."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/gui_driver.go",
+      "role": "Adds integration-test driver hooks for simulating focus-triggered config reload and reading the active tab of a window.",
+      "hunks": [
+        {
+          "header": "@@ -56,6 +56,18 @@ func (self *GuiDriver) Click(x, y int) {",
+          "note": "`FocusIn` sends a synthetic `FocusEvents` event so tests can exercise the config-reload path triggered by terminal focus."
+        },
+        {
+          "header": "@@ -141,6 +153,12 @@ func (self *GuiDriver) View(viewName string) *gocui.View {",
+          "note": "`TopViewInWindow` exposes `Window.TopViewInWindow` so tests can assert which tab is frontmost in a given window."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/layout.go",
+      "role": "Adjusts the minimum-height floor and default-tab ordering to account for a configurable number and order of side panels.",
+      "hunks": [
+        {
+          "header": "@@ -133,7 +133,12 @@ func (gui *Gui) layout(g *gocui.Gui) error {",
+          "note": "`minimumHeight` is now `max(9, len(SideWindows())+4)`, since more panels reserve more one-row unfocused slots before the focused panel gets squeezed."
+        },
+        {
+          "header": "@@ -249,6 +254,10 @@ func (gui *Gui) onRepoViewReset() error {",
+          "note": "`onRepoViewReset` now calls `gui.moveDefaultTabsToTop()` since the fixed view-ordering loop doesn't put each panel's configured default tab on top."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/side_panels.go",
+      "role": "New module implementing the `gui.sidePanels` config: grouping tabs into windows, assigning default tabs, and reapplying on reload.",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,128 @@",
+          "note": "Defines `sidePanelViewNames`/`sidePanelContexts` lookup maps plus `applySidePanelConfig`, `assignSidePanelWindows`, `moveDefaultTabsToTop`, `reloadSidePanels` that group tabs into windows per `gui.sidePanels`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/side_panels_test.go",
+      "role": "Guards that the three tab-name lookups stay in sync with the valid `gui.sidePanels` tab set",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,30 @@",
+          "note": "`TestSidePanelLookupsCoverAllValidTabs` compares `sidePanelViewNames`, `sidePanelTabTitles`, and `sidePanelContexts` keys against `config.ValidSidePanelTabs`; a missing entry means a nil lookup at runtime."
+        }
+      ]
+    },
+    {
+      "path": "pkg/gui/views.go",
+      "role": "Derives view titles, jump-label prefixes, and tab strips from the configurable `gui.sidePanels` layout instead of hardcoded panel groupings",
+      "hunks": [
+        {
+          "header": "@@ -9,7 +9,6 @@ import (",
+          "note": ""
+        },
+        {
+          "header": "@@ -182,10 +181,12 @@ func (gui *Gui) configureViewProperties() {",
+          "note": "Sets `gui.Views.ReflogCommits.Title` and `gui.Views.Submodules.Title` directly, since they can now be promoted to standalone panels instead of always being tabs."
+        },
+        {
+          "header": "@@ -210,66 +211,64 @@ func (gui *Gui) configureViewProperties() {",
+          "note": "Builds `panelViewGroups` from `gui.c.UserConfig().Gui.SidePanels` and assigns each group's `jumpLabelForPanel` prefix in a loop, replacing the old fixed `jumpLabels[0..4]` assignments per view. Tab strips are now computed into `tabsByView` and applied to every view (clearing stale `Tabs`/`TabIndex` on views no longer grouped), instead of only setting tabs on views found in `gui.viewTabMap()`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/components/test_driver.go",
+      "role": "Adds a test-driver helper to simulate the terminal window regaining focus, so integration tests can exercise config-reload-on-focus behavior",
+      "hunks": [
+        {
+          "header": "@@ -56,6 +56,14 @@ func (self *TestDriver) GlobalPress(key config.Keybinding) {",
+          "note": "`FocusIn` calls `self.gui.FocusIn()` to simulate the window regaining focus, which triggers lazygit's config reload."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/components/test_test.go",
+      "role": "Stubs the new `FocusIn` and `TopViewInWindow` driver methods on the fake GUI driver used by component unit tests",
+      "hunks": [
+        {
+          "header": "@@ -34,6 +34,9 @@ func (self *fakeGuiDriver) Click(x, y int) {",
+          "note": ""
+        },
+        {
+          "header": "@@ -72,6 +75,10 @@ func (self *fakeGuiDriver) View(viewName string) *gocui.View {",
+          "note": "`TopViewInWindow` stub returns nil since the fake driver has no real window/tab state."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/components/view_driver.go",
+      "role": "Adds an `IsActiveTab` assertion to check which view is the visibly displayed tab of its window, separate from keyboard focus",
+      "hunks": [
+        {
+          "header": "@@ -408,6 +408,28 @@ func (self *ViewDriver) IsFocused() *ViewDriver {",
+          "note": "`IsActiveTab` compares the view's name against `TopViewInWindow(context.GetWindowName())`, since a reload can make the focused view differ from the one actually drawn on top."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/tests/config/side_panels_in_per_repo_config.go",
+      "role": "Integration test proving each repo's own `gui.sidePanels` layout re-applies correctly when switching between repos",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,58 @@",
+          "note": "`SidePanelsInPerRepoConfig` sets a per-repo `sidePanels` layout swapping `commits`/`reflog` and `branches`/`remotes`/`tags`, then checks `JumpToBlock[2]` lands on `Branches` vs `Commits` depending on which repo is active."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/tests/test_list.go",
+      "role": "Registers the new per-repo-config and side-panel-configurability integration tests in the test suite",
+      "hunks": [
+        {
+          "header": "@@ -162,6 +162,7 @@ var tests = []*components.IntegrationTest{",
+          "note": "Adds `config.SidePanelsInPerRepoConfig` to the registered test list."
+        },
+        {
+          "header": "@@ -474,11 +475,15 @@ var tests = []*components.IntegrationTest{",
+          "note": "Adds `ui.HideSidePanel`, `ui.PromoteTabToSidePanel`, `ui.ReloadSidePanels`, and `ui.ReorderSidePanels` to the registered test list."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/tests/ui/hide_side_panel.go",
+      "role": "Integration test verifying that omitting a panel (stash) from `gui.sidePanels` hides it and cycling skips over it",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,33 @@",
+          "note": "`HideSidePanel` configures `Gui.SidePanels` without `stash`, then checks `NextBlock` from `Commits` wraps to `Status`, skipping the hidden panel."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/tests/ui/promote_tab_to_side_panel.go",
+      "role": "Integration test proving a tab can be promoted to its own top-level side panel via `gui.sidePanels`.",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,40 @@",
+          "note": "Sets `Gui.SidePanels` to pull `worktrees` into its own panel; verifies `JumpToBlock` reaches it and `NextTab` then skips to `Submodules`."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/tests/ui/reload_side_panels.go",
+      "role": "Integration test proving edits to `sidePanels` in the config file reload live on window focus without losing the focused tab.",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,51 @@",
+          "note": "Writes `.git/lazygit.yml` with `sidePanels`, edits it, then calls `FocusIn` to confirm the config reloads live while `Worktrees` stays the focused, active tab."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/tests/ui/reorder_side_panels.go",
+      "role": "Integration test proving `gui.sidePanels` can reorder panels, shifting which jump keys reach them.",
+      "hunks": [
+        {
+          "header": "@@ -0,0 +1,33 @@",
+          "note": "Swaps `commits` and `branches` order in `Gui.SidePanels`, so `JumpToBlock[2]`/`JumpToBlock[3]` now land on `Commits`/`Branches` respectively."
+        }
+      ]
+    },
+    {
+      "path": "pkg/integration/types/types.go",
+      "role": "Extends the `GuiDriver` test interface with hooks needed to drive and assert the new side-panel focus/reload behavior.",
+      "hunks": [
+        {
+          "header": "@@ -24,6 +24,9 @@ type IntegrationTest interface {",
+          "note": "Adds `FocusIn` to `GuiDriver` so tests can simulate the terminal regaining focus, which triggers a live config reload."
+        },
+        {
+          "header": "@@ -41,6 +44,8 @@ type GuiDriver interface {",
+          "note": "Adds `TopViewInWindow` to `GuiDriver` so tests can assert which tab is frontmost in a given window."
+        }
+      ]
+    },
+    {
+      "path": "schema-master/config.json",
+      "role": "JSON schema for the new `gui.sidePanels` config field and its `SidePanel` value type.",
+      "hunks": [
+        {
+          "header": "@@ -590,6 +590,35 @@",
+          "note": "Documents the `sidePanels` array: each entry lists tab names sharing a panel; omitting hides one, a single-name entry promotes it; `files`/`branches`/`commits` can't be hidden."
+        },
+        {
+          "header": "@@ -3565,6 +3594,24 @@",
+          "note": "Defines `SidePanel` as an array of the ten valid panel-name enum values used by `sidePanels`."
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "title": "Let users declare their side panel layout",
+      "why": "Adds the `SidePanel` type, the `SidePanels` config field, and `validateSidePanels` validation for the new `gui.sidePanels` key.",
+      "paths": [
+        "pkg/config/side_panel.go",
+        "pkg/config/user_config.go",
+        "pkg/config/user_config_validation.go",
+        "pkg/config/user_config_validation_test.go"
+      ],
+      "hop": "read by `sideWindowNames`"
+    },
+    {
+      "title": "Derive window layout and jump keys from the configured panels",
+      "why": "`SideWindows` and `sidePanelChildren` size and key panels by `ActiveViewForWindow` instead of a fixed five-panel list, and jump keys and window names follow the same config.",
+      "paths": [
+        "pkg/gui/controllers/helpers/window_helper.go",
+        "pkg/gui/controllers/helpers/window_arrangement_helper.go",
+        "pkg/gui/controllers/helpers/window_arrangement_helper_test.go",
+        "pkg/gui/layout.go",
+        "pkg/gui/controllers/jump_to_side_window_controller.go",
+        "pkg/gui/controllers/remotes_controller.go"
+      ],
+      "hop": "windows assigned by `assignSidePanelWindows`"
+    },
+    {
+      "title": "Build, apply, and live-reload the side panels",
+      "why": "`applySidePanelConfig` and `assignSidePanelWindows` assign windows and tabs from `gui.sidePanels`, and a new `FocusEvents` channel lets `reloadSidePanels` re-apply it live when the terminal regains focus.",
+      "paths": [
+        "pkg/gui/side_panels.go",
+        "pkg/gui/side_panels_test.go",
+        "pkg/gui/gui.go",
+        "pkg/gui/views.go",
+        "pkg/gocui/gui.go",
+        "pkg/gocui/tcell_driver.go",
+        "pkg/gui/gui_driver.go",
+        "pkg/integration/types/types.go",
+        "pkg/integration/components/test_driver.go",
+        "pkg/integration/components/test_test.go",
+        "pkg/integration/components/view_driver.go"
+      ],
+      "hop": "verified by `ReloadSidePanels`",
+      "flow_mermaid": "sequenceDiagram\n    participant Term as Terminal\n    participant Driver as GuiDriver\n    participant Gui as Gui\n    Term->>Driver: sends FocusIn\n    Driver->>Gui: emits FocusEvent\n    Gui->>Gui: calls reloadSidePanels\n    Gui->>Gui: calls applySidePanelConfig\n    Gui->>Gui: calls moveDefaultTabsToTop"
+    },
+    {
+      "title": "Prove reorder, hide, promote, and reload end to end",
+      "why": "Integration tests `ReorderSidePanels`, `HideSidePanel`, `PromoteTabToSidePanel`, and `ReloadSidePanels` exercise the new layouts, plus `SidePanelsInPerRepoConfig` for per-repo overrides.",
+      "paths": [
+        "pkg/integration/tests/config/side_panels_in_per_repo_config.go",
+        "pkg/integration/tests/test_list.go",
+        "pkg/integration/tests/ui/hide_side_panel.go",
+        "pkg/integration/tests/ui/promote_tab_to_side_panel.go",
+        "pkg/integration/tests/ui/reload_side_panels.go",
+        "pkg/integration/tests/ui/reorder_side_panels.go"
+      ]
+    },
+    {
+      "title": "Document the new config and contributor process",
+      "side": true,
+      "why": "Documents the new `sidePanels` key in the config reference and JSON schema, alongside an unrelated contributor-process note added in the same PR.",
+      "paths": [
+        "AGENTS.md",
+        "docs-master/Config.md",
+        "schema-master/config.json"
+      ]
+    }
+  ]
+}
