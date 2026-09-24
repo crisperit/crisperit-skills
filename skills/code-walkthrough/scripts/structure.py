@@ -553,6 +553,41 @@ def drop_test_components(components, edges, implements):
     return kept, kept_edges, kept_implements
 
 
+def drop_unreferenced_unchanged(components, edges, implements):
+    """Drop every "unchanged" component with no call or implements/heritage edge connecting it,
+    directly or through a chain of other surviving components, to a touched (non-"unchanged")
+    one: build_components parses every symbol in a changed file whole, so most of what it emits
+    was never part of the change itself -- only a real call or heritage relationship earns it a
+    spot as surrounding context. Touched components are never dropped here regardless of degree.
+
+    Not counted in apply_cap's own `dropped` figure -- the MAX_COMPONENTS cap never got a chance
+    to consider these, they were noise the parser produced, not overflow the cap had to cut.
+    Returns (kept_components, kept_edges, kept_implements), same shape as drop_test_components."""
+    adjacency = defaultdict(set)
+    for e in edges:
+        adjacency[e["from"]].add(e["to"])
+        adjacency[e["to"]].add(e["from"])
+    for item in _implements_edges_by_id(list(components.values()), implements):
+        adjacency[item["from"]].add(item["to"])
+        adjacency[item["to"]].add(item["from"])
+
+    kept_ids = {cid for cid, c in components.items() if c.get("state") != "unchanged"}
+    frontier = list(kept_ids)
+    while frontier:
+        next_frontier = []
+        for cid in frontier:
+            for neighbour in adjacency.get(cid, ()):
+                if neighbour in components and neighbour not in kept_ids:
+                    kept_ids.add(neighbour)
+                    next_frontier.append(neighbour)
+        frontier = next_frontier
+
+    kept = {cid: c for cid, c in components.items() if cid in kept_ids}
+    kept_edges = [e for e in edges if e["from"] in kept_ids and e["to"] in kept_ids]
+    kept_implements = [i for i in implements if i["from"] in kept_ids]
+    return kept, kept_edges, kept_implements
+
+
 def _implements_edges_by_id(components, implements):
     """implements/extends heritage entries carry a target NAME, not a component id (see the
     module-level note on cross-file type resolution); barycenter ordering needs a real id on
@@ -648,35 +683,50 @@ def assign_rows(components, edges, implements):
             c["row"] = i
 
 
-def apply_cap(components, edges, cap=MAX_COMPONENTS):
-    """Keep at most `cap` components, the top ones by call-edge degree within each group (a
-    round robin across groups so one large group can't starve the others), and drop any edge
-    or heritage entry left dangling. Returns (kept_components, kept_edges, dropped_count)."""
-    if len(components) <= cap:
-        return list(components.values()), edges, 0
-    degree = Counter()
-    for e in edges:
-        degree[e["from"]] += 1
-        degree[e["to"]] += 1
-    buckets = defaultdict(list)
-    for comp in components.values():
-        buckets[comp["group"]].append(comp)
-    for bucket in buckets.values():
-        bucket.sort(key=lambda c: (-degree.get(c["id"], 0), c["id"]))
-    bucket_keys = sorted(buckets, key=lambda k: (k is None, k))
+def _round_robin_fill(bucket_keys, buckets, kept_ids, cap):
+    """Fill `kept_ids` up to `cap` by taking one item at a time from each bucket in
+    `bucket_keys` order, so no single bucket can claim every slot before the others get a
+    turn. Mutates `kept_ids` in place; stops once a bucket runs dry on every pass."""
     idx = {k: 0 for k in bucket_keys}
-    kept_ids = set()
     while len(kept_ids) < cap:
         progressed = False
         for k in bucket_keys:
-            if idx[k] < len(buckets[k]):
-                kept_ids.add(buckets[k][idx[k]]["id"])
+            bucket = buckets[k]
+            if idx[k] < len(bucket):
+                kept_ids.add(bucket[idx[k]]["id"])
                 idx[k] += 1
                 progressed = True
                 if len(kept_ids) >= cap:
                     break
         if not progressed:
             break
+
+
+def apply_cap(components, edges, cap=MAX_COMPONENTS):
+    """Keep at most `cap` components, the top ones within each group (round robin across
+    groups so one large group can't starve the others), ranked by call-edge degree then id.
+    The round robin runs over touched (state != "unchanged") components first, then unchanged
+    ones for any remaining slots -- so the cap never cuts a touched component while an
+    unchanged one survives, even across groups. Drops any edge or heritage entry left
+    dangling. Returns (kept_components, kept_edges, dropped_count)."""
+    if len(components) <= cap:
+        return list(components.values()), edges, 0
+    degree = Counter()
+    for e in edges:
+        degree[e["from"]] += 1
+        degree[e["to"]] += 1
+    touched_buckets = defaultdict(list)
+    unchanged_buckets = defaultdict(list)
+    for comp in components.values():
+        bucket = unchanged_buckets if comp.get("state") == "unchanged" else touched_buckets
+        bucket[comp["group"]].append(comp)
+    for buckets in (touched_buckets, unchanged_buckets):
+        for bucket in buckets.values():
+            bucket.sort(key=lambda c: (-degree.get(c["id"], 0), c["id"]))
+    bucket_keys = sorted({comp["group"] for comp in components.values()}, key=lambda k: (k is None, k))
+    kept_ids = set()
+    _round_robin_fill(bucket_keys, touched_buckets, kept_ids, cap)
+    _round_robin_fill(bucket_keys, unchanged_buckets, kept_ids, cap)
     kept = [c for c in components.values() if c["id"] in kept_ids]
     kept_edges = [e for e in edges if e["from"] in kept_ids and e["to"] in kept_ids]
     return kept, kept_edges, len(components) - len(kept)
@@ -747,6 +797,7 @@ def analyse(repo, base, head, symdelta_path, analysis_path, paths=()):
     assign_columns(components, symdelta_data)
 
     components, edges, implements = drop_test_components(components, edges, implements)
+    components, edges, implements = drop_unreferenced_unchanged(components, edges, implements)
 
     kept, kept_edges, dropped = apply_cap(components, edges)
     kept_ids = {c["id"] for c in kept}

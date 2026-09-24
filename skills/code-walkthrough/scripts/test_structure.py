@@ -170,10 +170,13 @@ def test_whitespace_only_change_is_unchanged():
             "export function caller() { return greet(); }\n",
         )
         base = _commit(repo, "base")
+        # caller gets a genuine change so it's "touched" -- greet's whitespace-only reformat is
+        # the thing under test, and it needs a touched neighbour to stay boxed under the
+        # unreferenced-unchanged filter (see drop_unreferenced_unchanged).
         _write(
             repo, "a.ts",
             "export function greet() {\n  return 1;\n}\n"
-            "export function caller() { return greet(); }\n",
+            "export function caller() { return greet() + 1; }\n",
         )
         head = _commit(repo, "head")
 
@@ -590,6 +593,99 @@ def test_size_cap_is_a_noop_under_the_cap():
     assert dropped == 0
 
 
+def test_size_cap_never_cuts_a_touched_component_for_an_unchanged_one():
+    # 32 touched (state "changed") plus 3 unchanged, all degree 0 -- ties fall to alphabetical
+    # id, which used to let an unchanged component win a slot a touched one needed.
+    components = {}
+    for i in range(32):
+        cid = f"file{i}.ts:Comp{i}"
+        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "changed", "group": None}
+    for i in range(32, 35):
+        cid = f"file{i}.ts:Comp{i}"
+        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "unchanged", "group": None}
+
+    kept, kept_edges, dropped = structure.apply_cap(components, [], cap=30)
+
+    assert len(kept) == 30
+    assert dropped == 5
+    assert all(c["state"] != "unchanged" for c in kept)
+
+
+def test_size_cap_never_cuts_a_touched_component_for_an_unchanged_one_across_groups():
+    # Group 0 has 20 touched components; group 1 has only 5 unchanged ones. A round robin
+    # that alternates groups without regard to state would give group 1's unchanged
+    # components a slot each round before group 0 exhausts its touched ones.
+    components = {}
+    for i in range(20):
+        cid = f"file{i}.ts:Comp{i}"
+        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "changed", "group": 0}
+    for i in range(20, 25):
+        cid = f"file{i}.ts:Comp{i}"
+        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "unchanged", "group": 1}
+
+    kept, kept_edges, dropped = structure.apply_cap(components, [], cap=10)
+
+    assert len(kept) == 10
+    assert dropped == 15
+    assert all(c["state"] != "unchanged" for c in kept)
+
+
+# ---- unreferenced unchanged components: dropped as noise, not as overflow -------------------
+
+
+def test_unreferenced_unchanged_component_excluded_and_not_counted_in_dropped():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(
+            repo, "a.ts",
+            "export function touched() { return 1; }\n"
+            "export function untouched() { return 2; }\n",
+        )
+        base = _commit(repo, "base")
+        _write(
+            repo, "a.ts",
+            "export function touched() { return 99; }\n"
+            "export function untouched() { return 2; }\n",
+        )
+        head = _commit(repo, "head")
+
+        # No edge touches "untouched" at all -- it's an unrelated symbol build_components still
+        # parsed because it shares a changed file with "touched".
+        result = _run_structure(repo, base, head)
+        names = {c["name"] for c in result["components"]}
+        assert "touched" in names or "touched" in result["also_touched"]
+        assert "untouched" not in names
+        assert "untouched" not in result["also_touched"]
+        assert result["dropped"] == 0
+
+
+def test_unchanged_component_reached_by_an_edge_from_a_touched_one_is_kept():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _init_repo(repo)
+        _write(
+            repo, "a.ts",
+            "export function caller() { return callee(); }\n"
+            "export function callee() { return 1; }\n",
+        )
+        base = _commit(repo, "base")
+        _write(
+            repo, "a.ts",
+            "export function caller() { return callee() + 1; }\n"
+            "export function callee() { return 1; }\n",
+        )
+        head = _commit(repo, "head")
+
+        symdelta_path = _write_json(
+            repo, "symdelta.json", _edge_symdelta("a.ts", "caller", "a.ts", "callee")
+        )
+        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
+        callee = _component(result, "callee")
+        assert callee["state"] == "unchanged"
+        assert result["dropped"] == 0
+
+
 # ---- _member_states: pure logic --------------------------------------------------------------
 
 
@@ -877,6 +973,9 @@ if __name__ == "__main__":
         test_missing_tree_sitter_falls_back_to_null_language,
         test_size_cap_keeps_top_degree_components_and_reports_dropped,
         test_size_cap_is_a_noop_under_the_cap,
+        test_size_cap_never_cuts_a_touched_component_for_an_unchanged_one,
+        test_unreferenced_unchanged_component_excluded_and_not_counted_in_dropped,
+        test_unchanged_component_reached_by_an_edge_from_a_touched_one_is_kept,
         test_member_states_pure_logic,
         test_go_struct_and_interface_states,
         test_go_generic_receiver_method_is_a_member_and_a_new_one_marks_the_struct_changed,

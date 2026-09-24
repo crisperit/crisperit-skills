@@ -224,11 +224,17 @@
 
   /* Story map: the reading order's own stops, one per group in story order, main line first
      with hop labels between consecutive stops, side (supporting) groups listed below it
-     instead of in the chain. Vertical spine on a phone, horizontal from 900px up, the same
-     breakpoint .cols already uses. */
+     instead of in the chain. Vertical spine by default; a row only kicks in once each card
+     can clear ~200px, which depends on how many 140px-capped hops share the row with it --
+     see the tiered @media rules below rather than one flat breakpoint. */
   .map{background:var(--panel);border:1px solid var(--border);border-radius:10px;
     padding:16px;margin-bottom:20px}
-  .spine{display:flex;flex-direction:column;gap:0}
+  /* var()-driven so each row-layout tier can flip .spine/.stop/.hop together by setting custom
+     properties on .map once (see the @media rules below), instead of repeating the tier's gate
+     selector per property. Fallbacks reproduce the original vertical/mobile values. */
+  .spine{display:flex;flex-direction:var(--map-dir,column);align-items:var(--map-align,normal);
+    gap:0}
+  .spine .stop{flex:var(--stop-flex,0 1 auto);min-width:var(--stop-minw,auto)}
   .stop{display:block;text-decoration:none;color:inherit;background:var(--panel2);
     border:1px solid var(--border);border-left:4px solid var(--c);border-radius:8px;
     padding:10px 12px;transition:transform .15s}
@@ -244,23 +250,54 @@
     margin-right:6px;vertical-align:1px}
   .stop .t{font-weight:600;font-size:var(--fs-sm)}
   .stop .m{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:3px}
-  .hop{display:flex;align-items:center;gap:8px;padding:4px 0 4px 16px;color:var(--muted);
-    font-size:var(--fs-xs)}
-  .hop::before{content:"";width:2px;height:22px;background:var(--border)}
-  .hop code{font-size:var(--fs-xs)}
+  /* The page-wide `code` rule above breaks anywhere the instant a word doesn't fit, even one
+     line short of a clean wrap; break-word only breaks as that last resort, so a card wide
+     enough for `assignSidePanelWindows` gets it whole instead of `applySidePanelC|onfig`.
+     Covers hop labels too, same reasoning. */
+  .map code{overflow-wrap:break-word}
+  .hop{display:flex;flex-direction:var(--hop-dir,row);align-items:var(--hop-align,center);
+    justify-content:var(--hop-justify,normal);text-align:var(--hop-text-align,inherit);
+    flex:var(--hop-flex,0 1 auto);min-width:var(--hop-minw,auto);max-width:var(--hop-maxw,none);
+    gap:8px;padding:var(--hop-pad,4px 0 4px 16px);color:var(--muted);font-size:var(--fs-xs)}
+  .hop::before{content:"";width:var(--hop-before-w,2px);height:var(--hop-before-h,22px);
+    background:var(--border)}
+  /* .hop is a flex container, so this <code> is a blockified flex item; min-width:0 drops its
+     automatic min-size (break-word, unlike anywhere, doesn't shrink that min-size to its own
+     wrap points), or an unbroken identifier holds the hop open past max-width regardless. The
+     row tiers below also set align-items:stretch: .hop's base align-items:center, written for
+     the mobile layout, would otherwise center this item at its natural width instead. */
+  .hop code{font-size:var(--fs-xs);min-width:0}
   .map .side{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
   .map .side .lbl{display:block;color:var(--muted);font-size:var(--fs-xs);margin-bottom:6px}
-  @media(min-width:900px){
-    .spine{flex-direction:row;align-items:stretch}
-    .spine .stop{flex:1 1 0;min-width:0}
-    .spine .hop{flex:0 1 auto;min-width:64px;max-width:160px;flex-direction:column;
-      justify-content:center;text-align:center;padding:0 4px}
-    .spine .hop code{white-space:nowrap}
-    .spine .hop::before{width:100%;height:2px}
+  /* Row layout for 2-3 main-line stops: at most two hops share the row, and 1000px leaves
+     ~200px+ per card even then. flex-basis is a fixed 140px, not auto: auto sizes a flex item
+     from its own content, and a nowrap identifier used to make that content the width of the
+     whole word -- ~230px, on a real 4-stop map -- before flex-shrink ever ran. A fixed basis
+     plus a wrapping label (see .map code above) keeps the hop a connector, never something
+     competing with the cards for width. */
+  @media(min-width:1000px){
+    .map:not(:has(.spine .stop:nth-of-type(4))){
+      --map-dir:row;--map-align:stretch;--stop-flex:1 1 0;--stop-minw:0;--hop-flex:0 1 140px;
+      --hop-minw:64px;--hop-maxw:140px;--hop-dir:column;--hop-align:stretch;
+      --hop-justify:center;--hop-text-align:center;--hop-pad:0 4px;--hop-before-w:100%;
+      --hop-before-h:2px}
     .map .side{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
     .map .side .lbl{margin:0;flex:0 0 auto}
     .map .side .stop{flex:0 1 280px}
   }
+  /* A 4th stop adds a 4th 140px-capped hop, so the same ~200px-per-card floor needs more total
+     width -- raised rather than folded into the tier above. Same row-mode variables as that
+     tier, just gated one stop-count higher. */
+  @media(min-width:1360px){
+    .map:has(.spine .stop:nth-of-type(4)):not(:has(.spine .stop:nth-of-type(5))){
+      --map-dir:row;--map-align:stretch;--stop-flex:1 1 0;--stop-minw:0;--hop-flex:0 1 140px;
+      --hop-minw:64px;--hop-maxw:140px;--hop-dir:column;--hop-align:stretch;
+      --hop-justify:center;--hop-text-align:center;--hop-pad:0 4px;--hop-before-w:100%;
+      --hop-before-h:2px}
+  }
+  /* 5-6 stops: deliberately no wider tier. Even the page's own 1400px wrap cap can't clear
+     ~200px per card once four 140px hops are subtracted, so the vertical spine above stays the
+     only layout for this many stops. */
 
   /* section-symbols.html, moved to the page's end and collapsed (see render.py): a generic
      disclosure, same idiom as details.hunk's triangle-plus-label summary but plain text, no
