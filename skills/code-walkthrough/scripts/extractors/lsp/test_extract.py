@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import extract  # noqa: E402
-from lsp_client import LSPClient  # noqa: E402
+from lsp_client import LSPClient, uri  # noqa: E402
 
 ROOT = "/repo"
 
@@ -46,6 +46,30 @@ def test_uri_to_relpath_rejects_node_modules():
     # A dependency's own .d.ts (TS lib internals like Array.push) is noise, not application
     # call-graph, even though it lives inside root on disk.
     assert extract._uri_to_relpath(f"file://{ROOT}/node_modules/typescript/lib/lib.es5.d.ts", ROOT) is None
+
+
+def test_decl_span_prefers_selection_range_for_start():
+    # selectionRange is the name token; range often starts earlier (e.g. a decorator) -- start
+    # must land on the name, not there.
+    item = {
+        "selectionRange": {"start": {"line": 4, "character": 9}, "end": {"line": 4, "character": 10}},
+        "range": {"start": {"line": 2, "character": 0}, "end": {"line": 6, "character": 1}},
+    }
+    assert extract._decl_span(item) == (5, 7)
+
+
+def test_decl_span_falls_back_to_range_start_when_selection_range_missing():
+    item = {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 6, "character": 1}}}
+    assert extract._decl_span(item) == (3, 7)
+
+
+def test_decl_span_end_falls_back_to_start_when_range_missing():
+    item = {"selectionRange": {"start": {"line": 4, "character": 9}, "end": {"line": 4, "character": 10}}}
+    assert extract._decl_span(item) == (5, 5)
+
+
+def test_decl_span_returns_none_when_neither_range_present():
+    assert extract._decl_span({}) == (None, None)
 
 
 def test_flatten_symbols_keeps_only_method_and_function_kinds_at_any_depth():
@@ -286,6 +310,57 @@ def test_extract_edges_returns_empty_without_raising_when_existing_is_empty():
         extract.LSPClient = original_client
 
 
+def test_extract_edges_includes_start_end_positions_on_both_sides():
+    # Outgoing and incoming feed the same symbol's own span into opposite add_edge slots; giving
+    # every item a distinct range catches a from/to swap that identical ranges would hide.
+    original_client = extract.LSPClient
+    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sym = {
+                "name": "f",
+                "kind": extract.KIND_FUNCTION,
+                "selectionRange": {"start": {"line": 10, "character": 9}, "end": {"line": 10, "character": 10}},
+                "range": {"start": {"line": 10, "character": 0}, "end": {"line": 12, "character": 1}},
+            }
+            prepared_item = {
+                "name": "f", "kind": extract.KIND_FUNCTION, "uri": uri(str(root / "a.ts")),
+                "range": sym["range"], "selectionRange": sym["selectionRange"],
+            }
+            callee_item = {
+                "name": "callee", "kind": extract.KIND_FUNCTION, "uri": uri(str(root / "b.ts")),
+                "selectionRange": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 15}},
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 2, "character": 1}},
+            }
+            caller_item = {
+                "name": "caller", "kind": extract.KIND_FUNCTION, "uri": uri(str(root / "c.ts")),
+                "selectionRange": {"start": {"line": 20, "character": 9}, "end": {"line": 20, "character": 15}},
+                "range": {"start": {"line": 20, "character": 0}, "end": {"line": 22, "character": 1}},
+            }
+            extract.LSPClient = lambda cmd, cwd: _StubLSPClient({
+                "textDocument/documentSymbol": [sym],
+                "textDocument/prepareCallHierarchy": [prepared_item],
+                "callHierarchy/outgoingCalls": [{"to": callee_item}],
+                "callHierarchy/incomingCalls": [{"from": caller_item}],
+            })
+            (root / "a.ts").write_text("export function f() {}\n")
+
+            edges = extract.extract_edges(root, ["a.ts"])
+    finally:
+        extract.LSPClient = original_client
+        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
+        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+
+    outgoing = next(e for e in edges if e["ToSym"] == "callee")
+    assert (outgoing["FromStart"], outgoing["FromEnd"]) == (11, 13)
+    assert (outgoing["ToStart"], outgoing["ToEnd"]) == (1, 3)
+
+    incoming = next(e for e in edges if e["FromSym"] == "caller")
+    assert (incoming["FromStart"], incoming["FromEnd"]) == (21, 23)
+    assert (incoming["ToStart"], incoming["ToEnd"]) == (11, 13)
+
+
 def test_end_to_end_cross_file_call_resolves():
     if shutil.which("typescript-language-server") is None:
         print("skip (no typescript-language-server on PATH): test_end_to_end_cross_file_call_resolves")
@@ -305,7 +380,8 @@ def test_end_to_end_cross_file_call_resolves():
         assert ok, reason
 
         edges = extract.extract_edges(root, ["a.ts", "b.ts"])
-        assert {"FromFile": "a.ts", "FromSym": "caller", "ToFile": "b.ts", "ToSym": "callee"} in edges
+        identities = [{k: e[k] for k in ("FromFile", "FromSym", "ToFile", "ToSym")} for e in edges]
+        assert {"FromFile": "a.ts", "FromSym": "caller", "ToFile": "b.ts", "ToSym": "callee"} in identities
 
 
 if __name__ == "__main__":
@@ -316,6 +392,10 @@ if __name__ == "__main__":
         test_uri_to_relpath_resolves_inside_root,
         test_uri_to_relpath_rejects_outside_root,
         test_uri_to_relpath_rejects_node_modules,
+        test_decl_span_prefers_selection_range_for_start,
+        test_decl_span_falls_back_to_range_start_when_selection_range_missing,
+        test_decl_span_end_falls_back_to_start_when_range_missing,
+        test_decl_span_returns_none_when_neither_range_present,
         test_flatten_symbols_keeps_only_method_and_function_kinds_at_any_depth,
         test_parse_args_reads_a_files_list,
         test_parse_args_reads_positional_files,
@@ -328,6 +408,7 @@ if __name__ == "__main__":
         test_extract_edges_raises_when_every_call_hierarchy_lookup_comes_back_empty,
         test_extract_edges_returns_empty_without_raising_when_calls_just_dont_resolve,
         test_extract_edges_returns_empty_without_raising_when_existing_is_empty,
+        test_extract_edges_includes_start_end_positions_on_both_sides,
         test_end_to_end_cross_file_call_resolves,
     ]
     for test in tests:

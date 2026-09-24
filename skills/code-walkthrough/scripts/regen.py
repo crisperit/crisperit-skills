@@ -52,7 +52,7 @@ from validate_analysis import HUNK_PREFIX, parse_hunks  # noqa: E402
 # Bumped by hand when a script's own behaviour changes, so a cache entry keyed on git refs
 # alone (which say nothing about the script that produced it) doesn't survive the edit.
 SCRIPT_VERSION = {
-    "symdelta": 1,
+    "symdelta": 2,
     "complexity": 1,
     "links": 1,
     "resolution": 1,

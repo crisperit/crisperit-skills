@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """TypeScript/Python/Rust call-graph extractor: the LSP tier of symdelta.py's per-language
 extractor contract. Emits the same JSONL edge shape the Go extractor (extractors/go/main.go)
-does -- {"FromFile","FromSym","ToFile","ToSym"}, paths repo-relative, methods
-receiver-qualified ("Class.method") -- so symdelta.py's rename-pairing, move-collapse and graph
-assembly stay language agnostic.
+does -- {"FromFile","FromSym","FromStart","FromEnd","ToFile","ToSym","ToStart","ToEnd"}, paths
+repo-relative, methods receiver-qualified ("Class.method") -- so symdelta.py's rename-pairing,
+move-collapse and graph assembly stay language agnostic. The `*Start`/`*End` line numbers are
+optional and omitted when a span could not be determined.
 
 Usage:
   python3 extract.py <worktree_root> [--lang <name>]                          # capability check only
@@ -204,6 +205,25 @@ def _range_contains(outer, inner):
     return outer_start <= inner_start and outer_end >= inner_end
 
 
+def _decl_span(item):
+    """1-based (start, end) line numbers for a declaration's wire-edge position fields, from a
+    DocumentSymbol or CallHierarchyItem (both carry `selectionRange` and `range`, and per the LSP
+    spec `range` covers the whole declaration). Start prefers `selectionRange` (the name token,
+    not a doc comment/decorator/attribute); end always comes from `range`, falling back to start
+    when `range` itself is absent. (None, None) when neither is present -- LSP lines are 0-based
+    on the wire, hence the +1."""
+    sel = item.get("selectionRange")
+    rng = item.get("range")
+    if sel:
+        start = sel["start"]["line"] + 1
+    elif rng:
+        start = rng["start"]["line"] + 1
+    else:
+        return None, None
+    end = rng["end"]["line"] + 1 if rng else start
+    return start, end
+
+
 def _find_enclosing_container(symbols, target_range, best=None):
     """Innermost Class/Struct/Interface/Enum symbol (by name) whose range contains
     `target_range`, walked depth-first so a nested match overwrites its outer container."""
@@ -322,14 +342,20 @@ def extract_edges(root, rel_files, lang="typescript"):
         calls_ready_retries = 10  # generous relative to the ~1 retry measured; bounds worst case
         char_offset = 1 if lang == "typescript" else 0
 
-        def add_edge(from_file, from_sym, to_file, to_sym):
+        def add_edge(from_file, from_sym, to_file, to_sym,
+                     from_start=None, from_end=None, to_start=None, to_end=None):
             key = (from_file, from_sym, to_file, to_sym)
             if key not in seen:
                 seen.add(key)
-                edges.append({
+                edge = {
                     "FromFile": from_file, "FromSym": from_sym,
                     "ToFile": to_file, "ToSym": to_sym,
-                })
+                }
+                if from_start is not None:
+                    edge["FromStart"], edge["FromEnd"] = from_start, from_end
+                if to_start is not None:
+                    edge["ToStart"], edge["ToEnd"] = to_start, to_end
+                edges.append(edge)
 
         def cached_doc_symbols(file_uri):
             if file_uri not in doc_symbol_cache:
@@ -391,6 +417,7 @@ def extract_edges(root, rel_files, lang="typescript"):
                 symbols_with_callhierarchy += 1
                 item = items[0]
                 from_sym = _qualify_from_tree(sym, parent_name, lang)
+                sym_start, sym_end = _decl_span(sym)
 
                 call_attempts = 1 if calls_ready else calls_ready_retries
                 out_result = []
@@ -409,7 +436,9 @@ def extract_edges(root, rel_files, lang="typescript"):
                     to_file = _uri_to_relpath(to["uri"], root, profile["vendor_dirs"])
                     if to_file is None:
                         continue
-                    add_edge(rel, from_sym, to_file, qualify_target(to))
+                    to_start, to_end = _decl_span(to)
+                    add_edge(rel, from_sym, to_file, qualify_target(to),
+                             sym_start, sym_end, to_start, to_end)
 
                 call_attempts = 1 if calls_ready else calls_ready_retries
                 inc_result = []
@@ -428,7 +457,9 @@ def extract_edges(root, rel_files, lang="typescript"):
                     from_file = _uri_to_relpath(frm["uri"], root, profile["vendor_dirs"])
                     if from_file is None:
                         continue
-                    add_edge(from_file, qualify_target(frm), rel, from_sym)
+                    from_start, from_end = _decl_span(frm)
+                    add_edge(from_file, qualify_target(frm), rel, from_sym,
+                             from_start, from_end, sym_start, sym_end)
 
         # existing empty is the base side of an all-new diff (rel_files filtered to what's on
         # disk at this ref) -- already legitimate, so only raise when there was something to

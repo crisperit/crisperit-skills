@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import summary_line  # noqa: E402  one owner for wording a complexity delta
-from sections import _codeify, _wrap_flow_labels  # noqa: E402  one owner for these
+from sections import _codeify, _diagram_max_button, _wrap_flow_labels  # noqa: E402  one owner for these
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 from walkthrough import render_story, story  # noqa: E402  one owner for the group order
 
@@ -155,7 +155,8 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
     else:
         flow = _wrap_flow_labels(_flow_tb((analysis.get("flow_mermaid") or "").strip()))
         if flow:
-            body.append("<h2>Flow</h2>")
+            body.append('<h2 class="h2-row"><span>Flow</span><span class="ctl">'
+                        f'{_diagram_max_button()}</span></h2>')
             # tabindex and role give the zoom modal keyboard access before its JS has run;
             # wire() sets them again on the live element, which is a harmless no-op.
             # svgbox-flow: tells panZoom() and the CSS to size FLOW from its own viewBox (fit,

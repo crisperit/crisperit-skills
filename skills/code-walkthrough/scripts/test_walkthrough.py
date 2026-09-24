@@ -704,6 +704,45 @@ def test_group_panel_has_no_tab_bar_with_graph_only():
     assert "wt-tabs" not in api_chunk and 'role="tab"' not in api_chunk
 
 
+# ---- group panel maximise icon ----
+
+def test_group_panel_with_tabs_puts_the_maximise_icon_beside_the_tab_strip_not_the_heading():
+    files = _chain_files("src/api.py", "src/store.py")
+    groups = story(list(files), files, [
+        {"title": "API", "paths": ["src/api.py"], "flow_mermaid": 'flowchart LR\n  A --> B'},
+        {"title": "Store", "paths": ["src/store.py"]},
+    ], None)
+    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
+    heading, rest = out.split('<h3 class="wt-group"')[1].split("</h3>", 1)
+
+    assert "vd-max-btn" not in heading
+    row_start = rest.index('class="wt-tabs-row"')
+    tabs_start = rest.index('class="wt-tabs"', row_start)
+    btn_start = rest.index("vd-max-btn", row_start)
+    tabpanel_start = rest.index('class="wt-tabpanel"', row_start)
+    assert row_start < tabs_start < btn_start < tabpanel_start
+
+
+def test_group_panel_with_one_diagram_puts_the_maximise_icon_in_the_heading():
+    files = _chain_files("src/api.py")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"],
+                                         "flow_mermaid": 'flowchart LR\n  A --> B'}], None)
+    out = render_html(groups, files, {})
+    heading = out.split('<h3 class="wt-group"')[1].split("</h3>", 1)[0]
+
+    assert "vd-max-btn" in heading
+    assert "wt-tabs-row" not in out
+
+
+def test_group_with_neither_diagram_gets_no_maximise_icon():
+    files = _chain_files("src/api.py")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]}], None)
+    out = render_html(groups, files, {})
+    heading = out.split('<h3 class="wt-group"')[1].split("</h3>", 1)[0]
+
+    assert "vd-max-btn" not in heading
+
+
 # ---- complexity ----
 
 def _cx(path, peak, jump=None):
@@ -1055,6 +1094,14 @@ def test_renamed_file_header_row_carries_no_arrow_and_a_pure_hunk_path():
     assert '<span class="hunk-path">corelib/ratelimit/ratelimit_config/config.go</span>' in out
 
 
+def test_viewed_label_precedes_hunk_was_so_it_stays_on_the_header_row():
+    order, files = parse_hunks(RENAME_DIFF)
+    renames = rename_index(RENAME_DIFF)
+    out = render_html(flat(order, files), files, {}, renames=renames)
+
+    assert out.index('<label class="hunk-viewed"') < out.index('<span class="hunk-was">')
+
+
 def test_a_non_renamed_file_gets_no_arrow_or_hunk_was():
     order, files = parsed()
     out = render_html(flat(order, files), files, {})
@@ -1089,6 +1136,29 @@ def test_explain_file_stat_counts_lines_instead_of_adds_and_removes():
 
     assert '<span class="add">' not in out
     assert "lines</span>" in out or "line</span>" in out
+
+
+def test_group_panel_carries_data_lines_when_nodes_have_range():
+    # sections.py's own data-lines contract (see its _mermaid_symbols): walkthrough.py only
+    # passes render_symbols(inline=True)'s output through, so this is a thin proof the
+    # attribute actually reaches a real group panel rather than only sections.py's own tests.
+    files = _chain_files("src/api.py", "src/store.py")
+    symdelta = {
+        "nodes": [
+            {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
+            {"id": "p:Handle", "label": "Handle", "kind": "symbol", "parent": "p", "depth": 1,
+             "state": "new", "file": "src/api.py", "range": [5, 9]},
+            {"id": "p:HandleCallee", "label": "HandleCallee", "kind": "symbol", "parent": "p",
+             "depth": 1, "state": "new", "file": "src/api.py"},
+        ],
+        "edges": [{"id": "e0", "source": "p:Handle", "target": "p:HandleCallee", "state": "new"}],
+    }
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
+                                        {"title": "Store", "paths": ["src/store.py"]}], None)
+    out = render_html(groups, files, {}, symdelta=symdelta)
+
+    api_chunk = out.split('<h3 class="wt-group"')[1]
+    assert 'data-lines="' in api_chunk
 
 
 if __name__ == "__main__":

@@ -103,6 +103,18 @@ func workUseDirs(workPath string) ([]string, error) {
 }
 
 type Edge struct {
+	FromFile  string
+	FromSym   string
+	FromStart int
+	FromEnd   int
+	ToFile    string
+	ToSym     string
+	ToStart   int
+	ToEnd     int
+}
+
+// edgeKey is the dedup identity: the 4 identity fields, position-independent.
+type edgeKey struct {
 	FromFile, FromSym, ToFile, ToSym string
 }
 
@@ -158,16 +170,36 @@ func main() {
 		}
 		return p
 	}
-	seen := map[Edge]bool{}
+	seen := map[edgeKey]bool{}
 	out := json.NewEncoder(os.Stdout)
 	matched := 0
 	var loadErrs []packages.Error
+	var inRepoPkgs []*packages.Package
+	// Built as its own pass, before edges are emitted: a single combined pass would miss
+	// forward references (a same-package callee declared in a later file, or a callee in a
+	// package visited later in the topological walk).
+	declFuncs := map[*types.Func]*ast.FuncDecl{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		loadErrs = append(loadErrs, p.Errors...)
 		if p.TypesInfo == nil || !inRepo(p.PkgPath) {
 			return
 		}
 		matched++
+		inRepoPkgs = append(inRepoPkgs, p)
+		for _, f := range p.Syntax {
+			ast.Inspect(f, func(n ast.Node) bool {
+				fd, ok := n.(*ast.FuncDecl)
+				if !ok {
+					return true
+				}
+				if def, ok := p.TypesInfo.Defs[fd.Name].(*types.Func); ok && def != nil {
+					declFuncs[def] = fd
+				}
+				return true
+			})
+		}
+	})
+	for _, p := range inRepoPkgs {
 		for _, f := range p.Syntax {
 			fpath := rel(p.Fset.Position(f.Pos()).Filename)
 			if fpath == "" || strings.HasPrefix(fpath, "/") {
@@ -187,6 +219,8 @@ func main() {
 					return true
 				}
 				from := symName(def)
+				fromStart := p.Fset.Position(def.Pos()).Line
+				fromEnd := p.Fset.Position(fd.End()).Line
 				ast.Inspect(fd.Body, func(m ast.Node) bool {
 					ce, ok := m.(*ast.CallExpr)
 					if !ok {
@@ -210,18 +244,25 @@ func main() {
 					if tf == "" || strings.HasPrefix(tf, "/") || tf == "-" {
 						return true
 					}
-					e := Edge{fpath, from, tf, symName(obj)}
-					if !seen[e] {
-						seen[e] = true
-						out.Encode(e)
+					to := symName(obj)
+					key := edgeKey{fpath, from, tf, to}
+					if seen[key] {
+						return true
 					}
+					seen[key] = true
+					toStart := pos.Line
+					toEnd := toStart
+					if declFd, ok := declFuncs[obj]; ok {
+						toEnd = p.Fset.Position(declFd.End()).Line
+					}
+					out.Encode(Edge{fpath, from, fromStart, fromEnd, tf, to, toStart, toEnd})
 					return true
 				})
 				return true
 			})
 			_ = token.NoPos
 		}
-	})
+	}
 	if matched == 0 {
 		fmt.Fprintf(os.Stderr, "extractor: loaded %d packages, 0 in-repo with type info\n", len(pkgs))
 		for i, e := range loadErrs {

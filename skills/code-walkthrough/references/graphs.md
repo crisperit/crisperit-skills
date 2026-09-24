@@ -116,6 +116,12 @@ A mixed-language diff picks the language with the most changed files, and says s
 reason. This cuts deeper than reduced granularity on a mixed diff: the changed files in the
 language it did not pick get no graph either.
 
+A symbol node's optional `"range": [start, end]` (1-based, inclusive) comes only from the
+extractor that produced its edges -- go/types for Go, `selectionRange`/`range` for the three LSP
+languages -- never from grep or name matching. The LLM tier's edges carry no position fields by
+schema, so its symbols get no `range`. The range is BASE-side when the node's state is `gone`,
+HEAD-side otherwise, since that's the only ref the symbol is known to still exist on.
+
 ## `structure.py`: real symbols, not symdelta's own node state
 
 symdelta.json's own node `state` answers "did the LSP see a call edge appear", not "did this

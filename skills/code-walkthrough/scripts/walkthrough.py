@@ -31,6 +31,7 @@ from complexity import NOTEWORTHY_DEPTH  # noqa: E402  one owner for "how deep i
 from fanout import rename_map  # noqa: E402  one owner for parsing "rename from/to" headers
 from links import line_range  # noqa: E402  one owner for a hunk's new-side line span
 from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> conversion
+from sections import _diagram_max_button  # noqa: E402  one owner for the diagram header icon
 from sections import _wrap_flow_labels  # noqa: E402  one owner for mermaid long-label wrapping
 from sections import render_symbols  # noqa: E402  one owner for the symbol-delta diagram
 from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
@@ -360,18 +361,27 @@ def _group_panel(index, flow_mermaid, graph_html):
     The graph tabpanel starts `hidden` -- plain markup for a page with no JS -- and the level
     script replaces that with the off-screen (never `display:none`) treatment once it wires
     the tabs, the same reason the inline symbols block already avoids `display:none`: mermaid
-    measures a hidden container's labels as zero and collapses the diagram permanently."""
+    measures a hidden container's labels as zero and collapses the diagram permanently.
+
+    The maximise icon sits in `.wt-tabs-row`, wrapping the tab strip rather than inside it:
+    `.vd-ctl` (packages/symbols toggle) gets appended into `.wt-tabs` itself at runtime (see
+    the level script) and pushes itself right with its own margin, which would otherwise land
+    on the same spot as this icon depending on DOM order. The no-tabs case below has no tab
+    strip for the icon to sit beside; render_html puts it in the group's own `<h3>` instead."""
     if flow_mermaid and graph_html:
         flow_id, graph_id = f"wt-tab-flow-{index}", f"wt-tab-graph-{index}"
         flow_panel_id, graph_panel_id = f"wt-tabpanel-flow-{index}", f"wt-tabpanel-graph-{index}"
         return "\n".join([
             '<div class="wt-panel">',
+            '<div class="wt-tabs-row">',
             '<div class="wt-tabs" role="tablist" aria-label="diagram views">',
             f'<button type="button" class="wt-tab" role="tab" id="{flow_id}" '
             f'data-tab="flow" aria-selected="true" aria-controls="{flow_panel_id}">flow</button>',
             f'<button type="button" class="wt-tab" role="tab" id="{graph_id}" '
             f'data-tab="graph" aria-selected="false" tabindex="-1" '
             f'aria-controls="{graph_panel_id}">call graph</button>',
+            '</div>',
+            _diagram_max_button(),
             '</div>',
             f'<div class="wt-tabpanel" role="tabpanel" id="{flow_panel_id}" '
             f'aria-labelledby="{flow_id}">{_flow_box(flow_mermaid)}</div>',
@@ -406,6 +416,13 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     has_story = len(groups) > 1
     out = ["<!-- code-walkthrough:walkthrough -->"]
     for gi, (title, why, paths, flow_mermaid, _hop, _side) in enumerate(groups):
+        flow = flow_mermaid.strip()
+        graph = ""
+        # Scoped to one group only past the point where there's more than one: with a single
+        # group the graph would be the global section, character for character.
+        if symdelta and len(groups) > 1:
+            rendered = render_symbols(symdelta, explain, paths=paths, inline=True)
+            graph = rendered.rstrip("\n") if rendered else ""
         if title:
             n = gi + 1
             if has_story:
@@ -415,22 +432,22 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
                           f'title="Back to the story"><span class="wt-badge">{n}</span></a> ')
             else:
                 heading_attrs, badge = "", ""
+            # A tabbed panel carries its own maximise icon beside the tab strip (see
+            # _group_panel); a single diagram has no tab strip to sit beside, so its icon
+            # lands here instead -- a direct child of this flex heading, not wrapped in a
+            # `.ctl` span, since .wt-group's own margin:auto rule pushes the icon itself
+            # right and only works on a direct flex item -- and a group with neither
+            # diagram gets no icon at all.
+            max_btn = "" if (flow and graph) or not (flow or graph) else _diagram_max_button()
             out.append(f'<h3 class="wt-group"{heading_attrs}>{badge}'
                        f'{_codeify(escape(title))} '
                        f'<span class="wt-count">{len(paths)} '
                        f'file{"s" if len(paths) != 1 else ""}</span> '
                        # Filled and kept live client-side (updateGroupViewed in the
                        # template): viewed state lives in the reader's own localStorage.
-                       f'<span class="wt-viewed"></span></h3>')
+                       f'<span class="wt-viewed"></span>{max_btn}</h3>')
             if why:
                 out.append(f'<p class="wt-why">{_codeify(escape(why))}</p>')
-        flow = flow_mermaid.strip()
-        graph = ""
-        # Scoped to one group only past the point where there's more than one: with a single
-        # group the graph would be the global section, character for character.
-        if symdelta and len(groups) > 1:
-            rendered = render_symbols(symdelta, explain, paths=paths, inline=True)
-            graph = rendered.rstrip("\n") if rendered else ""
         if flow or graph:
             out.append(_group_panel(gi, flow, graph))
         for path in paths:
@@ -465,16 +482,19 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
             else:
                 out.append(f'      <span class="hunk-stat"><span class="add">+{file["added"]}'
                            f'</span> <span class="del">-{file["removed"]}</span></span>')
+            # GitHub-style Viewed checkbox: wireViewedCheckboxes reads the path from this
+            # hunk's own .hunk-path rather than a duplicate attribute here; checking it
+            # collapses the file and persists to localStorage the same way comments do.
+            # Emitted before .hunk-was so Viewed always lands on the header row right after
+            # .hunk-stat: .hunk-was's flex-basis:100% forces a new row, and anything emitted
+            # after it would wrap onto a third line instead.
+            out.append('      <label class="hunk-viewed" title="Mark this file as viewed">'
+                       '<input type="checkbox" class="hunk-viewed-cb"> Viewed</label>')
             if old_path:
                 # Sibling of .hunk-path, never inside it: the page's comment JS reads
                 # .hunk-path's textContent as the literal PR-comment path, which must stay pure.
                 out.append(f'      <span class="hunk-was">moved from {escape(old_path)}'
                            f'</span>')
-            # GitHub-style Viewed checkbox: wireViewedCheckboxes reads the path from this
-            # hunk's own .hunk-path rather than a duplicate attribute here; checking it
-            # collapses the file and persists to localStorage the same way comments do.
-            out.append('      <label class="hunk-viewed" title="Mark this file as viewed">'
-                       '<input type="checkbox" class="hunk-viewed-cb"> Viewed</label>')
             out.append("    </span>")
             out.append("  </summary>")
             # Complexity chips are furniture, not identity, so they get their own quiet row

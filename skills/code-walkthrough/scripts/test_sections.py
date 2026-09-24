@@ -211,7 +211,10 @@ def test_symbols_page_level_has_marker_heading_and_packages_only():
 
     assert out.startswith("<!-- code-walkthrough:symbols -->")
     assert out.count('<div class="mermaid"') == 1
-    assert '<h2>Changes visualization</h2>' in out
+    assert '<h2 class="h2-row"><span>Changes visualization</span>' in out
+    # The maximise icon shares wire()/openZoom's own "Expand diagram to full size" wording
+    # rather than its own separate label, so the two affordances read as one.
+    assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in out
     assert "vd-level-toggle" not in out
     assert "data-level" not in out
     assert "data-default" not in out
@@ -238,6 +241,14 @@ def test_symbols_inline_has_legend_slider_and_two_levels():
     assert 'data-level="3"' not in out
     assert "flowchart LR" in out
     assert "flowchart TB" not in out
+
+
+def test_symbols_inline_carries_no_maximise_icon_of_its_own():
+    # inline=True renders no heading at all (see render_symbols's own docstring): the icon for
+    # a group's call-graph tab belongs beside walkthrough.py's own tab strip instead
+    # (_group_panel), not duplicated in here.
+    out = render_symbols(SYMDELTA, inline=True)
+    assert "vd-max-btn" not in out
 
 
 def test_symbols_html_never_emits_classdef():
@@ -406,9 +417,10 @@ def test_mermaid_symbols_for_level_returns_a_placeholder_node_when_nothing_quali
     # A bare "flowchart LR" would render at a degenerate near-zero viewBox that the page's own
     # JS mistakes for a failed render (see diff-review-template.html's degenerate()); this has
     # to stay a real, if trivial, diagram instead.
-    text, id_map = _mermaid_symbols_for_level(SYMDELTA["nodes"], set(), [])
+    text, id_map, loc_map = _mermaid_symbols_for_level(SYMDELTA["nodes"], set(), [])
     assert text == 'flowchart LR\n  N0["Nothing to draw at this detail level"]'
     assert id_map == {}
+    assert loc_map == {}
 
 
 def test_mermaid_symbols_for_level_draws_normally_when_something_qualifies():
@@ -452,7 +464,7 @@ _ONE_EDGE = [{"id": "e0", "source": "a:F", "target": "a:G", "state": "new"}]
 
 
 def test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes():
-    text, id_map = _mermaid_symbols(_TWO_LINKED_SYMBOLS, {"a:F", "a:G"}, _ONE_EDGE)
+    text, id_map, _ = _mermaid_symbols(_TWO_LINKED_SYMBOLS, {"a:F", "a:G"}, _ONE_EDGE)
 
     assert set(id_map.values()) == {"a/f.go", "a/g.go"}
     assert all(k.startswith("S") for k in id_map)  # no "G..." package box id is ever a key
@@ -494,6 +506,72 @@ def test_symbols_html_data_ids_survives_a_quote_in_a_file_path():
     assert '"' not in attr  # every quote became &quot;, so none can end the attribute early
     ids = json.loads(attr.replace("&quot;", '"'))
     assert 'weird"path.go' in ids.values()
+
+
+# ---- data-lines: the node menu's "Go to symbol" span, level 2 only -------------------------
+
+_RANGE_SYMBOLS = [
+    {"id": "a", "label": "a", "kind": "pkg", "parent": None, "depth": 0},
+    {"id": "a:New", "label": "New", "kind": "symbol", "parent": "a", "depth": 1,
+     "state": "new", "file": "a/n.go", "range": [5, 9]},
+    {"id": "a:Gone", "label": "Gone", "kind": "symbol", "parent": "a", "depth": 1,
+     "state": "gone", "file": "a/g.go", "range": [1, 3]},
+    {"id": "a:NoRange", "label": "NoRange", "kind": "symbol", "parent": "a", "depth": 1,
+     "state": "new", "file": "a/x.go"},
+]
+_RANGE_EDGES = [
+    {"id": "e0", "source": "a:New", "target": "a:Gone", "state": "new"},
+    {"id": "e1", "source": "a:New", "target": "a:NoRange", "state": "new"},
+]
+
+
+def test_mermaid_symbols_loc_map_side_is_right_for_a_live_symbol():
+    _, file_map, loc_map = _mermaid_symbols(
+        _RANGE_SYMBOLS, {"a:New", "a:Gone", "a:NoRange"}, _RANGE_EDGES)
+
+    nid = next(n for n, f in file_map.items() if f == "a/n.go")
+    assert loc_map[nid] == {"start": 5, "end": 9, "side": "RIGHT"}
+
+
+def test_mermaid_symbols_loc_map_side_is_left_for_a_gone_symbol():
+    # BASE-side range, drawn on the diff's left, matching wireHunk's own side values.
+    _, file_map, loc_map = _mermaid_symbols(
+        _RANGE_SYMBOLS, {"a:New", "a:Gone", "a:NoRange"}, _RANGE_EDGES)
+
+    nid = next(n for n, f in file_map.items() if f == "a/g.go")
+    assert loc_map[nid] == {"start": 1, "end": 3, "side": "LEFT"}
+
+
+def test_mermaid_symbols_loc_map_omits_a_symbol_with_no_range():
+    _, file_map, loc_map = _mermaid_symbols(
+        _RANGE_SYMBOLS, {"a:New", "a:Gone", "a:NoRange"}, _RANGE_EDGES)
+
+    nid = next(n for n, f in file_map.items() if f == "a/x.go")
+    assert nid not in loc_map
+
+
+def test_symbols_html_level2_data_lines_round_trips_start_end_and_side():
+    out = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES}, inline=True)
+
+    attr = out.split('data-level="2"', 1)[1].split('data-lines="', 1)[1].split('"', 1)[0]
+    lines_map = json.loads(attr.replace("&quot;", '"'))
+    assert {"start": 5, "end": 9, "side": "RIGHT"} in lines_map.values()
+    assert {"start": 1, "end": 3, "side": "LEFT"} in lines_map.values()
+    assert len(lines_map) == 2  # a:NoRange carries no range, so it is never a key
+
+
+def test_symbols_html_level1_never_carries_a_data_lines_attribute():
+    # Level 1 draws packages, which own no line range of their own.
+    out = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES}, inline=True)
+
+    level1 = out.split('data-level="1"', 1)[1].split(">", 1)[0]
+    assert "data-lines" not in level1
+
+
+def test_symbols_html_page_level_never_carries_a_data_lines_attribute():
+    out = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES})
+
+    assert "data-lines" not in out
 
 
 def test_mm_escape_strips_parens_quotes_and_backticks():
@@ -694,7 +772,7 @@ def test_mermaid_symbols_keeps_a_long_label_in_one_pair_of_quotes():
     ids, edges = _symbols_scope(nodes, SYMDELTA["edges"])
     ids = ids | {"a:Filter"}
 
-    text, _ = _mermaid_symbols(nodes, ids, edges)
+    text, _, _ = _mermaid_symbols(nodes, ids, edges)
     label_line = next(line for line in text.splitlines() if "filters" in line)
 
     assert label_line.count('"') == 2  # one label, one pair of quotes
@@ -713,7 +791,7 @@ def test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol():
          "was": "incrementChecksTotal"},
     ]
 
-    text, _ = _mermaid_symbols(nodes, {"a:IncrementChecksTotal"}, [])
+    text, _, _ = _mermaid_symbols(nodes, {"a:IncrementChecksTotal"}, [])
     label_line = next(line for line in text.splitlines() if "IncrementChecksTotal" in line)
 
     assert label_line.count('"') == 2  # still one label, one pair of quotes
@@ -723,7 +801,7 @@ def test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol():
 def test_mermaid_symbols_label_has_no_was_line_when_the_name_did_not_change():
     # b:Moved carries no "was" key at all (see SYMDELTA), matching a plain package move with no
     # rename -- its label must stay exactly its own name, no second line.
-    text, _ = _mermaid_symbols(SYMDELTA["nodes"], {"b:Moved"}, [])
+    text, _, _ = _mermaid_symbols(SYMDELTA["nodes"], {"b:Moved"}, [])
     label_line = next(line for line in text.splitlines() if "Moved" in line)
 
     assert "was" not in label_line
@@ -739,7 +817,7 @@ def test_symbols_legend_ignores_the_word_new_in_a_label_not_a_class_line():
         {"id": "a:New", "label": "New", "kind": "symbol", "parent": "a", "depth": 1,
          "state": "changed", "file": "a/x.go", "was": "new"},
     ]
-    text, _ = _mermaid_symbols(nodes, {"a:New"}, [])
+    text, _, _ = _mermaid_symbols(nodes, {"a:New"}, [])
 
     assert "class " not in text
     assert _symbols_legend(text) == ""
@@ -758,7 +836,7 @@ def test_new_and_gone_class_lists_are_declaration_order_not_set_order():
     ]
     ids = {n["id"] for n in nodes if n["kind"] == "symbol"}
 
-    text, _ = _mermaid_symbols(nodes, ids, [])
+    text, _, _ = _mermaid_symbols(nodes, ids, [])
 
     line = next(l for l in text.splitlines() if l.strip().startswith("class "))
     listed = line.strip().split()[1].split(",")
@@ -767,7 +845,7 @@ def test_new_and_gone_class_lists_are_declaration_order_not_set_order():
 
 def test_mermaid_symbols_subgraphs_by_package_and_classes_new_gone_but_not_changed():
     ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
+    text, _, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
     assert 'subgraph G0["a"]' in text
     assert 'subgraph G1["b"]' in text
@@ -792,7 +870,7 @@ def test_mermaid_symbols_own_symbols_sit_inside_a_box_that_also_nests_children()
     ]
     ids = {"corelib/ratelimit:Foo", "corelib/ratelimit/ratelimit_config:Bar"}
 
-    text, _ = _mermaid_symbols(nodes, ids, [])
+    text, _, _ = _mermaid_symbols(nodes, ids, [])
 
     assert 'subgraph G0["corelib"]' in text
     assert 'subgraph G1["ratelimit"]' in text  # own label only, not "corelib/ratelimit"
@@ -817,7 +895,7 @@ def test_mermaid_symbols_keeps_a_symbol_whose_parent_is_unknown_or_missing():
     ]
     ids = {"a:Root", "a:Stray"}
 
-    text, _ = _mermaid_symbols(nodes, ids, [])
+    text, _, _ = _mermaid_symbols(nodes, ids, [])
 
     assert '["Root"]' in text and '["Stray"]' in text
     assert "no_such_pkg" in text  # unknown parent shown as itself, not collapsed onto "(root)"
@@ -910,7 +988,7 @@ def test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph():
     ]
     ids = {"a:X", "a:Y", "a:Z", "a:W"}
 
-    text, _ = _mermaid_symbols(nodes, ids, edges)
+    text, _, _ = _mermaid_symbols(nodes, ids, edges)
 
     assert text.count("subgraph") == 1  # one shared box, two components inside it
     assert "S0 ~~~ S1" in text  # component {W,Z} (min id W -> S0) chained to {X,Y} (min id X -> S1)
@@ -922,7 +1000,7 @@ def test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph():
 
 def test_mermaid_symbols_invisible_links_are_never_indexed_by_linkstyle():
     ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
+    text, _, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
     linkstyle_lines = [l for l in text.splitlines() if l.strip().startswith("linkStyle")]
     # both real links (e0, g0) get a style; an invisible chain link would shift these if it
@@ -949,7 +1027,7 @@ def test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order
     ]
     ids = {n["id"] for n in nodes if n["kind"] == "symbol"}
 
-    text, _ = _mermaid_symbols(nodes, ids, edges)
+    text, _, _ = _mermaid_symbols(nodes, ids, edges)
 
     chain_lines = [l.strip() for l in text.splitlines() if "~~~" in l]
     assert chain_lines == ["S0 ~~~ S2", "S2 ~~~ S4"]
@@ -985,7 +1063,7 @@ def test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node(
 def test_explain_renames_the_page_level_heading_to_structure():
     out = render_symbols({"nodes": _TWO_LINKED_SYMBOLS, "edges": _ONE_EDGE}, explain=True)
 
-    assert "<h2>Structure</h2>" in out
+    assert '<h2 class="h2-row"><span>Structure</span>' in out
     assert "Changes visualization" not in out
 
 
@@ -1067,7 +1145,7 @@ def test_structure_explain_mode_drops_badges_members_removed_boxes_and_gone_edge
     assert "vds-members" not in out
     assert "Baz" not in out  # removed component dropped outright, not just unstyled
     assert "&quot;state&quot;: &quot;gone&quot;" not in out
-    assert "<h2>How it fits together</h2>" in out
+    assert '<h2 class="h2-row"><span>How it fits together</span>' in out
     assert "2 components in 2 columns." in out
 
 
@@ -1263,6 +1341,12 @@ def test_structure_container_carries_the_zoom_aria_label():
             'aria-label="Expand diagram to full size"') in out
 
 
+def test_structure_heading_carries_the_maximise_icon():
+    out = render_structure(STRUCTURE)
+    assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in out
+    assert out.index("h2-row") < out.index("vd-max-btn") < out.index('class="vds-sys"')
+
+
 if __name__ == "__main__":
     tests = [
         test_symbols_returns_nothing_when_there_are_no_nodes,
@@ -1281,6 +1365,7 @@ if __name__ == "__main__":
         test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized,
         test_symbols_page_level_has_marker_heading_and_packages_only,
         test_symbols_inline_has_legend_slider_and_two_levels,
+        test_symbols_inline_carries_no_maximise_icon_of_its_own,
         test_symbols_html_never_emits_classdef,
         test_symbols_inline_has_no_page_marker_heading_or_details_wrapper,
         test_symbols_inline_toggle_is_a_class_not_an_id,
@@ -1302,6 +1387,12 @@ if __name__ == "__main__":
         test_explain_drops_the_new_gone_colouring_the_empty_baseline_makes_meaningless,
         test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes,
         test_symbols_html_data_ids_survives_a_quote_in_a_file_path,
+        test_mermaid_symbols_loc_map_side_is_right_for_a_live_symbol,
+        test_mermaid_symbols_loc_map_side_is_left_for_a_gone_symbol,
+        test_mermaid_symbols_loc_map_omits_a_symbol_with_no_range,
+        test_symbols_html_level2_data_lines_round_trips_start_end_and_side,
+        test_symbols_html_level1_never_carries_a_data_lines_attribute,
+        test_symbols_html_page_level_never_carries_a_data_lines_attribute,
         test_mm_escape_strips_parens_quotes_and_backticks,
         test_wrap_label_leaves_a_long_multiword_label_alone,
         test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries,
@@ -1371,6 +1462,7 @@ if __name__ == "__main__":
         test_structure_no_also_touched_renders_no_note,
         test_structure_boxes_carry_role_button_and_an_escaped_data_path,
         test_structure_container_carries_the_zoom_aria_label,
+        test_structure_heading_carries_the_maximise_icon,
     ]
     for test in tests:
         test()

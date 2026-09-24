@@ -534,6 +534,17 @@ def test_notes_toggle_moves_the_group_panel_off_screen_not_display_none():
     assert "position:absolute" in rule_body and "left:-99999px" in rule_body
 
 
+def test_notes_toggle_hides_a_single_diagram_groups_maximise_icon():
+    """A tabbed group's maximise icon rides inside .wt-panel and goes off-screen with it (see
+    the test above). A single-diagram group's icon lives directly in <h3> instead, outside
+    .wt-panel, so without its own rule it would dangle there -- visible and clickable -- for a
+    diagram the reader just chose to hide. display:none is fine for the icon itself: unlike
+    the panel, nothing here needs mermaid to keep measuring it."""
+    text = TEMPLATE_PATH.read_text()
+    assert re.search(r"body:not\(\.show-notes\) h3\.wt-group \.vd-max-btn\{display:none\}",
+                      text), "the single-diagram group's maximise icon no longer hides"
+
+
 def test_inactive_tab_panel_goes_off_screen_not_display_none():
     """The tab bar's inactive panel (.wt-tabpanel.wt-tab-off) may still hold an unrendered
     call-graph diagram (see wireGroupTabs' lazy render), so it must use the same off-screen
@@ -556,6 +567,30 @@ def test_vd_ctl_hidden_attribute_has_a_specificity_override():
     text = TEMPLATE_PATH.read_text()
     assert re.search(r"\.wt-tabs \.vd-ctl\[hidden\]\{display:none\}", text), (
         "no specificity override for .vd-ctl[hidden] inside .wt-tabs")
+
+
+def test_symbol_span_bridge_is_exported():
+    """The nav menu's "Go to symbol" item resolves a wired diff span through
+    window.__vdSymbolSpan, which only the comments script can define since spanByLineKey
+    lives in its closure."""
+    text = TEMPLATE_PATH.read_text()
+    assert "window.__vdSymbolSpan=" in text, "window.__vdSymbolSpan is no longer exported"
+
+
+def test_tag_nav_nodes_reads_the_lines_map():
+    """tagNavNodes must read the box's data-lines map (id_to_loc) to tag each node's
+    start/end/side, alongside the existing data-ids -> data-path map, or "Go to symbol"
+    has nothing to resolve."""
+    text = TEMPLATE_PATH.read_text()
+    assert "box.dataset.lines" in text, "tagNavNodes no longer reads box.dataset.lines"
+
+
+def test_nav_menu_still_offers_go_to_file_alongside_go_to_symbol():
+    """openNavMenu must offer "Go to symbol" when a node's range resolves to a wired span,
+    and keep the existing "Go to file"/"Go to first file" item for when it doesn't."""
+    text = TEMPLATE_PATH.read_text()
+    assert "Go to symbol" in text
+    assert "'Go to file'" in text and "Go to first file" in text
 
 
 if __name__ == "__main__":

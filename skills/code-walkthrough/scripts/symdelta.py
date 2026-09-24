@@ -629,6 +629,28 @@ def edge_tuple(d):
     return (d["FromFile"], d["FromSym"], d["ToFile"], d["ToSym"])
 
 
+def decl_ranges(edges):
+    """(file, sym_id) -> (start, end) declared-line range, over both ends of every RAW wire edge
+    (before compute_new_gone), first seen wins. Start must be a positive int -- an extractor with
+    no position data (the LLM tier) leaves the field absent, and `.get()` reads that as skip
+    rather than a fabricated range. End falls back to start when missing, non-int, or before it."""
+    ranges = {}
+    for e in edges:
+        for file_key, sym_key, start_key, end_key in (
+            ("FromFile", "FromSym", "FromStart", "FromEnd"),
+            ("ToFile", "ToSym", "ToStart", "ToEnd"),
+        ):
+            start = e.get(start_key)
+            if not isinstance(start, int) or start <= 0:
+                continue
+            end = e.get(end_key)
+            if not isinstance(end, int) or end < start:
+                end = start
+            file_path = e[file_key]
+            ranges.setdefault((file_path, sym_id(file_path, e[sym_key])), (start, end))
+    return ranges
+
+
 def compute_new_gone(base_edges, head_edges, rename_map):
     """Step (a), rename pairing: canonicalise head-side paths back to their pre-rename name only
     to decide whether an edge already existed pre-rename. Canonicalisation must stay internal to
@@ -920,7 +942,9 @@ def _compress_pkg_chains(nodes):
     return kept
 
 
-def build_graph(final_new, final_gone, rename_map=None, moved_pairs=None):
+def build_graph(final_new, final_gone, rename_map=None, moved_pairs=None, head_ranges=None, base_ranges=None):
+    head_ranges = head_ranges or {}
+    base_ranges = base_ranges or {}
     sym_new, sym_gone, sym_file, gone_file, gone_name = set(), set(), {}, {}, {}
     for edges, bucket in ((final_new, sym_new), (final_gone, sym_gone)):
         for ff, fs, tf, ts in edges:
@@ -987,6 +1011,9 @@ def build_graph(final_new, final_gone, rename_map=None, moved_pairs=None):
         }
         if sid in renamed_from:
             node["was"] = renamed_from[sid]
+        span = (base_ranges if node["state"] == "gone" else head_ranges).get((file_path, sid))
+        if span is not None:
+            node["range"] = [span[0], span[1]]
         nodes.append(node)
 
     def make_edges(final_edges, id_prefix, state):
@@ -1064,10 +1091,15 @@ def _run_in_worktrees(repo, base, head, extract_base, extract_head):
 
 
 def _finish(base, head, base_edges, head_edges, rename_map, language, resolver):
+    # From the RAW edges, before compute_new_gone/move_collapse: a symbol's range survives an
+    # edge that collapses away, as long as some other edge still gives that symbol a node.
+    head_ranges, base_ranges = decl_ranges(head_edges), decl_ranges(base_edges)
     new, gone = compute_new_gone(base_edges, head_edges, rename_map)
     new, gone = _drop_test_edges(new), _drop_test_edges(gone)
     final_new, final_gone, moved, moved_pairs = move_collapse(new, gone)
-    nodes, edges, presets, counts = build_graph(final_new, final_gone, rename_map, moved_pairs)
+    nodes, edges, presets, counts = build_graph(
+        final_new, final_gone, rename_map, moved_pairs, head_ranges, base_ranges
+    )
     return {
         "target": f"{base}...{head}",
         "language": language,
