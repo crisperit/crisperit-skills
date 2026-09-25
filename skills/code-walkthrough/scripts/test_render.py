@@ -118,23 +118,12 @@ def test_pasted_sections_are_never_re_escaped():
     assert "&amp;lt;" not in out
 
 
-def test_symbols_pastes_verbatim_inside_a_collapsed_details_at_the_end():
-    # Mirrors the explorer paste: section-symbols.html carries its own <h2>CHANGES
-    # VISUALIZATION</h2> and its own marker comment, so render.py adds nothing around the
-    # content itself -- only the wrapping <details>, and only at the very end of the page.
-    symbols = ('<!-- code-walkthrough:symbols -->\n<h2>CHANGES VISUALIZATION</h2>\n'
-               '<div class="vd-symbols"></div>')
-    out = html(symbols=symbols,
-               walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
+def test_no_page_level_symbols_section_is_rendered():
+    # The collapsed page-level symbol map was removed; nothing should reintroduce it.
+    out = html(walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
 
-    assert symbols in out
-    assert out.count("CHANGES VISUALIZATION") == 1
-    assert '<details class="collapse">' in out
-    assert "<summary>Package graph</summary>" in out
-    # validate_analysis.py's --sections gate looks for this marker in the rendered file.
-    assert "<!-- code-walkthrough:symbols -->" in out
-    assert out.index("wt-body") < out.index('<details class="collapse">')
-    assert out.index('<details class="collapse">') < out.index('class="foot"')
+    assert "Package graph" not in out
+    assert '<details class="collapse">' not in out
 
 
 def test_an_empty_flow_drops_the_whole_section():
@@ -147,7 +136,7 @@ def test_an_empty_flow_drops_the_whole_section():
 
 def test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams():
     # svgbox-flow is what lets the template give FLOW its own CSS rule instead of sharing the
-    # scale-to-fit one sized for the symbols graph sections.py pastes in below it.
+    # scale-to-fit one sized for the per-group symbol graphs walkthrough.py renders.
     out = html()
 
     assert 'class="panel svgbox svgbox-flow"' in out
@@ -392,9 +381,8 @@ def test_story_map_replaces_flow_and_lands_right_after_overview():
 
 
 def test_structure_section_lands_between_the_story_map_and_the_walkthrough():
-    # Mirrors the symbols-section paste test below: render.py adds nothing around
-    # section-structure.html's own content, only places it -- between the story map and the
-    # walkthrough, per render_html's own ordering.
+    # render.py adds nothing around section-structure.html's own content, only places it --
+    # between the story map and the walkthrough, per render_html's own ordering.
     order, files = parsed()
     analysis = {**ANALYSIS,
                 "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
@@ -449,7 +437,7 @@ if __name__ == "__main__":
         test_html_promotes_backticks_in_every_prose_field,
         test_html_escapes_the_mermaid_source,
         test_pasted_sections_are_never_re_escaped,
-        test_symbols_pastes_verbatim_inside_a_collapsed_details_at_the_end,
+        test_no_page_level_symbols_section_is_rendered,
         test_an_empty_flow_drops_the_whole_section,
         test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams,
         test_flow_tb_leaves_a_non_lr_diagram_alone,

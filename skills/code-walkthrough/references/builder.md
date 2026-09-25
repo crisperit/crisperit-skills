@@ -1,8 +1,9 @@
 # How the HTML page is shaped, and why
 
 **Nothing here is a task.** `scripts/render.py` builds the page; SKILL.md step 3 has the
-command. This file is background: what the page contains, and the reasons behind the parts that
-look arbitrary. Read it when changing `render.py` or the template, not when running the skill.
+commands (`pipeline.py prepare`/`render`/`all`). This file is background: what the page
+contains, and the reasons behind the parts that look arbitrary. Read it when changing
+`render.py` or the template, not when running the skill.
 
 The only thing a model contributes is `analysis.json` (schema in SKILL.md step 2). Every string
 in it follows the caller's style rule: apply the no-ai-slop skill if available, otherwise plain
@@ -33,6 +34,13 @@ These protect different things. Handling one does not excuse skipping the other.
 
 ## Linking, from `links.json`
 
+`links.py` (run by `pipeline.py prepare`) writes one JSON object: `repo_url`, `pr_url`,
+`head_sha`, `head_pushed`, and `files[]` with a `diff_url` (the file's anchor in the PR's Files
+changed tab), a `blob_url` (permalink at the head commit) and per-hunk `url`s (that hunk's
+new-side line range on the blob page). Explain mode never has a PR, so `diff_url` comes back
+empty for every file and the blob permalink at `<head>` is the only link, the same fallback a
+pushed branch with no PR gets.
+
 When `links.json` was handed to you and its `head_pushed` is true:
 
 - FILE MAP: wrap each `.path` span's text in `<a>` to that file's `diff_url` (the PR's Files
@@ -56,13 +64,21 @@ arithmetic, a string from `analysis.json`, or a section file pasted byte for byt
 | Facts strip | `.facts` with up to three `.fact` blocks | file count and net delta from `raw.diff`, the target, `verdict` |
 | OVERVIEW | `h2` + one `p` per paragraph | `overview`, omitted when blank; same heading in both modes |
 | FLOW | `h2` + `.panel.svgbox` wrapping `pre.mermaid` | `flow_mermaid`, omitted when blank |
+| STRUCTURE | between the story map and WALKTHROUGH | `structure.py` + `sections.py --kind structure`, omitted when the section file is empty |
 | WALKTHROUGH | `h2` + `section-walkthrough.html` | `walkthrough.py` |
 | Footer | `.foot` | target, timestamp, PR link from `links.json` |
+
+`render.py`'s `--structure` flag lands the row above; passing an empty section file, or omitting
+the flag, inserts nothing, not even the heading.
 
 Notes on the rows that look arbitrary:
 
 - **No FILE MAP section.** A panel listing the same paths directly above the same paths is one
   section too many, so the walkthrough `summary` carries the inventory.
+- **No page-level SYMBOLS row.** A symbols level laid out across a whole page is unreadable on a
+  big diff, so that detail lives per group instead, drawn inline by `walkthrough.py` with its own
+  toggle between packages and symbols, scoped to that group's files (see the call-graph tab note
+  below).
 - **No per-group FLOW row.** A group's own `flow_mermaid` lives inside WALKTHROUGH, not as a
   page-level row: `walkthrough.py` builds one panel per group, directly under that group's `why`
   paragraph, holding both its flow diagram and its inline call-graph behind a tab bar when it has
@@ -77,6 +93,9 @@ Notes on the rows that look arbitrary:
   Subgraphs render in declaration order, so a `flowchart TB` puts whichever came first on top.
 - **The zoom modal needs no markup help.** `wire()` sets `tabindex` and `role` on every
   `.svgbox` it finds; the copies in the generated markup only matter before the JS has run.
+- **The vendored mermaid script is spliced in conditionally.** `splice_assets.py` fills the
+  page's one JS placeholder only when the output contains a `class="mermaid"` block; a page with
+  none keeps the placeholder as an inert comment and stays small.
 
 ## Why the walkthrough is generated and not typed
 
@@ -91,8 +110,19 @@ using a different class silently breaks that count, and a reader's comment lands
 line of a real pull request. `walkthrough.py` owns it, with a test asserting that context plus
 removed equals the old span each header declares and context plus added equals the new span.
 
-The page has no size budget, so it carries every hunk body. The worked examples below are what
-the script emits, kept so a reviewer can see the shape without running it.
+The page has no size budget, so it carries every hunk body, and cannot omit a file even when
+`analysis.json` did: no line comment can anchor to a hunk that was dropped for size.
+`--symdelta` orders each group caller-first and gives it its own call graph scoped to its own
+files, the `call graph` tab beside `flow` above.
+`--complexity` adds the complexity chip described in `references/graphs.md`. `--diff`'s own
+rename headers let a moved file show its old path instead of reading as a new addition. All three
+are optional; `pipeline.py prepare` passes them whenever the files they read exist.
+
+## The state document
+
+`state.json` is the one document the page renders from: notes, their GitHub lifecycle, per-hunk
+hashes, staleness. `state.py` (run by `pipeline.py prepare`) builds it from `analysis.json` and
+`raw.diff`, plus `links.json` and a prior `state.json` when either was passed to it.
 
 ## Describe, not judge
 

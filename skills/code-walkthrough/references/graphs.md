@@ -1,8 +1,9 @@
 # The symbol-delta graph
 
-Background for steps 2b2, 2b3 and 2b4. Read it when the graph looks wrong, when deciding whether
-to trust a `language: null` result, or when the fleet-wide runtime is the thing you're planning
-around.
+Background for `complexity.py` and `structure.py` (both run automatically by `pipeline.py`) and
+for `symdelta.py` (SKILL.md step 2b3, still a manual call since it is the slow one). Read it when
+a graph looks wrong, when deciding whether to trust a `language: null` result, or when the
+fleet-wide runtime is the thing you're planning around.
 
 Both scripts treat `--base` as the merge base of the two refs, matching `git diff base...head`,
 so a commit that landed on the base branch after the fork is never attributed to this change.
@@ -23,12 +24,18 @@ the author does not know what `4 cx +1` means. A file whose complexity this chan
 function the change did not move gets no chip at all, since a static number on untouched code is
 noise that outranked real findings on a measured run.
 
+In explain mode `<base>` is the empty baseline, so every function has no before; the chip already
+treats a function with no before as new either way, so it names the worst genuinely complex
+function per file (`resolve_symbol_merges 27 branches`) instead of drawing a before/after arrow.
+Nothing about `complexity.py` itself needs adjusting for this mode.
+
 ## `symdelta.py`: three tiers, and why it resolves calls instead of matching names
 
-Never background this with `&` and `wait`: the Bash tool treats any command containing `&` as a
-background one, stops waiting, and burns its whole timeout before the harness gives up on it.
-Measured on a 1256-file Go repo, `&` plus `wait` sat for the full 600s after the script had
-already finished its real work in seconds. Run it as a plain foreground call instead.
+Never background this with `&` and `wait`: some agent shell tools (measured on Claude Code's
+Bash tool) treat any command containing `&` as a background one, stop waiting, and burn their
+whole timeout before the harness gives up on it. Measured on a 1256-file Go repo, `&` plus `wait`
+sat for the full 600s after the script had already finished its real work in seconds. Run it as a
+plain foreground call instead, on any harness.
 
 An earlier version matched symbol edges by name rather than resolving the call, and a name is
 often not unique across a repo. Measured on a 1256-file Go repo, 591 of 674 name-matched edges
@@ -49,6 +56,9 @@ of matching identifiers, and every page it appears on is stamped with a caveat n
 inferred, not compiler-resolved, so the reader can discount it deliberately rather than trust it
 by default. It is still worse than a real graph: a wrong edge is worse than no edge, which is why
 it is opt-in, asked for once per diff, and never the default when `language` is `null`.
+
+When `<paths>` scopes the symbols graph (SKILL.md step 2b3), the graph keeps symbols under those
+paths plus whatever their edges reach one hop out, not just the exact files named.
 
 The two mechanical tiers resolve calls with real tooling, not a reader. Go uses a native
 extractor built on `go/packages`, extracting the whole repo regardless of the diff's size: 2.65s
@@ -130,6 +140,12 @@ even though it was already there. `structure.py` answers existence itself instea
 the file at both refs directly and diffs declared symbols -- classes, interfaces and top-level
 functions/methods, never a local closure -- so its own `new`/`changed`/`moved`/`removed`/
 `unchanged` states are trustworthy on their own, independent of whatever symdelta.json says.
+
+It also needs `analysis.json`'s own `groups` to colour components by story stop, which is why
+`pipeline.py prepare` runs it only after the gate has passed, never alongside the fan-out. It
+still reads `symdelta.json` too, whatever that script's own `"language"` came back as, but only
+for call edges between the components it finds; parsing the two refs at each language is its own
+job, described below.
 
 Two parse tiers, both stdlib-plus-one-dependency rather than a language server: TypeScript/JS
 through a lazily-loaded tree-sitter grammar (bundled with graphify, loaded from its own venv when

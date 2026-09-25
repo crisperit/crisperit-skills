@@ -418,9 +418,7 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     for gi, (title, why, paths, flow_mermaid, _hop, _side) in enumerate(groups):
         flow = flow_mermaid.strip()
         graph = ""
-        # Scoped to one group only past the point where there's more than one: with a single
-        # group the graph would be the global section, character for character.
-        if symdelta and len(groups) > 1:
+        if symdelta:
             rendered = render_symbols(symdelta, explain, paths=paths, inline=True)
             graph = rendered.rstrip("\n") if rendered else ""
         if title:

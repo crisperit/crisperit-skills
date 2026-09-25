@@ -7,7 +7,7 @@ writes `raw.diff`. SKILL.md carries the decision; the mechanics are here.
 
 Diff against an empty tree and every line in the named path comes back as an addition, so the
 walkthrough machinery below runs unchanged, one code path, not two. Deciding to use it is also
-deciding the page's mode: every renderer in step 4 takes `<explain>`, and in this mode it is
+deciding the page's mode: every renderer in step 3 takes `<explain>`, and in this mode it is
 `--explain`. The empty tree
 `4b825dc642cb6eb9a060e54bf8d69288fbee4904` cannot be used directly as a diff base: `git merge-base`
 and three-dot both reject it with "is a tree, not a commit". Wrap it in an orphan commit first,
@@ -39,8 +39,8 @@ and every line in it comes back as an addition to fan out. Read the numstat tota
 writing `raw.diff`, spawning a subagent, or starting the graph scripts. Three bands, keyed to
 SKILL.md step 2's fan-out table so this does not invent a second scale:
 
-- At or under 1200 lines and 6 files, the same line that keeps a diff on the single-subagent
-  route: proceed, say nothing.
+- At or under 1500 lines, the same line that keeps a diff on the single-subagent route: proceed,
+  say nothing.
 - Above that but under 5000 lines: say the total and what it triggers, one line, then keep going.
   "1800 lines across 9 files, that fans out into a few batches" is enough; the user asked to
   understand something, not to approve a budget, so do not turn it into a question.
@@ -61,24 +61,20 @@ less of their own PR.
 
 SKILL.md step 3 carries the rule for resolving `<explain>` itself. What the flag does once
 resolved: the page renders plain code with the file's own line numbers instead of green `+` rows,
-"Scope: 6 files, 1400 lines" instead of add/remove arithmetic, "Structure" instead of "Changes
-visualization" for the page-level symbols heading, and a graph with no new/gone colouring or
-legend. OVERVIEW keeps the same heading in both modes. Same pipeline either way, only the
-wording and colouring change.
+and "Scope: 6 files, 1400 lines" instead of add/remove arithmetic. OVERVIEW keeps the same
+heading in both modes. Same pipeline either way, only the wording and colouring change.
 
-The structure view (2b4) follows the same rule: "How it fits together" instead of "System
-change" for its heading, "N components in M columns" instead of a per-state count in its summary
-strip, and no state badges, member state chips, removed boxes, or gone edges -- every one of
-those reads as a change against a baseline, and explain mode's baseline is empty, so all of it
-would be reporting on the trick rather than the code.
+The structure view, built by `structure.py` inside `pipeline.py prepare`, follows the same rule:
+"How it fits together" instead of "System change" for its heading, "N components in M columns"
+instead of a per-state count in its summary strip, and no state badges, member state chips,
+removed boxes, or gone edges -- every one of those reads as a change against a baseline, and
+explain mode's baseline is empty, so all of it would be reporting on the trick rather than the
+code.
 
-All three renderers have to agree: a page with diff-coloured headings over plain-code hunks is
+Both renderers have to agree: a page with diff-coloured headings over plain-code hunks is
 worse than either mode on its own.
 
-Scope the symbols graph too. Against the empty baseline every symbol in the repository is new, so
-`sections.py --paths` takes the same pathspec the diff used; `references/graphs.md` has the rest.
-The structure view needs the same scoping, for the same reason: against a real ref pair,
-`structure.py`'s own `git diff` is already bounded to the files that actually changed, but the
-empty baseline turns every file in the repo into a changed file, so without `--paths` the
-component set balloons past the 30-component cap with code the page was never about. Pass
-`structure.py --paths` the same pathspec the diff used.
+Scope the structure view too: against a real ref pair, `structure.py`'s own `git diff` is already
+bounded to the files that actually changed, but the empty baseline turns every file in the repo
+into a changed file, so without `--paths` the component set balloons past the 30-component cap
+with code the page was never about. Pass `structure.py --paths` the same pathspec the diff used.

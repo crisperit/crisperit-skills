@@ -190,6 +190,27 @@ def test_merge_carries_verdict_and_section_notes_through():
         assert result["section_notes"] == notes
 
 
+def test_merge_carries_groups_through_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        frag = Path(tmp) / "f.json"
+        frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
+        groups = [{"title": "t", "paths": ["a.py"]}]
+
+        result = merge(DIFF, [str(frag)], {"groups": groups})
+
+        assert result["groups"] == groups
+
+
+def test_merge_omits_groups_key_when_prose_has_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        frag = Path(tmp) / "f.json"
+        frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
+
+        result = merge(DIFF, [str(frag)], {})
+
+        assert "groups" not in result
+
+
 def test_merge_defaults_verdict_and_section_notes_when_prose_omits_them():
     with tempfile.TemporaryDirectory() as tmp:
         frag = Path(tmp) / "f.json"
@@ -297,6 +318,8 @@ if __name__ == "__main__":
         test_merge_reports_both_unparseable_fragments_not_just_the_first,
         test_merge_still_succeeds_when_every_fragment_is_valid,
         test_merge_carries_verdict_and_section_notes_through,
+        test_merge_carries_groups_through_unchanged,
+        test_merge_omits_groups_key_when_prose_has_none,
         test_merge_defaults_verdict_and_section_notes_when_prose_omits_them,
         test_rename_map_finds_the_old_to_new_pairing,
         test_rename_map_ignores_files_that_were_not_renamed,

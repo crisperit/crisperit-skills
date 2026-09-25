@@ -683,6 +683,36 @@ def test_validate_fails_when_almost_every_note_is_blank():
     assert any("floor" in p for p in problems)
 
 
+def test_fragment_mode_passes_a_seed_shaped_fragment_missing_target_and_overview():
+    # A seed fragment only has "files"; fragment mode must not demand target/overview/
+    # flow_mermaid the way the central gate does.
+    seed = {"files": copy.deepcopy(GOOD["files"])}
+
+    assert validate(DIFF, seed, fragment=True) == []
+    assert validate(DIFF, seed, fragment=False) != []
+
+
+def test_fragment_mode_still_fails_a_missing_hunk():
+    seed = {"files": copy.deepcopy(GOOD["files"])}
+    seed["files"][0]["hunks"] = seed["files"][0]["hunks"][:1]
+
+    problems = validate(DIFF, seed, fragment=True)
+
+    assert any("@@ -20,4 +20,5 @@" in p and "no note" in p for p in problems)
+
+
+def test_fragment_mode_ignores_the_empty_note_floor():
+    # The floor is scoped to the whole diff (EMPTY_NOTE_FLOOR); a batch that is mostly
+    # renames must not be pushed into padding notes just to clear it on its own.
+    seed = {"files": copy.deepcopy(GOOD["files"])}
+    for entry in seed["files"]:
+        for hunk in entry["hunks"]:
+            hunk["note"] = ""
+
+    assert validate(DIFF, seed, fragment=True) == []
+    assert any("floor" in p for p in validate(DIFF, seed, fragment=False))
+
+
 def test_a_short_unstructured_overview_passes():
     bad = copy.deepcopy(GOOD)
     bad["overview"] = "Renames the thing, nothing else changes."

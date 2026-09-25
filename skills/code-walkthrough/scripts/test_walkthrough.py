@@ -542,8 +542,6 @@ def test_render_story_lists_a_side_group_off_the_main_line():
 # ---- group flow diagrams ----
 
 def test_group_flow_mermaid_renders_after_why_and_before_the_symbols_graph():
-    # Two groups, so the per-group symbols graph actually renders (see the single-group rule
-    # right below the loop in render_html) and there is something for the flow box to precede.
     files = _chain_files("src/api.py", "src/store.py")
     groups = story(list(files), files, [
         {"title": "API", "why": "the entry point", "paths": ["src/api.py"],
@@ -627,15 +625,15 @@ def test_symdelta_group_graph_data_symbols_matches_its_scoped_count():
     assert 'data-symbols="2"' in store_chunk
 
 
-def test_symdelta_with_a_single_group_draws_no_per_group_graph():
-    # With one group the graph would be the global section, character for character -- nothing
-    # new to show.
+def test_symdelta_with_a_single_group_still_draws_its_graph():
+    # There is no page-level graph any more to duplicate, so a single group draws its own
+    # scoped graph the same as any other group would.
     files = _chain_files("src/api.py", "src/store.py")
     groups = story(list(files), files, None, None)
 
     out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
 
-    assert "vd-symbols-group" not in out
+    assert "vd-symbols-group" in out
 
 
 def test_a_group_with_no_symbols_in_scope_gets_no_graph():
