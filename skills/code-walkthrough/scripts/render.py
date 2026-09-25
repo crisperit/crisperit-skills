@@ -4,7 +4,7 @@
   python3 render.py --analysis analysis.json --diff raw.diff --format html \
       --template ../assets/diff-review-template.html \
       --walkthrough section-walkthrough.html \
-      [--symbols section-symbols.html] [--links links.json] [--title "..."] > out.html
+      [--links links.json] [--title "..."] > out.html
 
 The page body was the last thing a model still typed out, and almost none of it was judgment.
 Six of its seven sections are either a section file pasted byte for byte or a string that
@@ -109,7 +109,7 @@ def _flow_tb(mermaid):
 
 
 def render_html(analysis, files, template, walkthrough="", links=None, title=None,
-                now=None, symbols="", complexity=None, state=None, explain=False, order=None,
+                now=None, complexity=None, state=None, explain=False, order=None,
                 structure=""):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
@@ -167,8 +167,8 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                         f'<pre class="mermaid">{escape(flow)}</pre></div>')
 
     # sections.py's own section (marker, heading, everything): pasted verbatim between the
-    # story map and the walkthrough, same as `symbols` below is pasted verbatim at the page's
-    # end -- render.py places generated sections, it never rewrites their markup.
+    # story map and the walkthrough -- render.py places generated sections, it never rewrites
+    # their markup.
     if structure.strip():
         body.append(structure.rstrip("\n"))
 
@@ -182,15 +182,6 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                     ' aria-label="Explanations shown. Activate to hide them."'
                     '>explanations</button></span></h2>')
         body.append(walkthrough.rstrip("\n"))
-
-    # Last on the page, collapsed: a page-level symbol map is a detail a reader reaches for,
-    # not one they need before the walkthrough. sections.py's own marker comment stays inside
-    # verbatim, so validate_analysis.py's --sections check still finds it in the rendered file.
-    if symbols.strip():
-        body.append('<details class="collapse">')
-        body.append("<summary>Package graph</summary>")
-        body.append(symbols.rstrip("\n"))
-        body.append("</details>")
 
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
     foot = f"{escape(target)} · generated {stamp}"
@@ -226,7 +217,6 @@ def main():
     parser.add_argument("--links")
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
     parser.add_argument("--template", required=True, help="the page template")
-    parser.add_argument("--symbols", help="section-symbols.html")
     parser.add_argument("--structure", help="section-structure.html")
     parser.add_argument("--state", help="state.json, inlined behind HR_STATE")
     parser.add_argument("--title")
@@ -243,7 +233,7 @@ def main():
 
     sys.stdout.write(render_html(
         analysis, files, _read(args.template),
-        _read(args.walkthrough), links, args.title, symbols=_read(args.symbols),
+        _read(args.walkthrough), links, args.title,
         complexity=complexity, state=state, explain=args.explain, order=order,
         structure=_read(args.structure),
     ))

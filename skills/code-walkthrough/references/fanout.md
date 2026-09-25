@@ -18,7 +18,7 @@ most 8 batches, so a huge diff widens each batch instead of spawning 60 agents.
 
 ## The batch subagent brief
 
-One subagent per batch, each on a sonnet-class model: the job is per-hunk noticing
+One subagent per batch, each on the strong tier: the job is per-hunk noticing
 inside one slice, and the gate checks every answer, so delegate down when a validator can catch
 the mistake and keep it up when it cannot. All spawned in a single message so they run
 concurrently. Each reads only its own `batch-N.diff` and its manifest-listed
@@ -37,10 +37,17 @@ typing the JSON text by hand: a note quoting code routinely contains a double qu
 hand-typed JSON gets that escaping wrong often enough to cost a retry on half the batches. Tell
 it to verify its own fragment parses with `json.load` before it finishes.
 
-Tell it to reply with the fragment's path and a count of hunks filled, never the fragment's
-content. A batch agent that pastes its role and note text back into its own report is exactly
-how that text ends up in the main thread's context a second time; the fragment file is the
-deliverable, the reply is a receipt.
+Before replying, run
+`python3 <skill>/scripts/validate_analysis.py --fragment --diff <batch-N.diff> --analysis
+<fragment-N.json>`. Fix what it names and re-run, at most twice: it skips the whole-diff checks
+(the top-level keys, the empty-note floor) that only make sense over the merged analysis, so a
+batch that gates clean here can still contribute to a central-gate failure later, just not on
+anything this check already caught.
+
+Tell it to reply with the fragment's path, a count of hunks filled, and `gate: ok` or the number
+of problems left, never the fragment's content. A batch agent that pastes its role and note text
+back into its own report is exactly how that text ends up in the main thread's context a second
+time; the fragment file is the deliverable, the reply is a receipt.
 
 ## Role rules
 
@@ -88,17 +95,15 @@ what it is explaining and because the gate checks it. Keep a note to about 20 wo
 adds many symbols, explain the group and name the two that matter, never a comma series of
 everything.
 
-## The prose subagent
+## The prose and grouping subagent
 
-One subagent, on a stronger model (sonnet class) since it needs the whole change in view and
-nothing downstream can check its judgment, writes `<scratchpad>/prose.json` with `target`,
-`overview` and `verdict`, from the fragments and the numstat. Under about 2000 lines, hand
-it `<scratchpad>/raw.diff` too and tell it to read it, since that removes the guessing; above
-that, fragments and the numstat only, never `raw.diff`, the size this split exists to protect.
-Either way it may open specific files in the repo when a fragment note is not enough to explain
-the machinery. It never writes `flow_mermaid`: with two or more groups the story map replaces
-it, and with one group the grouping subagent (below) is the one that knows that and writes it,
-since it runs after this one and is the only one to see the final group count.
+One subagent, on the strong tier since it needs the whole change in view and nothing downstream
+can check its judgment, writes `<scratchpad>/prose.json` with `target`, `overview`, `verdict`,
+`groups` and a top-level `flow_mermaid`, from the fragments, the numstat and the graph summaries
+(`symdelta.counts`/`symdelta.moved`). Under about 2000 lines, hand it `<scratchpad>/raw.diff` too
+and tell it to read it, since that removes the guessing; above that, fragments and the numstat
+only, never `raw.diff`, the size this split exists to protect. Either way it may open specific
+files in the repo when a fragment note is not enough to explain the machinery.
 
 Tell it what `overview` is for: a lead of one or two sentences saying what this is (or what the
 change is) and who or what uses it, no file names in the lead, then three to five bullets, one
@@ -120,37 +125,18 @@ first `- ` line starts, not by a blank line, so this reads fine with or without 
     - `RateLimiter` swaps its polling loop for a debounced watcher
     - Metrics moved out to their own package, so the limiter stays free of reporting concerns
 
-Tell it, on either brief: every identifier in the prose is copied from the source, never
+Tell it, on the whole brief: every identifier in the prose is copied from the source, never
 reconstructed from what a name in that language usually looks like, so an exported
 `UIDFromOzoneCookie` is never softened into "a helper" because unexported names are usually
 lowercase. A signature change is claimed only when it is visibly in the diff, never because a
 function of that name plausibly gained a parameter elsewhere.
 
-Tell it to reply with `prose.json`'s path and a count of fields filled, never their content. An
-agent that pastes `overview` back into its own report is exactly how that prose ends up in
-the main thread's context a second time; the file is the deliverable, the reply is a receipt.
-
-## Merging
-
-The glob in the merge command is `fragment-[0-9].json`, not `fragment-*.json`: the latter also
-matches the `fragment-N.seed.json` skeletons sitting beside them, and every file then looks like
-it was claimed by two fragments.
-
-The merge orders entries the way `raw.diff` orders files and refuses two fragments claiming the
-same file. It also canonicalizes a fragment's old-side rename path to the new-side path before
-that check, since a cheap model often only sees one side of a rename. Why that canonicalization
-step exists: `references/rationale.md`.
-
-## Gating the merged analysis
-
-After the merge, one subagent, on a stronger model (sonnet class) since it needs the whole change
-in view and nothing downstream can check its judgment, gets the `(path, role)` pairs from the
-merged analysis, plus `symdelta.counts`/`symdelta.moved`. It returns `groups`, in story order;
-write what it returns into `analysis.json` before the gate, and review it rather than author it
-yourself. This is a deliberate tradeoff: `groups` is the reading order a
-human follows and is the least safe field here to hand off, but a `(path, role)` list plus the
-graph summary is enough to group from, and it moves 40 to 50 seconds off what the main thread
-would otherwise spend writing groups, notes and gate patches by hand.
+It also settles `groups`, in story order, from the merged `(path, role)` pairs plus the graph
+summaries; write what it returns into `analysis.json` before the gate, and review it rather than
+author it yourself. This is a deliberate tradeoff: `groups` is the reading order a human follows
+and is the least safe field here to hand off, but a `(path, role)` list plus the graph summary is
+enough to group from, and it moves 40 to 50 seconds off what the main thread would otherwise
+spend writing groups, notes and gate patches by hand.
 
 Tell it each group may also carry its own `flow_mermaid`: one small diagram, `sequenceDiagram` or
 `flowchart LR`, its pick per group. Default to a sequence; fall back to a flowchart only when the
@@ -163,10 +149,35 @@ identifier that has to appear in `raw.diff`, names the hand-off to the NEXT grou
 the last group that isn't a `side` group must not have one, since there is no next stop for it
 to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
 the story) that the map lists off the main line rather than in the chain. And tell it about the
-top-level `flow_mermaid` it is now responsible for: leave it blank when it settles on two or
-more groups (the story map replaces it), but when it settles on exactly one group, copy that
-group's own `flow_mermaid` (if it wrote one) up to the top level too, since a single group has
-no map to carry it instead.
+top-level `flow_mermaid` it now writes itself: leave it blank when it settles on two or more
+groups (the story map replaces it), but when it settles on exactly one group, copy that group's
+own `flow_mermaid` (if it wrote one) up to the top level too, since a single group has no map to
+carry it instead.
+
+Tell it to reply with the path, field counts and group titles only, never their content. An
+agent that pastes `overview` or a group's `why` back into its own report is exactly how that
+prose ends up in the main thread's context a second time; the file is the deliverable, the reply
+is a receipt. Group titles themselves are the one exception allowed in the main context
+(SKILL.md's intro), so naming them in the reply is fine.
+
+The main thread no longer writes `groups` into `analysis.json` by hand: this subagent writes them
+directly into `prose.json`, and `fanout.py merge` carries them through.
+
+Ordering: this subagent waits for every batch fragment and for `symdelta.json`, the same
+dependency the old grouping pass already had, so the critical path does not get longer.
+
+## Merging
+
+The glob in the merge command is `fragment-[0-9].json`, not `fragment-*.json`: the latter also
+matches the `fragment-N.seed.json` skeletons sitting beside them, and every file then looks like
+it was claimed by two fragments.
+
+The merge orders entries the way `raw.diff` orders files and refuses two fragments claiming the
+same file. It also canonicalizes a fragment's old-side rename path to the new-side path before
+that check, since a cheap model often only sees one side of a rename. Why that canonicalization
+step exists: `references/rationale.md`.
+
+## The gate
 
 `validate_analysis.py` prints one plain line per problem and exits non-zero: a file present in
 the diff but missing from `files[]`, a blank `role`, an invented file or hunk, and a filled-in
@@ -209,9 +220,9 @@ needs to travel.
   lines back to whoever produced that part. The fan-out manifest maps each file to its batch and
   fragment, so a complaint about one file goes to that batch's subagent alone, not to all of
   them. Re-run the gate after each fix.
-- **Same batch fails twice**: respawn that batch on a stronger model (sonnet class) rather than
-  pushing a third time. The fan-out is a speed optimisation, and a batch the cheap model cannot
-  cover is exactly where it stops paying off.
+- **Same batch fails twice**: respawn that batch on the strong tier rather than pushing a third
+  time. The fan-out is a speed optimisation, and a batch the cheap model cannot cover is exactly
+  where it stops paying off.
 
 Two things the gate does not check, so check them yourself: a hunk whose entry the fragment
 appended with an empty `hunks` list for a deleted file (append the entry, do not assume it is

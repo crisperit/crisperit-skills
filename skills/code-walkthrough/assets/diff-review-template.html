@@ -303,12 +303,6 @@
      ~200px per card once four 140px hops are subtracted, so the vertical spine above stays the
      only layout for this many stops. */
 
-  /* section-symbols.html, moved to the page's end and collapsed (see render.py): a generic
-     disclosure, same idiom as details.hunk's triangle-plus-label summary but plain text, no
-     path or stat to lay out. */
-  details.collapse{margin-top:36px}
-  details.collapse>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm)}
-  details.collapse>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* One panel per group, directly under its .wt-why: a tab bar switches between the flow
      diagram and the call graph when a group has both, so the two read as views of one thing
      rather than two unrelated affordances. Just the one diagram, no tab bar, when a group has
@@ -947,7 +941,6 @@
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
-    details.collapse>summary{min-height:44px;display:flex;align-items:center}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */

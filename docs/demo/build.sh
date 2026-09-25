@@ -41,42 +41,19 @@ git -C "$clone" diff "$base...$head" > "$diff_file"
 
 python3 "$skill/scripts/symdelta.py" --repo "$clone" --base "$base" --head "$head" \
   > "$work/symdelta.json"
-python3 "$skill/scripts/complexity.py" --repo "$clone" --base "$base" --head "$head" \
-  --diff "$diff_file" > "$work/complexity.json"
-python3 "$skill/scripts/validate_analysis.py" --diff "$diff_file" --analysis "$analysis"
-python3 "$skill/scripts/structure.py" --repo "$clone" --base "$base" --head "$head" \
-  --symdelta "$work/symdelta.json" --analysis "$analysis" --out "$work/structure.json"
-python3 "$skill/scripts/sections.py" --kind structure --data "$work/structure.json" \
-  --format html > "$work/section-structure.html"
-python3 "$skill/scripts/sections.py" --kind symbols --data "$work/symdelta.json" \
-  --format html > "$work/section-symbols.html"
+cp "$analysis" "$work/analysis.json"
 
-links="$work/links.json"
-python3 "$skill/scripts/links.py" --repo "$clone" --diff "$diff_file" --head "$head" --pr "$pr" \
-  > "$links"
-head_pushed=$(jq -r .head_pushed "$links")
+python3 "$skill/scripts/pipeline.py" prepare --dir "$work" --repo "$clone" --base "$base" \
+  --head "$head" --pr "$pr"
+
+head_pushed=$(jq -r .head_pushed "$work/links.json")
 if [ "$head_pushed" != "true" ]; then
   echo "links.json: head_pushed is false, $head is not on any remote ref" >&2
   exit 1
 fi
 
-python3 "$skill/scripts/walkthrough.py" --analysis "$analysis" --diff "$diff_file" --format html \
-  --symdelta "$work/symdelta.json" --complexity "$work/complexity.json" \
-  > "$work/section-walkthrough.html"
-python3 "$skill/scripts/state.py" --analysis "$analysis" --diff "$diff_file" --links "$links" \
-  --out "$work/state.json"
-
-out_html="$work/out.html"
-python3 "$skill/scripts/render.py" --analysis "$analysis" --diff "$diff_file" --format html \
-  --template "$skill/assets/diff-review-template.html" \
-  --walkthrough "$work/section-walkthrough.html" --state "$work/state.json" \
-  --symbols "$work/section-symbols.html" --structure "$work/section-structure.html" \
-  --links "$links" --title "Code walkthrough: lazygit #5702" > "$out_html"
-
-python3 "$skill/scripts/validate_analysis.py" --diff "$diff_file" --analysis "$analysis" \
-  --rendered "$out_html" --sections "$work"/section-*.html
-
-python3 "$skill/scripts/splice_assets.py" "$out_html" --skill "$skill"
+page=$(python3 "$skill/scripts/pipeline.py" render --dir "$work" --slug lazygit-5702 \
+  --title "Code walkthrough: lazygit #5702" | tail -n1)
 
 mkdir -p "$out_dir/demo"
-cp "$out_html" "$out_dir/demo/lazygit-5702.html"
+cp "$page" "$out_dir/demo/lazygit-5702.html"

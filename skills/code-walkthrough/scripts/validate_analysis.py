@@ -4,6 +4,12 @@
 Usage:
   python3 validate_analysis.py --diff raw.diff --analysis analysis.json
   python3 validate_analysis.py --diff raw.diff --analysis analysis.json --rendered out.html
+  python3 validate_analysis.py --diff batch-N.diff --analysis fragment-N.json --fragment
+
+--fragment gates one batch agent's fragment.json ahead of the central gate: it skips the
+top-level target/overview/flow_mermaid keys and the empty-note floor, both of which only
+make sense over the whole diff, not one batch (see validate()). Mutually exclusive with
+--rendered.
 
 raw.diff is the source of truth: every file it touches must appear in analysis.json, and
 every `@@` hunk of that file must appear under it. A hunk's note may be blank -- churn
@@ -296,20 +302,26 @@ def _empty_note_floor(hunks):
     ]
 
 
-def validate(diff_text, analysis):
-    """Return a list of plain-sentence problems; empty means it passes."""
+def validate(diff_text, analysis, fragment=False):
+    """Return a list of plain-sentence problems; empty means it passes.
+
+    fragment=True is for a batch agent's own fragment.json, gating one batch ahead of the
+    central gate (CW/references/fanout.md). A seed fragment only has "files", so REQUIRED_KEYS
+    and the overview checks don't apply, and the floor below is scoped to the whole diff, not
+    one batch, so it is skipped here too (see _empty_note_floor)."""
     order, diff_files = parse_hunks(diff_text)
     diff_hunks = {path: [h["prefix"] for h in entry["hunks"]]
                   for path, entry in diff_files.items()}
     problems = []
 
-    for key in REQUIRED_KEYS:
-        if key not in analysis:
-            problems.append(f"missing top-level key: {key}")
-    if _blank(analysis.get("overview")):
-        problems.append("overview is empty")
-    else:
-        problems += _overview_blob(analysis["overview"])
+    if not fragment:
+        for key in REQUIRED_KEYS:
+            if key not in analysis:
+                problems.append(f"missing top-level key: {key}")
+        if _blank(analysis.get("overview")):
+            problems.append("overview is empty")
+        else:
+            problems += _overview_blob(analysis["overview"])
 
     if not isinstance(analysis.get("files"), list):
         problems.append("files must be a list")
@@ -378,7 +390,8 @@ def validate(diff_text, analysis):
             problems.append(f"{path}: in files[] but not changed in the diff")
 
     problems += _validate_groups(analysis.get("groups"), diff_hunks, diff_text)
-    problems += _empty_note_floor(all_hunks)
+    if not fragment:
+        problems += _empty_note_floor(all_hunks)
     return problems
 
 
@@ -520,8 +533,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--diff", required=True)
     parser.add_argument("--analysis", required=True)
-    parser.add_argument("--rendered")
     parser.add_argument("--sections", nargs="*", default=[])
+    exclusive = parser.add_mutually_exclusive_group()
+    exclusive.add_argument("--rendered")
+    exclusive.add_argument("--fragment", action="store_true",
+                            help="Gate one batch agent's fragment.json ahead of the central gate")
     args = parser.parse_args()
 
     diff_text = open(args.diff, errors="replace").read()
@@ -531,7 +547,7 @@ def main():
         print(f"analysis.json is not valid JSON: {exc}", file=sys.stderr)
         return 1
 
-    problems = validate(diff_text, analysis)
+    problems = validate(diff_text, analysis, fragment=args.fragment)
     if args.rendered:
         rendered = open(args.rendered, errors="replace").read()
         problems += check_rendered(diff_text, rendered)
