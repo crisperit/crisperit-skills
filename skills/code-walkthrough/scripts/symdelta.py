@@ -315,6 +315,11 @@ def run_ts_extractor(worktree_path, rel_files, lang="typescript"):
         returncode, out, err = run_in_process_group(
             [sys.executable, str(LSP_EXTRACTOR_SCRIPT), str(worktree_path),
              "--lang", lang, "--files-list", files_list_path],
+            # A whole-run budget, not a per-request one -- extract.py's own rust call_timeout
+            # (120s) applies per prepareCallHierarchy/outgoingCalls/incomingCalls request, and a
+            # symbol that times out there is skipped rather than retried, so this only needs to
+            # cover every *other* symbol's real work. Measured 2m11s head-side on the 6-crate,
+            # 85-file workspace that motivated the 120s bump; 600s stays comfortable headroom.
             timeout=600, what=f"LSP extractor on {worktree_path}",
         )
     finally:
@@ -358,10 +363,10 @@ WORKTREE_PREP = {
 
 DEPENDENCY_FILES = {"package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
 PYTHON_DEPENDENCY_FILES = {"pyproject.toml", "requirements.txt", "poetry.lock", "Pipfile.lock", "uv.lock"}
-RUST_DEPENDENCY_FILES = {"Cargo.toml", "Cargo.lock"}
-DEPENDENCY_FILES_BY_LANG = {
-    "typescript": DEPENDENCY_FILES, "python": PYTHON_DEPENDENCY_FILES, "rust": RUST_DEPENDENCY_FILES,
-}
+# No rust entry: unlike typescript (shared node_modules) and python's blunt manifest-changed
+# guard below, each rust worktree already resolves against its own Cargo.lock and target/ (see
+# WORKTREE_PREP), so a Cargo change on one side can never leak into the other's resolution.
+DEPENDENCY_FILES_BY_LANG = {"typescript": DEPENDENCY_FILES, "python": PYTHON_DEPENDENCY_FILES}
 
 DEPENDENCY_REASON = {
     "typescript": (
@@ -373,10 +378,6 @@ DEPENDENCY_REASON = {
         "pyproject.toml or a Python lockfile changed between base and head; a resolver change "
         "between base and head would make the resulting call graph unreliable"
     ),
-    "rust": (
-        "Cargo.toml or Cargo.lock changed between base and head; a resolver change between base "
-        "and head would make the resulting call graph unreliable"
-    ),
 }
 
 
@@ -386,12 +387,13 @@ def dependency_files_changed(repo, base, head, lang="typescript"):
     BOTH worktrees, so base and head are resolved against head's dependencies; tsserver returns
     an empty result for a symbol it can't resolve instead of erroring, so a dependency change
     would silently drop real base edges and fabricate spurious new/gone ones. Refusing here is
-    cheaper than guessing."""
+    cheaper than guessing. False for any `lang` with no entry in DEPENDENCY_FILES_BY_LANG (rust)
+    rather than a KeyError: that lang simply has nothing to guard against here."""
     diff = run_git(repo, ["diff", "--name-only", f"{base}..{head}"])
     if diff.returncode != 0:
         raise RuntimeError(f"git diff failed: {diff.stderr.strip()}")
     changed_basenames = {posixpath.basename(f) for f in diff.stdout.splitlines() if f}
-    return bool(changed_basenames & DEPENDENCY_FILES_BY_LANG[lang])
+    return bool(changed_basenames & DEPENDENCY_FILES_BY_LANG.get(lang, set()))
 
 
 PACKAGE_JSON_DEP_KEYS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
@@ -1133,12 +1135,12 @@ def analyse_lsp(repo, base, head, lang):
     # for a dependency change to make incomparable, so the refusals below do not apply.
     if not is_empty_base(repo, base):
         if lang == "typescript":
-            # Narrower than python/rust's blunt dependency_files_changed: see
+            # Narrower than python's blunt dependency_files_changed: see
             # ts_dependency_incompatible for why file-level detection over-refuses here.
             incompatible, reason = ts_dependency_incompatible(repo, base, head)
             if incompatible:
                 return {"language": None, "reason": reason}
-        elif dependency_files_changed(repo, base, head, lang):
+        elif lang == "python" and dependency_files_changed(repo, base, head, lang):
             return {"language": None, "reason": DEPENDENCY_REASON[lang]}
 
     if lang == "typescript":

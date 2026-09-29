@@ -117,10 +117,13 @@ intra-repo imports from the files on disk, verified against a bare `git worktree
 graph; sharing one via `CARGO_TARGET_DIR` is the untested optimisation if that proves too slow,
 and it risks cargo lock contention.
 
-A dependency-manifest change between the refs makes resolution differ per ref, which fabricates
-new and gone edges, so each language bails out rather than guessing: `package.json` and the JS
-lockfiles, `pyproject.toml`/`requirements.txt`/`poetry.lock`/`Pipfile.lock`/`uv.lock`, and
-`Cargo.toml`/`Cargo.lock`.
+A dependency-manifest change between the refs makes resolution differ per ref for TypeScript
+(shared `node_modules`) and Python (blunt: any manifest/lockfile change bails), which fabricates
+new and gone edges, so those two bail out rather than guessing: `package.json` and the JS
+lockfiles, `pyproject.toml`/`requirements.txt`/`poetry.lock`/`Pipfile.lock`/`uv.lock`. Rust
+doesn't bail on `Cargo.toml`/`Cargo.lock`: each worktree already resolves against its own
+`Cargo.lock` and `target/` (previous paragraph), so a change on one side can't leak into the
+other's resolution.
 
 A mixed-language diff picks the language with the most changed files, and says so in the
 reason. This cuts deeper than reduced granularity on a mixed diff: the changed files in the
