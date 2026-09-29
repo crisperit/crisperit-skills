@@ -812,15 +812,23 @@ def test_detect_language_tie_break_between_python_and_rust_is_alphabetical():
 
 
 def test_lsp_language_tables_all_cover_typescript_python_and_rust():
-    # The four per-language dispatch tables symdelta.py's LSP tier relies on must all name the
-    # same three languages, or a newly-added one would silently fall through in one but not
-    # another (e.g. routed by LANG_EXTENSIONS but with no ANALYSERS entry).
+    # WORKTREE_PREP and ANALYSERS dispatch every LSP-tier language, or a newly-added one would
+    # silently fall through in one but not another (e.g. routed by LANG_EXTENSIONS but with no
+    # ANALYSERS entry).
     for lang in ("typescript", "python", "rust"):
-        assert lang in symdelta.DEPENDENCY_FILES_BY_LANG
-        assert lang in symdelta.DEPENDENCY_REASON
         assert lang in symdelta.WORKTREE_PREP
         assert lang in symdelta.ANALYSERS
     assert set(symdelta.LANG_EXTENSIONS.values()) >= {"typescript", "python", "rust", "go"}
+
+    # DEPENDENCY_FILES_BY_LANG/DEPENDENCY_REASON guard only typescript and python: rust
+    # worktrees never share a Cargo.lock or target/ between base and head (see WORKTREE_PREP),
+    # so a Cargo change can't leak into the other side's resolution the way a shared
+    # node_modules or resolver can.
+    for lang in ("typescript", "python"):
+        assert lang in symdelta.DEPENDENCY_FILES_BY_LANG
+        assert lang in symdelta.DEPENDENCY_REASON
+    assert "rust" not in symdelta.DEPENDENCY_FILES_BY_LANG
+    assert "rust" not in symdelta.DEPENDENCY_REASON
 
 
 # ---- pure-logic + wiring tests: refuse a TS diff when node_modules would lie ------------
@@ -894,7 +902,9 @@ def test_dependency_files_changed_false_for_python_when_only_ts_lockfile_changed
         assert symdelta.dependency_files_changed(repo, base, head, "python") is False
 
 
-def test_dependency_files_changed_true_for_cargo_lock():
+def test_dependency_files_changed_false_for_cargo_lock():
+    # Rust has no entry in DEPENDENCY_FILES_BY_LANG: each worktree resolves against its own
+    # Cargo.lock and target/, so a Cargo change on one side can't affect the other's resolution.
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
         _init_repo(repo)
@@ -902,7 +912,7 @@ def test_dependency_files_changed_true_for_cargo_lock():
         base = _commit(repo, "base")
         _write(repo, "Cargo.lock", "# auto-generated\nversion = 4\n")
         head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head, "rust") is True
+        assert symdelta.dependency_files_changed(repo, base, head, "rust") is False
 
 
 # ---- pure-logic tests: TypeScript dependency compatibility decided from declared specs -----
@@ -1297,6 +1307,34 @@ def test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails():
                 "language": None,
                 "reason": "boom",
                 "remedy": symdelta.LANGUAGE_SERVER_REMEDY["python"],
+            }
+    finally:
+        symdelta.check_typescript_tooling = original_check
+
+
+def test_analyse_rust_does_not_bail_on_a_cargo_lock_change():
+    # A Cargo.lock change between base and head must still let analyse_rust reach the tooling
+    # check (forced here to fail for an unrelated reason) rather than bailing earlier on a
+    # dependency-manifest reason. If analyse_lsp's `lang == "python"` gate ever regresses to
+    # cover rust too, this fails with the dependency reason instead of "boom".
+    original_check = symdelta.check_typescript_tooling
+    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (False, "boom")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+            _write(repo, "Cargo.lock", "# auto-generated\nversion = 3\n")
+            _write(repo, "src/a.rs", "fn a() {}\n")
+            base = _commit(repo, "base")
+            _write(repo, "Cargo.lock", "# auto-generated\nversion = 4\n")
+            _write(repo, "src/a.rs", "fn a() { let _ = 1; }\n")
+            head = _commit(repo, "head")
+
+            result = symdelta.analyse_rust(repo, base, head)
+            assert result == {
+                "language": None,
+                "reason": "boom",
+                "remedy": symdelta.LANGUAGE_SERVER_REMEDY["rust"],
             }
     finally:
         symdelta.check_typescript_tooling = original_check
@@ -2275,7 +2313,7 @@ if __name__ == "__main__":
         test_dependency_files_changed_true_for_pnpm_lock,
         test_dependency_files_changed_true_for_pyproject_toml,
         test_dependency_files_changed_false_for_python_when_only_ts_lockfile_changed,
-        test_dependency_files_changed_true_for_cargo_lock,
+        test_dependency_files_changed_false_for_cargo_lock,
         test_ts_dependency_incompatible_false_for_additions_only,
         test_ts_dependency_incompatible_true_when_a_dependency_is_removed,
         test_ts_dependency_incompatible_true_when_a_version_spec_changed,
@@ -2301,6 +2339,7 @@ if __name__ == "__main__":
         test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale,
         test_analyse_typescript_refuses_with_npm_ci_remedy_when_installed_version_is_stale,
         test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails,
+        test_analyse_rust_does_not_bail_on_a_cargo_lock_change,
         test_split_path_trap_pulls_the_remedy_out_of_the_reason,
         test_split_path_trap_returns_the_reason_unchanged_with_no_remedy_for_a_plain_reason,
         test_analyse_lsp_uses_the_path_trap_remedy_instead_of_a_reinstall,

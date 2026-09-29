@@ -19,7 +19,14 @@ def test_languages_table_covers_typescript_python_and_rust():
         assert isinstance(profile["language_id"], str)
         assert isinstance(profile["vendor_dirs"], tuple)
         assert profile["first_file_retries"] > 0
+        assert profile["call_timeout"] > 0
         assert profile["qualify"] in ("detail", "enclosing")
+
+
+def test_languages_table_rust_call_timeout_is_generous():
+    # rust-analyzer's incomingCalls does a workspace-wide search and measurably exceeds the
+    # other languages' 15s budget on a multi-crate workspace.
+    assert extract.LANGUAGES["rust"]["call_timeout"] > extract.LANGUAGES["typescript"]["call_timeout"]
 
 
 def test_languages_table_qualify_strategy_matches_the_spec():
@@ -60,6 +67,23 @@ def test_qualify_from_tree_normalises_a_rust_impl_parent():
 def test_qualify_from_tree_leaves_a_free_function_bare_with_no_parent():
     sym = {"kind": extract.KIND_FUNCTION, "name": "helper"}
     assert extract._qualify_from_tree(sym, None, "python") == "helper"
+
+
+def test_qualify_from_tree_qualifies_a_rust_associated_fn_with_no_self_receiver():
+    # rust-analyzer reports `impl Foo { fn bar() }` (no `self`) as KIND_FUNCTION, not
+    # KIND_METHOD. The callee side (enclosing-container lookup) qualifies this fine since it
+    # only looks at the impl block's own range, never the fn's kind -- this must match, or the
+    # same fn becomes two graph nodes (bare on the caller side, "Foo.bar" on the callee side).
+    sym = {"kind": extract.KIND_FUNCTION, "name": "deserialize"}
+    assert extract._qualify_from_tree(sym, "impl OctoMind", "rust") == "OctoMind.deserialize"
+    assert extract._qualify_from_tree(sym, "impl Store for OctoMind", "rust") == "OctoMind.deserialize"
+
+
+def test_qualify_from_tree_leaves_a_rust_fn_nested_in_another_fn_bare():
+    # A closure-like fn nested in another fn's body has a parent_name that's the outer fn's own
+    # name, never an "impl ..." block -- must not be mistaken for an associated fn.
+    sym = {"kind": extract.KIND_FUNCTION, "name": "inner"}
+    assert extract._qualify_from_tree(sym, "outer_fn", "rust") == "inner"
 
 
 def test_uri_to_relpath_rejects_python_venv_dirs():
@@ -163,6 +187,7 @@ def test_extract_lang_flag_defaults_to_typescript_when_absent():
 if __name__ == "__main__":
     tests = [
         test_languages_table_covers_typescript_python_and_rust,
+        test_languages_table_rust_call_timeout_is_generous,
         test_languages_table_qualify_strategy_matches_the_spec,
         test_rust_container_name_normalises_a_plain_impl_block,
         test_rust_container_name_normalises_a_trait_impl_block,
@@ -171,6 +196,8 @@ if __name__ == "__main__":
         test_qualify_from_tree_qualifies_a_method_via_its_parent_uniformly,
         test_qualify_from_tree_normalises_a_rust_impl_parent,
         test_qualify_from_tree_leaves_a_free_function_bare_with_no_parent,
+        test_qualify_from_tree_qualifies_a_rust_associated_fn_with_no_self_receiver,
+        test_qualify_from_tree_leaves_a_rust_fn_nested_in_another_fn_bare,
         test_uri_to_relpath_rejects_python_venv_dirs,
         test_uri_to_relpath_rejects_rust_target_dir,
         test_find_enclosing_container_picks_the_innermost_match,

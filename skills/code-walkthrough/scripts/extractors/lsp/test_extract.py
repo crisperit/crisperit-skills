@@ -361,6 +361,42 @@ def test_extract_edges_includes_start_end_positions_on_both_sides():
     assert (incoming["ToStart"], incoming["ToEnd"]) == (11, 13)
 
 
+def test_extract_edges_skips_a_symbol_whose_call_hierarchy_request_times_out():
+    # A single symbol's outgoingCalls hanging past call_timeout (rust-analyzer's workspace-wide
+    # search on a large crate graph, in practice) must skip that one symbol, not abort
+    # extraction for every other symbol in the run.
+    original_client = extract.LSPClient
+    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
+
+    def prepare_call_hierarchy(params):
+        file_uri = params["textDocument"]["uri"]
+        return [{**_CALL_ITEM, "uri": file_uri}]
+
+    def outgoing_calls(params):
+        if params["item"]["uri"].endswith("a.ts"):
+            raise TimeoutError("callHierarchy/outgoingCalls timed out after 15s")
+        return []
+
+    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({
+        "textDocument/documentSymbol": [_FUNC_SYMBOL],
+        "textDocument/prepareCallHierarchy": prepare_call_hierarchy,
+        "callHierarchy/outgoingCalls": outgoing_calls,
+        "callHierarchy/incomingCalls": [],
+    })
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.ts").write_text("export function f() {}\n")
+            (root / "b.ts").write_text("export function f() {}\n")
+            # Must not raise: a.ts's symbol is skipped, b.ts's still resolves (to no edges).
+            edges = extract.extract_edges(root, ["a.ts", "b.ts"])
+            assert edges == []
+    finally:
+        extract.LSPClient = original_client
+        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
+        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+
+
 def test_end_to_end_cross_file_call_resolves():
     if shutil.which("typescript-language-server") is None:
         print("skip (no typescript-language-server on PATH): test_end_to_end_cross_file_call_resolves")
@@ -409,6 +445,7 @@ if __name__ == "__main__":
         test_extract_edges_returns_empty_without_raising_when_calls_just_dont_resolve,
         test_extract_edges_returns_empty_without_raising_when_existing_is_empty,
         test_extract_edges_includes_start_end_positions_on_both_sides,
+        test_extract_edges_skips_a_symbol_whose_call_hierarchy_request_times_out,
         test_end_to_end_cross_file_call_resolves,
     ]
     for test in tests:

@@ -60,6 +60,7 @@ CONTAINER_KINDS = {KIND_CLASS, KIND_INTERFACE, KIND_ENUM, KIND_STRUCT, KIND_OBJE
 #   vendor_dirs       top-level dirs under root treated as dependency/build output, not source
 #   first_file_retries  retry budget for the first file's documentSymbol/prepareCallHierarchy
 #                        warmup (a cold project load, or -- rust-analyzer -- a cold crate index)
+#   call_timeout      per-request timeout for prepareCallHierarchy/outgoingCalls/incomingCalls
 #   qualify           how a call target (a CallHierarchyItem we have no tree for) is qualified:
 #     "detail"     the container name is in item["detail"] (typescript-language-server)
 #     "enclosing"  no usable detail; resolve the container by fetching documentSymbol for the
@@ -71,6 +72,7 @@ LANGUAGES = {
         "language_id": "typescript",
         "vendor_dirs": ("node_modules",),
         "first_file_retries": 30,  # tsserver's first project load, seen up to ~30s in testing
+        "call_timeout": 15,
         "qualify": "detail",
     },
     "python": {
@@ -78,6 +80,7 @@ LANGUAGES = {
         "language_id": "python",
         "vendor_dirs": (".venv", "venv", "site-packages", "__pypackages__"),
         "first_file_retries": 15,
+        "call_timeout": 15,
         "qualify": "enclosing",
     },
     "rust": {
@@ -85,6 +88,9 @@ LANGUAGES = {
         "language_id": "rust",
         "vendor_dirs": ("target",),
         "first_file_retries": 120,  # rust-analyzer's cold crate-graph index, measured worst case
+        "call_timeout": 120,  # incomingCalls does a workspace-wide search, measured >15s on a
+        # multi-crate workspace; extract_edges' per-symbol skip bounds the damage if even this
+        # isn't enough.
         "qualify": "enclosing",
     },
 }
@@ -173,8 +179,15 @@ def _qualify_from_tree(sym, parent_name, lang):
     """Class.method for a documentSymbol entry we found by walking our own file's tree:
     `parent_name` is the immediate ancestor's name, taken uniformly for all three languages
     (measured: documentSymbol nests a method under its class/struct/impl-block parent in
-    typescript, python and rust alike, unlike the CallHierarchyItem shape _symbol_name reads)."""
-    if sym.get("kind") == KIND_METHOD and parent_name:
+    typescript, python and rust alike, unlike the CallHierarchyItem shape _symbol_name reads).
+
+    Rust also qualifies when the parent is an impl block regardless of `sym`'s own kind:
+    rust-analyzer reports an associated fn with no `self` receiver (e.g. `impl Foo { fn bar() }`)
+    as KIND_FUNCTION, not KIND_METHOD, and the target side already qualifies it via the
+    enclosing-container lookup (which only looks at the parent's kind, never the child's) --
+    gating this side on kind alone left it bare, splitting one fn into two graph nodes."""
+    is_rust_impl = lang == "rust" and parent_name and _RUST_IMPL_RE.match(parent_name)
+    if parent_name and (sym.get("kind") == KIND_METHOD or is_rust_impl):
         container = _rust_container_name(parent_name) if lang == "rust" else parent_name
         return f"{container}.{sym['name']}"
     return sym["name"]
@@ -341,6 +354,7 @@ def extract_edges(root, rel_files, lang="typescript"):
         calls_ready = False
         calls_ready_retries = 10  # generous relative to the ~1 retry measured; bounds worst case
         char_offset = 1 if lang == "typescript" else 0
+        call_timeout = profile["call_timeout"]
 
         def add_edge(from_file, from_sym, to_file, to_sym,
                      from_start=None, from_end=None, to_start=None, to_end=None):
@@ -399,67 +413,79 @@ def extract_edges(root, rel_files, lang="typescript"):
                 # decorator or modifier) and silently returns empty.
                 pos = sym["selectionRange"]["start"]
                 symbols_tried += 1
-                attempts = 1 if chq_ready else retries
-                items = []
-                for attempt in range(attempts):
-                    prep = client.request("textDocument/prepareCallHierarchy", {
-                        "textDocument": {"uri": file_uri},
-                        "position": {"line": pos["line"], "character": pos["character"] + char_offset},
-                    }, timeout=15)
-                    items = prep.get("result") or []
-                    if items:
-                        chq_ready = True
-                        break
-                    if attempt < attempts - 1:
-                        time.sleep(DOC_SYMBOL_RETRY_DELAY)
-                if not items:
+                try:
+                    attempts = 1 if chq_ready else retries
+                    items = []
+                    for attempt in range(attempts):
+                        prep = client.request("textDocument/prepareCallHierarchy", {
+                            "textDocument": {"uri": file_uri},
+                            "position": {
+                                "line": pos["line"], "character": pos["character"] + char_offset,
+                            },
+                        }, timeout=call_timeout)
+                        items = prep.get("result") or []
+                        if items:
+                            chq_ready = True
+                            break
+                        if attempt < attempts - 1:
+                            time.sleep(DOC_SYMBOL_RETRY_DELAY)
+                    if not items:
+                        continue
+                    symbols_with_callhierarchy += 1
+                    item = items[0]
+                    from_sym = _qualify_from_tree(sym, parent_name, lang)
+                    sym_start, sym_end = _decl_span(sym)
+
+                    call_attempts = 1 if calls_ready else calls_ready_retries
+                    out_result = []
+                    for attempt in range(call_attempts):
+                        out = client.request(
+                            "callHierarchy/outgoingCalls", {"item": item}, timeout=call_timeout
+                        )
+                        out_result = out.get("result") or []
+                        if out_result:
+                            calls_ready = True
+                            break
+                        if attempt < call_attempts - 1:
+                            time.sleep(DOC_SYMBOL_RETRY_DELAY)
+                    for call in out_result:
+                        to = call["to"]
+                        if to.get("kind") not in QUERY_KINDS:
+                            continue
+                        to_file = _uri_to_relpath(to["uri"], root, profile["vendor_dirs"])
+                        if to_file is None:
+                            continue
+                        to_start, to_end = _decl_span(to)
+                        add_edge(rel, from_sym, to_file, qualify_target(to),
+                                 sym_start, sym_end, to_start, to_end)
+
+                    call_attempts = 1 if calls_ready else calls_ready_retries
+                    inc_result = []
+                    for attempt in range(call_attempts):
+                        inc = client.request(
+                            "callHierarchy/incomingCalls", {"item": item}, timeout=call_timeout
+                        )
+                        inc_result = inc.get("result") or []
+                        if inc_result:
+                            calls_ready = True
+                            break
+                        if attempt < call_attempts - 1:
+                            time.sleep(DOC_SYMBOL_RETRY_DELAY)
+                    for call in inc_result:
+                        frm = call["from"]
+                        if frm.get("kind") not in QUERY_KINDS:
+                            continue
+                        from_file = _uri_to_relpath(frm["uri"], root, profile["vendor_dirs"])
+                        if from_file is None:
+                            continue
+                        from_start, from_end = _decl_span(frm)
+                        add_edge(from_file, qualify_target(frm), rel, from_sym,
+                                 from_start, from_end, sym_start, sym_end)
+                except TimeoutError:
+                    # A late response landing after this raises is not a hazard: lsp_client keys
+                    # pending replies by request id, and this symbol's id is never reused, so it
+                    # can only ever satisfy a wait that already gave up.
                     continue
-                symbols_with_callhierarchy += 1
-                item = items[0]
-                from_sym = _qualify_from_tree(sym, parent_name, lang)
-                sym_start, sym_end = _decl_span(sym)
-
-                call_attempts = 1 if calls_ready else calls_ready_retries
-                out_result = []
-                for attempt in range(call_attempts):
-                    out = client.request("callHierarchy/outgoingCalls", {"item": item}, timeout=15)
-                    out_result = out.get("result") or []
-                    if out_result:
-                        calls_ready = True
-                        break
-                    if attempt < call_attempts - 1:
-                        time.sleep(DOC_SYMBOL_RETRY_DELAY)
-                for call in out_result:
-                    to = call["to"]
-                    if to.get("kind") not in QUERY_KINDS:
-                        continue
-                    to_file = _uri_to_relpath(to["uri"], root, profile["vendor_dirs"])
-                    if to_file is None:
-                        continue
-                    to_start, to_end = _decl_span(to)
-                    add_edge(rel, from_sym, to_file, qualify_target(to),
-                             sym_start, sym_end, to_start, to_end)
-
-                call_attempts = 1 if calls_ready else calls_ready_retries
-                inc_result = []
-                for attempt in range(call_attempts):
-                    inc = client.request("callHierarchy/incomingCalls", {"item": item}, timeout=15)
-                    inc_result = inc.get("result") or []
-                    if inc_result:
-                        calls_ready = True
-                        break
-                    if attempt < call_attempts - 1:
-                        time.sleep(DOC_SYMBOL_RETRY_DELAY)
-                for call in inc_result:
-                    frm = call["from"]
-                    if frm.get("kind") not in QUERY_KINDS:
-                        continue
-                    from_file = _uri_to_relpath(frm["uri"], root, profile["vendor_dirs"])
-                    if from_file is None:
-                        continue
-                    from_start, from_end = _decl_span(frm)
-                    add_edge(from_file, qualify_target(frm), rel, from_sym,
-                             from_start, from_end, sym_start, sym_end)
 
         # existing empty is the base side of an all-new diff (rel_files filtered to what's on
         # disk at this ref) -- already legitimate, so only raise when there was something to
