@@ -753,9 +753,16 @@
 
   /* A resolved thread collapses like a stray's .hr-lo fold above, same <details> idiom. Flex,
      same reason hr-lo>summary is below: the chip appended after the comment count (see
-     buildResolutionChip) needs to wrap on a narrow screen instead of overflowing. */
+     buildResolutionChip) needs to wrap on a narrow screen instead of overflowing. Font,
+     white-space and line-height reset for the same reason .dline-note resets them above: this
+     lives inside <pre class="diff"> too (resolvedWrapFor), so without the reset the summary's
+     login+path text and any un-rec'd .fb-item row inside (see buildItem) inherit the ancestor's
+     monospace, nowrap and line-height:0 and never wrap; overflow-wrap covers the path segment,
+     which has no spaces to break at. */
   details.hr-thread-resolved{background:var(--panel2);border:1px solid var(--border);
-    border-radius:8px;padding:8px 10px;margin-top:6px}
+    border-radius:8px;padding:8px 10px;margin-top:6px;
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    white-space:normal;line-height:1.6;overflow-wrap:anywhere}
   details.hr-thread-resolved>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-xs);
     display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
   details.hr-thread-resolved>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -2060,9 +2067,9 @@
     php:'php',pl:'perl',pm:'perl',lua:'lua',kt:'kotlin',kts:'kotlin',swift:'swift',r:'r',
     sql:'sql',sh:'bash',bash:'bash',zsh:'bash',yml:'yaml',yaml:'yaml',json:'json',
     xml:'xml',html:'xml',htm:'xml',css:'css',scss:'scss',less:'less',md:'markdown',
-    markdown:'markdown',ini:'ini',vb:'vbnet',graphql:'graphql',gql:'graphql',
+    markdown:'markdown',ini:'ini',toml:'ini',vb:'vbnet',graphql:'graphql',gql:'graphql',
     m:'objectivec',mm:'objectivec',wasm:'wasm',diff:'diff',patch:'diff',
-    makefile:'makefile',dockerfile:'dockerfile',
+    makefile:'makefile',dockerfile:'dockerfile','cargo.lock':'ini',
   };
 
   function wireHunk(pre){

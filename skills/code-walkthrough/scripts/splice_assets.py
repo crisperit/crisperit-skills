@@ -12,6 +12,7 @@ does not double the payload.
 """
 import argparse
 import pathlib
+import re
 import sys
 
 # placeholder -> (marker the page must contain to need it, asset filenames in load order)
@@ -19,6 +20,19 @@ ASSETS = {
     "<!-- MERMAID_JS -->": ('class="mermaid"', ["mermaid.min.js"]),
     "<!-- HLJS_JS -->": ('class="diff"', ["highlight.min.js"]),
 }
+
+# Nextcloud's HTML viewer rewrites every `<script` substring in the page to inject a CSP
+# nonce, including one inside hljs's own XML-grammar regex literal. The nonce is random
+# base64 and often contains "/", which can terminate that literal early with a SyntaxError,
+# killing highlighting. \x73 is a valid "s" escape in both regex and string literals, so
+# this stays JS-identical while removing the substring the rewrite matches on.
+SCRIPT_TAG_RE = re.compile(r"<(s)cript", re.IGNORECASE)
+
+
+def _escape_script_tag(match):
+    s = match.group(1)
+    hex_escape = r"\x53" if s == "S" else r"\x73"
+    return "<" + hex_escape + match.group(0)[2:]
 
 
 def splice(page_path, skill_dir):
@@ -37,6 +51,7 @@ def splice(page_path, skill_dir):
         if missing:
             return report, f"missing vendored asset(s): {', '.join(missing)}"
         js = "\n".join((skill_dir / "assets" / f).read_text() for f in filenames)
+        js = SCRIPT_TAG_RE.sub(_escape_script_tag, js)
         text = text.replace(placeholder, js)
         report.append(f"{name}: spliced {len(js)} bytes from {', '.join(filenames)}")
     page.write_text(text)
