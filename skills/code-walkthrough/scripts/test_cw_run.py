@@ -265,7 +265,7 @@ def test_final_gate_failure_gives_failed_status_with_gate_lines():
         (d / "analysis.json").write_text(json.dumps({"files": []}))  # missing required top-level keys
         meta = {"repo": str(repo), "base": base, "head": head, "slug": "t", "paths": [], "explain": False}
         events = []
-        ok = cw_run._final_build(d, meta, lambda ev, data: events.append((ev, data)))
+        ok = cw_run._final_build(d, meta, {}, lambda ev, data: events.append((ev, data)))
         assert ok is False
         saved = json.loads((d / "meta.json").read_text())
         assert saved["status"] == "failed"
@@ -348,6 +348,9 @@ def test_no_backend_configured_raises_cwerror_with_remedy():
 
 
 def test_pr_target_gives_cwerror():
+    # Phase 3: a PR target no longer refuses outright, but it still needs a GitHub origin to
+    # compute gh_repo from -- this repo has none, so it fails the same way a non-GitHub
+    # remote would (test_cw_pr.py covers the full id/sig/refresh behaviour for a real origin).
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\n"}, {"foo.py": "b\n"})
         cw_testlib.write_config(home, {"p": {"base_url": "http://x", "model": "m"}},
@@ -357,7 +360,8 @@ def test_pr_target_gives_cwerror():
                                          "target": "t", "slug": "t", "pr": 5})
             raise AssertionError("expected CWError")
         except cw_store.CWError as e:
-            assert "PR" in str(e) or "static" in str(e)
+            assert "GitHub remote" in str(e)
+            assert e.remedy
 
 
 def test_reuse_keeps_a_passing_fragment_at_the_same_sig_a_new_head_clears_it():

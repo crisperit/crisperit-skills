@@ -326,7 +326,7 @@ def test_final_gate_failure_gives_gate_lines_through_walkthrough_get_and_serves_
             # separate meta.json/RPC poll (run() returns "failed" here without raising).
             sock = _sse_connect(daemon, key, wid)
             try:
-                ok = cw_run._final_build(d, meta, lambda ev, data: daemon.hub.emit(key, wid, ev, data))
+                ok = cw_run._final_build(d, meta, {}, lambda ev, data: daemon.hub.emit(key, wid, ev, data))
                 assert ok is False
                 events = _sse_read_events(sock, stop_names=("done", "failed"))
             finally:

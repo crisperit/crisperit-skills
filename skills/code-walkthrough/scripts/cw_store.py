@@ -38,6 +38,9 @@ DEFAULTS = {
 _META_LOCKS = {}
 _META_LOCKS_GUARD = threading.Lock()
 
+_DIR_LOCKS = {}
+_DIR_LOCKS_GUARD = threading.Lock()
+
 
 class CWError(Exception):
     def __init__(self, message, remedy=None):
@@ -140,6 +143,16 @@ def update_meta(d, fn):
 
 def read_meta(d):
     return read_json(Path(d) / "meta.json", default=None)
+
+
+def dir_lock(d):
+    """Per-walkthrough-directory in-process lock, module dict keyed by str(d) like
+    update_meta's own lock. Held by cw_run._final_build from prepare through render, and by
+    phase 5's /post* server handlers -- lives here, not in cw_run, so cw_server tests that
+    inject a fake runner still serialize against the same lock."""
+    key = str(d)
+    with _DIR_LOCKS_GUARD:
+        return _DIR_LOCKS.setdefault(key, threading.Lock())
 
 
 def usage_total(meta):

@@ -140,11 +140,12 @@ not "nothing changed", so the same bail applies, worded for that case.
 
 ## 1b. Live mode, when the code-walkthrough MCP tools exist
 
-When the `walkthrough_start`/`walkthrough_get`/`walkthrough_list` MCP tools exist and the target
-is not a GitHub PR (the static path below is still what a PR target uses, until phase 3), prefer
-this over steps 2-6. Call `walkthrough_start` with `repo` the toplevel, `base`/`head` as resolved
-above (the snapshot commit for the working tree, `$EMPTY_BASE` in explain mode), `target`,
-`slug`, `explain`, `paths`, `title`.
+When the `walkthrough_start`/`walkthrough_get`/`walkthrough_list` MCP tools exist, prefer this
+over steps 2-6, including for a GitHub PR target. Call `walkthrough_start` with `repo` the
+toplevel, `base`/`head` as resolved above (the snapshot commit for the working tree,
+`$EMPTY_BASE` in explain mode), `target`, `slug`, `explain`, `paths`, `title`, and `pr` whenever
+the target is a PR. A re-call on a PR walkthrough that already finished `done` refreshes its
+comments and resolved threads instead of redoing any batch or prose work.
 
 Any error from the call: continue at step 2 as today, and mention the remedy in one line at the
 end of the report.
