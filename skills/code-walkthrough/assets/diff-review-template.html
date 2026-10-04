@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><!-- DIFF_TITLE --></title>
 <style>
@@ -2482,7 +2483,8 @@
   function buildResolutionChip(root){
     const res=state.resolutions&&state.resolutions[root.gh_thread_id];
     if(!res) return null;
-    if(res.outcome==='none'||(res.outcome==='deferred'&&!res.ticket)){
+    const hasTicket=res.ticket&&res.ticket.startsWith('https://');
+    if(res.outcome==='none'||(res.outcome==='deferred'&&!hasTicket)){
       const chip=document.createElement('span'); chip.className='chip chip-nofix';
       chip.textContent=res.outcome==='none'?'Nothing found':'Deferred to later';
       return chip;

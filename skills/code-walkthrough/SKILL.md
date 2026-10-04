@@ -191,7 +191,7 @@ The template and the rendered HTML still never enter context.
 {
   "target": "master...HEAD",
   "verdict": "one line for the facts strip: the change in a breath",
-  "overview": "lead (1-2 sentences) + 3-5 one-line bullets of organizing ideas -- shape in references/fanout.md",
+  "overview": "lead (1-2 sentences) + 3-5 one-line bullets of organizing ideas -- shape in prompts/prose.md",
   "flow_mermaid": "flowchart LR ..., or \"\" when there is no flow worth drawing",
   "files": [
     {
@@ -217,70 +217,11 @@ This file is the whole of your judgment. Nothing downstream writes prose: `rende
 `walkthrough.py` place these strings and build every other part of the output from `raw.diff`.
 So a field left blank is a section that will not appear, not a section someone else will fill in.
 
-`overview` is the one heading the page shows in both modes, "Overview" whether the target is a
-change or an area. It has two parts: a lead of one or two sentences saying what this is (or what
-the change is) and who or what uses it, no file names in the lead, then three to five bullets, one
-line each, carrying the organizing ideas only -- a bullet names a symbol or path only when that
-name IS the idea, and most should name none. Nothing sits below that altitude: the detail a reader
-wants next already lives in a group's `why` and in the hunk notes, not here, and reaching for
-completeness at this level is exactly the failure mode this schema exists to prevent. Shape and a
-worked example: `references/fanout.md`.
-
-`groups` is the reading order, the one part of the walkthrough that needs you rather than the
-diff: only someone who read the change knows which files belong to which theme and which theme a
-reviewer should meet first. Write one group per theme, **in story order, not just reading
-order** -- the list's own order is what the page's story map draws as stops one after another,
-so a group earlier in the list reads as happening earlier in the story. Title it as the theme
-rather than as a directory.
-
-When there are two or more groups, the story map replaces the page's one top-level `flow_mermaid`
-diagram (the story order already shows the shape a flow diagram would), so leave the top-level
-`flow_mermaid` blank in that case. With a single group there is no map to draw, so the top-level
-`flow_mermaid` still carries the page's one flow diagram exactly as before.
-
-Two optional fields per group serve the map. `hop` is 2 to 6 words naming the hand-off to the
-NEXT stop in the story (e.g. `"gated by \`defineTool\`"`), carrying one backticked identifier
-that has to appear in `raw.diff`; the gate checks both. The last group that isn't a `side` group
-has no next stop to name, so it must not carry a `hop`. `side: true` marks a supporting group
-that sits off the main line -- docs, local dev setup, anything that doesn't advance the story --
-and the map lists it separately rather than in the chain.
-
-Keep the groups wide. Aim for three to five whatever the file count, and never more than six:
-a group is a theme a reviewer holds in their head, not a stage in the data flow. Tracing the
-change end to end and giving each hop its own group is the failure mode here, and it reads as
-a pipeline diagram rather than a reading order. A group of one or two files almost always
-belongs merged into the neighbour it feeds, and a test file belongs with the code it covers,
-never in a group of its own. Under about five changed files, one group is the right answer.
-
-You do **not** decide the order inside a group; `walkthrough.py`
-derives that from `symdelta.json`, caller before callee, then by size, tests and generated files
-last. Leave `groups` out entirely and the whole walkthrough becomes one such group. A file you
-forget still renders in a trailing "Everything else" group, so a partial grouping is safe to
-ship. The gate rejects a group with no title, a path not in the diff, or a file in two groups.
-
-A group's own `flow_mermaid` is optional: one small diagram for that group, `sequenceDiagram` or
-`flowchart LR`, your pick per group. Default to a sequence; fall back to a flowchart only when
-the group genuinely has no order to show, a theme like error handling or config plumbing where
-participants and an ordered exchange would have to be invented. Keep it to about 8 steps at most,
-and omit the field entirely rather than draw something you had to guess. Same label rules as the
-top-level `flow_mermaid` below.
-
-**Mark identifiers with backticks** in `verdict`, `overview`,
-every `role` and every `note`: paths, function/method/type/class names, config
-keys, metric names, literal values. Markdown passes them through as inline code; the HTML
-renderer promotes them to `<code>` after escaping. In `overview` specifically, most sentences
-should carry no backticked symbol at all -- density, not the markup, is what produced the wall
-this schema exists to prevent.
-
-**`flow_mermaid` node labels are 2 to 6 words naming the step**, not a sentence explaining it;
-the reasoning belongs in `overview`. **An edge carries a label only when the arrow itself is
-the action or transition**, 1 to 4 words, verb-led; a plain sequential step needs none. A
-group's own `flow_mermaid` follows the same two rules.
-
 One entry per file in `raw.diff`, one `hunks` entry per `@@` hunk in that file, every `role`
-non-blank. A hunk's `note` explains the code, not the diff, and is often correctly left blank
-when the lines say it on their face. Full note-writing rules and bad/good pairs:
-`references/fanout.md`.
+non-blank. Judgment rules for `role` and `note`, with the bad/good pairs: `prompts/batch.md`.
+Judgment rules for `overview`, `groups`, the flow diagrams and the `hop`/`side` fields, with the
+worked example: `prompts/prose.md`. The single subagent below the fan-out threshold reads both
+of these before filling in this whole schema itself.
 
 `verdict` is the prose agent's, alongside `overview`: a batch agent sees one slice and cannot
 write it, so it waits for the one subagent that sees the whole change. On the fan-out route

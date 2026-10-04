@@ -4,18 +4,94 @@
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from fanout_threads import (  # noqa: E402
+    _validate_fragment,
     build_seed,
     diff_line_estimate,
+    do_index,
     do_split,
     merge,
     window_commits,
 )
+
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "Fanout Threads Test",
+    "GIT_AUTHOR_EMAIL": "fanout-threads-test@example.com",
+    "GIT_COMMITTER_NAME": "Fanout Threads Test",
+    "GIT_COMMITTER_EMAIL": "fanout-threads-test@example.com",
+}
+
+
+def _git(repo, *args):
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, env={**os.environ, **GIT_ENV},
+    )
+    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
+    return result.stdout
+
+
+def _repo_with_two_commits(tmp):
+    """A repo with a base commit and one commit on top, mirroring the shape the old
+    heredoc in references/resolved-threads.md used to index."""
+    repo = Path(tmp) / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "foo.py").write_text("one\ntwo\n")
+    _git(repo, "add", "foo.py")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "foo.py").write_text("one\ntwo\nthree\n")
+    _git(repo, "add", "foo.py")
+    _git(repo, "commit", "-q", "-m", "address review")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    return repo, base, head
+
+
+def _old_heredoc_index(repo, base, head):
+    """The inline python heredoc references/resolved-threads.md used to carry (step 2),
+    reproduced here so `index` can be checked for byte-equivalent output against it."""
+    raw = subprocess.run(
+        ["git", "-C", str(repo), "log", "--format=%x02%H%x09%s%x09%cI%x09%an", "--numstat",
+         f"{base}..{head}"],
+        capture_output=True, text=True,
+    ).stdout
+    commits, diffs = [], {}
+    for block in raw.split("\x02")[1:]:
+        header, _, rest = block.partition("\n")
+        sha, subject, committed_at, author = header.split("\t")
+        files = []
+        for line in rest.strip("\n").splitlines():
+            if not line.strip():
+                continue
+            added, removed, path = line.split("\t", 2)
+            files.append({
+                "path": path,
+                "additions": int(added) if added != "-" else 0,
+                "deletions": int(removed) if removed != "-" else 0,
+            })
+        commits.append({"sha": sha, "subject": subject, "committed_at": committed_at,
+                         "author": author, "files": files})
+        diffs[sha] = subprocess.run(["git", "show", "--format=", sha], cwd=str(repo),
+                                     capture_output=True, text=True).stdout
+    return (json.dumps({"commits": commits}, indent=2) + "\n",
+            json.dumps(diffs, indent=2) + "\n")
+
+
+class _IndexArgs:
+    def __init__(self, repo, base, head, out_commits, out_diffs):
+        self.repo = str(repo)
+        self.base = base
+        self.head = head
+        self.out_commits = str(out_commits)
+        self.out_diffs = str(out_diffs)
 
 
 def _thread(thread_id, first_comment_at="2026-09-01T10:00:00Z"):
@@ -393,6 +469,58 @@ def test_diff_line_estimate_sums_additions_and_deletions():
     assert diff_line_estimate([IN_WINDOW_COMMIT]) == 12  # 3 + 9, see _commit's defaults
 
 
+def test_index_output_matches_the_old_heredoc_byte_for_byte():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo_with_two_commits(tmp)
+        expected_commits, expected_diffs = _old_heredoc_index(repo, base, head)
+        out_commits = Path(tmp) / "commit-index.json"
+        out_diffs = Path(tmp) / "diffs.json"
+
+        rc = do_index(_IndexArgs(repo, base, head, out_commits, out_diffs))
+
+        assert rc == 0
+        assert out_commits.read_text() == expected_commits
+        assert out_diffs.read_text() == expected_diffs
+
+
+def test_index_commit_index_names_the_commit_and_its_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo_with_two_commits(tmp)
+        out_commits = Path(tmp) / "commit-index.json"
+        out_diffs = Path(tmp) / "diffs.json"
+
+        do_index(_IndexArgs(repo, base, head, out_commits, out_diffs))
+
+        commits = json.loads(out_commits.read_text())["commits"]
+        assert [c["sha"] for c in commits] == [head]
+        assert commits[0]["files"] == [{"path": "foo.py", "additions": 1, "deletions": 0}]
+        diffs = json.loads(out_diffs.read_text())
+        assert "foo.py" in diffs[head]
+
+
+def test_validate_fragment_refuses_a_javascript_ticket():
+    fragment = _fragment("T1", commits=["bbb222"])
+    fragment["ticket"] = "javascript:alert(1)"
+    try:
+        _validate_fragment(fragment)
+    except ValueError as exc:
+        assert "ticket" in str(exc)
+    else:
+        raise AssertionError("javascript: ticket was accepted")
+
+
+def test_validate_fragment_accepts_an_https_ticket():
+    fragment = _fragment("T1", commits=["bbb222"])
+    fragment["ticket"] = "https://example.com/TICKET-1"
+    _validate_fragment(fragment)  # does not raise
+
+
+def test_validate_fragment_accepts_a_null_ticket():
+    fragment = _fragment("T1")
+    fragment["ticket"] = None
+    _validate_fragment(fragment)  # does not raise
+
+
 if __name__ == "__main__":
     tests = [
         test_window_commits_drops_commits_before_the_first_comment,
@@ -415,6 +543,11 @@ if __name__ == "__main__":
         test_merge_rejects_a_fragment_that_does_not_match_contract_d,
         test_round_trip_split_then_merge_covers_both_a_miss_and_a_cached_thread,
         test_diff_line_estimate_sums_additions_and_deletions,
+        test_index_output_matches_the_old_heredoc_byte_for_byte,
+        test_index_commit_index_names_the_commit_and_its_file,
+        test_validate_fragment_refuses_a_javascript_ticket,
+        test_validate_fragment_accepts_an_https_ticket,
+        test_validate_fragment_accepts_a_null_ticket,
     ]
     for test in tests:
         test()

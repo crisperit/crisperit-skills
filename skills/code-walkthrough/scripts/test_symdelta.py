@@ -2258,6 +2258,30 @@ def test_end_to_end_ts_repo_two_root_files_with_same_function_name_stay_distinct
         assert "(root):b.run" in symbol_ids
 
 
+# ---- pure-logic tests: add_worktree disables a hostile repo's hooks ---------------------
+
+
+def test_add_worktree_does_not_run_a_tracked_post_checkout_hook():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+        _git(repo, "config", "core.hooksPath", ".githooks")
+        marker = repo / "pwned"
+        hook = repo / ".githooks" / "post-checkout"
+        hook.parent.mkdir()
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        hook.chmod(0o755)
+        head = _commit(repo, "head")
+
+        worktree_path = Path(tmp) / "wt"
+        symdelta.add_worktree(repo, head, worktree_path)
+        try:
+            assert not marker.exists()
+        finally:
+            symdelta.remove_worktree(repo, worktree_path)
+
+
 if __name__ == "__main__":
     tests = [
         test_brace_rename_with_empty_side_collapses_the_slash,
@@ -2378,6 +2402,7 @@ if __name__ == "__main__":
         test_end_to_end_go_repo_root_level_symbol_uses_the_root_sentinel,
         test_end_to_end_ts_repo_root_level_symbol_uses_the_root_sentinel,
         test_end_to_end_ts_repo_two_root_files_with_same_function_name_stay_distinct,
+        test_add_worktree_does_not_run_a_tracked_post_checkout_hook,
     ]
     for test in tests:
         test()
