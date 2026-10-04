@@ -90,6 +90,15 @@ walkthrough's repo as cwd and with `GH_TOKEN`/`GITHUB_TOKEN` stripped from its e
 (`cw_run.gh_env`), so a shared daemon serving several repos or users never posts under whichever
 identity its own process environment or working directory happens to carry.
 
+## Ask
+
+Selecting text on a live page and clicking Ask sends it to the `ask` role (`roles.ask` in
+`config.json`, falling back to no role configured if unset -- see the remedy table). The prompt
+built from the selection, its surrounding hunk lines, the file's notes and the last few prior
+answers is capped at 16000 characters; the selected quote itself is never truncated to make room.
+Every question and answer is appended to that walkthrough's `qa.jsonl`, which is what repopulates
+the page's Q&A list on reload and what the last-few-answers window above reads back from.
+
 ## Remedies
 
 Every error the daemon or client can raise carries a one-line remedy; this is the full table.
@@ -101,6 +110,8 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | Store would sit inside the repo | set `CODE_WALKTHROUGH_HOME` outside the repo |
 | `pr` set, origin isn't a GitHub remote | continue with step 2 of SKILL.md |
 | `comments`/`threads` step failed | `gh auth login` (`GH_TOKEN`/`GITHUB_TOKEN` are not passed to `gh` here) |
+| Ask selection too large | select a smaller range |
+| No `ask` role configured | set `roles.ask` in `config.json` |
 | Daemon didn't start | see the `server.log` path the error names |
 | 401 / 403 from the model backend | set `<api_key_env>` in the shell that starts your agent, then `cw_mcp.py stop` |
 | 404 from the model backend | check `model` for the named profile |

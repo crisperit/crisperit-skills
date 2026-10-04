@@ -446,6 +446,17 @@ def test_the_real_template_gates_live_code_behind_window_cw_live():
     assert "if(window.CW_LIVE)" in real_template
 
 
+def test_the_real_template_carries_the_ask_dialog_behind_window_cw_live():
+    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+
+    assert "if(window.CW_LIVE) wireAsk();" in real_template
+    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    assert "cw-ask-btn" in wire_ask
+    assert "cw-qa-btn" in wire_ask
+    assert "window.CW_LIVE.api+'/ask'" in wire_ask
+    assert "window.CW_LIVE.api+'/qa'" in wire_ask
+
+
 if __name__ == "__main__":
     tests = [
         test_facts_come_from_the_diff_not_the_analysis,
@@ -487,6 +498,7 @@ if __name__ == "__main__":
         test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
         test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
         test_the_real_template_gates_live_code_behind_window_cw_live,
+        test_the_real_template_carries_the_ask_dialog_behind_window_cw_live,
     ]
     for test in tests:
         test()

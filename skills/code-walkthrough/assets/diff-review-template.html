@@ -952,6 +952,42 @@
   .dline-note{display:block;margin:6px 0;white-space:normal;line-height:1.6;
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
+  #cw-ask-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
+    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--accent);color:#fff;
+    box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 35%,transparent)}
+  #cw-ask-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #cw-ask,#cw-qa{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+    border:1px solid var(--border);border-radius:10px;color:var(--text)}
+  #cw-ask::backdrop,#cw-qa::backdrop{background:rgba(0,0,0,.6)}
+  #cw-ask-head,#cw-qa-head{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
+  #cw-ask-close,#cw-qa-close{background:var(--panel2);border:1px solid var(--border);
+    color:var(--text);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;
+    line-height:1;transition:background .12s}
+  #cw-ask-close:hover,#cw-qa-close:hover{background:var(--border)}
+  #cw-ask-close:focus-visible,#cw-qa-close:focus-visible{outline:2px solid var(--accent);
+    outline-offset:2px}
+  #cw-ask-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
+  #cw-ask-quote{margin:0 0 10px;padding:8px 10px;background:var(--panel2);
+    border:1px solid var(--border);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;
+    font-family:var(--mono);font-size:var(--fs-xs);max-height:30vh;overflow-y:auto}
+  #cw-ask-question{display:block;width:100%;min-height:80px;background:var(--panel2);
+    border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
+    font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
+  #cw-ask-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
+  #cw-qa-btn{position:fixed;right:16px;bottom:62px;z-index:40;border:1px solid var(--border);
+    border-radius:999px;padding:8px 16px;font:600 var(--fs-sm) system-ui;cursor:pointer;
+    background:var(--panel2);color:var(--text)}
+  #cw-qa-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #cw-qa-list{list-style:none;margin:0;padding:14px 16px;overflow-y:auto;
+    max-height:calc(82vh - 60px);display:flex;flex-direction:column;gap:10px}
+  .cw-qa-q,.cw-answer-q{margin:0;color:var(--muted);font-style:italic;font-size:var(--fs-sm);
+    overflow-wrap:anywhere}
+  .cw-qa-a,.cw-answer-a{margin:4px 0 0;font-size:var(--fs-sm);white-space:pre-wrap;
+    overflow-wrap:anywhere}
+  .cw-answer{display:block;margin:6px 0;padding:6px 0 6px 10px;border-left:3px solid var(--accent);
+    white-space:normal;line-height:1.6;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
      carries an unconditional rule elsewhere (width/height) at this same ID specificity, and a
      tied specificity is decided by source order, not by which rule sits inside the media query.
@@ -967,6 +1003,8 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
+    #cw-ask-btn,#cw-qa-btn{min-height:44px}
+    #cw-ask-close,#cw-qa-close{width:44px;height:44px;font-size:16px}
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
@@ -1865,6 +1903,7 @@
   const $=id=>document.getElementById(id);
   const dirtyBanner=$('hr-dirty');
   const spanByLineKey=new Map(); // lineKey -> {span,meta}, survives the explanations toggle moving spans between <pre> blocks
+  const lineMetaBySpan=new WeakMap();
   // Bridge for the symbol graph's "Go to symbol" menu item (navSymbolSpan, in the earlier
   // script): the best wired .dline span in [start,end] on that side, first changed (+/-) line
   // winning over a mere context line, or null when nothing in range is wired. Same lineKey
@@ -2135,6 +2174,7 @@
     plus.addEventListener('click',e=>{ e.stopPropagation(); open(); });
     span.appendChild(plus);
     spanByLineKey.set(meta.lineKey,{span,meta});
+    lineMetaBySpan.set(span,meta);
     // Coarse-pointer (touch) tap: first tap on a line just reveals its "+" and clears whichever
     // other line had it revealed; the "+" click above (stopPropagation'd) is what actually opens
     // the draft, so a tap that only meant to select text never does.
@@ -3111,9 +3151,207 @@
     dlg.addEventListener('close',()=>{ if(resolutionOpener) resolutionOpener.focus(); });
   }
 
+  function closestDline(node){
+    const el=node&&(node.nodeType===1?node:node.parentElement);
+    return el&&el.closest('.dline');
+  }
+
+  function headingTextOf(el){
+    const heading=/^H[1-6]$/.test(el.tagName)?el:el.querySelector('h1,h2,h3,h4,h5,h6');
+    return (heading||el).textContent.trim();
+  }
+
+  function closestSectionHeading(node){
+    const el=node&&(node.nodeType===1?node:node.parentElement);
+    const withId=el&&el.closest('[id]');
+    return withId?headingTextOf(withId):(document.title||'');
+  }
+
+  function buildAskAnchor(sel){
+    const quote=sel.toString();
+    const range=sel.getRangeAt(0);
+    const sm=lineMetaBySpan.get(closestDline(range.startContainer));
+    const em=lineMetaBySpan.get(closestDline(range.endContainer));
+    if(sm&&em){
+      return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
+        end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
+    }
+    return {kind:'section',section:closestSectionHeading(range.startContainer),quote};
+  }
+
+  function wireAsk(){
+    const planEl=$('plan-content');
+    if(!planEl) return;
+
+    const askBtn=document.createElement('button');
+    askBtn.type='button'; askBtn.id='cw-ask-btn'; askBtn.hidden=true; askBtn.textContent='Ask';
+    askBtn.addEventListener('mousedown',e=>e.preventDefault());
+    document.body.appendChild(askBtn);
+
+    const dlg=document.createElement('dialog');
+    dlg.id='cw-ask'; dlg.setAttribute('aria-labelledby','cw-ask-title');
+    dlg.innerHTML='<div id="cw-ask-head"><span id="cw-ask-title">Ask about this</span>'
+      +'<button type="button" id="cw-ask-close" aria-label="Close">✕</button></div>'
+      +'<div id="cw-ask-body"><pre id="cw-ask-quote"></pre>'
+      +'<textarea id="cw-ask-question" aria-label="Your question" '
+      +'placeholder="What do you want to know?"></textarea>'
+      +'<div class="fb-actions"><button type="button" id="cw-ask-send" class="fb-primary">Send</button></div>'
+      +'<p id="cw-ask-status" role="status"></p></div>';
+    document.body.appendChild(dlg);
+    const quoteEl=$('cw-ask-quote'), questionEl=$('cw-ask-question'),
+      sendBtn=$('cw-ask-send'), statusEl=$('cw-ask-status'), askClose=$('cw-ask-close');
+
+    const qaBtn=document.createElement('button');
+    qaBtn.type='button'; qaBtn.id='cw-qa-btn'; qaBtn.setAttribute('aria-haspopup','dialog');
+    qaBtn.textContent='Q&A (0)';
+    document.body.appendChild(qaBtn);
+
+    const qaDlg=document.createElement('dialog');
+    qaDlg.id='cw-qa'; qaDlg.setAttribute('aria-label','Questions and answers');
+    qaDlg.innerHTML='<div id="cw-qa-head"><span>Questions and answers</span>'
+      +'<button type="button" id="cw-qa-close" aria-label="Close">✕</button></div>'
+      +'<ul id="cw-qa-list"></ul>';
+    document.body.appendChild(qaDlg);
+    const qaList=$('cw-qa-list');
+
+    const qaRecords=[];
+
+    function renderQaList(){
+      qaBtn.textContent='Q&A ('+qaRecords.length+')';
+      qaList.innerHTML='';
+      if(!qaRecords.length){
+        const li=document.createElement('li'); li.className='hr-comments-empty';
+        li.textContent='No questions yet -- select text on the page and click Ask.';
+        qaList.appendChild(li);
+        return;
+      }
+      for(const r of qaRecords){
+        const li=document.createElement('li');
+        const q=document.createElement('p'); q.className='cw-qa-q'; q.textContent=r.question;
+        const a=document.createElement('p'); a.className='cw-qa-a'; a.textContent=answerText(r);
+        li.append(q,a);
+        qaList.appendChild(li);
+      }
+    }
+
+    function answerText(r){
+      return r.status==='error'
+        ?('Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':''))
+        :(r.answer||'');
+    }
+
+    function upsertQa(record){
+      const i=qaRecords.findIndex(r=>r.qid===record.qid);
+      if(i<0) qaRecords.push(record); else qaRecords[i]=record;
+      renderQaList();
+    }
+
+    const lastAnswerElByKey=new Map();
+    function insertAnswer(record){
+      const div=document.createElement('div');
+      div.className='cw-answer';
+      const q=document.createElement('p'); q.className='cw-answer-q'; q.textContent=record.question;
+      const a=document.createElement('p'); a.className='cw-answer-a'; a.textContent=answerText(record);
+      div.append(q,a);
+      const anchor=record.anchor||{};
+      let key=null, afterEl=null;
+      if(anchor.kind==='line'){
+        key='line\t'+anchor.path+'\t'+anchor.side+'\t'+anchor.line;
+        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
+        afterEl=rec&&rec.span;
+      } else if(anchor.kind==='section'){
+        key='section\t'+anchor.section;
+        afterEl=[...planEl.querySelectorAll('[id]')].find(withId=>headingTextOf(withId)===anchor.section);
+      }
+      const insertAfter=(key&&lastAnswerElByKey.get(key))||afterEl;
+      if(insertAfter){
+        insertAfter.insertAdjacentElement('afterend',div);
+        if(key) lastAnswerElByKey.set(key,div);
+        return;
+      }
+      planEl.appendChild(div);
+    }
+
+    window.__cwOnAnswer=record=>{ upsertQa(record); insertAnswer(record); };
+
+    function updateAskButton(){
+      const sel=window.getSelection();
+      if(!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)){
+        askBtn.hidden=true;
+        return;
+      }
+      const rect=sel.getRangeAt(0).getBoundingClientRect();
+      askBtn.style.left=Math.max(4,rect.left)+'px';
+      askBtn.style.top=Math.max(4,rect.top-32)+'px';
+      askBtn.hidden=false;
+    }
+    let selTimer=null;
+    document.addEventListener('selectionchange',()=>{
+      if(selTimer) clearTimeout(selTimer);
+      selTimer=setTimeout(updateAskButton,150);
+    });
+
+    askBtn.addEventListener('click',()=>{
+      const sel=window.getSelection();
+      if(!sel||sel.isCollapsed||!sel.toString().trim()) return;
+      dlg.dataset.anchor=JSON.stringify(buildAskAnchor(sel));
+      quoteEl.textContent=sel.toString();
+      questionEl.value='';
+      statusEl.textContent='';
+      askBtn.hidden=true;
+      dlg.showModal();
+      questionEl.focus();
+    });
+    askClose.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('close',()=>{
+      updateAskButton();
+      if(!askBtn.hidden) askBtn.focus();
+    });
+
+    sendBtn.addEventListener('click',()=>{
+      const anchor=JSON.parse(dlg.dataset.anchor||'{}');
+      const question=questionEl.value.trim();
+      if(!question){ statusEl.textContent='Type a question first.'; return; }
+      sendBtn.disabled=true;
+      statusEl.textContent='Sending…';
+      fetch(window.CW_LIVE.api+'/ask',{
+        method:'POST',
+        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
+        body:JSON.stringify({anchor,question}),
+      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
+        .then(({ok,body})=>{
+          sendBtn.disabled=false;
+          if(!ok){
+            statusEl.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
+            return;
+          }
+          statusEl.textContent='Sent -- the answer will appear on the page shortly.';
+          dlg.close();
+        })
+        .catch(()=>{
+          sendBtn.disabled=false;
+          statusEl.textContent='Request failed -- check the daemon is still running.';
+        });
+    });
+
+    qaBtn.addEventListener('click',()=>{ qaDlg.showModal(); });
+    $('cw-qa-close').addEventListener('click',()=>qaDlg.close());
+    qaDlg.addEventListener('close',()=>{ qaBtn.focus(); });
+
+    fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
+      .then(r=>r.ok?r.json():null)
+      .then(data=>{
+        if(!data||!Array.isArray(data.qa)) return;
+        data.qa.forEach(r=>{ qaRecords.push(r); insertAnswer(r); });
+        renderQaList();
+      })
+      .catch(()=>{});
+  }
+
   document.querySelectorAll('pre.diff').forEach(wireHunk);
   wireCommentsPanel();
   wireResolutionDialog();
+  if(window.CW_LIVE) wireAsk();
   wireViewedCheckboxes();
   render();
 })();
@@ -3768,6 +4006,9 @@ document.querySelectorAll('summary a').forEach(a => {
       renderBanner();
     });
     es.addEventListener('rebuilt',()=>{ onPageUpdated(); });
+    es.addEventListener('answer',e=>{
+      if(window.__cwOnAnswer) window.__cwOnAnswer(JSON.parse(e.data));
+    });
   }
 })();
 </script>

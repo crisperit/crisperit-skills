@@ -156,7 +156,9 @@ its own: tell the user the problem and the exact command in one line, ask, and c
 `walkthrough_start` again once they confirm it is fixed.
 
 `done`: report per step 5, from `summary.verdict` and the group titles. `failed`: report the gate
-line count and the remedy. Page notes persist server-side, nothing to relay about them here.
+line count and the remedy. Page notes persist server-side, nothing to relay about them here. On
+the live page, select any text and click Ask to question it; the answer appears in place and in
+the page's own Q&A list, nothing to relay here either.
 
 Setup, config keys, cost, data egress and the full remedy table: `references/live.md`.
 
