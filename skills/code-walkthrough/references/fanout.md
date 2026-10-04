@@ -69,6 +69,12 @@ directly into `prose.json`, and `fanout.py merge` carries them through.
 Ordering: this subagent waits for every batch fragment and for `symdelta.json`, the same
 dependency the old grouping pass already had, so the critical path does not get longer.
 
+Tell it to reply with the path, field counts and group titles only, never their content. An
+agent that pastes `overview` or a group's `why` back into its own report is exactly how that
+prose ends up in the main thread's context a second time; the file is the deliverable, the reply
+is a receipt. Group titles themselves are the one exception allowed in the main context
+(SKILL.md's intro), so naming them in the reply is fine.
+
 ## Merging
 
 The glob in the merge command is `fragment-[0-9].json`, not `fragment-*.json`: the latter also

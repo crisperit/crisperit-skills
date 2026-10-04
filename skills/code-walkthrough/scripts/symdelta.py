@@ -32,6 +32,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -143,9 +144,14 @@ def build_extractor():
     env = os.environ.copy()
     env["GOCACHE"] = str(CACHE_DIR / "build-cache")
     env["GOMODCACHE"] = str(CACHE_DIR / "mod-cache")
+    # Per-process/thread temp path, then os.replace: two concurrent "go build -o
+    # EXTRACTOR_BIN" calls would otherwise corrupt the shared binary.
+    tmp_bin = EXTRACTOR_BIN.with_name(
+        f"{EXTRACTOR_BIN.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
     try:
         result = subprocess.run(
-            ["go", "build", "-o", str(EXTRACTOR_BIN), "."],
+            ["go", "build", "-o", str(tmp_bin), "."],
             cwd=str(EXTRACTOR_DIR),
             capture_output=True,
             text=True,
@@ -154,8 +160,10 @@ def build_extractor():
             # hung on a black-holed module proxy so it can't wedge the script forever
         )
     except subprocess.TimeoutExpired:
+        tmp_bin.unlink(missing_ok=True)
         raise RuntimeError("building the Go extractor timed out after 600s")
     if result.returncode != 0:
+        tmp_bin.unlink(missing_ok=True)
         stderr = result.stderr.strip()
         network_errors = ("dial tcp", "no such host", "network is unreachable", "i/o timeout")
         if any(s in stderr.lower() for s in network_errors):
@@ -164,6 +172,7 @@ def build_extractor():
                 f"golang.org/x/tools and its deps: {stderr}"
             )
         raise RuntimeError(f"building the Go extractor failed: {stderr}")
+    os.replace(tmp_bin, EXTRACTOR_BIN)
 
 
 def run_extractor(worktree_path):

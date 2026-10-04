@@ -539,6 +539,16 @@
     padding:8px 13px;font-size:var(--fs-xs);color:var(--muted);opacity:0;
     transition:opacity .25s ease;pointer-events:none;z-index:30}
   .vd-nav-toast.on{opacity:1}
+  #cw-live-banner{position:fixed;top:0;left:0;right:0;z-index:50;
+    background:var(--panel);border-bottom:1px solid var(--border);
+    padding:6px 14px;font-size:var(--fs-xs);color:var(--muted);
+    font-family:var(--mono);text-align:center}
+  #cw-live-banner.failed{color:var(--red)}
+  #cw-live-reload{position:fixed;left:16px;bottom:16px;z-index:40;border:none;
+    background:var(--accent);color:var(--bg);border-radius:999px;padding:10px 18px;
+    font:600 var(--fs-sm) system-ui;cursor:pointer;
+    box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent)}
+  #cw-live-reload:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Brief highlight so "Go to file" is visible arriving at the hunk, not just landing on it. */
   details.hunk.vd-flash{border-color:var(--accent)}
   /* Same idea for "Go to symbol" landing on a line rather than a hunk. The global
@@ -1877,6 +1887,10 @@
   function nowIso(){ return new Date().toISOString(); }
   function newNoteId(){ return 'n-'+Math.random().toString(36).slice(2,8); }
 
+  // A bare target hashes only itself, so one daemon origin can share localStorage across two
+  // repos compared with the same target; prefix the key with the repo key to keep them apart.
+  function lsKey(name,id){ return (window.CW_LIVE?window.CW_LIVE.key+'/':'')+name+':'+id; }
+
   function parseHeader(text){
     const m=/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
     return m?{oldStart:+m[1],newStart:+m[2],prefix:m[0]}:null;
@@ -1896,27 +1910,67 @@
     // natively -- no client-side un-escape needed (and none is safe: it can't tell
     // a real \u003c from the literal four characters "&lt;" in a note body).
     if(el){ try{ base=JSON.parse(el.textContent); }catch(e){} }
-    try{
-      const raw=localStorage.getItem('hr-notes:'+base.meta.id);
-      if(raw){
-        // Merge by id, not replace: only local drafts are this cache's own to restore.
-        // Posted and github-synced notes already in base came from the latest build and
-        // must win, or a stale cache could resurrect a note past its current state.
-        const byId=new Map(base.notes.map(n=>[n.id,n]));
-        const order=base.notes.map(n=>n.id);
-        JSON.parse(raw).filter(n=>n.origin==='local'&&n.state==='draft').forEach(n=>{
-          if(!byId.has(n.id)) order.push(n.id);
-          byId.set(n.id,n);
-        });
-        base.notes=order.map(id=>byId.get(id));
-      }
-    }catch(e){}
+    if(window.CW_LIVE&&Array.isArray(window.CW_LIVE.drafts)){
+      // Replace, not merge: page-notes.json is the full set of local drafts, so a plain
+      // upsert would resurrect one deleted on another tab.
+      const kept=base.notes.filter(n=>!(n.origin==='local'&&n.state==='draft'));
+      base.notes=kept.concat(window.CW_LIVE.drafts.filter(n=>n.origin==='local'&&n.state==='draft'));
+    }else{
+      try{
+        const raw=localStorage.getItem(lsKey('hr-notes',base.meta.id));
+        if(raw){
+          // Merge by id, not replace: only local drafts are this cache's own to restore.
+          // Posted and github-synced notes already in base came from the latest build and
+          // must win, or a stale cache could resurrect a note past its current state.
+          const byId=new Map(base.notes.map(n=>[n.id,n]));
+          const order=base.notes.map(n=>n.id);
+          JSON.parse(raw).filter(n=>n.origin==='local'&&n.state==='draft').forEach(n=>{
+            if(!byId.has(n.id)) order.push(n.id);
+            byId.set(n.id,n);
+          });
+          base.notes=order.map(id=>byId.get(id));
+        }
+      }catch(e){}
+    }
     return base;
   }
   let state=loadState();
 
   function persistLocal(){
-    try{ localStorage.setItem('hr-notes:'+state.meta.id, JSON.stringify(state.notes)); }catch(e){}
+    try{ localStorage.setItem(lsKey('hr-notes',state.meta.id), JSON.stringify(state.notes)); }catch(e){}
+    if(window.CW_LIVE) schedulePutNotes();
+  }
+
+  let putNotesTimer=null;
+  function draftNotesPayload(){
+    return {notes:state.notes.filter(n=>n.origin==='local'&&n.state==='draft')};
+  }
+  function putNotesNow(keepalive){
+    if(!window.CW_LIVE) return;
+    try{
+      fetch(window.CW_LIVE.api+'/notes',{
+        method:'PUT',
+        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
+        body:JSON.stringify(draftNotesPayload()),
+        keepalive:!!keepalive,
+      });
+    }catch(e){}
+  }
+  function schedulePutNotes(){
+    if(putNotesTimer) clearTimeout(putNotesTimer);
+    putNotesTimer=setTimeout(()=>{ putNotesTimer=null; putNotesNow(false); },500);
+  }
+  // Always sends, even with no timer pending: a pagehide landing right after the debounced
+  // send left must still get a guaranteed keepalive PUT.
+  function flushPutNotes(){
+    if(putNotesTimer){ clearTimeout(putNotesTimer); putNotesTimer=null; }
+    putNotesNow(true);
+  }
+  if(window.CW_LIVE){
+    window.addEventListener('pagehide',()=>flushPutNotes());
+    // Exposed on window: the end-of-body live script is a separate top-level IIFE, out of
+    // this one's scope.
+    window.__cwFlushPutNotes=flushPutNotes;
   }
 
   // Resolving a thread has no server to post a click to either: the reader's request is kept
@@ -1924,13 +1978,13 @@
   // sync (root.resolved turns true) -- see elementsForThreads below.
   function loadPendingResolve(){
     try{
-      const raw=localStorage.getItem('hr-resolve:'+state.meta.id);
+      const raw=localStorage.getItem(lsKey('hr-resolve',state.meta.id));
       return raw?new Set(JSON.parse(raw)):new Set();
     }catch(e){ return new Set(); }
   }
   let pendingResolveSet=loadPendingResolve();
   function persistPendingResolve(){
-    try{ localStorage.setItem('hr-resolve:'+state.meta.id, JSON.stringify([...pendingResolveSet])); }catch(e){}
+    try{ localStorage.setItem(lsKey('hr-resolve',state.meta.id), JSON.stringify([...pendingResolveSet])); }catch(e){}
   }
   function markPendingResolve(id){ pendingResolveSet.add(id); persistPendingResolve(); }
   function clearPendingResolve(id){ if(pendingResolveSet.delete(id)) persistPendingResolve(); }
@@ -1940,13 +1994,13 @@
   // exactly the same shape of fact.
   function loadViewedSet(){
     try{
-      const raw=localStorage.getItem('hr-viewed:'+state.meta.id);
+      const raw=localStorage.getItem(lsKey('hr-viewed',state.meta.id));
       return raw?new Set(JSON.parse(raw)):new Set();
     }catch(e){ return new Set(); }
   }
   let viewedSet=loadViewedSet();
   function persistViewed(){
-    try{ localStorage.setItem('hr-viewed:'+state.meta.id, JSON.stringify([...viewedSet])); }catch(e){}
+    try{ localStorage.setItem(lsKey('hr-viewed',state.meta.id), JSON.stringify([...viewedSet])); }catch(e){}
   }
 
   // Mirrors notes.py's own resolve mutation shape (see the module docstring): the thread id
@@ -3606,6 +3660,115 @@ document.querySelectorAll('summary a').forEach(a => {
     // ResizeObserver and the pan/zoom listeners wireModalPanZoom bound to the shared body.
     return { disconnect(){ ro.disconnect(); pz.controller.abort(); } };
   };
+})();
+</script>
+<script>
+(function(){
+  if(window.CW_LIVE){
+    const LIVE=window.CW_LIVE;
+    // Mirrors cw_run.py's STEPS tuple; keep in sync.
+    const STEP_ORDER=['capture','split','skeleton','worktree','complexity','symdelta','small',
+      'prose','routed','prepare','render','run'];
+    let liveStatus=LIVE.status, liveError=LIVE.error, liveRemedy=LIVE.remedy;
+    let liveSteps=LIVE.steps||{}, liveBatches=LIVE.batches||{done:0,total:0};
+    let liveTotal=LIVE.total||{};
+
+    function runningStepName(){
+      const names=Object.keys(liveSteps).filter(n=>liveSteps[n]&&liveSteps[n].status==='running');
+      if(!names.length) return null;
+      names.sort((a,b)=>{
+        const ai=STEP_ORDER.indexOf(a.split('-')[0]), bi=STEP_ORDER.indexOf(b.split('-')[0]);
+        return (ai<0?999:ai)-(bi<0?999:bi);
+      });
+      return names[names.length-1];
+    }
+
+    function ensureBanner(){
+      let el=document.getElementById('cw-live-banner');
+      if(!el){ el=document.createElement('div'); el.id='cw-live-banner'; document.body.prepend(el); }
+      return el;
+    }
+
+    function renderBanner(){
+      const el=ensureBanner();
+      const parts=['Live','\u00b7 '+liveStatus];
+      const running=runningStepName();
+      if(running) parts.push('\u00b7 '+running);
+      parts.push('\u00b7 batches '+(liveBatches.done||0)+'/'+(liveBatches.total||0));
+      const prompt=liveTotal.prompt_tokens||0, completion=liveTotal.completion_tokens||0;
+      parts.push('\u00b7 '+(prompt+completion)+' tokens');
+      if(liveTotal.cost_usd!=null) parts.push('\u00b7 $'+liveTotal.cost_usd.toFixed(4));
+      let text=parts.join(' ');
+      if(liveStatus==='failed'){
+        if(liveError) text+=' \u2014 '+liveError;
+        if(liveRemedy) text+=' (remedy: '+liveRemedy+')';
+      }
+      el.classList.toggle('failed',liveStatus==='failed');
+      el.textContent=text;
+    }
+    renderBanner();
+
+    function busyEditing(){
+      const a=document.activeElement;
+      if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)) return true;
+      return !!document.querySelector('dialog[open]');
+    }
+
+    function scrollKey(){ return 'cw-scroll:'+LIVE.key+'/'+LIVE.id; }
+
+    function doReload(){
+      if(window.__cwFlushPutNotes) window.__cwFlushPutNotes();
+      try{ sessionStorage.setItem(scrollKey(), String(window.scrollY)); }catch(e){}
+      location.reload();
+    }
+
+    function showReloadPill(){
+      if(document.getElementById('cw-live-reload')) return;
+      const btn=document.createElement('button');
+      btn.id='cw-live-reload';
+      btn.textContent='Updated, reload';
+      btn.addEventListener('click',doReload);
+      document.body.appendChild(btn);
+    }
+
+    function onPageUpdated(){
+      if(busyEditing()){ showReloadPill(); return; }
+      doReload();
+    }
+
+    try{
+      const key=scrollKey();
+      const saved=sessionStorage.getItem(key);
+      if(saved!=null){
+        sessionStorage.removeItem(key);
+        window.scrollTo(0,+saved||0);
+      }
+    }catch(e){}
+
+    const es=new EventSource(LIVE.api+'/events?k='+encodeURIComponent(LIVE.token));
+    es.addEventListener('snapshot',e=>{
+      const data=JSON.parse(e.data);
+      liveStatus=data.status; liveError=data.error; liveRemedy=data.remedy;
+      liveSteps=data.steps||{}; liveBatches=data.batches||liveBatches; liveTotal=data.total||liveTotal;
+      renderBanner();
+      if(typeof data.rev==='number'&&data.rev>LIVE.rev) onPageUpdated();
+    });
+    es.addEventListener('step',e=>{
+      const data=JSON.parse(e.data);
+      if(data.name==='run'&&(data.status==='done'||data.status==='failed')) liveStatus=data.status;
+      liveSteps=Object.assign({},liveSteps,{[data.name]:{status:data.status,error:data.error,remedy:data.remedy}});
+      if(data.error) liveError=data.error;
+      if(data.remedy) liveRemedy=data.remedy;
+      if(data.batches) liveBatches=data.batches;
+      renderBanner();
+    });
+    es.addEventListener('usage',e=>{
+      const data=JSON.parse(e.data);
+      liveTotal=data.total||liveTotal;
+      renderBanner();
+    });
+    es.addEventListener('rebuilt',()=>{ onPageUpdated(); });
+  }
 })();
 </script>
 </body>

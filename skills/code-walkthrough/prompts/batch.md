@@ -3,17 +3,6 @@ one good or bad. Delivery mechanics (how to build and gate the fragment, how to 
 each caller instead, since those differ: `references/fanout.md` for the agent fan-out and the
 daemon's batch worker.
 
-## The batch subagent brief
-
-One subagent per batch, each on the strong tier: the job is per-hunk noticing
-inside one slice, and the gate checks every answer, so delegate down when a validator can catch
-the mistake and keep it up when it cannot. All spawned in a single message so they run
-concurrently. Each reads only its own `batch-N.diff` and its manifest-listed
-`fragment-N.seed.json`, a skeleton with every `files[]` and `hunks[]` entry already pre-filled
-and only `role` and `note` left blank. It copies the seed to `fragment-N.json` and fills those
-in. It never types an `@@` header and never adds or removes a file or hunk entry, since the seed
-already has the full shape.
-
 ## Role rules
 
 Every file needs a `role`, including a test file and a pure rename, and that `role` is where a

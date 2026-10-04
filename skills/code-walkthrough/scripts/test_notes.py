@@ -1305,6 +1305,83 @@ def test_import_rejects_a_note_id_failing_valid_id_re():
     assert "0 added, 0 updated" in out.getvalue()
 
 
+def test_replace_local_drafts_drops_a_local_draft_missing_from_the_payload():
+    kept = _note(id="n-kept", state="draft")
+    deleted = _note(id="n-deleted", state="draft")
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": [kept, deleted]})
+        payload_path = Path(tmp) / "payload.json"
+        payload_path.write_text(json.dumps({"notes": [kept]}))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            do_import(_Args(state=state_path, file=str(payload_path),
+                             replace_local_drafts=True))
+        result = json.loads(Path(state_path).read_text())
+    assert [n["id"] for n in result["notes"]] == ["n-kept"]
+    assert "dropped: 1" in out.getvalue()
+
+
+def test_replace_local_drafts_leaves_a_github_note_untouched():
+    github_note = _note(id="n-gh", state="posted", origin="github", gh_id=1)
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": [github_note]})
+        payload_path = Path(tmp) / "payload.json"
+        payload_path.write_text(json.dumps({"notes": []}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_import(_Args(state=state_path, file=str(payload_path),
+                             replace_local_drafts=True))
+        result = json.loads(Path(state_path).read_text())
+    assert [n["id"] for n in result["notes"]] == ["n-gh"]
+
+
+def test_replace_local_drafts_leaves_a_posted_local_note_untouched():
+    posted = _note(id="n-posted", state="posted", origin="local", gh_id=1)
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": [posted]})
+        payload_path = Path(tmp) / "payload.json"
+        payload_path.write_text(json.dumps({"notes": []}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_import(_Args(state=state_path, file=str(payload_path),
+                             replace_local_drafts=True))
+        result = json.loads(Path(state_path).read_text())
+    assert [n["id"] for n in result["notes"]] == ["n-posted"]
+
+
+def test_replace_local_drafts_ignores_meta_hunks_files_and_groups_keys():
+    kept = _note(id="n-kept", state="draft")
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(
+            tmp, {"notes": [kept], "meta": {"a": 1}, "hunks": ["x"], "files": ["y"],
+                  "groups": ["z"]},
+        )
+        payload_path = Path(tmp) / "payload.json"
+        payload_path.write_text(json.dumps({
+            "notes": [kept], "meta": {"a": 2}, "hunks": ["hacked"], "files": ["hacked"],
+            "groups": ["hacked"],
+        }))
+        with contextlib.redirect_stdout(io.StringIO()):
+            do_import(_Args(state=state_path, file=str(payload_path),
+                             replace_local_drafts=True))
+        result = json.loads(Path(state_path).read_text())
+    assert result["meta"] == {"a": 1}
+    assert result["hunks"] == ["x"]
+    assert result["files"] == ["y"]
+    assert result["groups"] == ["z"]
+
+
+def test_without_replace_local_drafts_flag_behaviour_is_unchanged():
+    kept = _note(id="n-kept", state="draft")
+    other = _note(id="n-other", state="draft")
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = _write_state(tmp, {"notes": [kept, other]})
+        payload_path = Path(tmp) / "payload.json"
+        payload_path.write_text(json.dumps({"notes": [kept]}))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            do_import(_Args(state=state_path, file=str(payload_path)))
+        result = json.loads(Path(state_path).read_text())
+    assert {n["id"] for n in result["notes"]} == {"n-kept", "n-other"}
+    assert "dropped" not in out.getvalue()
+
+
 def _write_state(tmp_dir, state):
     path = Path(tmp_dir) / "state.json"
     path.write_text(json.dumps(state))
@@ -1392,6 +1469,11 @@ if __name__ == "__main__":
         test_import_of_a_malformed_page_note_does_not_brick_a_later_import,
         test_import_reads_from_stdin,
         test_import_rejects_a_note_id_failing_valid_id_re,
+        test_replace_local_drafts_drops_a_local_draft_missing_from_the_payload,
+        test_replace_local_drafts_leaves_a_github_note_untouched,
+        test_replace_local_drafts_leaves_a_posted_local_note_untouched,
+        test_replace_local_drafts_ignores_meta_hunks_files_and_groups_keys,
+        test_without_replace_local_drafts_flag_behaviour_is_unchanged,
     ]
     for test in tests:
         test()

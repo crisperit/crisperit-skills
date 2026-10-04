@@ -41,8 +41,7 @@ not the markup, is what produced the wall this schema exists to prevent.
 ## Groups
 
 It also settles `groups`, in story order, from the merged `(path, role)` pairs plus the graph
-summaries; write what it returns into `analysis.json` before the gate, and review it rather than
-author it yourself. This is a deliberate tradeoff: `groups` is the reading order a human follows
+summaries. This is a deliberate tradeoff: `groups` is the reading order a human follows
 and is the least safe field here to hand off, but a `(path, role)` list plus the graph summary is
 enough to group from, and it moves 40 to 50 seconds off what the main thread would otherwise
 spend writing groups, notes and gate patches by hand.
@@ -89,11 +88,3 @@ identifier that has to appear in `raw.diff`, names the hand-off to the NEXT grou
 the last group that isn't a `side` group must not have one, since there is no next stop for it
 to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
 the story) that the map lists off the main line rather than in the chain.
-
-## Reply
-
-Tell it to reply with the path, field counts and group titles only, never their content. An
-agent that pastes `overview` or a group's `why` back into its own report is exactly how that
-prose ends up in the main thread's context a second time; the file is the deliverable, the reply
-is a receipt. Group titles themselves are the one exception allowed in the main context
-(SKILL.md's intro), so naming them in the reply is fine.
