@@ -304,7 +304,7 @@ def _resolution_submit_tool():
         "name": "submit_resolution",
         "description": "Submit this thread's resolution, or ask for the diffs it needs first.",
         "parameters": {"type": "object", "required": ["thread_id"],
-            "properties": {"thread_id": {"type": "string"}}}}}
+            "properties": {"thread_id": {"type": "string"}}, "additionalProperties": True}}}
 
 
 def _analysis_submit_tool():
@@ -576,7 +576,7 @@ def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=
         cw_llm.run_tools(
             profile, messages, tools, local_handlers, max_rounds=10,
             max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-            on_usage=_make_on_usage(d, role, on_event, config),
+            on_usage=_make_on_usage(d, role, on_event, config), cwd=d / "head",
         )
     except cw_llm.LLMError as e:
         error = str(e)
@@ -696,7 +696,7 @@ def _run_prose(d, meta, config, on_event, batch_count):
         cw_llm.run_tools(
             profile, messages, tools, local_handlers, max_rounds=10,
             max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-            on_usage=_make_on_usage(d, "prose", on_event, config),
+            on_usage=_make_on_usage(d, "prose", on_event, config), cwd=d / "head",
         )
     except cw_llm.LLMError as e:
         _write_transcript(d, "prose", profile, messages, result=False, error=str(e))
@@ -840,7 +840,7 @@ def _run_small(d, meta, config, on_event):
             cw_llm.run_tools(
                 profile, messages, tools, local_handlers, max_rounds=10,
                 max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-                on_usage=_make_on_usage(d, role, on_event, config),
+                on_usage=_make_on_usage(d, role, on_event, config), cwd=d / "head",
             )
         except cw_llm.LLMError as e:
             error = str(e)
@@ -1027,7 +1027,7 @@ def _thread_worker(d, n, seed, diffs, config, on_event=None):
         cw_llm.run_tools(
             profile, messages, tools, local_handlers, max_rounds=10,
             max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-            on_usage=_make_on_usage(d, "analysis", on_event, config),
+            on_usage=_make_on_usage(d, "analysis", on_event, config), cwd=d / "head",
         )
     except cw_llm.LLMError as e:
         error = str(e)
@@ -1340,8 +1340,8 @@ def prepare_walkthrough(params, is_running=None):
     if cw_store.role_profile(config, "analysis") is None or cw_store.role_profile(config, "prose") is None:
         raise cw_store.CWError(
             "no model backend configured",
-            remedy=(f"run cw_mcp.py setup, fill profiles and roles in {cw_store.config_path()}, "
-                    "run cw_mcp.py check; this run continues on the static path"),
+            remedy=("run cw_mcp.py setup (with claude on PATH it writes a working Claude Code "
+                    "config), then cw_mcp.py check; this run continues on the static path"),
         )
     base_sha = _verify_ref(toplevel, base_ref)
     head_sha = _verify_ref(toplevel, head_ref)
@@ -1450,7 +1450,7 @@ def run(d, on_event=None):
 
         head_dir = d / "head"
         if not head_dir.exists():
-            add_worktree(meta["repo"], meta["head"], head_dir)
+            add_worktree(meta["repo"], meta["head"], head_dir, symlinks=False)
 
         if meta.get("refresh") and (d / "analysis.json").exists():
             meta = cw_store.update_meta(d, lambda m: m.update({"refresh": False}))

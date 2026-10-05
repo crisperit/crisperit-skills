@@ -248,7 +248,7 @@ def answer(d, qid, anchor, question, on_event=None):
             answer_text = cw_llm.run_tools(
                 profile, messages, tools, handlers, nudge=None, max_rounds=10,
                 max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-                on_usage=on_usage,
+                on_usage=on_usage, cwd=d / "head",
             )
             record["status"] = "ok"
             record["answer"] = answer_text

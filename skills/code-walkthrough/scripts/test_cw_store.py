@@ -94,6 +94,32 @@ def test_load_config_defaults():
         assert config is not cw_store.DEFAULTS
 
 
+def test_role_profile_claude_code_without_base_url_passes():
+    config = {
+        "profiles": {"c": {"kind": "claude-code", "model": "sonnet"}},
+        "roles": {"analysis": "c"},
+    }
+    profile = cw_store.role_profile(config, "analysis")
+    assert profile["name"] == "c"
+    assert profile["model"] == "sonnet"
+    assert "base_url" not in profile
+
+
+def test_role_profile_unknown_kind_refused_with_remedy():
+    with cw_testlib.temp_home():
+        config = {
+            "profiles": {"c": {"kind": "bogus", "model": "sonnet"}},
+            "roles": {"analysis": "c"},
+        }
+        try:
+            cw_store.role_profile(config, "analysis")
+        except cw_store.CWError as e:
+            assert "unknown kind" in str(e)
+            assert e.remedy and "openai or claude-code" in e.remedy
+        else:
+            raise AssertionError("expected CWError for unknown kind")
+
+
 if __name__ == "__main__":
     tests = [
         test_walkthrough_dir_rejects_dotdot_and_bad_id,
@@ -104,6 +130,8 @@ if __name__ == "__main__":
         test_dead_pid_lock_file_with_no_flock_is_acquired,
         test_role_profile_escalate_falls_back_to_prose,
         test_load_config_defaults,
+        test_role_profile_claude_code_without_base_url_passes,
+        test_role_profile_unknown_kind_refused_with_remedy,
     ]
     for test in tests:
         test()

@@ -4,11 +4,13 @@ that starts a real cw_server.py daemon stops it (or waits for its own idle exit)
 block, so no process is left running after this module finishes."""
 
 import contextlib
+import io
 import json
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -19,6 +21,18 @@ import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
 
 SCRIPTS_DIR = str(Path(__file__).parent)
+
+
+@contextlib.contextmanager
+def _no_claude_on_path():
+    """A PATH with no `claude` binary anywhere on it, for the "not on PATH" branch."""
+    with tempfile.TemporaryDirectory() as empty_bin:
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = empty_bin
+        try:
+            yield
+        finally:
+            os.environ["PATH"] = old_path
 
 
 def _pid_alive(pid):
@@ -149,6 +163,72 @@ def test_stop_reports_not_running_then_stopped():
             assert _wait(lambda: not _pid_alive(info["pid"]), timeout=5)
 
 
+def test_setup_with_claude_on_path_writes_claude_code_template():
+    with cw_testlib.temp_home() as home:
+        with tempfile.TemporaryDirectory() as tmp:
+            with cw_testlib.fake_claude(tmp, {}):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    assert cw_mcp.cmd_setup("print") == 0
+                config = cw_store.read_json(home / "config.json")
+                assert config["profiles"]["claude"]["kind"] == "claude-code"
+                assert config["profiles"]["claude"]["model"] == "sonnet"
+                assert config["roles"]["analysis"] == "claude"
+                assert "claude-code template" in err.getvalue()
+
+
+def test_setup_without_claude_on_path_writes_proxy_template():
+    with cw_testlib.temp_home() as home:
+        with _no_claude_on_path():
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                assert cw_mcp.cmd_setup("print") == 0
+            config = cw_store.read_json(home / "config.json")
+            assert "proxy" in config["profiles"]
+            assert "kind" not in config["profiles"]["proxy"]
+            assert "proxy template" in err.getvalue()
+
+
+def test_check_with_fake_claude_ok():
+    with cw_testlib.temp_home() as home:
+        cw_testlib.write_config(
+            home, {"claude": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "claude"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = {"sonnet": [cw_testlib.claude_result(structured={"ok": True})]}
+            with cw_testlib.fake_claude(tmp, script):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    assert cw_mcp.cmd_check() == 0
+                assert "ok analysis (claude/sonnet)" in out.getvalue()
+
+
+def test_check_not_logged_in_prints_fail_and_remedy():
+    with cw_testlib.temp_home() as home:
+        cw_testlib.write_config(
+            home, {"claude": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "claude"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with cw_testlib.fake_claude(tmp, {}, auth={"loggedIn": False}):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    assert cw_mcp.cmd_check() == 1
+                output = out.getvalue()
+                assert "FAIL analysis" in output
+                assert "remedy:" in output
+
+
+def test_setup_leaves_existing_config_untouched():
+    with cw_testlib.temp_home() as home:
+        sentinel = {"profiles": {"mine": {"base_url": "http://x", "model": "m"}}, "roles": {}}
+        cw_store.write_json(home / "config.json", sentinel)
+        with tempfile.TemporaryDirectory() as tmp:
+            with cw_testlib.fake_claude(tmp, {}):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    assert cw_mcp.cmd_setup("print") == 0
+                assert cw_store.read_json(home / "config.json") == sentinel
+
+
 if __name__ == "__main__":
     tests = [
         test_handshake_does_not_start_the_daemon,
@@ -156,6 +236,11 @@ if __name__ == "__main__":
         test_dead_pid_lock_file_is_taken_over,
         test_idle_exit_within_five_seconds,
         test_stop_reports_not_running_then_stopped,
+        test_setup_with_claude_on_path_writes_claude_code_template,
+        test_setup_without_claude_on_path_writes_proxy_template,
+        test_setup_leaves_existing_config_untouched,
+        test_check_with_fake_claude_ok,
+        test_check_not_logged_in_prints_fail_and_remedy,
     ]
     for test in tests:
         test()

@@ -4,7 +4,8 @@ config builders shared by test_cw_store.py, test_cw_llm.py and the batch-1 suite
 not `test_`-prefixed, so pytest does not try to collect it as a test module (section 0 of the
 phase 2 spec).
 
-Stdlib only. The "network" here is the loopback stub this module starts itself.
+Stdlib only. The "network" here is the loopback stub this module starts itself, and fake_claude
+is a `claude` binary on PATH, never a real process.
 """
 
 import json
@@ -363,6 +364,155 @@ class _FakeGH:
 
     def count(self, op):
         return sum(1 for entry in self.log() if entry.get("op") == op)
+
+
+_FAKE_CLAUDE_BODY = '''
+import fcntl, json, os, subprocess, sys, time
+from pathlib import Path
+
+root = Path(os.environ["CW_FAKE_CLAUDE_DIR"])
+cfg = json.loads((root / "config.json").read_text())
+log_path = root / "log.jsonl"
+counts_path = root / "counts.json"
+lock_path = root / "lock"
+
+
+def _next_count(model):
+    with open(lock_path, "a+") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            counts = json.loads(counts_path.read_text()) if counts_path.exists() else {}
+            n = counts.get(model, 0)
+            counts[model] = n + 1
+            counts_path.write_text(json.dumps(counts))
+        finally:
+            fcntl.flock(lockf, fcntl.LOCK_UN)
+    return n
+
+
+def _append_log(entry):
+    with open(lock_path, "a+") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps(entry) + "\\n")
+        finally:
+            fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
+argv = sys.argv[1:]
+
+if argv[:2] == ["auth", "status"]:
+    _append_log({"argv": argv, "cwd": os.getcwd(), "env_keys": sorted(os.environ.keys()),
+                 "stdin": "", "model": None, "start": time.time(), "end": time.time(),
+                 "child_pid": None})
+    print(json.dumps(cfg["auth"]))
+    sys.exit(0)
+
+model = None
+for i, a in enumerate(argv):
+    if a == "--model" and i + 1 < len(argv):
+        model = argv[i + 1]
+    elif a.startswith("--model="):
+        model = a.split("=", 1)[1]
+
+entries = cfg["script"].get(model, [])
+n = _next_count(model)
+entry = entries[min(n, len(entries) - 1)] if entries else {"stdout": "", "exit": 1}
+
+stdin_data = sys.stdin.read()
+start = time.time()
+child_pid = None
+
+while isinstance(entry, dict) and "_cw_delay" in entry:
+    if entry.get("_cw_spawn_child"):
+        devnull = open(os.devnull, "wb")
+        child_pid = subprocess.Popen(["sleep", "30"], stdout=devnull, stderr=devnull).pid
+    time.sleep(entry["_cw_delay"])
+    entry = entry["_cw_entry"]
+
+end = time.time()
+_append_log({"argv": argv, "cwd": os.getcwd(), "env_keys": sorted(os.environ.keys()),
+             "stdin": stdin_data, "model": model, "start": start, "end": end,
+             "child_pid": child_pid})
+
+stderr = entry.get("stderr", "")
+if stderr:
+    sys.stderr.write(stderr)
+
+stdout = entry.get("stdout", "")
+sys.stdout.write(stdout if isinstance(stdout, str) else json.dumps(stdout))
+sys.exit(entry.get("exit", 0))
+'''
+
+
+def claude_result(structured=None, *, result="", usage=None, is_error=False, **extra):
+    """One `claude -p --output-format json` reply: a successful or failed `result` event."""
+    stdout = {
+        "type": "result", "subtype": "success", "is_error": is_error, "result": result,
+        "structured_output": structured,
+        "usage": usage or {"input_tokens": 10, "output_tokens": 5,
+                            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+        "total_cost_usd": 0.01, "num_turns": 1, "permission_denials": [], **extra,
+    }
+    return {"stdout": stdout, "exit": 1 if is_error else 0}
+
+
+def claude_raw(stdout, *, exit=1, stderr=""):
+    """Non-JSON stdout, for the LLMError(kind="protocol") path."""
+    return {"stdout": stdout, "exit": exit, "stderr": stderr}
+
+
+def claude_delayed(seconds, entry, *, spawn_child=False):
+    """Sleep `seconds` before resolving to `entry`; with spawn_child=True, start `sleep 30`
+    first and log its pid, to prove a timeout kills the whole process group."""
+    return {"_cw_delay": seconds, "_cw_entry": entry, "_cw_spawn_child": spawn_child}
+
+
+class _FakeClaude:
+    def __init__(self, root):
+        self._log_path = root / "log.jsonl"
+
+    def log(self):
+        if not self._log_path.exists():
+            return []
+        return [json.loads(line) for line in self._log_path.read_text().splitlines() if line.strip()]
+
+    def count(self, model):
+        return sum(1 for entry in self.log() if entry.get("model") == model)
+
+
+@contextmanager
+def fake_claude(tmp, script, *, auth=None):
+    """A `claude` on PATH that fakes `claude auth status` and `claude -p ...`, replying from
+    `script` ({model: [entries]}, keyed by the --model argv value) like StubLLM. State a call
+    needs across invocations (the per-model call counter) lives in CW_FAKE_CLAUDE_DIR as JSON,
+    since each `claude` call is its own fresh process."""
+    root = Path(tmp) / "fake-claude"
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    default_auth = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"}
+    (root / "config.json").write_text(json.dumps({
+        "script": script, "auth": auth if auth is not None else default_auth,
+    }))
+    (root / "log.jsonl").write_text("")
+
+    claude_path = bin_dir / "claude"
+    claude_path.write_text("#!" + sys.executable + "\n" + _FAKE_CLAUDE_BODY)
+    claude_path.chmod(0o755)
+
+    old_path = os.environ.get("PATH", "")
+    old_dir = os.environ.get("CW_FAKE_CLAUDE_DIR")
+    os.environ["PATH"] = str(bin_dir) + os.pathsep + old_path
+    os.environ["CW_FAKE_CLAUDE_DIR"] = str(root)
+    try:
+        yield _FakeClaude(root)
+    finally:
+        os.environ["PATH"] = old_path
+        if old_dir is None:
+            os.environ.pop("CW_FAKE_CLAUDE_DIR", None)
+        else:
+            os.environ["CW_FAKE_CLAUDE_DIR"] = old_dir
 
 
 @contextmanager

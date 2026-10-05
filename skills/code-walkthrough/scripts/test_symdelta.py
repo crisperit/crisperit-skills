@@ -2311,6 +2311,26 @@ def test_add_worktree_does_not_run_a_tracked_post_checkout_hook():
             symdelta.remove_worktree(repo, worktree_path)
 
 
+def test_add_worktree_with_symlinks_false_checks_out_a_regular_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+        _write(repo, "target.txt", "payload\n")
+        link = repo / "link.txt"
+        os.symlink("target.txt", link)
+        head = _commit(repo, "head")
+
+        worktree_path = Path(tmp) / "wt"
+        symdelta.add_worktree(repo, head, worktree_path, symlinks=False)
+        try:
+            checked_out = worktree_path / "link.txt"
+            assert not checked_out.is_symlink()
+            assert checked_out.read_text() == "target.txt"
+        finally:
+            symdelta.remove_worktree(repo, worktree_path)
+
+
 if __name__ == "__main__":
     tests = [
         test_brace_rename_with_empty_side_collapses_the_slash,
@@ -2433,6 +2453,7 @@ if __name__ == "__main__":
         test_end_to_end_ts_repo_root_level_symbol_uses_the_root_sentinel,
         test_end_to_end_ts_repo_two_root_files_with_same_function_name_stay_distinct,
         test_add_worktree_does_not_run_a_tracked_post_checkout_hook,
+        test_add_worktree_with_symlinks_false_checks_out_a_regular_file,
     ]
     for test in tests:
         test()

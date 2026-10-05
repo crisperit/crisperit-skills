@@ -14,6 +14,7 @@ Stdlib only. Logging goes to stderr; stdout carries only JSON-RPC replies.
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -245,11 +246,24 @@ _CONFIG_TEMPLATE = {
     "max_conversation_tokens": 200000,
 }
 
+_CLAUDE_CODE_TEMPLATE = {
+    "profiles": {"claude": {"kind": "claude-code", "model": "sonnet"}},
+    "roles": {"analysis": "claude", "prose": "claude", "ask": "claude"},
+    "max_concurrency": 4,
+    "timeout_s": 600,
+    "max_conversation_tokens": 200000,
+}
+
 
 def cmd_setup(agent):
     config_path = cw_store.config_path()
     if not config_path.exists():
-        cw_store.write_json(config_path, _CONFIG_TEMPLATE)
+        if shutil.which("claude"):
+            cw_store.write_json(config_path, _CLAUDE_CODE_TEMPLATE)
+            _log(f"wrote {config_path} (claude-code template)")
+        else:
+            cw_store.write_json(config_path, _CONFIG_TEMPLATE)
+            _log(f"wrote {config_path} (proxy template)")
 
     mcp_py = str(SCRIPTS_DIR / "cw_mcp.py")
     if agent == "print":
@@ -257,7 +271,7 @@ def cmd_setup(agent):
         return 0
     if agent == "claude":
         if "/.claude/plugins/" in str(SCRIPTS_DIR):
-            _log("already registered by the plugin install, nothing to do")
+            _log(f"MCP server already registered by the plugin install; config is at {config_path}")
             return 1
         subprocess.run(["claude", "mcp", "remove", "-s", "user", "code-walkthrough"], capture_output=True)
         result = subprocess.run(

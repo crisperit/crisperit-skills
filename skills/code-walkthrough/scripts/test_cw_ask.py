@@ -374,6 +374,42 @@ def test_idle_exit_waits_for_in_flight_ask():
                 daemon.stop()
 
 
+# ---------------------------------------------------------------------------
+# ask role on the claude-code backend
+# ---------------------------------------------------------------------------
+
+def test_ask_on_claude_code_sums_usage_and_omits_json_schema():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: _small_route_reply(body))) as stub:
+            cw_testlib.write_config(
+                home,
+                {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m"),
+                 "k": {"kind": "claude-code", "model": "sonnet"}},
+                {"analysis": "a", "prose": "p", "ask": "k"},
+            )
+            repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+            d, _meta, _reused = cw_run.prepare_walkthrough(
+                {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t"})
+            status = cw_run.run(d, lambda ev, data: None)
+            assert status == "done", status
+
+        with cw_testlib.fake_claude(tmp, {"sonnet": [cw_testlib.claude_result(
+                result="It assigns X on line 2.",
+                usage={"input_tokens": 7, "output_tokens": 3,
+                       "cache_creation_input_tokens": 2, "cache_read_input_tokens": 1})]}) as fc:
+            anchor = cw_ask.validate_anchor(dict(ANCHOR_SECTION))
+            record = cw_ask.answer(d, "q-claude", anchor, "why?", on_event=None)
+
+        assert record["status"] == "ok"
+        assert record["answer"] == "It assigns X on line 2."
+        assert record["usage"]["prompt_tokens"] == 7 + 2 + 1
+        assert record["usage"]["completion_tokens"] == 3
+        assert record["usage"]["cost_usd"] is None
+        entry = fc.log()[-1]
+        assert not any(a.startswith("--json-schema") for a in entry["argv"])
+        assert Path(entry["cwd"]).resolve() == (d / "head").resolve()
+
+
 if __name__ == "__main__":
     tests = [
         test_ask_gives_qa_record_and_sse_answer,
@@ -384,6 +420,7 @@ if __name__ == "__main__":
         test_hung_endpoint_cut_at_timeout,
         test_guards_and_walkthrough_get_qa,
         test_idle_exit_waits_for_in_flight_ask,
+        test_ask_on_claude_code_sums_usage_and_omits_json_schema,
     ]
     for test in tests:
         test()
