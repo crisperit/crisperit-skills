@@ -9,5 +9,5 @@ def clamp(value, low, high):
 
 def mean(values):
     if not values:
-        return 0.0
+        raise ValueError("mean of an empty list")
     return sum(values) / len(values)
