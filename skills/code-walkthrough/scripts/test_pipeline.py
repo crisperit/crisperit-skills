@@ -207,6 +207,79 @@ def test_render_with_no_pipeline_json_exits_non_zero():
         assert rc != 0
 
 
+# ---- prompt injection: every model-written field renders inert -------------------------
+
+HOSTILE = '<img src=x onerror=alert(1)> </script><script>evil()</script> javascript:alert(1)'
+
+
+def _render_with_text(tmp, payload):
+    """Two files, two groups, so verdict, overview, top-level and group flow_mermaid, group
+    title/why/hop, role and note are all exercised, each carrying `payload` -- wrapped in just
+    enough scaffolding (a real identifier for note/hop, a flowchart header for group
+    flow_mermaid) to pass validate_analysis.py's content gate regardless of what `payload` is.
+    Returns the rendered page."""
+    repo = Path(tmp) / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "foo.py").write_text("one\ntwo\nthree\n")
+    (repo / "bar.py").write_text("one\ntwo\nthree\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "foo.py").write_text("one\ntwo\nthree\nfoo_helper\n")
+    (repo / "bar.py").write_text("one\ntwo\nthree\nbar_helper\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "head")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+
+    d = Path(tmp) / "work"
+    d.mkdir()
+    diff_text = _git(repo, "diff", f"{base}...{head}")
+    headers = HUNK_HEADER.findall(diff_text)
+    (d / "raw.diff").write_text(diff_text)
+    analysis = {
+        "target": f"{base}...{head}",
+        "verdict": payload,
+        "overview": payload,
+        "flow_mermaid": payload,
+        "groups": [
+            {"title": payload, "why": payload, "hop": f"`foo_helper` {payload}",
+             "flow_mermaid": f'flowchart LR\n  A["{payload}"] --> B["x"]', "paths": ["foo.py"]},
+            {"title": payload, "paths": ["bar.py"]},
+        ],
+        "files": [
+            {"path": "foo.py", "role": payload,
+             "hunks": [{"header": headers[0], "note": f"foo_helper {payload}"}]},
+            {"path": "bar.py", "role": payload,
+             "hunks": [{"header": headers[1], "note": f"bar_helper {payload}"}]},
+        ],
+    }
+    (d / "analysis.json").write_text(json.dumps(analysis))
+
+    rc = pipeline.main(["all", "--dir", str(d), "--repo", str(repo), "--base", base,
+                         "--head", head, "--slug", "test", "--title", payload])
+    assert rc == 0
+    return (d / "test.html").read_text()
+
+
+def test_hostile_strings_in_every_model_written_field_render_inert():
+    # Baseline <script> count from a clean render of the same shape: the vendored mermaid and
+    # hljs payloads are spliced in with their own "<script" substrings mangled (splice_assets'
+    # SCRIPT_TAG_RE), so every "<script" left in either page is a real tag, not noise from the
+    # vendored assets -- a hostile render smuggling in a new one would raise this count.
+    with tempfile.TemporaryDirectory() as clean_tmp:
+        clean = _render_with_text(clean_tmp, "a safe description")
+    with tempfile.TemporaryDirectory() as hostile_tmp:
+        hostile = _render_with_text(hostile_tmp, HOSTILE)
+
+    # Not a blanket "<img" check: the vendored mermaid bundle carries its own KaTeX fallback
+    # that builds "<img src=\"...\"" as a JS string literal, legitimately in the page already.
+    # What must never appear is the hostile tag surviving unescaped.
+    assert "<img src=x onerror=alert(1)>" not in hostile
+    assert hostile.count("<script") == clean.count("<script")
+    assert 'href="javascript:' not in hostile
+
+
 if __name__ == "__main__":
     tests = [
         test_all_on_a_valid_analysis_writes_a_page_and_exits_0,
@@ -217,6 +290,7 @@ if __name__ == "__main__":
         test_explain_recorded_by_prepare_reaches_render_via_pipeline_json,
         test_links_cached_leaves_a_pre_placed_links_json_untouched,
         test_render_with_no_pipeline_json_exits_non_zero,
+        test_hostile_strings_in_every_model_written_field_render_inert,
     ]
     for test in tests:
         test()

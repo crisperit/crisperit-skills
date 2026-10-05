@@ -192,7 +192,11 @@ def run_extractor(worktree_path):
 
 
 def add_worktree(repo, commit, path):
-    result = run_git(repo, ["worktree", "add", "--detach", str(path), commit])
+    result = run_git(
+        repo,
+        ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", str(path), commit],
+        env={"GIT_LFS_SKIP_SMUDGE": "1"},
+    )
     if result.returncode != 0:
         raise RuntimeError(f"git worktree add failed for {commit!r}: {result.stderr.strip()}")
 

@@ -37,11 +37,16 @@ SSH_REMOTE = re.compile(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?$")
 HTTPS_REMOTE = re.compile(r"^https?://(?:[^@/]+@)?([^/]+)/(.+?)(?:\.git)?$")
 
 
-def run_git(repo, args):
+def run_git(repo, args, env=None):
     import subprocess
 
+    full_env = None
+    if env is not None:
+        import os
+
+        full_env = {**os.environ, **env}
     return subprocess.run(
-        ["git", "-C", repo, *args], capture_output=True, text=True, errors="replace"
+        ["git", "-C", repo, *args], capture_output=True, text=True, errors="replace", env=full_env
     )
 
 

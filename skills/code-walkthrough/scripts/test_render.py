@@ -426,6 +426,20 @@ def test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox():
     assert out.index("</h2>") < out.index("svgbox-flow")
 
 
+CSP = ('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
+       "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; "
+       "connect-src 'self'; base-uri 'none'; form-action 'none'\">")
+
+
+def test_the_real_template_carries_the_csp_meta_before_its_first_script_tag():
+    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+    order, files = parsed()
+    out = render_html(ANALYSIS, files, real_template, now=FROZEN, order=order)
+
+    assert CSP in out
+    assert out.index(CSP) < out.index("<script")
+
+
 if __name__ == "__main__":
     tests = [
         test_facts_come_from_the_diff_not_the_analysis,
@@ -465,6 +479,7 @@ if __name__ == "__main__":
         test_an_empty_structure_section_inserts_nothing,
         test_a_single_group_keeps_the_flow_diagram,
         test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
+        test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
     ]
     for test in tests:
         test()

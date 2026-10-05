@@ -2,10 +2,17 @@
 """Split resolved review threads into per-thread seeds for parallel analysis, then merge
 the results.
 
+  python3 fanout_threads.py index --repo <repo> --base <base> --head <head> \
+      --out-commits commit-index.json --out-diffs diffs.json
   python3 fanout_threads.py split --threads threads.json --commits commit-index.json \
       --plan <regen plan json> --out <dir> [--max-diff-lines N] [--diffs diffs.json]
   python3 fanout_threads.py merge --threads threads.json --commits commit-index.json \
       --fragments <dir>/thread-*.json --out resolutions.json
+
+index builds the commit index and the per-commit diff map that split and merge read, from
+`git log <base>..<head>` (two-dot, never three-dot: see references/resolved-threads.md on why)
+plus one `git show` per commit. It replaces the inline heredoc the reference doc used to carry,
+so the agent path and the daemon run the same code.
 
 Same shape as fanout.py (one seed per unit, one cheap model per unit, merge at the end),
 but a thread is not a diff slice: fanout.py's split_chunks/batch/rename_map/merge are all
@@ -47,6 +54,7 @@ Stdlib only, no network.
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +65,49 @@ FRAGMENT_KEYS = (
     "thread_id", "outcome", "closing_message", "ticket", "commits", "files", "why",
     "confidence",
 )
+
+
+def parse_commit_log(raw):
+    """Parse `git log --format='%x02%H%x09%s%x09%cI%x09%an' --numstat` output into the
+    commit-index.json "commits" list."""
+    commits = []
+    for block in raw.split("\x02")[1:]:
+        header, _, rest = block.partition("\n")
+        sha, subject, committed_at, author = header.split("\t")
+        files = []
+        for line in rest.strip("\n").splitlines():
+            if not line.strip():
+                continue
+            added, removed, path = line.split("\t", 2)
+            files.append({
+                "path": path,
+                "additions": int(added) if added != "-" else 0,
+                "deletions": int(removed) if removed != "-" else 0,
+            })
+        commits.append({"sha": sha, "subject": subject, "committed_at": committed_at,
+                         "author": author, "files": files})
+    return commits
+
+
+def do_index(args):
+    log = subprocess.run(
+        ["git", "-C", args.repo, "log", "--format=%x02%H%x09%s%x09%cI%x09%an", "--numstat",
+         f"{args.base}..{args.head}"],
+        capture_output=True, text=True,
+    )
+    if log.returncode != 0:
+        raise RuntimeError(f"git log failed: {log.stderr}")
+    commits = parse_commit_log(log.stdout)
+
+    diffs = {}
+    for commit in commits:
+        show = subprocess.run(["git", "show", "--format=", commit["sha"]], cwd=args.repo,
+                               capture_output=True, text=True)
+        diffs[commit["sha"]] = show.stdout
+
+    Path(args.out_commits).write_text(json.dumps({"commits": commits}, indent=2) + "\n")
+    Path(args.out_diffs).write_text(json.dumps(diffs, indent=2) + "\n")
+    return 0
 
 
 def _parse_iso(ts):
@@ -164,6 +215,9 @@ def _validate_fragment(data):
         raise ValueError("commits must be a list")
     if not isinstance(data["files"], list):
         raise ValueError("files must be a list")
+    ticket = data["ticket"]
+    if ticket is not None and not (isinstance(ticket, str) and ticket.startswith("https://")):
+        raise ValueError(f"invalid ticket: {ticket!r}")
 
 
 def merge(threads, commits, fragment_paths):
@@ -228,6 +282,14 @@ def do_merge(args):
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="mode", required=True)
+
+    index_parser = sub.add_parser("index")
+    index_parser.add_argument("--repo", required=True)
+    index_parser.add_argument("--base", required=True)
+    index_parser.add_argument("--head", required=True)
+    index_parser.add_argument("--out-commits", required=True)
+    index_parser.add_argument("--out-diffs", required=True)
+    index_parser.set_defaults(func=do_index)
 
     split_parser = sub.add_parser("split")
     split_parser.add_argument("--threads", required=True)

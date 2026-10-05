@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><!-- DIFF_TITLE --></title>
 <style>
@@ -912,8 +913,10 @@
   details.hr-lo>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .hr-lo .fb-item{margin-top:8px}
 
-  /* per-line commenting: each commentable diff line is its own focusable control */
-  .dline{cursor:pointer}
+  /* per-line commenting: each commentable diff line is its own focusable control, but only
+     the .dline-plus button opens a draft -- the row itself is plain text underneath, so a
+     click that is really a text selection (or a copy) never fires one. */
+  .dline{cursor:text;position:relative;padding-left:20px}
   .dline:hover{background:var(--panel2)}
   .dline:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .dline.has-comment{background:var(--markbg)}
@@ -922,6 +925,15 @@
   .dline.has-comment.vd-flash-line{background:color-mix(in srgb,var(--accent) 24%,transparent)}
   .dline-num{display:inline-block;min-width:32px;margin-right:8px;padding-right:8px;
     border-right:1px solid var(--border);color:var(--muted);text-align:right;user-select:none}
+  /* GitHub's own idiom: a "+" in the gutter reserved by .dline's padding-left, hidden until
+     hover/focus/touch-reveal. Sized off itself, not the row, so it never disturbs .diff's
+     line-height:0 row layout or the number badge next to it. */
+  .dline-plus{display:none;position:absolute;left:1px;top:50%;transform:translateY(-50%);
+    width:16px;height:16px;border:none;border-radius:4px;background:var(--accent);color:#fff;
+    font:700 11px/1 system-ui;cursor:pointer;padding:0;user-select:none}
+  .dline:hover .dline-plus,
+  .dline:focus-visible .dline-plus,
+  .dline.dline-touch-active .dline-plus{display:flex;align-items:center;justify-content:center}
   /* Lives inside <pre class="diff">, so it inherits its monospace and its white-space:pre.
      The font is reset because this is prose, and white-space for the same reason: left on pre a
      note never wrapped, it ran off to the right (a row 382px wide holding 855px of content).
@@ -948,6 +960,11 @@
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
+    /* Hit area grows, visible size doesn't: a 44px button here would overlap the line number
+       and the row above/below. ::before extends the tappable region on all sides instead,
+       via inset rather than negative margins, so it never adds to .dline-plus's own box and
+       can't grow the row's layout height. */
+    .dline-plus::before{content:'';position:absolute;inset:-10px}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */
@@ -2042,8 +2059,12 @@
     focusDraftBody(note.id);
   }
 
+  // Tracks the one line a touch tap has revealed the "+" on, so a second tap elsewhere clears
+  // the first rather than leaving every previously-tapped line lit.
+  let touchRevealedSpan=null;
+
   function wireLine(span,meta){
-    meta.text=span.textContent; // capture verbatim (incl. leading +/-/space) before the badge changes it -- this is anchor_text
+    meta.text=span.textContent; // capture verbatim (incl. leading +/-/space) before the badge/button change it -- this is anchor_text
     meta.lineKey=meta.path+'\t'+meta.side+'\t'+meta.line;
     span.classList.add('dline');
     span.tabIndex=0;
@@ -2052,9 +2073,24 @@
     const badge=document.createElement('span'); badge.className='dline-num';
     badge.textContent=meta.line; badge.setAttribute('aria-hidden','true');
     span.insertBefore(badge,span.firstChild);
-    spanByLineKey.set(meta.lineKey,{span,meta});
     const open=()=>openOrFocusDraft(meta);
-    span.addEventListener('click',open);
+    const plus=document.createElement('button');
+    plus.type='button'; plus.className='dline-plus'; plus.tabIndex=-1;
+    plus.setAttribute('aria-label','Add comment on '+meta.path+':'+meta.line+' ('+meta.side+')');
+    plus.textContent='+';
+    plus.addEventListener('click',e=>{ e.stopPropagation(); open(); });
+    span.appendChild(plus);
+    spanByLineKey.set(meta.lineKey,{span,meta});
+    // Coarse-pointer (touch) tap: first tap on a line just reveals its "+" and clears whichever
+    // other line had it revealed; the "+" click above (stopPropagation'd) is what actually opens
+    // the draft, so a tap that only meant to select text never does.
+    span.addEventListener('click',e=>{
+      if(e.target===plus) return;
+      if(!matchMedia('(pointer:coarse)').matches) return;
+      if(touchRevealedSpan&&touchRevealedSpan!==span) touchRevealedSpan.classList.remove('dline-touch-active');
+      span.classList.toggle('dline-touch-active');
+      touchRevealedSpan=span.classList.contains('dline-touch-active')?span:null;
+    });
     span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(); } });
   }
 
@@ -2447,7 +2483,8 @@
   function buildResolutionChip(root){
     const res=state.resolutions&&state.resolutions[root.gh_thread_id];
     if(!res) return null;
-    if(res.outcome==='none'||(res.outcome==='deferred'&&!res.ticket)){
+    const hasTicket=res.ticket&&res.ticket.startsWith('https://');
+    if(res.outcome==='none'||(res.outcome==='deferred'&&!hasTicket)){
       const chip=document.createElement('span'); chip.className='chip chip-nofix';
       chip.textContent=res.outcome==='none'?'Nothing found':'Deferred to later';
       return chip;

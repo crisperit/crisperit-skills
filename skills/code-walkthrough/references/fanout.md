@@ -18,14 +18,14 @@ most 8 batches, so a huge diff widens each batch instead of spawning 60 agents.
 
 ## The batch subagent brief
 
-One subagent per batch, each on the strong tier: the job is per-hunk noticing
-inside one slice, and the gate checks every answer, so delegate down when a validator can catch
-the mistake and keep it up when it cannot. All spawned in a single message so they run
-concurrently. Each reads only its own `batch-N.diff` and its manifest-listed
-`fragment-N.seed.json`, a skeleton with every `files[]` and `hunks[]` entry already pre-filled
-and only `role` and `note` left blank. It copies the seed to `fragment-N.json` and fills those
-in. It never types an `@@` header and never adds or removes a file or hunk entry, since the seed
-already has the full shape.
+Judgment rules (what a batch subagent is told about `role` and `note`): `prompts/batch.md`. One
+subagent per batch, each on the strong tier: the job is per-hunk noticing inside one slice, and
+the gate checks every answer, so delegate down when a validator can catch the mistake and keep
+it up when it cannot. All spawned in a single message so they run concurrently. Each reads only
+its own `batch-N.diff` and its manifest-listed `fragment-N.seed.json`, a skeleton with every
+`files[]` and `hunks[]` entry already pre-filled and only `role` and `note` left blank. It copies
+the seed to `fragment-N.json` and fills those in. It never types an `@@` header and never adds or
+removes a file or hunk entry, since the seed already has the full shape.
 
 Tell each one explicitly: do not read the repo, do not read other batches, do not judge the
 code. Retyping the header used to be the only proof an agent had actually read the hunk, and
@@ -49,116 +49,19 @@ of problems left, never the fragment's content. A batch agent that pastes its ro
 back into its own report is exactly how that text ends up in the main thread's context a second
 time; the fragment file is the deliverable, the reply is a receipt.
 
-## Role rules
-
-Every file needs a `role`, including a test file and a pure rename, and that `role` is where a
-file's churn gets said once, not per hunk, which is exactly why it cannot be a single word.
-`Moved`, `Deleted`, `Modified`, `Updated` alone are not roles: the page already shows the path,
-the +/- counts, and for a renamed file an `old → new` arrow in its header row, so a bare
-change-verb tells the reader strictly less than they already see. For the same reason a role
-must not restate the move itself: `Moved from \`internal/\`` is redundant beside the arrow.
-
-Say what the file is FOR, or for a deleted one where its contents went:
-
-- `Deleted: metrics promoted to \`internal/ratelimit/metrics.go\``
-- `Now holds only threshold parsing, config loading exported to \`ratelimit_config\``
-- `Swaps the polling loop for a debounced watcher`
-
-A deleted file still gets a note on its one removal hunk, saying what went away and where it
-went.
-
-## Note rules
-
-A hunk `note` explains the code, it does not narrate the diff. The reader has the lines right
-there; what they cannot get from the lines is the meaning. So a note answers one of: what this
-code now does, why it has to, or what it breaks if it is wrong. It never answers "what did the
-author type here".
-
-- Bad, narrates: `Adds rate-limit config import and passes it to NewRateLimiter.`
-- Good, explains: `NewRateLimiter now takes its thresholds from config instead of the literals
-  it was compiled with, so they can change without a deploy.`
-- Bad, narrates: `Renames metricsInjector to MetricsInjector.`
-- Good: leave it blank. Exporting a field is on the face of the line.
-
-Leave the note blank whenever the lines already say it on their face: adds an import, renames a
-variable, changes the package clause, reorders struct fields, drops a qualifier, recapitalises
-an export. A note that restates the line above it is worse than no note: on a 45-file diff that
-is 120 paragraphs standing between the reader and the code. The file's `role` carries the churn
-once instead of every hunk repeating it. A binary or mode-only change gets an empty `hunks` list
-and keeps its file entry, so the reader can tell "nothing to show" from "forgot to look". A file
-with five substantive hunks gets five notes; picking the interesting one and dropping the rest
-is the failure this schema exists to prevent, and the gate's empty-note floor below is what
-catches it in practice.
-
-A note still has to name at least one identifier from its own changed lines, because that is
-what it is explaining and because the gate checks it. Keep a note to about 20 words; when a hunk
-adds many symbols, explain the group and name the two that matter, never a comma series of
-everything.
+Role and note rules, with the bad/good pairs: `prompts/batch.md`.
 
 ## The prose and grouping subagent
 
-One subagent, on the strong tier since it needs the whole change in view and nothing downstream
-can check its judgment, writes `<scratchpad>/prose.json` with `target`, `overview`, `verdict`,
-`groups` and a top-level `flow_mermaid`, from the fragments, the numstat and the graph summaries
-(`symdelta.counts`/`symdelta.moved`). Under about 2000 lines, hand it `<scratchpad>/raw.diff` too
-and tell it to read it, since that removes the guessing; above that, fragments and the numstat
-only, never `raw.diff`, the size this split exists to protect. Either way it may open specific
-files in the repo when a fragment note is not enough to explain the machinery.
-
-Tell it what `overview` is for: a lead of one or two sentences saying what this is (or what the
-change is) and who or what uses it, no file names in the lead, then three to five bullets, one
-line each, carrying the organizing ideas only. A bullet may name one symbol or path when that
-name IS the idea; most should name none -- density, not the markup, is what produced the wall
-this schema replaces. Nothing goes below that altitude: the detail a reader wants next already
-lives in each file's `role`, each hunk's `note`, and a group's `why`, and reaching for
-completeness here is exactly the failure this brief exists to head off.
-
-Worked example, the shape wanted, as prose (it becomes one JSON string, the lead first, then the
-bullets, one `\n` between bullets; the renderer tells the lead from the bullets by where the
-first `- ` line starts, not by a blank line, so this reads fine with or without one):
-
-    Rate limiting now reads its thresholds from live config instead of compile-time constants,
-    so an operator can tighten a limit without redeploying.
-
-    - Thresholds load once at startup and refresh on a config change event
-    - A stale config falls back to the last good values rather than zero
-    - `RateLimiter` swaps its polling loop for a debounced watcher
-    - Metrics moved out to their own package, so the limiter stays free of reporting concerns
-
-Tell it, on the whole brief: every identifier in the prose is copied from the source, never
-reconstructed from what a name in that language usually looks like, so an exported
-`UIDFromOzoneCookie` is never softened into "a helper" because unexported names are usually
-lowercase. A signature change is claimed only when it is visibly in the diff, never because a
-function of that name plausibly gained a parameter elsewhere.
-
-It also settles `groups`, in story order, from the merged `(path, role)` pairs plus the graph
-summaries; write what it returns into `analysis.json` before the gate, and review it rather than
-author it yourself. This is a deliberate tradeoff: `groups` is the reading order a human follows
-and is the least safe field here to hand off, but a `(path, role)` list plus the graph summary is
-enough to group from, and it moves 40 to 50 seconds off what the main thread would otherwise
-spend writing groups, notes and gate patches by hand.
-
-Tell it each group may also carry its own `flow_mermaid`: one small diagram, `sequenceDiagram` or
-`flowchart LR`, its pick per group. Default to a sequence; fall back to a flowchart only when the
-group genuinely has no order to show, a theme like error handling or config plumbing where
-participants and an ordered exchange would have to be invented. At most about 8 steps, and omit
-the field rather than draw something it had to guess.
-
-Tell it about the two fields that drive the story map. `hop`, 2 to 6 words with one backticked
-identifier that has to appear in `raw.diff`, names the hand-off to the NEXT group in the list --
-the last group that isn't a `side` group must not have one, since there is no next stop for it
-to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
-the story) that the map lists off the main line rather than in the chain. And tell it about the
-top-level `flow_mermaid` it now writes itself: leave it blank when it settles on two or more
-groups (the story map replaces it), but when it settles on exactly one group, copy that group's
-own `flow_mermaid` (if it wrote one) up to the top level too, since a single group has no map to
-carry it instead.
-
-Tell it to reply with the path, field counts and group titles only, never their content. An
-agent that pastes `overview` or a group's `why` back into its own report is exactly how that
-prose ends up in the main thread's context a second time; the file is the deliverable, the reply
-is a receipt. Group titles themselves are the one exception allowed in the main context
-(SKILL.md's intro), so naming them in the reply is fine.
+Judgment rules (what `overview`, `groups`, the flow diagrams and `hop`/`side` are for, the
+worked example): `prompts/prose.md`. One subagent, on the strong tier since it needs the whole
+change in view and nothing downstream can check its judgment, writes `<scratchpad>/prose.json`
+with `target`, `overview`, `verdict`, `groups` and a top-level `flow_mermaid`, from the
+fragments, the numstat and the graph summaries (`symdelta.counts`/`symdelta.moved`). Under about
+2000 lines, hand it `<scratchpad>/raw.diff` too and tell it to read it, since that removes the
+guessing; above that, fragments and the numstat only, never `raw.diff`, the size this split
+exists to protect. Either way it may open specific files in the repo when a fragment note is not
+enough to explain the machinery.
 
 The main thread no longer writes `groups` into `analysis.json` by hand: this subagent writes them
 directly into `prose.json`, and `fanout.py merge` carries them through.
