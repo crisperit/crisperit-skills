@@ -26,6 +26,12 @@ Explain mode never has a PR, so the page already hides the Copy gh command butto
 note instead; Copy for agent is the only exit there, and reads purely as feedback to act on in
 the repo, since there is no PR to post it to.
 
+In live mode, the Copy gh command button is always hidden, and a Post to GitHub button takes its
+place instead (shown under the same PR/pushed conditions): it previews the same comments and
+resolutions in a confirm dialog, then posts them itself through the daemon rather than handing
+the reader a command to run (`references/live.md`'s Posting section has the full flow). Copy for
+agent is unaffected either way.
+
 `notes.py import`, `deliver` and `submit` (hand-fed notes JSON, one GraphQL pending review) still
 work for a state.json-driven posting flow; neither button feeds them.
 
