@@ -7,6 +7,7 @@
   python3 notes.py deliver --state state.json --id <local> [--diff raw.diff]
   python3 notes.py submit --state state.json --event COMMENT|APPROVE|REQUEST_CHANGES \
       --body-file <f>
+  python3 notes.py resolve --state state.json --thread-id <gh_thread_id>
   python3 notes.py reanchor --state state.json --diff raw.diff
   python3 notes.py resolved-threads --state state.json [--payload raw-graphql.json] \
       --out threads.json
@@ -16,8 +17,9 @@
   python3 notes.py payloads --state state.json --commit-id <sha> --out <dir>
   python3 notes.py promote --state state.json --id <local> --gh-id <id> --gh-url <url>
 
-notes.py never calls git. `gh` is the one subprocess it runs, and only for `deliver` and
-`submit`, always `gh api graphql` with the request body on stdin (see "GitHub delivery").
+notes.py never calls git. `gh` is the one subprocess it runs, and only for `deliver`,
+`submit` and `resolve`, always `gh api graphql` with the request body on stdin (see
+"GitHub delivery").
 Everything else here is a pure state transformer over state.json's notes[] array (schema: see state.py).
 
 Lifecycle is draft -> posted. A record is never deleted and never rewritten in place by any
@@ -100,7 +102,9 @@ refuses to re-deliver a note already `state == "posted"`, so retrying `deliver` 
 timeout (the natural response to it) can't double-post a thread whose first attempt actually
 landed -- see GH_TIMEOUT above. `submit` publishes the pending review with
 `submitPullRequestReview`, and `do_submit` raises if that comes back null (a silently rejected
-submission) rather than reporting success. Every `gh` call sends its query and
+submission) rather than reporting success. `resolve` is unrelated to the pending review -- it
+runs `RESOLVE_THREAD_MUTATION` directly against a thread id and marks every note sharing that
+`gh_thread_id` resolved, raising if GitHub's response doesn't come back `isResolved`. Every `gh` call sends its query and
 variables as one JSON document on stdin via `gh api graphql --input -`: a note body is
 authored by a browser page, and interpolating that text into a command line would be shell
 injection with an extra step. Notes carry `gh_thread_id` and `gh_node_id` beside the existing
@@ -162,7 +166,7 @@ VALID_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # merge_state withholds all five.
 PAGE_DENIED_NOTE_FIELDS = frozenset({"state", "gh_id", "gh_url", "reply_to", "origin"})
 
-GH_TIMEOUT = 30  # seconds; a hung `gh` must not wedge deliver/submit forever
+GH_TIMEOUT = int(os.environ.get("CW_GH_TIMEOUT", 30))
 
 # All four operations are named so a test double can dispatch on the query text alone --
 # the variables never appear on argv, so a name is the only thing a fake `gh` can switch on.
@@ -212,6 +216,12 @@ mutation SubmitReview($reviewId: ID!, $event: PullRequestReviewEvent!, $body: St
   submitPullRequestReview(input: {pullRequestReviewId: $reviewId, event: $event, body: $body}) {
     pullRequestReview { id state }
   }
+}
+"""
+
+RESOLVE_THREAD_MUTATION = """
+mutation ResolveThread($id: ID!) {
+  resolveReviewThread(input: {threadId: $id}) { thread { id isResolved } }
 }
 """
 
@@ -408,12 +418,13 @@ def sync_comments(state, comments):
         in_reply_to_id = comment.get("in_reply_to_id")
         diff_hunk = comment.get("diff_hunk")
         original_commit_id = comment.get("original_commit_id")
+        gh_node_id = comment.get("node_id")
 
         existing = by_gh_id.get(gh_id)
         if existing is not None:
             existing.update(
                 path=path, line=line, side=side, stale=stale, body=body, author=author,
-                created_at=created_at, gh_url=gh_url,
+                created_at=created_at, gh_url=gh_url, gh_node_id=gh_node_id,
                 anchor_line=line, diff_hunk=diff_hunk, original_commit_id=original_commit_id,
             )
             if existing.get("reply_to") is None:
@@ -424,7 +435,8 @@ def sync_comments(state, comments):
                 "path": path, "line": line, "side": side, "hunk_id": None,
                 "anchor_text": None, "anchor_line": line, "stale": stale, "body": body,
                 "order": SYNCED_ORDER, "author": author,
-                "created_at": created_at, "gh_id": gh_id, "gh_url": gh_url, "reply_to": None,
+                "created_at": created_at, "gh_id": gh_id, "gh_url": gh_url, "gh_node_id": gh_node_id,
+                "reply_to": None,
                 "reply_to_gh_id": in_reply_to_id, "diff_hunk": diff_hunk,
                 "original_commit_id": original_commit_id,
             }
@@ -1023,6 +1035,25 @@ def do_deliver(args):
     return 0
 
 
+def do_resolve(args):
+    """Resolve one review thread (the Resolve-conversation action), via the same
+    _gh_graphql/RESOLVE_THREAD_MUTATION the template's own JS sends -- see that constant's
+    docstring. Every note sharing this gh_thread_id (sync_threads stamps it onto every note
+    in a thread, not just the root) flips to resolved, so a later resolved_threads() call
+    reflects it without waiting on the next sync-threads pass."""
+    state = _load_state(args.state)
+    resp = _gh_graphql(RESOLVE_THREAD_MUTATION, {"id": args.thread_id})
+    thread = ((resp.get("data") or {}).get("resolveReviewThread") or {}).get("thread")
+    if not thread or not thread.get("isResolved"):
+        raise RuntimeError(f"GitHub did not resolve thread {args.thread_id!r}")
+    for note in state.get("notes", []):
+        if note.get("gh_thread_id") == args.thread_id:
+            note["resolved"] = True
+    _save_state(args.state, state)
+    print(f"resolved {args.thread_id}")
+    return 0
+
+
 def do_submit(args):
     state = _load_state(args.state)
     body = Path(args.body_file).read_text()
@@ -1093,6 +1124,11 @@ def main():
         "--diff", help="defaults to raw.diff beside --state, the scratchpad convention"
     )
     deliver_parser.set_defaults(func=do_deliver)
+
+    resolve_parser = sub.add_parser("resolve")
+    resolve_parser.add_argument("--state", required=True)
+    resolve_parser.add_argument("--thread-id", required=True)
+    resolve_parser.set_defaults(func=do_resolve)
 
     submit_parser = sub.add_parser("submit")
     submit_parser.add_argument("--state", required=True)

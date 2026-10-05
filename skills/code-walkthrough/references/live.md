@@ -99,6 +99,22 @@ answers is capped at 16000 characters; the selected quote itself is never trunca
 Every question and answer is appended to that walkthrough's `qa.jsonl`, which is what repopulates
 the page's Q&A list on reload and what the last-few-answers window above reads back from.
 
+## Posting
+
+The comments panel on a live page replaces Copy gh command with a Post to GitHub button
+(hidden under the same conditions Copy gh command would be: a PR, and the compared commit
+pushed). Clicking it flushes pending drafts to the daemon, then previews what would be sent
+-- every draft's `path:line` and body, every thread marked resolved locally -- in a confirm
+dialog before anything reaches GitHub. The confirm dialog's checkbox, "Submit review as
+COMMENT", is unchecked by default: unchecked, the comments land in a pending review only the
+poster can see on GitHub until they submit it there themselves; checked, this submits the
+review as a COMMENT immediately. Confirming re-sends the same preview request's `nonce`; if
+anything changed since the preview (another tab posted first, a draft was edited), that 409s
+and the dialog re-previews instead of posting a stale list. Per-item progress (one line per
+note delivered or thread resolved) streams in over the same SSE connection as everything else,
+and a successful post clears the locally pending-resolve marks for threads it resolved -- the
+page itself reloads from the `rebuilt` event once the daemon re-renders.
+
 ## Remedies
 
 Every error the daemon or client can raise carries a one-line remedy; this is the full table.

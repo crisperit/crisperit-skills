@@ -21,6 +21,7 @@ from notes import (  # noqa: E402
     do_payloads,
     do_promote,
     do_reanchor,
+    do_resolve,
     do_resolved_threads,
     do_submit,
     do_sync,
@@ -211,6 +212,56 @@ def test_second_sync_of_same_comment_leaves_original_commit_id_unchanged():
     sync_comments(state, [comment])
     sync_comments(state, [comment])
     assert state["notes"][0]["original_commit_id"] == "sha1"
+
+
+def test_sync_stores_gh_node_id_on_a_new_note():
+    state = {"notes": []}
+    comment = _comment(id=45, node_id="PRRC_1")
+    sync_comments(state, [comment])
+    assert state["notes"][0]["gh_node_id"] == "PRRC_1"
+
+
+def test_second_sync_of_same_comment_updates_gh_node_id():
+    # deliver_note needs gh_node_id on a reply's parent; a resync must keep it current rather
+    # than only setting it once on insert.
+    state = {"notes": []}
+    comment = _comment(id=46, node_id="PRRC_1")
+    sync_comments(state, [comment])
+    comment["node_id"] = "PRRC_2"
+    sync_comments(state, [comment])
+    assert state["notes"][0]["gh_node_id"] == "PRRC_2"
+
+
+def test_reply_to_a_synced_parent_uses_its_node_id_as_in_reply_to():
+    # Phase 5 plan point 7: deliver_note's reply branch addresses the parent by gh_node_id, so
+    # a reply to a comment that only ever arrived through `sync` (never through `deliver`)
+    # must still be able to post.
+    parent_comment = _comment(id=47, node_id="PRRC_PARENT")
+    reply_comment = _comment(id=48, node_id="PRRC_REPLY", in_reply_to_id=47)
+    state = {"meta": {"repo": "o/r", "pr": 1}, "notes": []}
+    sync_comments(state, [parent_comment, reply_comment])
+    by_id = {n["id"]: n for n in state["notes"]}
+    parent = by_id["gh-47"]
+    reply = by_id["gh-48"]
+    assert parent["gh_node_id"] == "PRRC_PARENT"
+    assert reply["reply_to"] == "gh-47"
+
+    seen = {}
+
+    def gh_run(query, variables):
+        if "PendingReview" in query:
+            return {"data": {"repository": {"pullRequest": {
+                "id": "PR_node", "reviews": {"nodes": [{"id": "REVIEW_node"}]}}}}}
+        if "ReplyThread" in query:
+            seen["in_reply_to"] = variables["inReplyTo"]
+            return {"data": {"addPullRequestReviewComment": {
+                "comment": {"id": "C_1", "databaseId": 999}}}}
+        raise AssertionError(query)
+
+    draft = _note(id="n-1", body="a reply", reply_to="gh-47")
+    state["notes"].append(draft)
+    deliver_note(state, draft, "", gh_run)
+    assert seen["in_reply_to"] == parent["gh_node_id"]
 
 
 def test_local_draft_with_no_diff_hunk_round_trips_unharmed():
@@ -1016,6 +1067,50 @@ def test_do_deliver_skips_a_note_already_posted_and_does_not_double_post():
     assert "already posted" in out.getvalue()
 
 
+def test_resolve_marks_every_note_in_the_thread_resolved():
+    root = _note(id="n-1", gh_thread_id="THREAD_1")
+    reply = _note(id="n-2", gh_thread_id="THREAD_1", reply_to="n-1")
+    other = _note(id="n-3", gh_thread_id="THREAD_2")
+    real_gh_graphql = notes._gh_graphql
+
+    def fake_gh_graphql(query, variables):
+        assert "ResolveThread" in query
+        assert variables == {"id": "THREAD_1"}
+        return {"data": {"resolveReviewThread": {"thread": {"id": "THREAD_1", "isResolved": True}}}}
+
+    notes._gh_graphql = fake_gh_graphql
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = _write_state(tmp, {"notes": [root, reply, other]})
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert do_resolve(_Args(state=state_path, thread_id="THREAD_1")) == 0
+            result = json.loads(Path(state_path).read_text())
+    finally:
+        notes._gh_graphql = real_gh_graphql
+
+    by_id = {n["id"]: n for n in result["notes"]}
+    assert by_id["n-1"]["resolved"] is True
+    assert by_id["n-2"]["resolved"] is True
+    assert "resolved" not in by_id["n-3"] or by_id["n-3"]["resolved"] is not True
+
+
+def test_do_resolve_raises_when_github_does_not_confirm_resolution():
+    real_gh_graphql = notes._gh_graphql
+    notes._gh_graphql = lambda query, variables: {
+        "data": {"resolveReviewThread": {"thread": {"id": "THREAD_1", "isResolved": False}}}}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = _write_state(tmp, {"notes": []})
+            try:
+                do_resolve(_Args(state=state_path, thread_id="THREAD_1"))
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("expected a RuntimeError")
+    finally:
+        notes._gh_graphql = real_gh_graphql
+
+
 # ---------------------------------------------------------------------------
 # merge_state (the page-origin deny-list `import` relies on)
 # ---------------------------------------------------------------------------
@@ -1401,6 +1496,9 @@ if __name__ == "__main__":
         test_sync_stores_original_commit_id_on_a_new_note,
         test_sync_stores_none_original_commit_id_when_absent,
         test_second_sync_of_same_comment_leaves_original_commit_id_unchanged,
+        test_sync_stores_gh_node_id_on_a_new_note,
+        test_second_sync_of_same_comment_updates_gh_node_id,
+        test_reply_to_a_synced_parent_uses_its_node_id_as_in_reply_to,
         test_local_draft_with_no_diff_hunk_round_trips_unharmed,
         test_sync_threads_sets_thread_id_and_resolved_on_the_matching_note,
         test_sync_threads_maps_one_thread_onto_several_comments,
@@ -1451,6 +1549,8 @@ if __name__ == "__main__":
         test_do_submit_raises_instead_of_reporting_success_when_the_submit_is_rejected,
         test_deliver_sends_the_relocated_line_to_the_mutation_when_the_anchor_has_shifted,
         test_do_deliver_skips_a_note_already_posted_and_does_not_double_post,
+        test_resolve_marks_every_note_in_the_thread_resolved,
+        test_do_resolve_raises_when_github_does_not_confirm_resolution,
         test_merge_state_upserts_notes_merges_meta_replaces_lists,
         test_merge_state_page_created_note_gets_schema_defaults,
         test_merge_state_agent_created_note_state_is_not_overridden_by_default,

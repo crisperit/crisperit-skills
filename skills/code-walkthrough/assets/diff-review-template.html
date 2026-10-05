@@ -988,6 +988,27 @@
   .cw-answer{display:block;margin:6px 0;padding:6px 0 6px 10px;border-left:3px solid var(--accent);
     white-space:normal;line-height:1.6;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
+  #cw-post-confirm{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+    border:1px solid var(--border);border-radius:10px;color:var(--text)}
+  #cw-post-confirm::backdrop{background:rgba(0,0,0,.6)}
+  #cw-post-confirm-head{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
+  #cw-post-confirm-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1;
+    transition:background .12s}
+  #cw-post-confirm-close:hover{background:var(--border)}
+  #cw-post-confirm-close:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #cw-post-confirm-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
+  #cw-post-confirm-notes,#cw-post-confirm-resolves,#cw-post-confirm-items{list-style:none;
+    margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:8px}
+  #cw-post-confirm-notes pre,#cw-post-confirm-resolves pre{margin:2px 0 0;padding:6px 8px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+    white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--fs-xs)}
+  #cw-post-confirm-submit-row{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm)}
+  #cw-post-confirm-hint{margin:4px 0 12px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
+  #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
+
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
      carries an unconditional rule elsewhere (width/height) at this same ID specificity, and a
      tied specificity is decided by source order, not by which rule sits inside the media query.
@@ -1005,6 +1026,7 @@
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
     #cw-ask-btn,#cw-qa-btn{min-height:44px}
     #cw-ask-close,#cw-qa-close{width:44px;height:44px;font-size:16px}
+    #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
@@ -1048,6 +1070,7 @@
     <ul id="hr-comments-list"></ul>
     <div id="hr-comments-actions" class="fb-actions">
       <button type="button" id="hr-comments-gh-btn" class="fb-ghost">Copy gh command</button>
+      <button type="button" id="hr-comments-post-btn" class="fb-primary" hidden>Post to GitHub</button>
       <button type="button" id="hr-comments-agent-btn" class="fb-primary">Copy for agent</button>
     </div>
     <p id="hr-comments-gh-note" hidden></p>
@@ -1078,6 +1101,26 @@
     <button type="button" id="hr-resolution-close" aria-label="Close">✕</button>
   </div>
   <div id="hr-resolution-body"></div>
+</dialog>
+
+<dialog id="cw-post-confirm" aria-labelledby="cw-post-confirm-title">
+  <div id="cw-post-confirm-head">
+    <span id="cw-post-confirm-title">Post to GitHub</span>
+    <button type="button" id="cw-post-confirm-close" aria-label="Close">✕</button>
+  </div>
+  <div id="cw-post-confirm-body">
+    <ul id="cw-post-confirm-notes"></ul>
+    <ul id="cw-post-confirm-resolves"></ul>
+    <label id="cw-post-confirm-submit-row">
+      <input type="checkbox" id="cw-post-submit"> Submit review as COMMENT
+    </label>
+    <p id="cw-post-confirm-hint">unchecked: comments stay in a pending review only you can see</p>
+    <ul id="cw-post-confirm-items"></ul>
+    <div class="fb-actions">
+      <button type="button" id="cw-post-confirm-send" class="fb-primary">Confirm</button>
+    </div>
+    <p id="cw-post-confirm-status" role="status"></p>
+  </div>
 </dialog>
 
 <script><!-- MERMAID_JS --></script>
@@ -1985,15 +2028,17 @@
     return {notes:state.notes.filter(n=>n.origin==='local'&&n.state==='draft')};
   }
   function putNotesNow(keepalive){
-    if(!window.CW_LIVE) return;
+    if(!window.CW_LIVE) return Promise.resolve();
     try{
-      fetch(window.CW_LIVE.api+'/notes',{
+      return fetch(window.CW_LIVE.api+'/notes',{
         method:'PUT',
         headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
         body:JSON.stringify(draftNotesPayload()),
         keepalive:!!keepalive,
-      });
-    }catch(e){}
+      }).catch(()=>{});
+    }catch(e){
+      return Promise.resolve();
+    }
   }
   function schedulePutNotes(){
     if(putNotesTimer) clearTimeout(putNotesTimer);
@@ -3004,6 +3049,112 @@
     return orderThreaded(state.notes).filter(n=>n.origin==='local');
   }
 
+  function wirePost(canGhCommand){
+    const postBtn=$('hr-comments-post-btn'), dlg=$('cw-post-confirm'),
+      close=$('cw-post-confirm-close'), notesList=$('cw-post-confirm-notes'),
+      resolvesList=$('cw-post-confirm-resolves'), submitCb=$('cw-post-submit'),
+      itemsList=$('cw-post-confirm-items'), sendBtn=$('cw-post-confirm-send'),
+      status=$('cw-post-confirm-status');
+    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!submitCb||!itemsList||!sendBtn||!status) return;
+    postBtn.hidden=!canGhCommand;
+
+    let nonce=null, lastResolves=[];
+
+    function renderBody(data){
+      nonce=data.nonce;
+      lastResolves=data.resolves;
+      notesList.innerHTML='';
+      for(const n of data.notes){
+        const li=document.createElement('li');
+        const where=document.createElement('div'); where.className='hr-comments-where';
+        where.textContent=n.path+':'+n.line;
+        const pre=document.createElement('pre'); pre.textContent=n.body;
+        li.append(where,pre);
+        notesList.appendChild(li);
+      }
+      resolvesList.innerHTML='';
+      for(const r of data.resolves){
+        const li=document.createElement('li');
+        const where=document.createElement('div'); where.className='hr-comments-where';
+        where.textContent='Resolve '+r.path+':'+r.line;
+        const pre=document.createElement('pre'); pre.textContent=r.body;
+        li.append(where,pre);
+        resolvesList.appendChild(li);
+      }
+    }
+
+    function preview(){
+      status.textContent='Loading…';
+      sendBtn.disabled=true;
+      return fetch(window.CW_LIVE.api+'/post/preview',{
+        method:'POST',
+        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
+        body:JSON.stringify({resolve:[...pendingResolveSet]}),
+      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
+        .then(({ok,body})=>{
+          sendBtn.disabled=false;
+          if(!ok){
+            status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
+            return;
+          }
+          status.textContent='';
+          renderBody(body);
+        })
+        .catch(()=>{
+          sendBtn.disabled=false;
+          status.textContent='Request failed -- check the daemon is still running.';
+        });
+    }
+
+    postBtn.addEventListener('click',()=>{
+      postBtn.disabled=true;
+      putNotesNow(false).then(()=>{
+        postBtn.disabled=false;
+        submitCb.checked=false;
+        itemsList.innerHTML='';
+        status.textContent='';
+        dlg.showModal();
+        preview();
+      });
+    });
+
+    close.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('close',()=>{ postBtn.focus(); });
+
+    window.__cwOnPosted=item=>{
+      const li=document.createElement('li');
+      li.textContent=(item.ok?'Posted ':'Failed ')+item.kind+' '+item.id+(item.error?': '+item.error:'');
+      itemsList.appendChild(li);
+    };
+
+    sendBtn.addEventListener('click',()=>{
+      if(nonce==null) return;
+      sendBtn.disabled=true;
+      status.textContent='Posting…';
+      itemsList.innerHTML='';
+      fetch(window.CW_LIVE.api+'/post',{
+        method:'POST',
+        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
+        body:JSON.stringify({nonce,resolve:[...pendingResolveSet],submit:submitCb.checked}),
+      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
+        .then(({ok,body})=>{
+          sendBtn.disabled=false;
+          if(!ok){
+            status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
+            if(body.error==='changed since preview') preview();
+            return;
+          }
+          const resolvedOk=new Set(body.results.filter(r=>r.kind==='resolve'&&r.ok).map(r=>r.id));
+          lastResolves.filter(r=>resolvedOk.has(r.thread_id)).forEach(r=>clearPendingResolve(r.root_id));
+          status.textContent=body.ok?'Posted.':body.render_error;
+        })
+        .catch(()=>{
+          sendBtn.disabled=false;
+          status.textContent='Request failed -- check the daemon is still running.';
+        });
+    });
+  }
+
   function wireCommentsPanel(){
     const btn=$('hr-comments-btn'), dlg=$('hr-comments'), close=$('hr-comments-close'),
       list=$('hr-comments-list'), ghBtn=$('hr-comments-gh-btn'), ghNote=$('hr-comments-gh-note'),
@@ -3069,6 +3220,10 @@
       ghNote.textContent=(state.meta&&state.meta.pr==null)
         ?'No PR for this comparison -- use Copy for agent instead.'
         :'The compared commit has not been pushed yet -- use Copy for agent instead.';
+    }
+    if(window.CW_LIVE){
+      ghBtn.hidden=true;
+      wirePost(canGhCommand);
     }
 
     ghBtn.addEventListener('click',()=>{
@@ -4008,6 +4163,9 @@ document.querySelectorAll('summary a').forEach(a => {
     es.addEventListener('rebuilt',()=>{ onPageUpdated(); });
     es.addEventListener('answer',e=>{
       if(window.__cwOnAnswer) window.__cwOnAnswer(JSON.parse(e.data));
+    });
+    es.addEventListener('posted',e=>{
+      if(window.__cwOnPosted) window.__cwOnPosted(JSON.parse(e.data));
     });
   }
 })();

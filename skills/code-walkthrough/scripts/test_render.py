@@ -457,6 +457,27 @@ def test_the_real_template_carries_the_ask_dialog_behind_window_cw_live():
     assert "window.CW_LIVE.api+'/qa'" in wire_ask
 
 
+def test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off():
+    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+
+    # wireCommentsPanel's canGhCommand block is the only caller of wirePost -- the post UI
+    # never activates on a page that isn't live.
+    assert "if(window.CW_LIVE){" in real_template
+    assert "wirePost(canGhCommand);" in real_template
+    wire_post = real_template.split("function wirePost(canGhCommand){")[1].split(
+        "\n  function wireCommentsPanel()")[0]
+    assert "window.CW_LIVE.api+'/post/preview'" in wire_post
+    assert "window.CW_LIVE.api+'/post'" in wire_post
+    assert "window.__cwOnPosted" in wire_post
+
+    # The checkbox ships unchecked -- no `checked` attribute anywhere in its tag, checked by
+    # capturing the whole <input ...> rather than just the text after id=, so a `checked`
+    # placed before id= would still be caught.
+    before, _, after = real_template.partition('id="cw-post-submit"')
+    tag = before.rsplit("<input", 1)[1] + after.split(">", 1)[0]
+    assert "checked" not in tag
+
+
 if __name__ == "__main__":
     tests = [
         test_facts_come_from_the_diff_not_the_analysis,
@@ -499,6 +520,7 @@ if __name__ == "__main__":
         test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
         test_the_real_template_gates_live_code_behind_window_cw_live,
         test_the_real_template_carries_the_ask_dialog_behind_window_cw_live,
+        test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off,
     ]
     for test in tests:
         test()

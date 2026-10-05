@@ -8,6 +8,7 @@ Usage: cw_server.py serve
 Stdlib only. Binds 127.0.0.1 only; see references/live.md for the localhost guard.
 """
 
+import hashlib
 import hmac
 import json
 import os
@@ -27,7 +28,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
+import cw_run  # noqa: E402  direct, not the runner seam: /post's gh-facing calls (notes.py
 import cw_store  # noqa: E402
+import notes  # noqa: E402
 from notes import VALID_ID_RE  # noqa: E402  same id check a page write is subject to
 
 HOST = "127.0.0.1"
@@ -252,6 +255,13 @@ _EVENTS_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/events$")
 _NOTES_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/notes$")
 _ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
+_POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
+_POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
+
+NO_PR_MSG = "No PR for this comparison -- use Copy for agent instead."
+HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet -- use Copy for agent instead."
+STILL_BUILDING_MSG = "walkthrough still building"
+FAILED_MSG = "walkthrough did not finish"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -315,12 +325,22 @@ class _Handler(BaseHTTPRequestHandler):
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length > MAX_BODY:
-            # The body is still unread on the wire; keep-alive would feed its tail to the
-            # next request line.
+            # ponytail: drain capped at 4x MAX_BODY; a Content-Length far beyond that can
+            # still race a close against the client's write. Routes here require a valid
+            # token, so raise the cap if an authenticated client ever needs it.
+            self._drain(min(length, MAX_BODY * 4))
             self.close_connection = True
             self._send_json(413, {"error": "payload too large"})
             return None, True
         return (self.rfile.read(length) if length else b""), False
+
+    def _drain(self, n):
+        remaining = n
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break
+            remaining -= len(chunk)
 
     def _resolve_dir(self, key, wid, *, json_errors):
         send = self._send_json if json_errors else self._send_text
@@ -341,6 +361,11 @@ class _Handler(BaseHTTPRequestHandler):
         daemon.enter_request()
         try:
             fn()
+        except Exception as e:
+            try:
+                self._send_json(500, {"error": str(e)})
+            except Exception:
+                pass
         finally:
             daemon.exit_request()
 
@@ -377,6 +402,12 @@ class _Handler(BaseHTTPRequestHandler):
         m = _ASK_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_ask(m.group(1), m.group(2)))
+        m = _POST_PREVIEW_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_post_preview(m.group(1), m.group(2)))
+        m = _POST_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_post(m.group(1), m.group(2)))
         self._tracked(lambda: self._send_text(404, "not found"))
 
     def _route_health(self):
@@ -460,14 +491,17 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "bad json"})
             return
-        notes = payload.get("notes")
-        if not isinstance(notes, list):
+        incoming = payload.get("notes")
+        if not isinstance(incoming, list):
             self._send_json(400, {"error": "notes must be a list"})
             return
+        st = cw_store.read_json(d / "state.json", default={})
+        posted_ids = {n.get("id") for n in (st or {}).get("notes", []) if n.get("state") == "posted"}
         kept = [
-            n for n in notes
+            n for n in incoming
             if isinstance(n, dict) and isinstance(n.get("id"), str) and VALID_ID_RE.fullmatch(n["id"])
             and n.get("origin") == "local" and n.get("state") == "draft"
+            and n["id"] not in posted_ids
         ]
         cw_store.write_json(d / "page-notes.json", {"notes": kept})
         self._send_json(200, {"ok": True, "count": len(kept)})
@@ -512,6 +546,212 @@ class _Handler(BaseHTTPRequestHandler):
         qid = "q-" + secrets.token_hex(4)
         self.server.cw_daemon.start_ask(key, wid, d, qid, anchor, question)
         self._send_json(202, {"qid": qid})
+
+    def _post_check_meta(self, d):
+        """Guard 1, shared by /post/preview and /post: posting only ever makes sense from a
+        built, final page -- daemon.is_running(d) already turned away a page still building,
+        this turns away a partial preview page, which has no links/pr wiring yet."""
+        meta = cw_store.read_meta(d)
+        if meta is None:
+            return None, {"error": STILL_BUILDING_MSG}
+        if meta.get("status") in ("failed", "interrupted"):
+            return None, {"error": FAILED_MSG, "remedy": "re-run /code-walkthrough"}
+        if meta.get("status") != "done" or meta.get("page") != "final":
+            return None, {"error": STILL_BUILDING_MSG}
+        return meta, None
+
+    def _post_check_state(self, d):
+        """Guard 2: today's exact refusal strings (canGhCommand, assets/diff-review-template.html)
+        for the two cases a page post can never succeed in -- no PR on this comparison, or a
+        head GitHub cannot see yet."""
+        st = cw_store.read_json(d / "state.json")
+        if not isinstance(st, dict):
+            return None, {"error": STILL_BUILDING_MSG}
+        st_meta = st.get("meta") or {}
+        if st_meta.get("pr") is None:
+            return None, {"error": NO_PR_MSG}
+        if not st_meta.get("head_pushed"):
+            return None, {"error": HEAD_NOT_PUSHED_MSG}
+        return st, None
+
+    def _post_items(self, d, st, resolve_ids):
+        """Steps 3-4 shared by preview and post: fold page-notes.json into state.json first
+        (an edit made just before clicking Post must count), then list exactly what
+        notes.pending_publish_ids calls ready -- the same in-process predicate /post
+        recomputes and compares against the nonce -- and which requested root ids still
+        point at an unresolved thread."""
+        page_notes_path = d / "page-notes.json"
+        if page_notes_path.exists():
+            result = cw_run._notes(cw_store.read_meta(d), [
+                "import", "--state", str(d / "state.json"), "--file", str(page_notes_path),
+                "--replace-local-drafts",
+            ])
+            if result.returncode != 0:
+                raise cw_store.CWError(
+                    "notes.py import failed: " + result.stderr.strip()[-500:])
+            st = cw_store.read_json(d / "state.json")
+        by_id = {n["id"]: n for n in st.get("notes", [])}
+        notes_items = []
+        for note_id in notes.pending_publish_ids(st):
+            note = by_id[note_id]
+            body = note.get("body") or ""
+            if not body.strip():
+                continue
+            notes_items.append({
+                "id": note_id, "path": note.get("path"), "line": note.get("line"),
+                "side": note.get("side"), "body": body, "reply_to": note.get("reply_to"),
+            })
+        resolves_items = []
+        for root_id in resolve_ids or []:
+            note = by_id.get(root_id)
+            if note is None:
+                continue
+            thread_id = note.get("gh_thread_id")
+            if not thread_id or note.get("resolved"):
+                continue
+            resolves_items.append({
+                "root_id": root_id, "thread_id": thread_id, "path": note.get("path"),
+                "line": note.get("line"), "body": note.get("body"),
+            })
+        return st, notes_items, resolves_items
+
+    def _post_nonce(self, notes_items, resolves_items):
+        """A change under us between preview and post -- a draft body edited, a resolve added
+        or removed -- must invalidate the preview rather than silently posting something the
+        user never actually saw; a hash over exactly what preview returned catches either."""
+        payload = {
+            "notes": [[n["id"], n["body"]] for n in notes_items],
+            "resolve": sorted(r["thread_id"] for r in resolves_items),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def _route_post_preview(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if self.server.cw_daemon.is_running(d):
+            self._send_json(409, {"error": STILL_BUILDING_MSG})
+            return
+        with cw_store.dir_lock(d):
+            meta, err = self._post_check_meta(d)
+            if err:
+                self._send_json(409, err)
+                return
+            st, err = self._post_check_state(d)
+            if err:
+                self._send_json(409, err)
+                return
+            if meta.get("pr") and meta.get("gh_repo"):
+                _runner().sync_pr(d, meta)
+                # sync_pr can flip a draft to posted on disk; st above predates that write.
+                refreshed = cw_store.read_json(d / "state.json")
+                if isinstance(refreshed, dict):
+                    st = refreshed
+            try:
+                st, notes_items, resolves_items = self._post_items(d, st, payload.get("resolve"))
+            except cw_store.CWError as e:
+                self._send_json(500, {"error": str(e)})
+                return
+            nonce = self._post_nonce(notes_items, resolves_items)
+        self._send_json(200, {"notes": notes_items, "resolves": resolves_items, "nonce": nonce})
+
+    def _route_post(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        daemon = self.server.cw_daemon
+        if daemon.is_running(d):
+            self._send_json(409, {"error": STILL_BUILDING_MSG})
+            return
+        with cw_store.dir_lock(d):
+            meta, err = self._post_check_meta(d)
+            if err:
+                self._send_json(409, err)
+                return
+            st, err = self._post_check_state(d)
+            if err:
+                self._send_json(409, err)
+                return
+            try:
+                st, notes_items, resolves_items = self._post_items(d, st, payload.get("resolve"))
+            except cw_store.CWError as e:
+                self._send_json(500, {"error": str(e)})
+                return
+            nonce = self._post_nonce(notes_items, resolves_items)
+            if nonce != payload.get("nonce"):
+                self._send_json(409, {"error": "changed since preview", "remedy": "review the list again"})
+                return
+
+            results = []
+            state_path = str(d / "state.json")
+            for item in notes_items:
+                result = cw_run._notes(meta, ["deliver", "--state", state_path, "--id", item["id"]])
+                entry = {"kind": "note", "id": item["id"], "ok": result.returncode == 0,
+                         "error": None if result.returncode == 0 else result.stderr.strip()[-500:]}
+                results.append(entry)
+                daemon.hub.emit(key, wid, "posted", entry)
+            for item in resolves_items:
+                result = cw_run._notes(meta, ["resolve", "--state", state_path,
+                                              "--thread-id", item["thread_id"]])
+                entry = {"kind": "resolve", "id": item["thread_id"], "ok": result.returncode == 0,
+                         "error": None if result.returncode == 0 else result.stderr.strip()[-500:]}
+                results.append(entry)
+                daemon.hub.emit(key, wid, "posted", entry)
+            if payload.get("submit"):
+                body_path = d / "review-body.txt"
+                body_path.write_text("")
+                result = cw_run._notes(meta, ["submit", "--state", state_path, "--event", "COMMENT",
+                                              "--body-file", str(body_path)])
+                entry = {"kind": "submit", "id": None, "ok": result.returncode == 0,
+                         "error": None if result.returncode == 0 else result.stderr.strip()[-500:]}
+                results.append(entry)
+                daemon.hub.emit(key, wid, "posted", entry)
+
+            delivered_ids = {r["id"] for r in results if r["kind"] == "note" and r["ok"]}
+            page_notes = cw_store.read_json(d / "page-notes.json")
+            if isinstance(page_notes, dict):
+                remaining = [n for n in page_notes.get("notes", []) if n.get("id") not in delivered_ids]
+                cw_store.write_json(d / "page-notes.json", {"notes": remaining})
+
+            render_args = ["render", "--dir", str(d), "--slug", meta["slug"]]
+            if meta.get("title"):
+                render_args += ["--title", meta["title"]]
+            render_result = subprocess.run(
+                [sys.executable, str(cw_run.SCRIPTS_DIR / "pipeline.py"), *render_args],
+                capture_output=True, text=True)
+            if render_result.returncode != 0:
+                gate_lines = [line for line in render_result.stderr.splitlines() if line.strip()]
+                cw_store.update_meta(d, lambda m: m.update({"status": "failed", "gate": gate_lines}))
+                daemon.hub.emit(key, wid, "step",
+                                 {"name": "render", "status": "failed", "error": gate_lines})
+                self._send_json(200, {"ok": False, "results": results,
+                                       "render_error": render_result.stderr.strip()[-500:]})
+                return
+            meta2 = cw_store.update_meta(d, lambda m: m.update(
+                {"page": "final", "rev": m.get("rev", 0) + 1}))
+
+        daemon.hub.emit(key, wid, "rebuilt", {"rev": meta2["rev"], "page": "final", "fragments": []})
+        self._send_json(200, {"ok": True, "results": results})
 
     def _route_rpc(self):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
