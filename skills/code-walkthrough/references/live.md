@@ -79,9 +79,16 @@ another worker already wrote there.
 
 ## PR targets
 
-A PR target still uses the static, agent-driven path end to end: `walkthrough_start` refuses it
-with `CWError("PR targets use the static path until phase 3", remedy="continue with step 2 of
-SKILL.md")` until a later phase wires PR comment sync and thread resolution into the daemon.
+A PR target runs through the daemon too (phase 3): `walkthrough_start` with `pr` set syncs the
+PR's own comments and resolves its threads as part of the build, between `prepare` and `render`,
+steps `comments` and `threads` (plus one `thread-<N>` per resolved thread needing a fresh
+answer). `walkthrough_start` on an origin that isn't a GitHub remote still refuses with
+`CWError("origin is not a GitHub remote", remedy="continue with step 2 of SKILL.md")`.
+
+Every `gh` and `notes.py` call the daemon makes on a walkthrough's behalf runs with that
+walkthrough's repo as cwd and with `GH_TOKEN`/`GITHUB_TOKEN` stripped from its environment
+(`cw_run.gh_env`), so a shared daemon serving several repos or users never posts under whichever
+identity its own process environment or working directory happens to carry.
 
 ## Remedies
 
@@ -92,6 +99,8 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | No model backend configured | run `cw_mcp.py setup`, fill `profiles` and `roles` in the config path it names, run `cw_mcp.py check`; this run continues on the static path |
 | `<ref>` not in the local object store | `git fetch origin <ref>` |
 | Store would sit inside the repo | set `CODE_WALKTHROUGH_HOME` outside the repo |
+| `pr` set, origin isn't a GitHub remote | continue with step 2 of SKILL.md |
+| `comments`/`threads` step failed | `gh auth login` (`GH_TOKEN`/`GITHUB_TOKEN` are not passed to `gh` here) |
 | Daemon didn't start | see the `server.log` path the error names |
 | 401 / 403 from the model backend | set `<api_key_env>` in the shell that starts your agent, then `cw_mcp.py stop` |
 | 404 from the model backend | check `model` for the named profile |

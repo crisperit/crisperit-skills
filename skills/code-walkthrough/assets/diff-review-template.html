@@ -3668,7 +3668,7 @@ document.querySelectorAll('summary a').forEach(a => {
     const LIVE=window.CW_LIVE;
     // Mirrors cw_run.py's STEPS tuple; keep in sync.
     const STEP_ORDER=['capture','split','skeleton','worktree','complexity','symdelta','small',
-      'prose','routed','prepare','render','run'];
+      'prose','routed','comments','threads','thread','prepare','render','run'];
     let liveStatus=LIVE.status, liveError=LIVE.error, liveRemedy=LIVE.remedy;
     let liveSteps=LIVE.steps||{}, liveBatches=LIVE.batches||{done:0,total:0};
     let liveTotal=LIVE.total||{};

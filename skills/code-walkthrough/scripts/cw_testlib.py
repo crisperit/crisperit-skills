@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -250,3 +251,150 @@ class StubLLM:
 
     def __exit__(self, exc_type, exc, tb):
         self.close()
+
+
+_FAKE_GH_BODY = '''
+import json, os, re, sys, time
+from pathlib import Path
+
+root = Path(os.environ["CW_FAKE_GH_DIR"])
+cfg = json.loads((root / "config.json").read_text())
+log_path = root / "log.jsonl"
+OP_RE = re.compile(r"(?:query|mutation)\\s+(\\w+)")
+
+
+def _load(name, default):
+    path = root / name
+    return json.loads(path.read_text()) if path.exists() else default
+
+
+def _save(name, data):
+    (root / name).write_text(json.dumps(data))
+
+
+def _log(op, argv, variables):
+    entry = {"argv": argv, "cwd": os.getcwd(), "gh_token": "GH_TOKEN" in os.environ,
+             "github_token": "GITHUB_TOKEN" in os.environ, "op": op, "variables": variables}
+    with open(log_path, "a") as f:
+        f.write(json.dumps(entry) + "\\n")
+
+
+def _reply(op, argv, variables, data):
+    _log(op, argv, variables)
+    if op in cfg.get("fail_ops", []):
+        sys.stderr.write("fake gh: %s configured to fail\\n" % op)
+        sys.exit(1)
+    sleep_s = cfg.get("sleep", {}).get(op)
+    if sleep_s:
+        time.sleep(sleep_s)
+    print(json.dumps(data))
+    sys.exit(0)
+
+
+argv = sys.argv[1:]
+
+if len(argv) >= 2 and argv[0] == "api" and re.match(r"^repos/[^/]+/[^/]+/pulls/\\d+/comments$", argv[1]):
+    _reply("rest-comments", argv, None, _load("comments.json", []))
+
+if len(argv) >= 2 and argv[0] == "api" and argv[1] == "graphql":
+    payload = json.loads(sys.stdin.read())
+    query = payload.get("query", "")
+    variables = payload.get("variables")
+    match = OP_RE.search(query)
+    op = match.group(1) if match else "unknown"
+    state = _load("state.json", {"review_opened": False, "comment_n": 0})
+
+    if op == "ReviewThreads":
+        threads = _load("threads.json", [])
+        _reply(op, argv, variables, {"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": threads}}}}})
+    elif op == "PendingReview":
+        nodes = [{"id": "R_1"}] if state.get("review_opened") else []
+        _reply(op, argv, variables, {"data": {"repository": {"pullRequest": {
+            "id": "PR_1", "reviews": {"nodes": nodes}}}}})
+    elif op == "OpenReview":
+        state["review_opened"] = True
+        _save("state.json", state)
+        _reply(op, argv, variables, {"data": {"addPullRequestReview": {
+            "pullRequestReview": {"id": "R_1"}}}})
+    elif op == "NewThread":
+        state["comment_n"] = state.get("comment_n", 0) + 1
+        n = state["comment_n"]
+        _save("state.json", state)
+        comments = _load("comments.json", [])
+        comments.append({"id": 1000 + n, "path": variables.get("path"),
+                          "line": variables.get("line"), "side": variables.get("side"),
+                          "body": variables.get("body"), "user": {"login": "fake"},
+                          "created_at": "2000-01-01T00:00:00Z", "html_url": "",
+                          "in_reply_to_id": None})
+        _save("comments.json", comments)
+        _reply(op, argv, variables, {"data": {"addPullRequestReviewThread": {"thread": {
+            "id": "T_%d" % n,
+            "comments": {"nodes": [{"id": "C_%d" % n, "databaseId": 1000 + n}]}}}}})
+    elif op == "ReplyThread":
+        state["comment_n"] = state.get("comment_n", 0) + 1
+        n = state["comment_n"]
+        _save("state.json", state)
+        _reply(op, argv, variables, {"data": {"addPullRequestReviewComment": {"comment": {
+            "id": "C_%d" % n, "databaseId": 1000 + n}}}})
+    elif op == "SubmitReview":
+        _reply(op, argv, variables, {"data": {"submitPullRequestReview": {"pullRequestReview": {
+            "id": "R_1", "state": "COMMENTED"}}}})
+    elif op == "ResolveThread":
+        _reply(op, argv, variables, {"data": {"resolveReviewThread": {"thread": {
+            "id": variables.get("id"), "isResolved": True}}}})
+    else:
+        _reply(op, argv, variables, {"data": {}})
+
+_log("unknown", argv, None)
+sys.stderr.write("fake gh: unrecognized invocation: %r\\n" % argv)
+sys.exit(1)
+'''
+
+
+class _FakeGH:
+    def __init__(self, root):
+        self._log_path = root / "log.jsonl"
+
+    def log(self):
+        if not self._log_path.exists():
+            return []
+        return [json.loads(line) for line in self._log_path.read_text().splitlines() if line.strip()]
+
+    def count(self, op):
+        return sum(1 for entry in self.log() if entry.get("op") == op)
+
+
+@contextmanager
+def fake_gh(tmp, *, comments=(), threads=None, fail_ops=(), sleep=None):
+    """A `gh` on PATH that fakes the one REST call and the GraphQL ops notes.py sends,
+    dispatched by the mutation/query name parsed from the request body (never from argv --
+    see cw_run._gh/_notes: a note's body never reaches a command line). State a call needs
+    across invocations (the pending review, the running comment counter) lives in
+    CW_FAKE_GH_DIR as JSON, since each `gh` call is its own fresh process.
+    """
+    root = Path(tmp) / "fake-gh"
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (root / "comments.json").write_text(json.dumps(list(comments)))
+    (root / "threads.json").write_text(json.dumps(threads if threads is not None else []))
+    (root / "config.json").write_text(json.dumps({"fail_ops": list(fail_ops), "sleep": sleep or {}}))
+    (root / "state.json").write_text(json.dumps({"review_opened": False, "comment_n": 0}))
+    (root / "log.jsonl").write_text("")
+
+    gh_path = bin_dir / "gh"
+    gh_path.write_text("#!" + sys.executable + "\n" + _FAKE_GH_BODY)
+    gh_path.chmod(0o755)
+
+    old_path = os.environ.get("PATH", "")
+    old_dir = os.environ.get("CW_FAKE_GH_DIR")
+    os.environ["PATH"] = str(bin_dir) + os.pathsep + old_path
+    os.environ["CW_FAKE_GH_DIR"] = str(root)
+    try:
+        yield _FakeGH(root)
+    finally:
+        os.environ["PATH"] = old_path
+        if old_dir is None:
+            os.environ.pop("CW_FAKE_GH_DIR", None)
+        else:
+            os.environ["CW_FAKE_GH_DIR"] = old_dir
