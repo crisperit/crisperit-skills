@@ -277,6 +277,33 @@ def test_reject_closes_connection_instead_of_leaking_body_into_next_request():
             assert buf.count(b"HTTP/1.1") == 1, buf
 
 
+# -- token persistence ------------------------------------------------------
+
+def test_token_stable_across_restarts():
+    with cw_testlib.temp_home():
+        with running_daemon() as daemon1:
+            token1 = daemon1.token
+        with running_daemon() as daemon2:
+            token2 = daemon2.token
+        assert token1 == token2
+
+
+def test_token_file_is_mode_0600():
+    with cw_testlib.temp_home():
+        with running_daemon():
+            mode = cw_store.token_path().stat().st_mode
+            assert (mode & 0o777) == 0o600
+
+
+def test_corrupt_token_file_replaced_with_fresh_valid_token():
+    with cw_testlib.temp_home():
+        cw_store.token_path().write_text("")
+        with running_daemon() as daemon:
+            token = daemon.token
+            assert cw_store.TOKEN_RE.fullmatch(token)
+            assert cw_store.token_path().read_text().strip() == token
+
+
 # -- restart on a new port ------------------------------------------------
 
 def test_drafts_survive_restart_on_new_port():
@@ -483,6 +510,9 @@ if __name__ == "__main__":
         test_page_not_built_yet_gives_503,
         test_put_notes_filters_and_413,
         test_reject_closes_connection_instead_of_leaking_body_into_next_request,
+        test_token_stable_across_restarts,
+        test_token_file_is_mode_0600,
+        test_corrupt_token_file_replaced_with_fresh_valid_token,
         test_drafts_survive_restart_on_new_port,
         test_sse_snapshot_and_broadcast_to_two_clients,
         test_second_start_does_not_spawn_second_run,
