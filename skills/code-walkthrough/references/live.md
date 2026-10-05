@@ -19,7 +19,8 @@ with a `cost_usd` once an openai profile carries `price_per_mtok`.
 
 With `claude` on PATH, `python3 scripts/cw_mcp.py setup` writes a working claude-code config;
 there is nothing to edit. Installing this skill as a Claude Code plugin registers the MCP server
-automatically, but plugin users still run `setup` once to get this config. A manual clone (or any
+automatically, but plugin users still run `setup` once to get this config; under the plugin,
+`setup` just writes that config and skips registration, for either `--agent`. A manual clone (or any
 other MCP-capable harness) needs one command instead:
 
 ```bash

@@ -805,19 +805,29 @@ def _repo_owner_name(state):
     return owner, name
 
 
-def _ensure_pending_review(state, gh_run):
-    """The pending review's node id, looked up fresh on every call rather than cached on
-    state -- a review submitted from the GitHub web UI mid-session would otherwise strand a
-    stored id on a review that no longer exists. Opens one only when none is found.
+def _lookup_pending_review(state, gh_run):
+    """(review_id or None, pull_request_id), looked up fresh on every call rather than cached
+    on state -- a review submitted from the GitHub web UI mid-session would otherwise strand a
+    stored id on a review that no longer exists.
     """
     owner, name = _repo_owner_name(state)
     number = (state.get("meta") or {}).get("pr")
     resp = gh_run(PENDING_REVIEW_QUERY, {"owner": owner, "repo": name, "number": number})
     pull_request = resp["data"]["repository"]["pullRequest"]
     nodes = (pull_request.get("reviews") or {}).get("nodes") or []
-    if nodes:
-        return nodes[0]["id"]
-    resp = gh_run(OPEN_REVIEW_MUTATION, {"pullRequestId": pull_request["id"]})
+    review_id = nodes[0]["id"] if nodes else None
+    return review_id, pull_request["id"]
+
+
+def _ensure_pending_review(state, gh_run):
+    """The pending review's node id, opening one only when none is found. deliver_note's two
+    callers (a new thread, a reply) both want this open-if-missing behaviour; submit_review
+    does not -- see submit_review.
+    """
+    review_id, pull_request_id = _lookup_pending_review(state, gh_run)
+    if review_id is not None:
+        return review_id
+    resp = gh_run(OPEN_REVIEW_MUTATION, {"pullRequestId": pull_request_id})
     return resp["data"]["addPullRequestReview"]["pullRequestReview"]["id"]
 
 
@@ -873,7 +883,14 @@ def deliver_note(state, note, diff_text, gh_run):
 
 
 def submit_review(state, event, body, gh_run):
-    review_id = _ensure_pending_review(state, gh_run)
+    """Submit the existing pending review -- never opens one, unlike deliver_note's
+    _ensure_pending_review. Submitting with nothing pending (e.g. a retry after the only
+    draft already posted) would otherwise open an empty review and have GitHub reject the
+    mutation, leaving that empty review stranded on the PR.
+    """
+    review_id, _ = _lookup_pending_review(state, gh_run)
+    if review_id is None:
+        raise RuntimeError("no pending review to submit: post a comment first")
     resp = gh_run(SUBMIT_MUTATION, {"reviewId": review_id, "event": event, "body": body})
     return ((resp.get("data") or {}).get("submitPullRequestReview") or {}).get("pullRequestReview")
 
@@ -1138,7 +1155,11 @@ def main():
     submit_parser.set_defaults(func=do_submit)
 
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

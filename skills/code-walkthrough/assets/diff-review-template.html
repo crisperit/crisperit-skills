@@ -2048,7 +2048,7 @@
   // send left must still get a guaranteed keepalive PUT.
   function flushPutNotes(){
     if(putNotesTimer){ clearTimeout(putNotesTimer); putNotesTimer=null; }
-    putNotesNow(true);
+    return putNotesNow(true);
   }
   if(window.CW_LIVE){
     window.addEventListener('pagehide',()=>flushPutNotes());
@@ -4110,9 +4110,10 @@ document.querySelectorAll('summary a').forEach(a => {
     function scrollKey(){ return 'cw-scroll:'+LIVE.key+'/'+LIVE.id; }
 
     function doReload(){
-      if(window.__cwFlushPutNotes) window.__cwFlushPutNotes();
       try{ sessionStorage.setItem(scrollKey(), String(window.scrollY)); }catch(e){}
-      location.reload();
+      const flushed=window.__cwFlushPutNotes ? window.__cwFlushPutNotes() : Promise.resolve();
+      const timeout=new Promise(resolve=>setTimeout(resolve,1500));
+      Promise.race([flushed,timeout]).then(()=>location.reload());
     }
 
     function showReloadPill(){

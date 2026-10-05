@@ -237,6 +237,73 @@ def test_put_notes_filters_and_413():
             assert status == 413, status
 
 
+def test_reject_closes_connection_instead_of_leaking_body_into_next_request():
+    # Regression: an early-reject 403 used to leave the PUT body unread on the keep-alive
+    # socket, so Chrome's pooled connection fed it to the server as the next request line
+    # (a stale-token notes PUT followed by a page GET came back 400/501 instead of 200).
+    with cw_testlib.temp_home() as home:
+        _make_walkthrough(home)
+        with running_daemon() as daemon:
+            put_body = json.dumps({"notes": []})
+            req = (
+                f"PUT /api/walkthrough/{KEY}/{WID}/notes HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{daemon.port}\r\n"
+                "X-CW-Token: wrong\r\n"
+                f"Content-Length: {len(put_body)}\r\n"
+                "Content-Type: application/json\r\n"
+                "Connection: keep-alive\r\n\r\n"
+                f"{put_body}"
+                f"GET /health HTTP/1.1\r\nHost: 127.0.0.1:{daemon.port}\r\n\r\n"
+            )
+            sock = socket.create_connection(("127.0.0.1", daemon.port), timeout=5)
+            try:
+                sock.sendall(req.encode())
+                sock.settimeout(5)
+                buf = b""
+                try:
+                    while True:
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        buf += chunk
+                except socket.timeout:
+                    pass
+            finally:
+                sock.close()
+            assert buf.startswith(b"HTTP/1.1 403"), buf
+            assert b"Connection: close" in buf, buf
+            # Exactly one response: the leftover body+GET bytes were never parsed as a
+            # second request (which would show up as a 400 or 501 status line).
+            assert buf.count(b"HTTP/1.1") == 1, buf
+
+
+# -- token persistence ------------------------------------------------------
+
+def test_token_stable_across_restarts():
+    with cw_testlib.temp_home():
+        with running_daemon() as daemon1:
+            token1 = daemon1.token
+        with running_daemon() as daemon2:
+            token2 = daemon2.token
+        assert token1 == token2
+
+
+def test_token_file_is_mode_0600():
+    with cw_testlib.temp_home():
+        with running_daemon():
+            mode = cw_store.token_path().stat().st_mode
+            assert (mode & 0o777) == 0o600
+
+
+def test_corrupt_token_file_replaced_with_fresh_valid_token():
+    with cw_testlib.temp_home():
+        cw_store.token_path().write_text("")
+        with running_daemon() as daemon:
+            token = daemon.token
+            assert cw_store.TOKEN_RE.fullmatch(token)
+            assert cw_store.token_path().read_text().strip() == token
+
+
 # -- restart on a new port ------------------------------------------------
 
 def test_drafts_survive_restart_on_new_port():
@@ -442,6 +509,10 @@ if __name__ == "__main__":
         test_page_route_requires_query_token_not_header,
         test_page_not_built_yet_gives_503,
         test_put_notes_filters_and_413,
+        test_reject_closes_connection_instead_of_leaking_body_into_next_request,
+        test_token_stable_across_restarts,
+        test_token_file_is_mode_0600,
+        test_corrupt_token_file_replaced_with_fresh_valid_token,
         test_drafts_survive_restart_on_new_port,
         test_sse_snapshot_and_broadcast_to_two_clients,
         test_second_start_does_not_spawn_second_run,

@@ -265,14 +265,15 @@ def cmd_setup(agent):
             cw_store.write_json(config_path, _CONFIG_TEMPLATE)
             _log(f"wrote {config_path} (proxy template)")
 
+    if "/.claude/plugins/" in str(SCRIPTS_DIR):
+        _log(f"MCP server already registered by the plugin install; config is at {config_path}")
+        return 0
+
     mcp_py = str(SCRIPTS_DIR / "cw_mcp.py")
     if agent == "print":
         print(json.dumps({"mcpServers": {"code-walkthrough": {"command": sys.executable, "args": [mcp_py, "mcp"]}}}))
         return 0
     if agent == "claude":
-        if "/.claude/plugins/" in str(SCRIPTS_DIR):
-            _log(f"MCP server already registered by the plugin install; config is at {config_path}")
-            return 1
         subprocess.run(["claude", "mcp", "remove", "-s", "user", "code-walkthrough"], capture_output=True)
         result = subprocess.run(
             ["claude", "mcp", "add", "-s", "user", "code-walkthrough", "--", sys.executable, mcp_py, "mcp"]

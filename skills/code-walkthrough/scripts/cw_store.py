@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 import sys
 import tempfile
 import threading
@@ -74,6 +76,41 @@ def log_path():
 
 def config_path():
     return home() / "config.json"
+
+
+def token_path():
+    return home() / "token"
+
+
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,}$")
+
+
+def load_or_create_token():
+    """Load the daemon auth token from token_path(), minting and persisting a fresh one if
+    missing or malformed. Kept stable across daemon restarts so a page tab opened before a
+    restart can still save its drafts."""
+    path = token_path()
+    try:
+        token = path.read_text().strip()
+    except OSError:
+        token = ""
+    if TOKEN_RE.fullmatch(token):
+        if stat.S_IMODE(path.stat().st_mode) != 0o600:
+            os.chmod(path, 0o600)
+        return token
+    return _mint_token(path)
+
+
+def _mint_token(path):
+    token = secrets.token_urlsafe(32)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    return token
 
 
 def now_iso():

@@ -593,6 +593,39 @@ def test_nav_menu_still_offers_go_to_file_alongside_go_to_symbol():
     assert "'Go to file'" in text and "Go to first file" in text
 
 
+def test_flush_put_notes_returns_the_put_promise():
+    """flushPutNotes must hand back putNotesNow(true)'s promise, not fire-and-forget it --
+    doReload's reload-after-flush fix below is useless if there is nothing to await."""
+    text = TEMPLATE_PATH.read_text()
+    fn_match = re.search(r"function flushPutNotes\(\)\{(.*?)\n  \}", text, re.S)
+    assert fn_match, "flushPutNotes() not found in diff-review-template.html"
+    assert "return putNotesNow(" in fn_match.group(1), (
+        "flushPutNotes no longer returns putNotesNow()'s promise"
+    )
+
+
+def test_do_reload_awaits_the_flush_before_reloading():
+    """Regression for the live-reload data-loss race: doReload used to call
+    __cwFlushPutNotes() and reload() back to back, so the reload's GET could beat the
+    flush's keepalive PUT to the server and the page would come back showing stale notes.
+    doReload must chain location.reload() onto the flush promise (capped by a timeout, so a
+    hung daemon can't block reload forever) instead of calling it unconditionally inline."""
+    text = TEMPLATE_PATH.read_text()
+    fn_match = re.search(r"function doReload\(\)\{(.*?)\n    \}", text, re.S)
+    assert fn_match, "doReload() not found in diff-review-template.html"
+    body = fn_match.group(1)
+
+    assert "location.reload()" not in body.split(".then(")[0], (
+        "doReload calls location.reload() before chaining on the flush promise"
+    )
+    assert re.search(r"\.then\(.*?location\.reload\(\)", body, re.S), (
+        "doReload no longer reloads inside a .then() chained on the flush"
+    )
+    assert "Promise.race" in body, (
+        "doReload no longer caps the flush wait with a timeout"
+    )
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in list(globals().items())
              if name.startswith("test_") and callable(fn)]

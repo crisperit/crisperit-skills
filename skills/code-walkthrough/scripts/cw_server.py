@@ -276,6 +276,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
+        if status >= 400:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
@@ -790,7 +792,7 @@ class Daemon:
         self.idle_s = idle_s
         self.write_server_json = write_server_json
         self.beat_s = float(os.environ.get("CW_BEAT_S", 15))
-        self.token = secrets.token_urlsafe(32)
+        self.token = cw_store.load_or_create_token()
         self.hub = _Hub()
         self.port = None
 
