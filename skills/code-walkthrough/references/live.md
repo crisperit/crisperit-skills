@@ -51,8 +51,8 @@ A profile's `kind` is `openai` (the default; needs `base_url` and `model`) or `c
 bounds each profile's call either way, HTTP request or claude process; `max_conversation_tokens`
 and `price_per_mtok` apply to the openai kind only. `roles.escalate` is optional and falls back to
 `roles.prose`; it is the fresh retry a batch gets after failing its fragment gate twice.
-`small_diff_lines` and `batch_max_lines` mirror the fan-out thresholds in SKILL.md step 2 and step
-2a. An openai profile may also carry `price_per_mtok: {"input": x, "output": y}`, which is what
+`small_diff_lines` and `batch_max_lines` mirror the fan-out thresholds in `static.md` step 2 and
+step 2a. An openai profile may also carry `price_per_mtok: {"input": x, "output": y}`, which is what
 turns a usage total into `cost_usd`; no price table ships, since one would go stale.
 
 ## `check`
@@ -106,7 +106,7 @@ A PR target runs through the daemon too (phase 3): `walkthrough_start` with `pr`
 PR's own comments and resolves its threads as part of the build, between `prepare` and `render`,
 steps `comments` and `threads` (plus one `thread-<N>` per resolved thread needing a fresh
 answer). `walkthrough_start` on an origin that isn't a GitHub remote still refuses with
-`CWError("origin is not a GitHub remote", remedy="continue with step 2 of SKILL.md")`.
+`CWError("origin is not a GitHub remote", remedy="follow references/static.md of the code-walkthrough skill")`.
 
 Every `gh` and `notes.py` call the daemon makes on a walkthrough's behalf runs with that
 walkthrough's repo as cwd and with `GH_TOKEN`/`GITHUB_TOKEN` stripped from its environment
@@ -147,7 +147,7 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | No model backend configured | run `cw_mcp.py setup`, fill `profiles` and `roles` in the config path it names, run `cw_mcp.py check`; this run continues on the static path |
 | `<ref>` not in the local object store | `git fetch origin <ref>` |
 | Store would sit inside the repo | set `CODE_WALKTHROUGH_HOME` outside the repo |
-| `pr` set, origin isn't a GitHub remote | continue with step 2 of SKILL.md |
+| `pr` set, origin isn't a GitHub remote | follow references/static.md of the code-walkthrough skill |
 | `comments`/`threads` step failed | `gh auth login` (`GH_TOKEN`/`GITHUB_TOKEN` are not passed to `gh` here) |
 | Ask selection too large | select a smaller range |
 | No `ask` role configured | set `roles.ask` in `config.json` |

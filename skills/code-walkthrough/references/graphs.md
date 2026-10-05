@@ -1,7 +1,7 @@
 # The symbol-delta graph
 
 Background for `complexity.py` and `structure.py` (both run automatically by `pipeline.py`) and
-for `symdelta.py` (SKILL.md step 2b3, still a manual call since it is the slow one). Read it when
+for `symdelta.py` (`static.md` step 2b3, still a manual call since it is the slow one). Read it when
 a graph looks wrong, when deciding whether to trust a `language: null` result, or when the
 fleet-wide runtime is the thing you're planning around.
 
@@ -57,7 +57,7 @@ inferred, not compiler-resolved, so the reader can discount it deliberately rath
 by default. It is still worse than a real graph: a wrong edge is worse than no edge, which is why
 it is opt-in, asked for once per diff, and never the default when `language` is `null`.
 
-When `<paths>` scopes the symbols graph (SKILL.md step 2b3), the graph keeps symbols under those
+When `<paths>` scopes the symbols graph (`static.md` step 2b3), the graph keeps symbols under those
 paths plus whatever their edges reach one hop out, not just the exact files named.
 
 The two mechanical tiers resolve calls with real tooling, not a reader. Go uses a native

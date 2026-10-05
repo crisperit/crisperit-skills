@@ -1,7 +1,7 @@
 # Resolving PR review threads
 
-Background and full steps for SKILL.md's 2g, run only when the diffed target is a GitHub PR.
-SKILL.md carries the stub; this file carries every step and the worker prompt, and is meant to
+Background and full steps for `static.md`'s 2g, run only when the diffed target is a GitHub PR.
+`static.md` carries the stub; this file carries every step and the worker prompt, and is meant to
 be read in full before starting.
 
 For each thread `sync-threads` just marked resolved, work out what closed it: conversation, a

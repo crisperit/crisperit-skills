@@ -1353,7 +1353,7 @@ def prepare_walkthrough(params, is_running=None):
             raise cw_store.CWError(f"bad pr: {pr!r}")
         gh_repo = state._repo_from_links({"repo_url": links.repo_web_url(str(toplevel))})
         if gh_repo is None:
-            raise cw_store.CWError("origin is not a GitHub remote", remedy="continue with step 2 of SKILL.md")
+            raise cw_store.CWError("origin is not a GitHub remote", remedy="follow references/static.md of the code-walkthrough skill")
     config = cw_store.load_config()
     if cw_store.role_profile(config, "analysis") is None or cw_store.role_profile(config, "prose") is None:
         raise cw_store.CWError(

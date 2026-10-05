@@ -1,7 +1,7 @@
 # Fan-out: the batch brief, note rules, and the gate
 
 Background for steps 2a and 2b. Read it before running the fan-out on a large diff, or when a
-batch or the gate keeps failing. SKILL.md carries the commands; this file carries what each
+batch or the gate keeps failing. `static.md` carries the commands; this file carries what each
 subagent is told and why the gate is shaped the way it is.
 
 ## Why split at all
@@ -73,7 +73,7 @@ Tell it to reply with the path, field counts and group titles only, never their 
 agent that pastes `overview` or a group's `why` back into its own report is exactly how that
 prose ends up in the main thread's context a second time; the file is the deliverable, the reply
 is a receipt. Group titles themselves are the one exception allowed in the main context
-(SKILL.md's intro), so naming them in the reply is fine.
+(`static.md`'s intro), so naming them in the reply is fine.
 
 ## Merging
 

@@ -1,6 +1,6 @@
 # Regen: skip what has not changed
 
-Background for the optional cache step SKILL.md's 2a-regen stub points at, and for the second
+Background for the optional cache step `static.md`'s 2a-regen stub points at, and for the second
 invocation `references/resolved-threads.md` makes. Read it before running `regen.py`, or when its
 printed plan's fields need explaining.
 

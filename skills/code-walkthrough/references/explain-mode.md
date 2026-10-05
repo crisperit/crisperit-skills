@@ -1,7 +1,7 @@
 # Explain mode: the empty baseline, its scope bands, and `<explain>`
 
-Read this at step 1 whenever the target resolved to the empty-baseline row, before step 2
-writes `raw.diff`. SKILL.md carries the decision; the mechanics are here.
+Read this at step 1 whenever the target resolved to the empty-baseline row, before `static.md`
+step 2 writes `raw.diff`. SKILL.md carries the decision; the mechanics are here.
 
 ## The empty baseline
 
@@ -37,7 +37,7 @@ Explain mode has no size ceiling of its own: "explain the auth flow" might be 40
 "help me understand this codebase" or a bare `src/` aims the empty baseline at an entire subtree,
 and every line in it comes back as an addition to fan out. Read the numstat total above before
 writing `raw.diff`, spawning a subagent, or starting the graph scripts. Three bands, keyed to
-SKILL.md step 2's fan-out table so this does not invent a second scale:
+`static.md` step 2's fan-out table so this does not invent a second scale:
 
 - At or under 1500 lines, the same line that keeps a diff on the single-subagent route: proceed,
   say nothing.
@@ -59,7 +59,7 @@ less of their own PR.
 
 ## What `--explain` changes in the page
 
-SKILL.md step 3 carries the rule for resolving `<explain>` itself. What the flag does once
+`static.md` step 3 carries the rule for resolving `<explain>` itself. What the flag does once
 resolved: the page renders plain code with the file's own line numbers instead of green `+` rows,
 and "Scope: 6 files, 1400 lines" instead of add/remove arithmetic. OVERVIEW keeps the same
 heading in both modes. Same pipeline either way, only the wording and colouring change.
