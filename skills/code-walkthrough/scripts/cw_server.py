@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_store  # noqa: E402
 from notes import VALID_ID_RE  # noqa: E402  same id check a page write is subject to
@@ -193,7 +194,11 @@ def _tool_walkthrough_get(daemon, args):
             "page": str(d / _page_name(meta)),
         }
     if "qa" in parts:
-        result["qa"] = []
+        result["qa"] = [
+            {"qid": r.get("qid"), "question": r.get("question"), "status": r.get("status"),
+             "answer": r.get("answer")}
+            for r in cw_ask.read_qa(d)[-20:]
+        ]
     if "files" in parts:
         result["files"] = [{"path": f.get("path"), "role": f.get("role")}
                             for f in (analysis or {}).get("files", []) if isinstance(f, dict)]
@@ -245,6 +250,8 @@ _RPC_TOOLS = {
 _PAGE_RE = re.compile(r"^/walkthrough/([^/]+)/([^/]+)/?$")
 _EVENTS_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/events$")
 _NOTES_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/notes$")
+_ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
+_QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -346,6 +353,9 @@ class _Handler(BaseHTTPRequestHandler):
         if m:
             # Long-lived; tracked via hub client_count, not the request tracker, for idle exit.
             return self._route_events(m.group(1), m.group(2), qs)
+        m = _QA_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_qa(m.group(1), m.group(2)))
         m = _PAGE_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_page(m.group(1), m.group(2), qs))
@@ -364,6 +374,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._tracked(self._route_rpc)
         if path == "/api/shutdown":
             return self._tracked(self._route_shutdown)
+        m = _ASK_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_ask(m.group(1), m.group(2)))
         self._tracked(lambda: self._send_text(404, "not found"))
 
     def _route_health(self):
@@ -459,6 +472,47 @@ class _Handler(BaseHTTPRequestHandler):
         cw_store.write_json(d / "page-notes.json", {"notes": kept})
         self._send_json(200, {"ok": True, "count": len(kept)})
 
+    def _route_qa(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        self._send_json(200, {"qa": cw_ask.read_qa(d)})
+
+    def _route_ask(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        try:
+            anchor = cw_ask.validate_anchor(payload.get("anchor"))
+        except cw_store.CWError as e:
+            self._send_json(400, {"error": str(e), "remedy": e.remedy})
+            return
+        question = payload.get("question")
+        if not isinstance(question, str) or not (1 <= len(question) <= cw_ask.QUESTION_MAX):
+            self._send_json(400, {"error": "question must be 1-2000 characters",
+                                   "remedy": "shorten the question"})
+            return
+        try:
+            cw_ask.build_prompt(d, anchor, question)
+        except cw_store.CWError as e:
+            self._send_json(400, {"error": str(e), "remedy": e.remedy})
+            return
+        qid = "q-" + secrets.token_hex(4)
+        self.server.cw_daemon.start_ask(key, wid, d, qid, anchor, question)
+        self._send_json(202, {"qid": qid})
+
     def _route_rpc(self):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
             return
@@ -510,6 +564,10 @@ class Daemon:
         self._run_threads = set()
         self._run_threads_lock = threading.Lock()
         self._idle_since = None
+
+        self._asks = 0
+        self._ask_locks = {}
+        self._ask_locks_guard = threading.Lock()
 
     def start(self):
         old = cw_store.read_json(cw_store.server_json_path())
@@ -596,12 +654,36 @@ class Daemon:
 
         threading.Thread(target=_target, daemon=True).start()
 
+    def ask_lock(self, d):
+        """Per-walkthrough-directory lock so a second ask on the same walkthrough waits
+        rather than running alongside the first (one in-flight ask per walkthrough)."""
+        key = str(d)
+        with self._ask_locks_guard:
+            return self._ask_locks.setdefault(key, threading.Lock())
+
+    def start_ask(self, key, wid, d, qid, anchor, question):
+        with self._inflight_lock:
+            self._asks += 1
+        self._idle_since = None
+
+        def _target():
+            try:
+                with self.ask_lock(d):
+                    cw_ask.answer(d, qid, anchor, question,
+                                  on_event=lambda ev, data: self.hub.emit(key, wid, ev, data))
+            finally:
+                with self._inflight_lock:
+                    self._asks -= 1
+
+        threading.Thread(target=_target, daemon=True).start()
+
     def _is_idle_now(self):
         with self._inflight_lock:
             inflight = self._inflight
+            asks = self._asks
         with self._run_threads_lock:
             running = len(self._run_threads)
-        return inflight == 0 and running == 0 and self.hub.client_count() == 0
+        return inflight == 0 and asks == 0 and running == 0 and self.hub.client_count() == 0
 
     def _watch_idle(self):
         while not self._stopped.is_set():
