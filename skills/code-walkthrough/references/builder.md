@@ -1,11 +1,11 @@
 # How the HTML page is shaped, and why
 
-**Nothing here is a task.** `scripts/render.py` builds the page; SKILL.md step 3 has the
+**Nothing here is a task.** `scripts/render.py` builds the page; `static.md` step 3 has the
 commands (`pipeline.py prepare`/`render`/`all`). This file is background: what the page
 contains, and the reasons behind the parts that look arbitrary. Read it when changing
 `render.py` or the template, not when running the skill.
 
-The only thing a model contributes is `analysis.json` (schema in SKILL.md step 2). Every string
+The only thing a model contributes is `analysis.json` (schema in `static.md` step 2). Every string
 in it follows the caller's style rule: apply the no-ai-slop skill if available, otherwise plain
 sentences, no dashes, no filler.
 

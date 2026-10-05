@@ -2,7 +2,7 @@ Judgment rules for the subagent that writes the whole-picture fields `overview`,
 `groups` and the flow diagrams, from the fragments (or, on the small-diff route, straight from
 the diff) plus the numstat and the graph summaries. Delivery mechanics (what it is handed, what
 it writes to, how it replies) stay with each caller: `references/fanout.md` for the fan-out
-route, SKILL.md's schema block for the single small-diff subagent, and the daemon's prose worker.
+route, `static.md`'s schema block for the single small-diff subagent, and the daemon's prose worker.
 
 ## Overview
 

@@ -90,7 +90,8 @@ bills per token against that backend's own API key.
   server too. With `claude` on PATH it writes a working config pointed at
   your own Claude Code; otherwise it writes a template to point at an
   OpenAI-compatible backend instead (see
-  `skills/code-walkthrough/references/live.md`).
+  `skills/code-walkthrough/references/live.md`). `/code-walkthrough`
+  runs this setup for you when live mode is missing.
 
 ### Language support
 
