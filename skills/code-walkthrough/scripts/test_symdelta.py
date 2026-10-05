@@ -1635,6 +1635,35 @@ def test_build_extractor_raises_runtime_error_on_timeout():
             symdelta.EXTRACTOR_BIN = original_bin
 
 
+def test_build_extractor_builds_to_a_temp_path_and_replaces_the_real_binary():
+    original_run = symdelta.subprocess.run
+    original_cache_dir = symdelta.CACHE_DIR
+    original_bin = symdelta.EXTRACTOR_BIN
+    recorded = {}
+
+    def fake_run(cmd, **kwargs):
+        out_path = Path(cmd[cmd.index("-o") + 1])
+        recorded["out_path"] = out_path
+        out_path.write_text("fake binary")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        symdelta.CACHE_DIR = Path(tmp) / "cache"
+        symdelta.EXTRACTOR_BIN = symdelta.CACHE_DIR / "symdelta-go-extractor"
+        symdelta.CACHE_DIR.mkdir(parents=True)
+        symdelta.subprocess.run = fake_run
+        try:
+            symdelta.build_extractor()
+        finally:
+            symdelta.subprocess.run = original_run
+            symdelta.CACHE_DIR = original_cache_dir
+            symdelta.EXTRACTOR_BIN = original_bin
+
+        assert recorded["out_path"] != Path(tmp) / "cache" / "symdelta-go-extractor"
+        assert (Path(tmp) / "cache" / "symdelta-go-extractor").exists()
+        assert not recorded["out_path"].exists(), "temp build file was not replaced away"
+
+
 def test_run_extractor_raises_runtime_error_on_timeout():
     original_run = symdelta.subprocess.run
 
@@ -2377,6 +2406,7 @@ if __name__ == "__main__":
         test_run_in_process_group_handles_getpgid_race_without_crashing,
         test_run_in_process_group_kills_the_whole_group_not_just_the_direct_child,
         test_build_extractor_raises_runtime_error_on_timeout,
+        test_build_extractor_builds_to_a_temp_path_and_replaces_the_real_binary,
         test_run_extractor_raises_runtime_error_on_timeout,
         test_run_extractor_omits_goflags_when_go_work_exists_and_sets_it_otherwise,
         test_resolve_cache_dir_uses_xdg_cache_home_when_set,

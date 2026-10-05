@@ -138,6 +138,27 @@ Bail with one clear line if the target resolves to an empty diff; an empty revie
 than a message. In explain mode this is what an empty diff means: a path with no matching files,
 not "nothing changed", so the same bail applies, worded for that case.
 
+## 1b. Live mode, when the code-walkthrough MCP tools exist
+
+When the `walkthrough_start`/`walkthrough_get`/`walkthrough_list` MCP tools exist and the target
+is not a GitHub PR (the static path below is still what a PR target uses, until phase 3), prefer
+this over steps 2-6. Call `walkthrough_start` with `repo` the toplevel, `base`/`head` as resolved
+above (the snapshot commit for the working tree, `$EMPTY_BASE` in explain mode), `target`,
+`slug`, `explain`, `paths`, `title`.
+
+Any error from the call: continue at step 2 as today, and mention the remedy in one line at the
+end of the report.
+
+Success: open `url` under step 4's rules, then poll `walkthrough_get(id, key, wait_s=600)` while
+status is `building`. A step carrying a `remedy` is a backend problem the daemon cannot fix on
+its own: tell the user the problem and the exact command in one line, ask, and call
+`walkthrough_start` again once they confirm it is fixed.
+
+`done`: report per step 5, from `summary.verdict` and the group titles. `failed`: report the gate
+line count and the remedy. Page notes persist server-side, nothing to relay about them here.
+
+Setup, config keys, cost, data egress and the full remedy table: `references/live.md`.
+
 ## 2. Capture the diff to a file, never into context
 
 Write it to `<scratchpad>`, never the git working tree (a stray review page there

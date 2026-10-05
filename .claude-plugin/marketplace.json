@@ -12,7 +12,9 @@
       "source": "./",
       "author": {
         "name": "crisperit"
-      }
+      },
+      "mcpServers": {"code-walkthrough": {"command": "python3",
+        "args": ["${CLAUDE_PLUGIN_ROOT}/skills/code-walkthrough/scripts/cw_mcp.py", "mcp"]}}
     }
   ]
 }

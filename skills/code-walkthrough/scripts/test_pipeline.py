@@ -3,6 +3,7 @@
 _git helper pattern from test_links.py) and runs each subcommand for real, since pipeline.py's
 whole job is driving the other scripts as subprocesses."""
 
+import hashlib
 import json
 import os
 import re
@@ -262,6 +263,37 @@ def _render_with_text(tmp, payload):
     return (d / "test.html").read_text()
 
 
+def test_page_notes_import_drops_a_deleted_draft_and_leaves_a_github_note_on_render():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head, verdict="ok")
+
+        rc = pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
+                             "--head", head])
+        assert rc == 0
+
+        github_note = {"id": "n-gh", "origin": "github", "state": "posted", "path": "foo.py",
+                        "line": 5, "side": "RIGHT", "body": "existing", "gh_id": 1,
+                        "gh_url": "https://x/1", "reply_to": None}
+        kept_draft = {"id": "n-keep", "origin": "local", "state": "draft", "path": "foo.py",
+                       "line": 5, "side": "RIGHT", "body": "keep me", "gh_id": None,
+                       "gh_url": None, "reply_to": None}
+        deleted_draft = {"id": "n-gone", "origin": "local", "state": "draft", "path": "foo.py",
+                          "line": 5, "side": "RIGHT", "body": "delete me", "gh_id": None,
+                          "gh_url": None, "reply_to": None}
+        state = json.loads((d / "state.json").read_text())
+        state["notes"] = [github_note, kept_draft, deleted_draft]
+        (d / "state.json").write_text(json.dumps(state))
+        (d / "page-notes.json").write_text(json.dumps({"notes": [kept_draft]}))
+
+        rc = pipeline.main(["render", "--dir", str(d), "--slug", "test"])
+
+        assert rc == 0
+        result = json.loads((d / "state.json").read_text())
+        ids = {n["id"] for n in result["notes"]}
+        assert ids == {"n-gh", "n-keep"}
+
+
 def test_hostile_strings_in_every_model_written_field_render_inert():
     # Baseline <script> count from a clean render of the same shape: the vendored mermaid and
     # hljs payloads are spliced in with their own "<script" substrings mangled (splice_assets'
@@ -280,6 +312,113 @@ def test_hostile_strings_in_every_model_written_field_render_inert():
     assert 'href="javascript:' not in hostile
 
 
+# ---- partial ----------------------------------------------------------------------------
+
+def _batch_seed(d, header, note=""):
+    batches = d / "batches"
+    batches.mkdir(exist_ok=True)
+    seed = {"files": [{"path": "foo.py", "role": "", "hunks": [{"header": header, "note": note}]}]}
+    (batches / "fragment-1.seed.json").write_text(json.dumps(seed))
+
+
+def test_partial_builds_a_page_with_the_right_meta_id_and_touches_no_final_artifact():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = Path(tmp) / "work"
+        d.mkdir()
+        diff_text = _git(repo, "diff", f"{base}...{head}")
+        header = HUNK_HEADER.search(diff_text).group(1)
+        (d / "raw.diff").write_text(diff_text)
+        _batch_seed(d, header)
+        target = f"{base}...{head}"
+
+        rc = pipeline.main(["partial", "--dir", str(d), "--repo", str(repo), "--base", base,
+                             "--head", head, "--target", target])
+
+        assert rc == 0
+        page = (d / "partial.html").read_text()
+        assert "<!-- code-walkthrough:" in page
+        state = json.loads((d / "partial" / "state.json").read_text())
+        expected_id = f"cmp-{hashlib.sha256(target.encode()).hexdigest()[:8]}"
+        assert state["meta"]["id"] == expected_id
+        assert not (d / "state.json").exists()
+        assert not (d / "pipeline.json").exists()
+        assert not list(d.glob("section-*.html"))
+
+
+def test_partial_with_no_fragments_yet_still_builds_a_skeleton_page():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = Path(tmp) / "work"
+        d.mkdir()
+        diff_text = _git(repo, "diff", f"{base}...{head}")
+        (d / "raw.diff").write_text(diff_text)
+        target = f"{base}...{head}"
+
+        rc = pipeline.main(["partial", "--dir", str(d), "--repo", str(repo), "--base", base,
+                             "--head", head, "--target", target])
+
+        assert rc == 0
+        assert (d / "partial.html").exists()
+
+
+def test_partial_prefers_a_passed_fragment_over_its_seed():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = Path(tmp) / "work"
+        d.mkdir()
+        diff_text = _git(repo, "diff", f"{base}...{head}")
+        header = HUNK_HEADER.search(diff_text).group(1)
+        (d / "raw.diff").write_text(diff_text)
+        _batch_seed(d, header, note="")
+        fragment = {"files": [{"path": "foo.py", "role": "defines it",
+                                "hunks": [{"header": header, "note": "the real note"}]}]}
+        (d / "batches" / "fragment-1.json").write_text(json.dumps(fragment))
+        target = f"{base}...{head}"
+
+        rc = pipeline.main(["partial", "--dir", str(d), "--repo", str(repo), "--base", base,
+                             "--head", head, "--target", target])
+
+        assert rc == 0
+        analysis = json.loads((d / "analysis.partial.json").read_text())
+        assert analysis["files"][0]["hunks"][0]["note"] == "the real note"
+
+
+def test_partial_dir_inside_the_repo_is_refused():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        inside = repo / "scratch"
+
+        rc = pipeline.main(["partial", "--dir", str(inside), "--repo", str(repo), "--base", base,
+                             "--head", head, "--target", f"{base}...{head}"])
+
+        assert rc != 0
+        assert not inside.exists()
+
+
+def test_partial_imports_page_notes_and_drops_a_deleted_draft():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = Path(tmp) / "work"
+        d.mkdir()
+        diff_text = _git(repo, "diff", f"{base}...{head}")
+        header = HUNK_HEADER.search(diff_text).group(1)
+        (d / "raw.diff").write_text(diff_text)
+        _batch_seed(d, header)
+        kept_draft = {"id": "n-keep", "origin": "local", "state": "draft", "path": "foo.py",
+                       "line": 4, "side": "RIGHT", "body": "keep me", "gh_id": None,
+                       "gh_url": None, "reply_to": None}
+        (d / "page-notes.json").write_text(json.dumps({"notes": [kept_draft]}))
+        target = f"{base}...{head}"
+
+        rc = pipeline.main(["partial", "--dir", str(d), "--repo", str(repo), "--base", base,
+                             "--head", head, "--target", target])
+
+        assert rc == 0
+        state = json.loads((d / "partial" / "state.json").read_text())
+        assert [n["id"] for n in state["notes"]] == ["n-keep"]
+
+
 if __name__ == "__main__":
     tests = [
         test_all_on_a_valid_analysis_writes_a_page_and_exits_0,
@@ -290,7 +429,13 @@ if __name__ == "__main__":
         test_explain_recorded_by_prepare_reaches_render_via_pipeline_json,
         test_links_cached_leaves_a_pre_placed_links_json_untouched,
         test_render_with_no_pipeline_json_exits_non_zero,
+        test_page_notes_import_drops_a_deleted_draft_and_leaves_a_github_note_on_render,
         test_hostile_strings_in_every_model_written_field_render_inert,
+        test_partial_builds_a_page_with_the_right_meta_id_and_touches_no_final_artifact,
+        test_partial_with_no_fragments_yet_still_builds_a_skeleton_page,
+        test_partial_prefers_a_passed_fragment_over_its_seed,
+        test_partial_dir_inside_the_repo_is_refused,
+        test_partial_imports_page_notes_and_drops_a_deleted_draft,
     ]
     for test in tests:
         test()

@@ -70,6 +70,9 @@ The example PR took about 7 minutes and roughly 490k tokens, all on Sonnet
 subagents, in one measured run. The per-hunk reading fans out to parallel
 subagents; the main session only orchestrates, and neither the diff nor the
 page ever enters its context. The graphs come from parsers and take seconds.
+Live mode, below, runs the same work through whichever model backend you
+configure instead of subagents, billed per token against that backend's own
+API key; a Claude subscription doesn't cover it.
 
 ### Prerequisites
 
@@ -78,6 +81,9 @@ page ever enters its context. The graphs come from parsers and take seconds.
 - `gh`, only to target a PR or post comments
 - optional, for the graphs: `tree-sitter-language-pack`, `go`, or a language
   server, depending on the language. See below.
+- optional, for live mode: installing the plugin registers the MCP server
+  automatically; elsewhere, run `cw_mcp.py setup` once to point it at a model
+  backend (see `skills/code-walkthrough/references/live.md`).
 
 ### Language support
 

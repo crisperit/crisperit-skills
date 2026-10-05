@@ -440,6 +440,12 @@ def test_the_real_template_carries_the_csp_meta_before_its_first_script_tag():
     assert out.index(CSP) < out.index("<script")
 
 
+def test_the_real_template_gates_live_code_behind_window_cw_live():
+    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+
+    assert "if(window.CW_LIVE)" in real_template
+
+
 if __name__ == "__main__":
     tests = [
         test_facts_come_from_the_diff_not_the_analysis,
@@ -480,6 +486,7 @@ if __name__ == "__main__":
         test_a_single_group_keeps_the_flow_diagram,
         test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
         test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
+        test_the_real_template_gates_live_code_behind_window_cw_live,
     ]
     for test in tests:
         test()

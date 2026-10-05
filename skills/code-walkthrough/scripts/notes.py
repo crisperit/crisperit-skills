@@ -932,9 +932,22 @@ def do_import(args):
     state = _load_state(args.state)
     raw = Path(args.file).read_text() if args.file else sys.stdin.read()
     partial = json.loads(raw)
+    replace_local_drafts = getattr(args, "replace_local_drafts", False)
+    if replace_local_drafts:
+        # Page input may carry meta/hunks/files/groups that merge_state would accept.
+        partial = {"notes": partial.get("notes", [])}
 
     before = {note["id"]: dict(note) for note in state.get("notes", [])}
     merged = merge_state(state, partial, is_page_origin=True)
+
+    if replace_local_drafts:
+        kept_ids = {note.get("id") for note in partial["notes"]}
+        merged["notes"] = [
+            note for note in merged.get("notes", [])
+            if not (note.get("origin") == "local" and note.get("state") == "draft"
+                    and note.get("id") not in kept_ids)
+        ]
+
     merged_by_id = {note["id"]: note for note in merged.get("notes", [])}
 
     added, updated = [], []
@@ -956,6 +969,8 @@ def do_import(args):
     ready = [note_id for note_id in touched if note_id in postable]
     print(f"imported: {len(added)} added, {len(updated)} updated")
     print("ready to post: " + (", ".join(ready) if ready else "none"))
+    if replace_local_drafts:
+        print(f"dropped: {len(set(before) - set(merged_by_id))}")
     return 0
 
 
@@ -1033,6 +1048,12 @@ def main():
     import_parser = sub.add_parser("import")
     import_parser.add_argument("--state", required=True)
     import_parser.add_argument("--file", help="read the payload from a file instead of stdin")
+    import_parser.add_argument(
+        "--replace-local-drafts", action="store_true",
+        help="the payload is the full set of local drafts: drop any local draft note missing "
+             "from it, so a draft deleted on the page stays deleted. github-origin and posted "
+             "notes are never touched.",
+    )
     import_parser.set_defaults(func=do_import)
 
     payloads_parser = sub.add_parser("payloads")

@@ -10,9 +10,14 @@ Usage:
   pipeline.py render --dir D --slug S [--title T]
   pipeline.py all --dir D --repo R --base B --head H --slug S [--title T] [--pr N]
       [--paths P ...] [--explain] [--prior] [--links-cached]
+  pipeline.py partial --dir D --repo R --base B --head H --target T [--paths P ...] [--explain]
 
 All three read raw.diff, analysis.json and, if present, symdelta.json from --dir. symdelta.py
 itself stays outside this driver: it runs alongside the fan-out, before this is invoked.
+
+`partial` builds an incremental page from whatever fragments have passed so far (the daemon's
+live view, cw_run.py), writing everything under --dir/partial/ so it never collides with the
+final build's top-level state.json/section-*.html; it never gates and never touches links.
 
 Stdout is a few plain lines: the gate result, each graph section's language or null reason,
 links on/off, a warning when analysis.json's verdict is blank, and (from render) the page path.
@@ -21,12 +26,17 @@ It never prints hunk text or notes.
 
 import argparse
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
+
+sys.path.insert(0, str(SCRIPTS_DIR))
+import fanout  # noqa: E402  in-process merge, per the phase 2 import convention (section 0)
 
 
 def _script(name):
@@ -67,6 +77,36 @@ def _repo_toplevel(repo):
     return Path(result.stdout.strip()).resolve()
 
 
+def _check_dir_outside_repo(d, repo):
+    """Return repo's toplevel after refusing a --dir inside it; None (message already on
+    stderr) otherwise. Shared by prepare and partial, which both write build output next to
+    the repo and must never land inside the working tree (8.8)."""
+    toplevel = _repo_toplevel(repo)
+    if toplevel is None:
+        print(f"--repo {repo} does not look like a git repo "
+              "(git rev-parse --show-toplevel failed)", file=sys.stderr)
+        return None
+    resolved_dir = d.resolve()
+    if resolved_dir == toplevel or toplevel in resolved_dir.parents:
+        print(f"--dir {d} is inside the repo ({toplevel}); output must stay outside "
+              "the working tree", file=sys.stderr)
+        return None
+    return toplevel
+
+
+def _import_page_notes(d, state_path):
+    """Fold page-notes.json's local drafts into state_path, dropping any local draft the page
+    no longer has. A no-op (and not an error) when there is nothing to import yet."""
+    notes_path = d / "page-notes.json"
+    if not notes_path.exists():
+        return True
+    return _run_ok(
+        "notes.py",
+        ["import", "--state", str(state_path), "--file", str(notes_path),
+         "--replace-local-drafts"],
+    )
+
+
 def cmd_early(args):
     d = Path(args.dir)
     ok = _run_to_file(
@@ -80,15 +120,7 @@ def cmd_early(args):
 
 def cmd_prepare(args):
     d = Path(args.dir)
-    toplevel = _repo_toplevel(args.repo)
-    if toplevel is None:
-        print(f"--repo {args.repo} does not look like a git repo "
-              "(git rev-parse --show-toplevel failed)", file=sys.stderr)
-        return 1
-    resolved_dir = d.resolve()
-    if resolved_dir == toplevel or toplevel in resolved_dir.parents:
-        print(f"--dir {d} is inside the repo ({toplevel}); output must stay outside "
-              "the working tree", file=sys.stderr)
+    if _check_dir_outside_repo(d, args.repo) is None:
         return 1
 
     raw_diff = d / "raw.diff"
@@ -190,11 +222,15 @@ def cmd_render(args):
 
     analysis_path = d / "analysis.json"
     raw_diff = d / "raw.diff"
+    state_path = d / "state.json"
+
+    if not _import_page_notes(d, state_path):
+        return 1
 
     render_cmd = ["--analysis", str(analysis_path), "--diff", str(raw_diff), "--format", "html",
                   "--template", str(SKILL_DIR / "assets" / "diff-review-template.html"),
                   "--walkthrough", str(d / "section-walkthrough.html"),
-                  "--state", str(d / "state.json")]
+                  "--state", str(state_path)]
     if pipeline.get("explain"):
         render_cmd.append("--explain")
     if pipeline.get("links_ok"):
@@ -221,6 +257,112 @@ def cmd_render(args):
         return 1
 
     print(str(page))
+    return 0
+
+
+def cmd_partial(args):
+    d = Path(args.dir)
+    if _check_dir_outside_repo(d, args.repo) is None:
+        return 1
+
+    partial_dir = d / "partial"
+    partial_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_diff = d / "raw.diff"
+    diff_text = raw_diff.read_text(errors="replace")
+
+    def _fragment_n(path):
+        return int(re.search(r"fragment-(\d+)", path.name).group(1))
+
+    fragment_paths = []
+    for seed in sorted(d.glob("batches/fragment-*.seed.json"), key=_fragment_n):
+        real = d / "batches" / f"fragment-{_fragment_n(seed)}.json"
+        fragment_paths.append(real if real.exists() else seed)
+
+    prose_path = d / "prose.json"
+    prose = json.loads(prose_path.read_text()) if prose_path.exists() else {}
+    # Keeps meta.id (state.py's _stable_id) stable with the final build, even before
+    # prose.json exists.
+    prose["target"] = args.target
+
+    try:
+        merged = fanout.merge(diff_text, fragment_paths, prose)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    analysis_partial_path = d / "analysis.partial.json"
+    analysis_partial_path.write_text(json.dumps(merged, indent=2) + "\n")
+
+    symdelta_path = d / "symdelta.json"
+    walkthrough_cmd = ["--analysis", str(analysis_partial_path), "--diff", str(raw_diff),
+                        "--format", "html"]
+    if symdelta_path.exists():
+        walkthrough_cmd += ["--symdelta", str(symdelta_path)]
+    complexity_path = d / "complexity.json"
+    if complexity_path.exists():
+        walkthrough_cmd += ["--complexity", str(complexity_path)]
+    if args.explain:
+        walkthrough_cmd.append("--explain")
+    if not _run_to_file("walkthrough.py", walkthrough_cmd,
+                         partial_dir / "section-walkthrough.html"):
+        return 1
+
+    structure_html = None
+    if symdelta_path.exists():
+        try:
+            json.loads(symdelta_path.read_text())
+        except json.JSONDecodeError:
+            pass
+        else:
+            structure_json = partial_dir / "structure.json"
+            structure_cmd = ["--repo", args.repo, "--base", args.base, "--head", args.head,
+                              "--symdelta", str(symdelta_path),
+                              "--analysis", str(analysis_partial_path),
+                              "--out", str(structure_json)]
+            if args.paths:
+                structure_cmd += ["--paths", *args.paths]
+            section_structure = partial_dir / "section-structure.html"
+            structure_sections = ["--kind", "structure", "--data", str(structure_json),
+                                   "--format", "html"]
+            if args.explain:
+                structure_sections.append("--explain")
+            if (_run_ok("structure.py", structure_cmd)
+                    and _run_to_file("sections.py", structure_sections, section_structure)):
+                structure_html = section_structure
+
+    state_path = partial_dir / "state.json"
+    state_cmd = ["--analysis", str(analysis_partial_path), "--diff", str(raw_diff),
+                 "--out", str(state_path)]
+    prior_state = d / "state.json"
+    if prior_state.exists():
+        state_cmd += ["--prior", str(prior_state)]
+    if not _run_ok("state.py", state_cmd):
+        return 1
+
+    if not _import_page_notes(d, state_path):
+        return 1
+
+    render_cmd = ["--analysis", str(analysis_partial_path), "--diff", str(raw_diff),
+                  "--format", "html",
+                  "--template", str(SKILL_DIR / "assets" / "diff-review-template.html"),
+                  "--walkthrough", str(partial_dir / "section-walkthrough.html"),
+                  "--state", str(state_path)]
+    if structure_html:
+        render_cmd += ["--structure", str(structure_html)]
+    if args.explain:
+        render_cmd.append("--explain")
+
+    tmp_page = d / "partial.html.tmp"
+    if not _run_to_file("render.py", render_cmd, tmp_page):
+        return 1
+    splice = run("splice_assets.py", str(tmp_page), "--skill", str(SKILL_DIR), capture=True)
+    if splice.returncode != 0:
+        sys.stderr.write(splice.stderr or splice.stdout)
+        return 1
+
+    final_page = d / "partial.html"
+    os.replace(tmp_page, final_page)
+    print(str(final_page))
     return 0
 
 
@@ -270,6 +412,16 @@ def build_parser():
     add_prepare_args(all_)
     add_render_args(all_)
     all_.set_defaults(func=cmd_all)
+
+    partial = sub.add_parser("partial")
+    partial.add_argument("--dir", required=True)
+    partial.add_argument("--repo", required=True)
+    partial.add_argument("--base", required=True)
+    partial.add_argument("--head", required=True)
+    partial.add_argument("--target", required=True)
+    partial.add_argument("--paths", nargs="*", default=[])
+    partial.add_argument("--explain", action="store_true")
+    partial.set_defaults(func=cmd_partial)
 
     return parser
 
