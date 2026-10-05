@@ -196,9 +196,17 @@ def role_profile(config, role):
     if name is None:
         return None
     profile = config.get("profiles", {}).get(name)
-    if not profile or not profile.get("base_url") or not profile.get("model"):
+    kind = (profile or {}).get("kind", "openai")
+    if kind not in ("openai", "claude-code"):
         raise CWError(
-            f"profile {name!r} for role {role!r} has no base_url/model",
+            f"profile {name!r}: unknown kind {kind!r}",
+            remedy=f"kind is openai or claude-code in {config_path()}",
+        )
+    need = ("model",) if kind == "claude-code" else ("base_url", "model")
+    missing = [key for key in need if not (profile or {}).get(key)]
+    if missing:
+        raise CWError(
+            f"profile {name!r} for role {role!r} has no {'/'.join(missing)}",
             remedy=f"fix profiles.{name} in {config_path()}",
         )
     return {**profile, "name": name}

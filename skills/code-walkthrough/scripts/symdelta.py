@@ -200,12 +200,12 @@ def run_extractor(worktree_path):
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
-def add_worktree(repo, commit, path):
-    result = run_git(
-        repo,
-        ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", str(path), commit],
-        env={"GIT_LFS_SKIP_SMUDGE": "1"},
-    )
+def add_worktree(repo, commit, path, *, symlinks=True):
+    args = ["-c", "core.hooksPath=/dev/null"]
+    if not symlinks:
+        args += ["-c", "core.symlinks=false"]
+    args += ["worktree", "add", "--detach", str(path), commit]
+    result = run_git(repo, args, env={"GIT_LFS_SKIP_SMUDGE": "1"})
     if result.returncode != 0:
         raise RuntimeError(f"git worktree add failed for {commit!r}: {result.stderr.strip()}")
 

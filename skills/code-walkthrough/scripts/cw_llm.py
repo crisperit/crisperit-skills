@@ -9,8 +9,11 @@ Stdlib only, no network except the configured profile's base_url.
 import json
 import os
 import re
+import signal
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -27,6 +30,21 @@ ATTEMPTS = 3
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _CONTEXT_MARKERS = ("context_length_exceeded", "context length", "maximum context")
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+CLAUDE_TOOLS = {"read_file": "Read", "grep": "Grep", "list_dir": "Glob"}
+_CLAUDE_ENV_DROP = (
+    "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PID", "CLAUDE_AGENT_SDK_VERSION",
+)
+_CLAUDE_NOT_ON_PATH_REMEDY = (
+    "install Claude Code and log in, or point the role at an openai profile, then cw_mcp.py stop"
+)
+_CLAUDE_AUTH_REMEDY = "run `claude` in a terminal and log in (`claude auth login`)"
+_CLAUDE_RATE_REMEDY = "wait for the reset the message names, or point the role at another profile"
+_CLAUDE_AUTH_MARKERS = ("not logged in", "unauthorized", "authentication required")
+_CLAUDE_RATE_MARKERS = ("usage limit", "rate limit", "rate_limit")
+_CLAUDE_CONTEXT_MARKERS = ("prompt is too long", "context length")
 
 _semaphore_lock = threading.Lock()
 _semaphore = threading.BoundedSemaphore(4)
@@ -209,8 +227,165 @@ def chat(profile, messages, tools=None, *, timeout=300, stream=False, on_chunk=N
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def claude_env():
+    return {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_DROP}
+
+
+def _classify_claude_error(parsed, stderr, profile):
+    status = parsed.get("api_error_status")
+    text = f"{parsed.get('result') or ''} {stderr or ''}".lower()
+
+    if status in (401, 403) or any(marker in text for marker in _CLAUDE_AUTH_MARKERS):
+        return "auth", _CLAUDE_AUTH_REMEDY
+    if status == 404 or "unrecognized_model" in (stderr or ""):
+        return "notfound", f"check model for profile {profile.get('name')}"
+    if status == 429 or any(marker in text for marker in _CLAUDE_RATE_MARKERS):
+        return "rate", _CLAUDE_RATE_REMEDY
+    if any(marker in text for marker in _CLAUDE_CONTEXT_MARKERS):
+        return "context", f"this batch is too big for {profile.get('model')}: lower batch_max_lines"
+    if parsed.get("subtype") == "error_max_turns":
+        return "rounds", None
+    return "error", None
+
+
+def claude_call(profile, system, prompt, *, cwd, tools, schema=None, timeout=300):
+    if not cwd or not Path(cwd).is_dir():
+        raise LLMError(
+            "cwd is not a directory", kind="config",
+            remedy="re-run /code-walkthrough on the same target",
+        )
+
+    argv = [
+        "claude", "-p", "--safe-mode", "--restricted", f"--tools={tools}",
+        "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "none",
+        f"--model={profile['model']}", "--output-format", "json", f"--system-prompt={system}",
+    ]
+    if schema:
+        argv.append(f"--json-schema={json.dumps(schema)}")
+
+    sem = _current_semaphore()
+    sem.acquire()
+    try:
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=cwd, env=claude_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, start_new_session=True,
+            )
+        except FileNotFoundError as e:
+            raise LLMError(
+                "claude not on PATH", kind="config", remedy=_CLAUDE_NOT_ON_PATH_REMEDY,
+            ) from e
+        try:
+            out, err = proc.communicate(input=prompt, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            raise LLMError(
+                "claude process timed out", kind="timeout",
+                remedy="raise timeout_s in config.json",
+            ) from e
+    finally:
+        sem.release()
+
+    try:
+        parsed = json.loads(out)
+    except ValueError as e:
+        error = LLMError((err or out)[-300:], kind="protocol")
+        error.usage = None
+        raise error from e
+
+    usage_raw = parsed.get("usage") or {}
+    usage = {
+        "prompt_tokens": (usage_raw.get("input_tokens", 0) + usage_raw.get("cache_creation_input_tokens", 0)
+                           + usage_raw.get("cache_read_input_tokens", 0)),
+        "completion_tokens": usage_raw.get("output_tokens", 0),
+        "estimated": False,
+    }
+
+    if parsed.get("is_error") or proc.returncode != 0:
+        kind, remedy = _classify_claude_error(parsed, err, profile)
+        message = (parsed.get("result") or err or "")[:300]
+        error = LLMError(message, kind=kind, remedy=remedy)
+        error.usage = usage
+        raise error
+
+    return parsed, usage
+
+
+def _render_claude_prompt(messages):
+    parts = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            parts.append(f"Your previous answer:\n```json\n{message.get('content')}\n```")
+        else:
+            parts.append(message.get("content") or "")
+    return "\n\n".join(parts)
+
+
+def _run_claude_tools(profile, messages, tools, handlers, *, max_rounds, timeout, on_usage, cwd):
+    # ponytail: max_tokens/nudge are HTTP-path knobs; each claude process runs its own tool
+    # loop and timeout_s is the only budget here.
+    submit = [t for t in tools if t["function"]["name"] not in CLAUDE_TOOLS]
+    if len(submit) > 1:
+        raise LLMError("claude-code backend supports at most one submit tool", kind="config")
+    tools_arg = ",".join(
+        CLAUDE_TOOLS[t["function"]["name"]] for t in tools if t["function"]["name"] in CLAUDE_TOOLS
+    )
+    schema = (submit[0]["function"]["parameters"] or None) if submit else None
+
+    system = messages[0]["content"] + (
+        "\n\nIn this session read_file, grep and list_dir are the Read, Grep and Glob tools, "
+        "rooted at the current directory (the repo at head)."
+    )
+    if submit:
+        system += (
+            f"\n\nCalling `{submit[0]['function']['name']}` means returning its arguments as "
+            "your final structured output; there is no tool by that name."
+        )
+
+    for _round in range(max_rounds):
+        prompt = _render_claude_prompt(messages[1:])
+        try:
+            out, usage = claude_call(
+                profile, system, prompt, cwd=cwd, tools=tools_arg, schema=schema, timeout=timeout,
+            )
+        except LLMError as e:
+            if on_usage and getattr(e, "usage", None):
+                on_usage(e.usage)
+            raise
+        if on_usage:
+            on_usage(usage)
+
+        if schema is None:
+            result = out.get("result") or ""
+            messages.append({"role": "assistant", "content": result})
+            return result
+
+        structured = out.get("structured_output")
+        if not isinstance(structured, dict):
+            raise LLMError("claude-code reply had no structured output", kind="protocol")
+        messages.append({
+            "role": "assistant", "content": json.dumps(structured),
+            "permission_denials": out.get("permission_denials"),
+        })
+        result = handlers[submit[0]["function"]["name"]](structured)
+        if isinstance(result, Done):
+            return result.value
+        messages.append({"role": "user", "content": result})
+
+    raise LLMError("tool loop exceeded max_rounds", kind="rounds")
+
+
 def run_tools(profile, messages, tools, handlers, *, max_rounds=10, max_tokens=200000,
-              timeout=300, on_usage=None, nudge="Reply only by calling one of the tools."):
+              timeout=300, on_usage=None, nudge="Reply only by calling one of the tools.", cwd=None):
+    if profile.get("kind") == "claude-code":
+        return _run_claude_tools(
+            profile, messages, tools, handlers, max_rounds=max_rounds, timeout=timeout,
+            on_usage=on_usage, cwd=cwd,
+        )
     total_tokens = 0
     for _round in range(max_rounds):
         message, usage = chat(profile, messages, tools, timeout=timeout)
@@ -268,6 +443,40 @@ def cost_usd(profile, usage):
 
 
 def check(profile, *, timeout=60):
+    if profile.get("kind") == "claude-code":
+        try:
+            auth = subprocess.run(
+                ["claude", "auth", "status", "--json"], env=claude_env(),
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except FileNotFoundError as e:
+            raise LLMError(
+                "claude not on PATH", kind="config", remedy=_CLAUDE_NOT_ON_PATH_REMEDY,
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise LLMError(
+                "claude auth status timed out", kind="timeout",
+                remedy="raise timeout_s in config.json",
+            ) from e
+        try:
+            auth_data = json.loads(auth.stdout)
+        except ValueError:
+            auth_data = {}
+        if not auth_data.get("loggedIn"):
+            raise LLMError("claude is not logged in", kind="auth", remedy=_CLAUDE_AUTH_REMEDY)
+
+        schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            out, _usage = claude_call(
+                profile, "", "Return ok: true.", cwd=tmp, tools="", schema=schema, timeout=timeout,
+            )
+        if not isinstance(out.get("structured_output"), dict):
+            raise LLMError(
+                "model did not reply with structured output", kind="no_tools",
+                remedy="point this role at a model that supports structured output",
+            )
+        return
+
     messages = [{"role": "user", "content": "Call the ping tool now."}]
     tools = [{"type": "function", "function": {"name": "ping", "description": "ping",
                                                 "parameters": {"type": "object", "properties": {}}}}]

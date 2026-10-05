@@ -156,6 +156,95 @@ def test_a_batch_thread_that_raises_is_recorded_as_a_failed_result_not_dropped()
 
 
 # ---------------------------------------------------------------------------
+# claude-code backend: cwd=head, gate retry/escalate, mixed kinds, thread worker
+# ---------------------------------------------------------------------------
+
+def test_fragment_gate_retries_then_escalates_then_fails_on_claude_code():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+        d, manifest = _prepare_batches(tmp, repo, base, head)
+        (d / "head").mkdir()
+        entry = manifest[0]
+        always_bad = cw_testlib.claude_result(structured={"files": []})
+        with cw_testlib.fake_claude(tmp, {"sonnet": [always_bad] * 10, "opus": [always_bad] * 10}) as fc:
+            config = _config(
+                profiles={"a": {"kind": "claude-code", "model": "sonnet"},
+                          "e": {"kind": "claude-code", "model": "opus"}},
+                roles={"analysis": "a", "escalate": "e"},
+            )
+            ok = cw_run._run_batch(d, 1, entry, config, None)
+        assert ok is False
+        assert fc.count("sonnet") == 3
+        assert fc.count("opus") == 3
+        meta = json.loads((d / "meta.json").read_text())
+        step = meta["steps"]["batch-1"]
+        assert step["attempts"] == 2
+        assert step["model"] == "opus"
+        assert step["status"] == "failed"
+        assert not (d / "batches" / "fragment-1.json").exists()
+        assert all(Path(e["cwd"]).resolve() == (d / "head").resolve() for e in fc.log())
+
+
+def test_mixed_kinds_claude_code_analysis_fails_http_escalate_passes():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+        d, manifest = _prepare_batches(tmp, repo, base, head)
+        (d / "head").mkdir()
+        entry = manifest[0]
+        seed = json.loads(Path(entry["seed"]).read_text())
+        good = _passing_fragment(seed)
+        good["files"][0]["role"] = "does the X thing"
+        with cw_testlib.fake_claude(
+                tmp, {"sonnet": [cw_testlib.claude_result(is_error=True, result="boom")]}) as fc, \
+                cw_testlib.StubLLM({"escalate-m": [cw_testlib.tool_call("submit_fragment", good)]}) as stub:
+            config = _config(
+                profiles={"a": {"kind": "claude-code", "model": "sonnet"}, "e": stub.profile("escalate-m")},
+                roles={"analysis": "a", "escalate": "e"},
+            )
+            ok = cw_run._run_batch(d, 1, entry, config, None)
+        assert ok is True
+        assert fc.count("sonnet") == 1
+        assert stub.count("escalate-m") == 1
+        meta = json.loads((d / "meta.json").read_text())
+        step = meta["steps"]["batch-1"]
+        assert step["attempts"] == 2
+        assert step["model"] == "escalate-m"
+        assert Path(fc.log()[-1]["cwd"]).resolve() == (d / "head").resolve()
+
+
+def test_thread_worker_need_diffs_for_sends_diffs_in_second_prompt():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp) / "work"
+        d.mkdir()
+        (d / "head").mkdir()
+        seed = {
+            "thread_id": "t1",
+            "thread": {"thread_id": "t1"},
+            "commits": [{"sha": "abc123", "committed_at": "2024-01-01T00:00:00Z"}],
+            "diffs": {},
+            "cache_path_positive": str(d / "cache" / "positive.json"),
+            "cache_path_null": str(d / "cache" / "null.json"),
+        }
+        diffs = {"abc123": "diff --git a/foo.py b/foo.py\n"}
+        resolution = {
+            "thread_id": "t1", "outcome": "none", "closing_message": "", "ticket": None,
+            "commits": [], "files": [], "why": "no code change needed", "confidence": "high",
+        }
+        with cw_testlib.fake_claude(tmp, {"sonnet": [
+            cw_testlib.claude_result(structured={"thread_id": "t1", "need_diffs_for": ["abc123"]}),
+            cw_testlib.claude_result(structured=resolution),
+        ]}) as fc:
+            config = _config(profiles={"a": {"kind": "claude-code", "model": "sonnet"}},
+                              roles={"analysis": "a"})
+            result = cw_run._thread_worker(d, 1, seed, diffs, config, on_event=None)
+        assert result == resolution
+        assert (d / "resolutions" / "thread-1.json").exists()
+        second_stdin = fc.log()[-1]["stdin"]
+        assert "Diffs:" in second_stdin
+        assert all(Path(e["cwd"]).resolve() == (d / "head").resolve() for e in fc.log())
+
+
+# ---------------------------------------------------------------------------
 # small-diff route
 # ---------------------------------------------------------------------------
 
@@ -419,6 +508,9 @@ if __name__ == "__main__":
         test_small_diff_makes_one_prose_conversation_and_no_batch_calls,
         test_usage_totals_land_in_meta_json,
         test_a_batch_thread_that_raises_is_recorded_as_a_failed_result_not_dropped,
+        test_fragment_gate_retries_then_escalates_then_fails_on_claude_code,
+        test_mixed_kinds_claude_code_analysis_fails_http_escalate_passes,
+        test_thread_worker_need_diffs_for_sends_diffs_in_second_prompt,
         test_classify_prose_floor_file_fatal,
         test_groups_problem_is_classified_as_prose_not_file,
         test_file_problem_routes_to_its_owning_batch,
