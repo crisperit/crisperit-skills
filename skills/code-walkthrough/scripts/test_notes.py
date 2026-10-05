@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -973,6 +974,49 @@ def test_deliver_raises_cleanly_when_the_new_thread_field_is_outright_null():
         raise AssertionError("expected a RuntimeError")
 
 
+def test_submit_review_raises_and_never_mutates_when_no_review_is_pending():
+    # Regression (PR #22): submit used to reuse _ensure_pending_review, which opens a review
+    # when none is pending -- e.g. a retry after the only draft already posted. That left an
+    # empty pending review stranded on GitHub once SUBMIT_MUTATION was then rejected. submit_review
+    # must only look up an existing review and never call OPEN_REVIEW_MUTATION or SUBMIT_MUTATION.
+    state = {"meta": {"repo": "o/r", "pr": 1}}
+
+    def gh_run(query, _variables):
+        if "PendingReview" in query:
+            return {"data": {"repository": {"pullRequest": {
+                "id": "PR_node", "reviews": {"nodes": []}}}}}
+        raise AssertionError(f"unexpected mutation: {query}")
+
+    try:
+        submit_review(state, "COMMENT", "lgtm", gh_run)
+    except RuntimeError as exc:
+        assert "no pending review" in str(exc)
+    else:
+        raise AssertionError("expected a RuntimeError")
+
+
+def test_submit_cli_prints_one_clean_stderr_line_and_exits_non_zero_with_nothing_pending():
+    # Regression (PR #22): the CLI used to let this RuntimeError escape as a Python traceback,
+    # whose tail is what cw_server's _route_post shows the page (result.stderr.strip()[-500:]).
+    # main() now catches RuntimeError and prints the message alone.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        state_path = _write_state(tmp, {"meta": {"repo": "o/r", "pr": 1}, "notes": []})
+        body_path = tmp_path / "body.txt"
+        body_path.write_text("lgtm")
+
+        with _fake_gh_on_path(tmp_path):
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).parent / "notes.py"), "submit",
+                 "--state", state_path, "--event", "COMMENT", "--body-file", str(body_path)],
+                capture_output=True, text=True,
+            )
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert result.stderr.strip() == "no pending review to submit: post a comment first"
+
+
 def test_submit_review_returns_none_when_the_submit_field_is_outright_null():
     # Same null-propagation shape as deliver_note's two sites: submitPullRequestReview can come
     # back outright null rather than {"pullRequestReview": null}, which used to crash the old
@@ -1545,6 +1589,8 @@ if __name__ == "__main__":
         test_deliver_refuses_a_reply_whose_parent_has_not_been_delivered_yet,
         test_deliver_reply_falls_back_to_a_new_thread_when_the_comment_field_is_outright_null,
         test_deliver_raises_cleanly_when_the_new_thread_field_is_outright_null,
+        test_submit_review_raises_and_never_mutates_when_no_review_is_pending,
+        test_submit_cli_prints_one_clean_stderr_line_and_exits_non_zero_with_nothing_pending,
         test_submit_review_returns_none_when_the_submit_field_is_outright_null,
         test_do_submit_raises_instead_of_reporting_success_when_the_submit_is_rejected,
         test_deliver_sends_the_relocated_line_to_the_mutation_when_the_anchor_has_shifted,
