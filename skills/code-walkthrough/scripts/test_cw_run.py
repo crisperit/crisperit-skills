@@ -77,7 +77,7 @@ def test_invented_file_or_hunk_cannot_reach_disk():
         ]}
         with cw_testlib.StubLLM({"m": [cw_testlib.tool_call("submit_fragment", evil)] * 5}) as stub:
             config = _config(profiles={"a": stub.profile("m")}, roles={"analysis": "a"})
-            _ok, fragment, _problems = cw_run._run_fragment_conversation(d, 1, entry, config, None, "analysis")
+            _ok, fragment, _problems, _err = cw_run._run_fragment_conversation(d, 1, entry, config, None, "analysis")
         assert fragment is not None
         paths = [f["path"] for f in fragment["files"]]
         assert "evil.py" not in paths  # invented file dropped
@@ -266,6 +266,65 @@ def test_small_diff_makes_one_prose_conversation_and_no_batch_calls():
             cw_run.run(d)
         assert stub.count("analysis-m") == 0
         assert stub.count("prose-m") >= 1
+
+
+def test_small_route_llm_error_carries_message_and_remedy_into_run_failure():
+    # Regression for the real run that failed with the misleading "small route failed the
+    # fragment gate" / re-run remedy while the actual cause (a bad model -> 403) only lived in
+    # runs/prose-1.json. No gate problems are ever produced here, so _run_small must carry the
+    # LLMError's own message and remedy out through meta.json instead of the generic wording.
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+        always_403 = cw_testlib.claude_result(
+            is_error=True,
+            result="Failed to authenticate. API Error: 403 team not allowed to access model sonnet",
+            api_error_status=403,
+        )
+        with cw_testlib.fake_claude(tmp, {"sonnet": [always_403] * 10}):
+            cw_testlib.write_config(
+                home, {"p": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "p", "prose": "p"},
+                small_diff_lines=1000000, batch_max_lines=1,
+            )
+            d, meta, _reused = cw_run.prepare_walkthrough({
+                "repo": str(repo), "base": base, "head": head, "target": "main...HEAD", "slug": "t",
+            })
+            assert meta["route"] == "small"
+            status = cw_run.run(d)
+        assert status == "failed"
+        saved = json.loads((d / "meta.json").read_text())
+        assert saved["status"] == "failed"
+        assert "403" in saved["error"]
+        assert saved["error"] != "small route failed the fragment gate"
+        assert saved["remedy"] == cw_llm._CLAUDE_AUTH_REMEDY
+
+
+def test_batch_route_llm_error_carries_message_and_remedy_into_run_failure():
+    # Same regression, fanout route: a batch worker's conversation raises LLMError with no
+    # escalate role configured, so _run_batch has no gate problems either -- run() must read
+    # the batch step's own error/remedy rather than reporting "batch 1 failed the fragment gate".
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+        always_403 = cw_testlib.claude_result(
+            is_error=True,
+            result="Failed to authenticate. API Error: 403 team not allowed to access model sonnet",
+            api_error_status=403,
+        )
+        with cw_testlib.fake_claude(tmp, {"sonnet": [always_403] * 10}):
+            cw_testlib.write_config(
+                home, {"p": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "p", "prose": "p"},
+                small_diff_lines=0, batch_max_lines=1,
+            )
+            d, meta, _reused = cw_run.prepare_walkthrough({
+                "repo": str(repo), "base": base, "head": head, "target": "main...HEAD", "slug": "t",
+            })
+            assert meta["route"] == "fanout"
+            status = cw_run.run(d)
+        assert status == "failed"
+        saved = json.loads((d / "meta.json").read_text())
+        assert saved["status"] == "failed"
+        assert "403" in saved["error"]
+        assert saved["error"] != "batch 1 failed the fragment gate"
+        assert saved["remedy"] == cw_llm._CLAUDE_AUTH_REMEDY
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +565,8 @@ if __name__ == "__main__":
         test_failing_fragment_gates_twice_then_escalates_then_keeps_seed,
         test_llm_error_counts_as_one_failed_conversation_and_moves_on,
         test_small_diff_makes_one_prose_conversation_and_no_batch_calls,
+        test_small_route_llm_error_carries_message_and_remedy_into_run_failure,
+        test_batch_route_llm_error_carries_message_and_remedy_into_run_failure,
         test_usage_totals_land_in_meta_json,
         test_a_batch_thread_that_raises_is_recorded_as_a_failed_result_not_dropped,
         test_fragment_gate_retries_then_escalates_then_fails_on_claude_code,

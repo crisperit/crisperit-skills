@@ -553,7 +553,7 @@ def _submit_fragment_handler(d, n, batch_diff, seed, state):
 def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=None):
     profile = cw_store.role_profile(config, role)
     if profile is None:
-        return False, None, [f"no profile for role {role}"]
+        return False, None, [f"no profile for role {role}"], None
 
     batch_diff = Path(entry["batch"]).read_text(errors="replace")
     seed = json.loads(Path(entry["seed"]).read_text())
@@ -572,6 +572,7 @@ def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=
     local_handlers["submit_fragment"] = _submit_fragment_handler(d, n, batch_diff, seed, state)
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}]
     error = None
+    exc = None
     try:
         cw_llm.run_tools(
             profile, messages, tools, local_handlers, max_rounds=10,
@@ -580,8 +581,9 @@ def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=
         )
     except cw_llm.LLMError as e:
         error = str(e)
+        exc = e
     _write_transcript(d, role, profile, messages, result=state["ok"], error=error)
-    return state["ok"], state["fragment"], state["problems"]
+    return state["ok"], state["fragment"], state["problems"], exc
 
 
 def _run_batch(d, n, entry, config, on_event):
@@ -603,22 +605,29 @@ def _run_batch(d, n, entry, config, on_event):
     passed = False
     fragment = None
     problems = []
+    last_error = None
     for role in ("analysis", "escalate"):
         profile = cw_store.role_profile(config, role)
         if profile is None:
             continue
         attempts += 1
         model_used = profile.get("model")
-        ok, frag, probs = _run_fragment_conversation(d, n, entry, config, on_event, role)
+        ok, frag, probs, err = _run_fragment_conversation(d, n, entry, config, on_event, role)
         if ok:
             passed, fragment = True, frag
             break
         if frag is not None:
             fragment, problems = frag, probs
+        if err is not None:
+            last_error = err
 
     if passed:
         _emit_step(d, on_event, name, "ok", attempts=attempts, model=model_used)
         return True
+    if not problems and last_error is not None:
+        _emit_step(d, on_event, name, "failed", attempts=attempts, model=model_used,
+                    error=str(last_error), remedy=last_error.remedy)
+        return False
     _emit_step(d, on_event, name, "failed", attempts=attempts, model=model_used, lines=problems)
     return False
 
@@ -791,6 +800,7 @@ def _run_small(d, meta, config, on_event):
     analysis = None
     prose_json = None
     problems = []
+    last_exc = None
     for role in ("prose", "escalate"):
         profile = cw_store.role_profile(config, role)
         if profile is None:
@@ -844,6 +854,7 @@ def _run_small(d, meta, config, on_event):
             )
         except cw_llm.LLMError as e:
             error = str(e)
+            last_exc = e
         _write_transcript(d, role, profile, messages, result=state["ok"], error=error)
         if state["ok"]:
             passed, analysis, prose_json = True, state["analysis"], state["prose"]
@@ -856,6 +867,11 @@ def _run_small(d, meta, config, on_event):
         (d / "analysis.json").write_text(json.dumps(analysis, indent=2))
         _emit_step(d, on_event, name, "ok", attempts=attempts, model=model_used)
         return True
+    if not problems and last_exc is not None:
+        _emit_step(d, on_event, name, "failed", attempts=attempts, model=model_used,
+                    error=str(last_exc), remedy=last_exc.remedy)
+        cw_store.update_meta(d, lambda m: m.update({"gate": []}))
+        return False
     _emit_step(d, on_event, name, "failed", attempts=attempts, model=model_used, lines=problems)
     cw_store.update_meta(d, lambda m: m.update({"gate": problems}))
     return False
@@ -1023,6 +1039,7 @@ def _thread_worker(d, n, seed, diffs, config, on_event=None):
         d, n, thread_id, window_shas, diffs, seed, state_)
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}]
     error = None
+    remedy = None
     try:
         cw_llm.run_tools(
             profile, messages, tools, local_handlers, max_rounds=10,
@@ -1031,12 +1048,13 @@ def _thread_worker(d, n, seed, diffs, config, on_event=None):
         )
     except cw_llm.LLMError as e:
         error = str(e)
+        remedy = e.remedy
     _write_transcript(d, "analysis", profile, messages, result=state_["result"], error=error)
 
     if state_["result"] is not None:
         _emit_step(d, on_event, name, "ok")
     else:
-        _emit_step(d, on_event, name, "failed", error=error)
+        _emit_step(d, on_event, name, "failed", error=error, remedy=remedy)
     return state_["result"]
 
 
@@ -1424,8 +1442,8 @@ def _set_renderer(d, renderer):
         _RENDERERS[str(d)] = renderer
 
 
-def _fail_run(d, on_event, error, gate=None):
-    remedy = "re-run /code-walkthrough on the same target; passing fragments are reused"
+def _fail_run(d, on_event, error, gate=None, remedy=None):
+    remedy = remedy or "re-run /code-walkthrough on the same target; passing fragments are reused"
 
     def fn(m):
         m["status"] = "failed"
@@ -1437,6 +1455,21 @@ def _fail_run(d, on_event, error, gate=None):
 
     cw_store.update_meta(d, fn)
     _emit_step(d, on_event, "run", "failed", error=error, remedy=remedy)
+
+
+def _fail_run_from_step(d, on_event, step_name, gate_message):
+    """`_fail_run`, but preferring a failed step's own error/remedy (an LLMError that reached
+    `run()` with no gate problems to report) over the generic re-run wording; a genuine gate
+    failure keeps `gate_message` instead. `error` alone discriminates: a gate failure always
+    emits error=None, and _apply_step never clears a stale `lines` from an earlier run of the
+    same step, so checking `lines` too would wrongly keep the generic wording on a later
+    LLMError run."""
+    meta = cw_store.read_meta(d) or {}
+    step = meta.get("steps", {}).get(step_name, {})
+    if step.get("error"):
+        _fail_run(d, on_event, step["error"], remedy=step.get("remedy"))
+    else:
+        _fail_run(d, on_event, gate_message)
 
 
 def run(d, on_event=None):
@@ -1490,7 +1523,7 @@ def run(d, on_event=None):
             for t in bg_threads:
                 t.join()
             if not small_ok:
-                _fail_run(d, on_event, "small route failed the fragment gate")
+                _fail_run_from_step(d, on_event, "small", "small route failed the fragment gate")
                 return "failed"
         else:
             results = {}
@@ -1511,7 +1544,8 @@ def run(d, on_event=None):
             if failed_n is not None:
                 for t in bg_threads:
                     t.join()
-                _fail_run(d, on_event, f"batch {failed_n} failed the fragment gate")
+                _fail_run_from_step(d, on_event, f"batch-{failed_n}",
+                                     f"batch {failed_n} failed the fragment gate")
                 return "failed"
 
             prose_status, prose_lines = _run_prose(d, meta, config, on_event, batch_count)

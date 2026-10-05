@@ -229,6 +229,23 @@ def test_setup_leaves_existing_config_untouched():
                 assert cw_store.read_json(home / "config.json") == sentinel
 
 
+def test_setup_under_plugin_install_writes_config_and_skips_snippet():
+    with cw_testlib.temp_home() as home:
+        with tempfile.TemporaryDirectory() as tmp:
+            with cw_testlib.fake_claude(tmp, {}):
+                plugin_dir = cw_mcp.SCRIPTS_DIR
+                cw_mcp.SCRIPTS_DIR = Path("/some/path/.claude/plugins/cache/code-walkthrough/scripts")
+                try:
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        assert cw_mcp.cmd_setup("print") == 0
+                    assert out.getvalue() == ""
+                    assert "already registered by the plugin install" in err.getvalue()
+                    assert cw_store.read_json(home / "config.json") is not None
+                finally:
+                    cw_mcp.SCRIPTS_DIR = plugin_dir
+
+
 if __name__ == "__main__":
     tests = [
         test_handshake_does_not_start_the_daemon,
@@ -239,6 +256,7 @@ if __name__ == "__main__":
         test_setup_with_claude_on_path_writes_claude_code_template,
         test_setup_without_claude_on_path_writes_proxy_template,
         test_setup_leaves_existing_config_untouched,
+        test_setup_under_plugin_install_writes_config_and_skips_snippet,
         test_check_with_fake_claude_ok,
         test_check_not_logged_in_prints_fail_and_remedy,
     ]

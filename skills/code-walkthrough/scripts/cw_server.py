@@ -276,6 +276,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
+        if status >= 400:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
