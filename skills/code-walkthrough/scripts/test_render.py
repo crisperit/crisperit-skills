@@ -518,6 +518,47 @@ def test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_default
     assert "checked" not in tag
 
 
+def test_the_real_template_offers_a_direct_github_draft_only_on_a_line_anchor():
+    real_template = _real_template()
+    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+
+    direct = wire_ask.split("function directDraftFor(anchor){")[1].split("function makeComposer(")[0]
+    assert "anchor.kind!=='line'||!anchor.path" in direct and "!anchor.line) return null" in direct
+    assert "newDraft(" in direct and "saveNote(note)" in direct
+    assert "note.body=text;" in direct and "trim" not in direct
+    assert "/comment" not in direct
+
+    composer = wire_ask.split("function makeComposer(")[1].split("const threads=new Map()")[0]
+    assert "Save as GitHub draft" in composer and "onDraft?" in composer
+    save_draft = composer.split("function saveDraft(){")[1].split("send.addEventListener")[0]
+    assert "onDraft(ta.value)" in save_draft
+    assert "fetch(" not in save_draft and "/comment" not in save_draft and "Sending" not in save_draft
+    assert "e.shiftKey" in composer and "saveDraft()" in composer
+    # prose/block composers never receive a draft handler
+    assert "makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null)" in wire_ask
+
+
+def test_the_real_template_opens_the_inline_box_from_a_diff_line_and_marks_local_drafts_amber():
+    real_template = _real_template()
+
+    wire_line = real_template.split("function wireLine(span,meta){")[1].split("// Extension (no dot)")[0]
+    assert "openLineComposer(meta)" in wire_line
+    assert "const open=()=>openOrFocusDraft(meta)" not in real_template
+    assert "openLineComposer=meta=>" in real_template
+    assert "fb-own-draft{border-left:3px dashed var(--yellow)}" in real_template
+    assert "draft, not published" in real_template
+
+
+def test_the_real_template_reply_box_is_a_textarea_with_a_reply_on_github_button():
+    real_template = _real_template()
+
+    reply = real_template.split("function buildReplyRow(root){")[1].split("function buildResolveButton(")[0]
+    assert "createElement('textarea')" in reply
+    assert "Reply on GitHub" in reply
+    assert "reply_to:root.id,in_reply_to:root.id" in reply
+    assert "const body=input.value;" in reply
+
+
 if __name__ == "__main__":
     tests = [
         test_facts_come_from_the_diff_not_the_analysis,
@@ -563,6 +604,9 @@ if __name__ == "__main__":
         test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips,
         test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe,
         test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off,
+        test_the_real_template_offers_a_direct_github_draft_only_on_a_line_anchor,
+        test_the_real_template_opens_the_inline_box_from_a_diff_line_and_marks_local_drafts_amber,
+        test_the_real_template_reply_box_is_a_textarea_with_a_reply_on_github_button,
     ]
     for test in tests:
         test()

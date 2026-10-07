@@ -756,11 +756,15 @@
      isn't one of my own unposted drafts, no button to reveal it. float:none/flex overrides
      .fb-av's float:left above, since this row is a single input line, not text wrapping
      around an avatar. */
-  .fb-item.fb-reply{display:flex;align-items:center;gap:8px}
+  .fb-item.fb-reply{display:flex;align-items:flex-start;gap:8px}
   .fb-item.fb-reply .fb-av{float:none;flex:none}
-  .fb-reply-input{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--border);
+  .fb-reply-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .fb-reply-input{width:100%;box-sizing:border-box;min-height:34px;resize:vertical;background:var(--panel2);border:1px solid var(--border);
     color:var(--text);border-radius:6px;padding:6px 10px;font:inherit;font-size:var(--fs-sm)}
   .fb-reply-input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .fb-reply-col button{border:none;border-radius:6px;padding:6px 12px;margin-left:0;cursor:pointer}
+  .fb-item.fb-own-draft{border-left:3px dashed var(--yellow)}
+  .fb-draft-tag{margin-left:6px;color:var(--yellow);font-size:var(--fs-xs)}
 
   /* A resolved thread collapses like a stray's .hr-lo fold above, same <details> idiom. Flex,
      same reason hr-lo>summary is below: the chip appended after the comment count (see
@@ -2205,9 +2209,12 @@
   // Reuses a line's existing top-level draft rather than starting a second one; a reply is
   // excluded from that lookup even though it shares the parent's path/line/side, since it is
   // never the line's "own" comment.
+  function lineDraft(meta){
+    return state.notes.find(n=>!n.stale&&n.origin==='local'&&n.state==='draft'
+      &&!n.reply_to&&!n.in_reply_to&&n.path===meta.path&&n.side===meta.side&&n.line===meta.line);
+  }
   function openOrFocusDraft(meta){
-    const existing=state.notes.find(n=>!n.stale&&n.origin==='local'&&n.state==='draft'
-      &&!n.reply_to&&n.path===meta.path&&n.side===meta.side&&n.line===meta.line);
+    const existing=lineDraft(meta);
     const note=existing||newDraft({
       path:meta.path,line:meta.line,side:meta.side,hunk_id:meta.hunkId,
       anchor_text:meta.text,anchor_line:meta.line,order:meta.order,
@@ -2221,6 +2228,9 @@
   // the first rather than leaving every previously-tapped line lit.
   let touchRevealedSpan=null;
 
+  // set by wireAsk on a live page; a static page has no daemon, so wireLine falls back to the plain draft row
+  let openLineComposer=null;
+
   function wireLine(span,meta){
     meta.text=span.textContent; // capture verbatim (incl. leading +/-/space) before the badge/button change it -- this is anchor_text
     meta.lineKey=meta.path+'\t'+meta.side+'\t'+meta.line;
@@ -2231,7 +2241,7 @@
     const badge=document.createElement('span'); badge.className='dline-num';
     badge.textContent=meta.line; badge.setAttribute('aria-hidden','true');
     span.insertBefore(badge,span.firstChild);
-    const open=()=>openOrFocusDraft(meta);
+    const open=()=>{ if(openLineComposer) openLineComposer(meta); else openOrFocusDraft(meta); };
     const plus=document.createElement('button');
     plus.type='button'; plus.className='dline-plus'; plus.tabIndex=-1;
     plus.setAttribute('aria-label','Add comment on '+meta.path+':'+meta.line+' ('+meta.side+')');
@@ -2353,7 +2363,8 @@
     // one check instead of needing their own.
     const rec=n.stale?undefined:spanByLineKey.get(lineKey);
     const d=document.createElement('div');
-    d.className='fb-item'+(rec?' dline-note':'')+(n.stale?' stale':'')+(n.reply_to?' reply':'');
+    d.className='fb-item'+(rec?' dline-note':'')+(n.stale?' stale':'')+(n.reply_to?' reply':'')
+      +(n.state==='draft'&&n.origin==='local'?' fb-own-draft':'');
     d.setAttribute('role','note');
     d.tabIndex=-1;
     d.setAttribute('aria-label','Comment on '+n.path+':'+n.line+' ('+n.side+') by '
@@ -2399,6 +2410,11 @@
         t.setAttribute('aria-label','Open comment on GitHub');
       }
       head.appendChild(t);
+    }
+    if(ownDraft){
+      const tag=document.createElement('span'); tag.className='fb-draft-tag';
+      tag.textContent='draft, not published';
+      head.appendChild(tag);
     }
     d.appendChild(head);
     // rec rows (line-anchored) have path/line/side already visible from the diff line above,
@@ -2448,11 +2464,10 @@
     });
     ta.addEventListener('blur',()=>{
       clearTimeout(timer);
-      const body=ta.value.trim();
-      if(!body){ deleteNote(id); renderNotes(); return; }
+      if(!ta.value.trim()){ deleteNote(id); renderNotes(); return; }
       const note=state.notes.find(n=>n.id===id);
       if(!note) return;
-      note.body=body;
+      note.body=ta.value;
       saveNote(note);
     });
   }
@@ -2512,20 +2527,24 @@
     const d=document.createElement('div'); d.className='fb-item fb-reply';
     const av=document.createElement('span'); av.className='fb-av'; av.setAttribute('aria-hidden','true');
     av.style.background='hsl(210,45%,30%)'; av.textContent='Y';
-    const input=document.createElement('input'); input.type='text'; input.className='fb-reply-input';
+    const input=document.createElement('textarea'); input.className='fb-reply-input'; input.rows=1;
     input.placeholder='Reply...'; input.setAttribute('aria-label','Reply to this conversation');
-    d.append(av,input);
-    wireReplyBox(input,root);
+    const btn=document.createElement('button'); btn.type='button'; btn.className='fb-primary';
+    btn.textContent='Reply on GitHub';
+    const col=document.createElement('div'); col.className='fb-reply-col';
+    col.append(input,btn);
+    d.append(av,col);
+    wireReplyBox(input,root,btn);
     return d;
   }
 
   // Commits on blur or Cmd/Ctrl+Enter only -- unlike a draft's own debounced autosave, a reply
   // in progress must not turn into a posted-looking row on every keystroke. Cmd/Ctrl+Enter
   // blurs afterwards too, which re-fires this handler harmlessly against an already-cleared box.
-  function wireReplyBox(input,root){
+  function wireReplyBox(input,root,btn){
     function commit(){
-      const body=input.value.trim();
-      if(!body) return;
+      const body=input.value;
+      if(!body.trim()) return;
       // Sorts after every existing note (root and prior replies alike), never root.order --
       // copying the root's own order would tie-break a fresh reply ahead of an older sibling
       // reply whose order is already higher.
@@ -2541,6 +2560,8 @@
       renderNotes();
     }
     input.addEventListener('blur',commit);
+    btn.addEventListener('mousedown',e=>e.preventDefault());
+    btn.addEventListener('click',()=>{ commit(); input.blur(); });
     input.addEventListener('keydown',e=>{
       if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); commit(); input.blur(); }
     });
@@ -3441,12 +3462,30 @@
       ref.insertAdjacentElement('afterend',el);
     }
 
-    function makeComposer(label,payload,onSent,onCancel){
+    function directDraftFor(anchor){
+      if(!anchor||anchor.kind!=='line'||!anchor.path||!anchor.side||!anchor.line) return null;
+      return text=>{
+        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
+        const m=rec?rec.meta:{};
+        const note=newDraft({
+          path:anchor.path,line:anchor.line,side:anchor.side,end_line:anchor.end_line||null,
+          hunk_id:anchor.hunk_id||m.hunkId||null,anchor_text:m.text||anchor.quote,anchor_line:anchor.line,
+          order:m.order!=null?m.order:Math.max(0,...state.notes.map(x=>x.order||0))+1,
+        });
+        note.body=text;
+        saveNote(note);
+        renderNotes();
+      };
+    }
+
+    function makeComposer(label,payload,onSent,onCancel,onDraft){
       const box=mk('div','cw-compose');
       const ta=mk('textarea','cw-compose-text');
       ta.setAttribute('aria-label',label); ta.placeholder=label;
       const send=mkBtn('Send','cw-send fb-primary');
       const row=mk('div','fb-actions'); row.append(send);
+      const draftBtn=onDraft?mkBtn('Save as GitHub draft','cw-draft fb-ghost'):null;
+      if(draftBtn) row.append(draftBtn);
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       box.append(ta,row,status);
       function submit(){
@@ -3463,9 +3502,18 @@
           })
           .catch(()=>{ send.disabled=false; status.textContent='Request failed -- check the daemon is still running.'; });
       }
+      function saveDraft(){
+        if(!ta.value.trim()){ status.textContent='Type a comment first.'; return; }
+        onDraft(ta.value);
+        if(onCancel) onCancel();
+      }
       send.addEventListener('click',submit);
+      if(draftBtn) draftBtn.addEventListener('click',saveDraft);
       ta.addEventListener('keydown',e=>{
-        if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); submit(); }
+        if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){
+          e.preventDefault();
+          if(e.shiftKey&&onDraft) saveDraft(); else submit();
+        }
         else if(e.key==='Escape'&&onCancel){ e.preventDefault(); onCancel(); }
       });
       return {box,ta};
@@ -3668,12 +3716,24 @@
       const ref=anchor&&placementFor(anchor);
       if(!ref) return;
       closeBox();
-      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeBox,closeBox);
+      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeBox,closeBox,directDraftFor(anchor));
       openBox=c.box;
       insertAfterThreads(ref,c.box);
       commentBtn.hidden=true;
       c.ta.focus();
     });
+
+    openLineComposer=meta=>{
+      const anchor={kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,
+        hunk_id:meta.hunkId||null,quote:meta.text};
+      const ref=placementFor(anchor);
+      if(!ref||lineDraft(meta)){ openOrFocusDraft(meta); return; }
+      closeBox();
+      const c=makeComposer('Comment on this line',text=>({anchor,text}),closeBox,closeBox,directDraftFor(anchor));
+      openBox=c.box;
+      insertAfterThreads(ref,c.box);
+      c.ta.focus();
+    };
 
     fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
       .then(r=>r.ok?r.json():null)

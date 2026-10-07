@@ -498,6 +498,51 @@ def test_prune_state_json_requires_both_local_origin_and_draft_state():
         assert draft.exists()
 
 
+# -- direct GitHub draft path -------------------------------------------------
+
+EXACT_BODY = "  lead spaces\n`code` <b>x</b> \U0001F600 tail\n"
+
+
+def test_direct_draft_and_reply_draft_make_no_model_call_and_keep_exact_body():
+    import tempfile
+    import test_cw_post as post  # shared PR-walkthrough fixtures
+
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: post._small_route_reply(body)) as stub, \
+                cw_testlib.fake_claude(tmp, {}) as fc, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]):
+            repo, base, head, d = post._build_done_pr(home, tmp, stub)
+            root = post._note(id="gh-501", origin="github", state="posted", gh_id=501,
+                              gh_node_id="NODE_501", gh_thread_id="THREAD_1", body="root")
+            post._add_notes(d, [root])
+            baseline = len(stub.requests)
+            qa = d / "qa.jsonl"
+            qa_before = qa.read_text() if qa.exists() else ""
+
+            direct = post._note(id="n-direct", body=EXACT_BODY)
+            reply = post._note(id="n-reply", body=EXACT_BODY, reply_to="gh-501", in_reply_to="gh-501")
+            key, wid = d.parent.name, d.name
+            with post.running_daemon() as daemon:
+                status, raw = post._put_notes(daemon, key, wid, [direct, reply])
+                assert status == 200, (status, raw)
+                saved = {n["id"]: n for n in cw_store.read_json(d / "page-notes.json")["notes"]}
+                assert saved["n-direct"]["body"] == EXACT_BODY
+                assert saved["n-reply"]["body"] == EXACT_BODY
+                status, raw = post._preview(daemon, key, wid, [])
+                assert status == 200, (status, raw)
+
+            state = {n["id"]: n for n in cw_store.read_json(d / "state.json")["notes"]}
+            assert state["n-direct"]["body"] == EXACT_BODY
+            assert state["n-direct"]["origin"] == "local" and state["n-direct"]["state"] == "draft"
+            assert state["n-reply"]["body"] == EXACT_BODY
+            # PAGE_DENIED_NOTE_FIELDS strips reply_to; in_reply_to is the durable link.
+            assert state["n-reply"]["reply_to"] is None
+            assert state["n-reply"]["in_reply_to"] == "gh-501"
+            assert len(stub.requests) == baseline
+            assert fc.log() == []
+            assert (qa.read_text() if qa.exists() else "") == qa_before
+
+
 if __name__ == "__main__":
     tests = [
         test_host_guard_rejects_wrong_host,
@@ -521,6 +566,7 @@ if __name__ == "__main__":
         test_mark_interrupted_flips_building_status,
         test_prune_removes_old_without_drafts_keeps_with_drafts,
         test_prune_state_json_requires_both_local_origin_and_draft_state,
+        test_direct_draft_and_reply_draft_make_no_model_call_and_keep_exact_body,
     ]
     for test in tests:
         test()
