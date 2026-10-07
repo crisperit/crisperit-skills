@@ -952,41 +952,61 @@
   .dline-note{display:block;margin:6px 0;white-space:normal;line-height:1.6;
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
-  #cw-ask-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
-    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--accent);color:#fff;
-    box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 35%,transparent)}
-  #cw-ask-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #cw-ask,#cw-qa{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
-    border:1px solid var(--border);border-radius:10px;color:var(--text)}
-  #cw-ask::backdrop,#cw-qa::backdrop{background:rgba(0,0,0,.6)}
-  #cw-ask-head,#cw-qa-head{display:flex;align-items:center;justify-content:space-between;
-    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
-  #cw-ask-close,#cw-qa-close{background:var(--panel2);border:1px solid var(--border);
-    color:var(--text);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;
-    line-height:1;transition:background .12s}
-  #cw-ask-close:hover,#cw-qa-close:hover{background:var(--border)}
-  #cw-ask-close:focus-visible,#cw-qa-close:focus-visible{outline:2px solid var(--accent);
-    outline-offset:2px}
-  #cw-ask-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
-  #cw-ask-quote{margin:0 0 10px;padding:8px 10px;background:var(--panel2);
-    border:1px solid var(--border);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;
-    font-family:var(--mono);font-size:var(--fs-xs);max-height:30vh;overflow-y:auto}
-  #cw-ask-question{display:block;width:100%;min-height:80px;background:var(--panel2);
-    border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
-    font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
-  #cw-ask-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
-  #cw-qa-btn{position:fixed;right:16px;bottom:62px;z-index:40;border:1px solid var(--border);
+  #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
+    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:#fff;
+    box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
+  #cw-threads-btn{position:fixed;right:16px;bottom:62px;z-index:40;border:1px solid var(--border);
     border-radius:999px;padding:8px 16px;font:600 var(--fs-sm) system-ui;cursor:pointer;
     background:var(--panel2);color:var(--text)}
-  #cw-qa-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #cw-qa-list{list-style:none;margin:0;padding:14px 16px;overflow-y:auto;
-    max-height:calc(82vh - 60px);display:flex;flex-direction:column;gap:10px}
-  .cw-qa-q,.cw-answer-q{margin:0;color:var(--muted);font-style:italic;font-size:var(--fs-sm);
-    overflow-wrap:anywhere}
-  .cw-qa-a,.cw-answer-a{margin:4px 0 0;font-size:var(--fs-sm);white-space:pre-wrap;
-    overflow-wrap:anywhere}
-  .cw-answer{display:block;margin:6px 0;padding:6px 0 6px 10px;border-left:3px solid var(--accent);
-    white-space:normal;line-height:1.6;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+  #cw-comment-btn:focus-visible,#cw-threads-btn:focus-visible,#cw-threads-close:focus-visible,
+  .cw-thread button:focus-visible,.cw-compose button:focus-visible,
+  .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #cw-threads{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+    border:1px solid var(--border);border-radius:10px;color:var(--text)}
+  #cw-threads::backdrop{background:rgba(0,0,0,.6)}
+  #cw-threads-head{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
+  #cw-threads-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1}
+  #cw-threads-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
+  #cw-threads-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+  #cw-threads-unplaced h3{margin:14px 0 6px;font-size:var(--fs-sm);color:var(--muted)}
+  .cw-th-go{display:flex;gap:10px;justify-content:space-between;width:100%;text-align:left;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:6px 10px;cursor:pointer;font:inherit;font-size:var(--fs-sm)}
+  .cw-th-go:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-th-go-text{min-width:0;overflow-wrap:anywhere}
+  .cw-th-go-state{flex:none;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-thread,.cw-compose{display:block;box-sizing:border-box;max-width:100%;margin:6px 0;
+    padding:8px 10px;border-left:3px solid var(--purple);
+    background:color-mix(in srgb,var(--purple) 8%,transparent);white-space:normal;line-height:1.6;
+    font:var(--fs-sm)/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;overflow-wrap:anywhere}
+  .cw-thread [hidden]{display:none!important}
+  .cw-thread-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .cw-thread-head button,.cw-compose .fb-actions button{cursor:pointer;border:1px solid var(--border);
+    background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;
+    font-size:var(--fs-xs)}
+  .cw-th-resolve{margin-left:auto}
+  .cw-th-badge{color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
+  .cw-th-summary{min-width:0;flex:1 1 12em;color:var(--muted);font-style:italic}
+  .cw-turn{margin:8px 0}
+  .cw-turn-q{margin:0;color:var(--muted);font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap}
+  .cw-turn-a{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-turn-err{color:var(--red)}
+  .cw-dots i{display:inline-block;width:6px;height:6px;margin-right:3px;border-radius:50%;
+    background:var(--purple);opacity:.6}
+  .cw-working span+span{margin-left:4px;color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){
+    .cw-dots i{animation:cw-dot 1.2s ease-in-out infinite}
+    .cw-dots i:nth-child(2){animation-delay:.2s}
+    .cw-dots i:nth-child(3){animation-delay:.4s}
+  }
+  @keyframes cw-dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+  .cw-compose textarea{display:block;width:100%;min-height:64px;background:var(--panel2);
+    border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
+    font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
+  .cw-compose .fb-actions{margin-top:6px}
+  .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
 
   #cw-post-confirm{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
     border:1px solid var(--border);border-radius:10px;color:var(--text)}
@@ -1024,8 +1044,8 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-ask-btn,#cw-qa-btn{min-height:44px}
-    #cw-ask-close,#cw-qa-close{width:44px;height:44px;font-size:16px}
+    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button{min-height:44px}
+    #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
@@ -3311,194 +3331,356 @@
     return el&&el.closest('.dline');
   }
 
-  function headingTextOf(el){
-    const heading=/^H[1-6]$/.test(el.tagName)?el:el.querySelector('h1,h2,h3,h4,h5,h6');
-    return (heading||el).textContent.trim();
-  }
-
-  function closestSectionHeading(node){
-    const el=node&&(node.nodeType===1?node:node.parentElement);
-    const withId=el&&el.closest('[id]');
-    return withId?headingTextOf(withId):(document.title||'');
-  }
-
-  function buildAskAnchor(sel){
-    const quote=sel.toString();
-    const range=sel.getRangeAt(0);
-    const sm=lineMetaBySpan.get(closestDline(range.startContainer));
-    const em=lineMetaBySpan.get(closestDline(range.endContainer));
-    if(sm&&em){
-      return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
-        end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
-    }
-    return {kind:'section',section:closestSectionHeading(range.startContainer),quote};
+  function blockKeyFrom(sectionSlug,text){
+    const t=String(text).replace(/\s+/g,' ').trim();
+    let h=0x811c9dc5;
+    for(let i=0;i<t.length;i++){ h^=t.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; }
+    const slug=String(sectionSlug||'').replace(/[^A-Za-z0-9:_.-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,150);
+    return (slug+'|'+h.toString(16).padStart(8,'0')).slice(0,200);
   }
 
   function wireAsk(){
     const planEl=$('plan-content');
     if(!planEl) return;
 
-    const askBtn=document.createElement('button');
-    askBtn.type='button'; askBtn.id='cw-ask-btn'; askBtn.hidden=true; askBtn.textContent='Ask';
-    askBtn.addEventListener('mousedown',e=>e.preventDefault());
-    document.body.appendChild(askBtn);
+    const BLOCK_SEL='p,li,pre,table,blockquote,h2,h3,h4,.fact,.panel';
+    const norm=s=>String(s).replace(/\s+/g,' ').trim();
+    const mk=(tag,cls,text)=>{
+      const e=document.createElement(tag);
+      if(cls) e.className=cls;
+      if(text!=null) e.textContent=text;
+      return e;
+    };
+    const mkBtn=(text,cls)=>{ const b=mk('button',cls,text); b.type='button'; return b; };
+    const firstLine=s=>String(s||'').split('\n')[0].slice(0,100);
+    const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
+    const asEl=node=>node&&(node.nodeType===1?node:node.parentElement);
+    const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose')); };
+
+    function textOf(el){
+      if(!el.querySelector('.cw-thread,.cw-compose')) return el.textContent;
+      const c=el.cloneNode(true);
+      c.querySelectorAll('.cw-thread,.cw-compose').forEach(n=>n.remove());
+      return c.textContent;
+    }
+
+    function blockOf(node){
+      const el=asEl(node);
+      if(!el) return null;
+      const b=el.closest(BLOCK_SEL);
+      if(b&&b!==planEl&&planEl.contains(b)) return b;
+      const w=el.closest('[id]');
+      return w&&w!==planEl&&planEl.contains(w)?w:null;
+    }
+
+    function sectionIdOf(el){
+      for(let n=el;n&&n!==planEl;n=n.parentElement) if(n.id) return n.id;
+      return '';
+    }
+
+    function sectionHeadingOf(el){
+      let found=null;
+      for(const h of planEl.querySelectorAll('h2,h3')){
+        if(h===el||(h.compareDocumentPosition(el)&Node.DOCUMENT_POSITION_FOLLOWING)) found=h;
+        else break;
+      }
+      return found?found.textContent.trim():(document.title||'');
+    }
+
+    function blockKey(el){
+      return blockKeyFrom(sectionIdOf(el)||sectionHeadingOf(el),textOf(el));
+    }
+
+    let blockIdx=null;
+    function blockIndex(){
+      if(blockIdx) return blockIdx;
+      blockIdx={list:[],byKey:new Map()};
+      planEl.querySelectorAll(BLOCK_SEL).forEach(el=>{
+        if(el.closest('.cw-thread,.cw-compose')) return;
+        const k=blockKey(el);
+        blockIdx.list.push({el,text:norm(textOf(el))});
+        if(!blockIdx.byKey.has(k)) blockIdx.byKey.set(k,el);
+      });
+      return blockIdx;
+    }
+
+    function buildAskAnchor(sel){
+      const quote=sel.toString();
+      const range=sel.getRangeAt(0);
+      const sm=lineMetaBySpan.get(closestDline(range.startContainer));
+      const em=lineMetaBySpan.get(closestDline(range.endContainer));
+      if(sm&&em){
+        return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
+          end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
+      }
+      const b=blockOf(range.startContainer);
+      if(!b) return null;
+      return {kind:'block',block:blockKey(b),section:sectionHeadingOf(b),quote};
+    }
+
+    function placementFor(anchor){
+      if(anchor.kind==='line'){
+        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+(anchor.end_line||anchor.line));
+        return rec&&rec.span;
+      }
+      const idx=blockIndex();
+      if(anchor.block&&idx.byKey.has(anchor.block)) return idx.byKey.get(anchor.block);
+      const q=norm(anchor.quote||'').slice(0,60);
+      if(q){
+        const hit=idx.list.find(b=>b.text.includes(q));
+        if(hit) return hit.el;
+      }
+      if(anchor.section){
+        return [...planEl.querySelectorAll('h1,h2,h3,h4')].find(h=>h.textContent.trim()===anchor.section)||null;
+      }
+      return null;
+    }
+
+    function insertAfterThreads(ref,el){
+      while(ref.nextElementSibling&&ref.nextElementSibling.classList.contains('cw-thread')) ref=ref.nextElementSibling;
+      ref.insertAdjacentElement('afterend',el);
+    }
+
+    function makeComposer(label,payload,onSent,onCancel){
+      const box=mk('div','cw-compose');
+      const ta=mk('textarea','cw-compose-text');
+      ta.setAttribute('aria-label',label); ta.placeholder=label;
+      const send=mkBtn('Send','cw-send fb-primary');
+      const row=mk('div','fb-actions'); row.append(send);
+      const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
+      box.append(ta,row,status);
+      function submit(){
+        const text=ta.value.trim();
+        if(!text){ status.textContent='Type a comment first.'; return; }
+        send.disabled=true; status.textContent='Sending…';
+        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(payload(text))})
+          .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
+          .then(({ok,body})=>{
+            send.disabled=false;
+            if(!ok){ status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
+            ta.value=''; status.textContent='';
+            onSent(body);
+          })
+          .catch(()=>{ send.disabled=false; status.textContent='Request failed -- check the daemon is still running.'; });
+      }
+      send.addEventListener('click',submit);
+      ta.addEventListener('keydown',e=>{
+        if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); submit(); }
+        else if(e.key==='Escape'&&onCancel){ e.preventDefault(); onCancel(); }
+      });
+      return {box,ta};
+    }
+
+    const threads=new Map();
+    const foldKey=t=>lsKey('cw-thread-fold',t.id);
+    function isCollapsed(t){
+      let v=null;
+      try{ v=localStorage.getItem(foldKey(t)); }catch(e){}
+      return v==null?t.resolved:v==='1';
+    }
+    function setFold(t,collapsed){
+      try{
+        if(collapsed===null) localStorage.removeItem(foldKey(t));
+        else localStorage.setItem(foldKey(t),collapsed?'1':'0');
+      }catch(e){}
+      renderThread(t);
+    }
+    function stateOf(t){
+      if(t.resolved) return 'resolved';
+      if(t.turns.some(r=>r.status==='pending')) return 'working';
+      const last=t.turns[t.turns.length-1];
+      return last&&last.status==='error'?'error':'answered';
+    }
+
+    function turnEl(r){
+      const d=mk('div','cw-turn');
+      d.append(mk('p','cw-turn-q',r.comment||r.question||''));
+      if(r.status==='pending'){
+        const p=mk('p','cw-turn-a cw-working');
+        const dots=mk('span','cw-dots'); dots.setAttribute('aria-hidden','true');
+        for(let i=0;i<3;i++) dots.appendChild(document.createElement('i'));
+        p.append(dots,mk('span',null,'(working)'));
+        d.append(p);
+      } else if(r.status==='error'){
+        d.append(mk('p','cw-turn-a cw-turn-err','Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':'')));
+      } else {
+        d.append(mk('p','cw-turn-a',r.answer||''));
+      }
+      return d;
+    }
+
+    function buildThread(t){
+      t.el=mk('div','cw-thread'); t.el.dataset.thread=t.id;
+      const head=mk('div','cw-thread-head');
+      t.foldBtn=mkBtn('Fold','cw-th-fold');
+      t.badge=mk('span','cw-th-badge','Resolved');
+      t.summary=mk('span','cw-th-summary');
+      t.resolveBtn=mkBtn('Resolve','cw-th-resolve');
+      head.append(t.foldBtn,t.badge,t.summary,t.resolveBtn);
+      t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
+      t.body=mk('div','cw-thread-body');
+      t.turnsEl=mk('div','cw-turns');
+      const anchor=(t.turns[0]||{}).anchor||{};
+      const follow=makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null);
+      t.body.append(t.turnsEl,follow.box);
+      t.el.append(head,t.msg,t.body);
+      t.foldBtn.addEventListener('click',()=>setFold(t,!isCollapsed(t)));
+      t.resolveBtn.addEventListener('click',()=>{
+        t.msg.textContent='';
+        const want=!t.resolved;
+        fetch(window.CW_LIVE.api+'/threads/'+encodeURIComponent(t.id)+'/resolve',
+          {method:'POST',headers:headers(),body:JSON.stringify({resolved:want})})
+          .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
+          .then(({ok,body})=>{
+            if(!ok){ t.msg.textContent=body.error||'Request failed'; return; }
+            try{ localStorage.removeItem(foldKey(t)); }catch(e){}
+            applyResolve(t.id,want);
+          })
+          .catch(()=>{ t.msg.textContent='Request failed -- check the daemon is still running.'; });
+      });
+    }
+
+    function renderThread(t){
+      if(!t.el) buildThread(t);
+      const collapsed=isCollapsed(t), state=stateOf(t);
+      const first=t.turns[0]||{};
+      t.el.dataset.state=state;
+      t.foldBtn.textContent=collapsed?'Unfold':'Fold';
+      t.foldBtn.setAttribute('aria-expanded',String(!collapsed));
+      t.resolveBtn.textContent=t.resolved?'Reopen':'Resolve';
+      t.badge.hidden=!t.resolved;
+      t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
+      t.summary.hidden=!collapsed;
+      t.body.hidden=collapsed;
+      t.turnsEl.replaceChildren(...t.turns.map(turnEl));
+    }
+
+    const earlyResolve=new Map();
+    function upsertTurn(r,fromSnapshot){
+      if(!r||!r.thread_id) return;
+      let t=threads.get(r.thread_id);
+      const isNew=!t;
+      if(isNew){ t={id:r.thread_id,turns:[],resolved:earlyResolve.get(r.thread_id)===true,el:null,placed:false}; threads.set(t.id,t); earlyResolve.delete(t.id); }
+      const i=t.turns.findIndex(x=>x.qid===r.qid);
+      if(fromSnapshot&&i>=0&&r.status==='pending'&&t.turns[i].status!=='pending') return;
+      if(i<0) t.turns.push(r); else t.turns[i]=r;
+      renderThread(t);
+      if(isNew){
+        const ref=placementFor(t.turns[0].anchor||{});
+        if(ref){ insertAfterThreads(ref,t.el); t.placed=true; }
+      }
+      renderList();
+    }
+
+    function applyResolve(tid,resolved){
+      const t=threads.get(tid);
+      if(!t){ earlyResolve.set(tid,!!resolved); return; }
+      t.resolved=!!resolved;
+      renderThread(t);
+      renderList();
+    }
+
+    window.__cwOnThread=ev=>{
+      if(!ev) return;
+      if(ev.kind==='turn') upsertTurn(ev.record);
+      else if(ev.kind==='resolve') applyResolve(ev.thread_id,ev.resolved);
+    };
+
+    const commentBtn=mkBtn('Comment');
+    commentBtn.id='cw-comment-btn'; commentBtn.hidden=true;
+    commentBtn.addEventListener('mousedown',e=>e.preventDefault());
+    document.body.appendChild(commentBtn);
+
+    const threadsBtn=mkBtn('Threads (0)');
+    threadsBtn.id='cw-threads-btn'; threadsBtn.setAttribute('aria-haspopup','dialog');
+    document.body.appendChild(threadsBtn);
 
     const dlg=document.createElement('dialog');
-    dlg.id='cw-ask'; dlg.setAttribute('aria-labelledby','cw-ask-title');
-    dlg.innerHTML='<div id="cw-ask-head"><span id="cw-ask-title">Ask about this</span>'
-      +'<button type="button" id="cw-ask-close" aria-label="Close">✕</button></div>'
-      +'<div id="cw-ask-body"><pre id="cw-ask-quote"></pre>'
-      +'<textarea id="cw-ask-question" aria-label="Your question" '
-      +'placeholder="What do you want to know?"></textarea>'
-      +'<div class="fb-actions"><button type="button" id="cw-ask-send" class="fb-primary">Send</button></div>'
-      +'<p id="cw-ask-status" role="status"></p></div>';
+    dlg.id='cw-threads'; dlg.setAttribute('aria-label','Threads');
+    const dlgHead=mk('div'); dlgHead.id='cw-threads-head';
+    const dlgClose=mkBtn('✕'); dlgClose.id='cw-threads-close'; dlgClose.setAttribute('aria-label','Close');
+    dlgHead.append(mk('span',null,'Threads'),dlgClose);
+    const dlgBody=mk('div'); dlgBody.id='cw-threads-body';
+    const listEl=mk('ul'); listEl.id='cw-threads-list';
+    const unplacedWrap=mk('section'); unplacedWrap.id='cw-threads-unplaced';
+    const unplacedBox=mk('div');
+    unplacedWrap.append(mk('h3',null,'Unplaced'),unplacedBox);
+    dlgBody.append(listEl,unplacedWrap);
+    dlg.append(dlgHead,dlgBody);
     document.body.appendChild(dlg);
-    const quoteEl=$('cw-ask-quote'), questionEl=$('cw-ask-question'),
-      sendBtn=$('cw-ask-send'), statusEl=$('cw-ask-status'), askClose=$('cw-ask-close');
 
-    const qaBtn=document.createElement('button');
-    qaBtn.type='button'; qaBtn.id='cw-qa-btn'; qaBtn.setAttribute('aria-haspopup','dialog');
-    qaBtn.textContent='Q&A (0)';
-    document.body.appendChild(qaBtn);
-
-    const qaDlg=document.createElement('dialog');
-    qaDlg.id='cw-qa'; qaDlg.setAttribute('aria-label','Questions and answers');
-    qaDlg.innerHTML='<div id="cw-qa-head"><span>Questions and answers</span>'
-      +'<button type="button" id="cw-qa-close" aria-label="Close">✕</button></div>'
-      +'<ul id="cw-qa-list"></ul>';
-    document.body.appendChild(qaDlg);
-    const qaList=$('cw-qa-list');
-
-    const qaRecords=[];
-
-    function renderQaList(){
-      qaBtn.textContent='Q&A ('+qaRecords.length+')';
-      qaList.innerHTML='';
-      if(!qaRecords.length){
-        const li=document.createElement('li'); li.className='hr-comments-empty';
-        li.textContent='No questions yet -- select text on the page and click Ask.';
-        qaList.appendChild(li);
-        return;
-      }
-      for(const r of qaRecords){
+    function renderList(){
+      const all=[...threads.values()];
+      threadsBtn.textContent='Threads ('+all.filter(t=>!t.resolved).length+')';
+      const rows=[];
+      for(const t of all.filter(t=>t.placed)){
         const li=document.createElement('li');
-        const q=document.createElement('p'); q.className='cw-qa-q'; q.textContent=r.question;
-        const a=document.createElement('p'); a.className='cw-qa-a'; a.textContent=answerText(r);
-        li.append(q,a);
-        qaList.appendChild(li);
+        const go=mkBtn(null,'cw-th-go');
+        go.append(mk('span','cw-th-go-text',firstLine((t.turns[0]||{}).comment||(t.turns[0]||{}).question)),
+          mk('span','cw-th-go-state',stateOf(t)));
+        go.addEventListener('click',()=>{
+          setFold(t,false);
+          dlg.close();
+          t.el.scrollIntoView({block:'center'});
+          t.foldBtn.focus();
+        });
+        li.append(go); rows.push(li);
       }
-    }
-
-    function answerText(r){
-      return r.status==='error'
-        ?('Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':''))
-        :(r.answer||'');
-    }
-
-    function upsertQa(record){
-      const i=qaRecords.findIndex(r=>r.qid===record.qid);
-      if(i<0) qaRecords.push(record); else qaRecords[i]=record;
-      renderQaList();
-    }
-
-    const lastAnswerElByKey=new Map();
-    function insertAnswer(record){
-      const div=document.createElement('div');
-      div.className='cw-answer';
-      const q=document.createElement('p'); q.className='cw-answer-q'; q.textContent=record.question;
-      const a=document.createElement('p'); a.className='cw-answer-a'; a.textContent=answerText(record);
-      div.append(q,a);
-      const anchor=record.anchor||{};
-      let key=null, afterEl=null;
-      if(anchor.kind==='line'){
-        key='line\t'+anchor.path+'\t'+anchor.side+'\t'+anchor.line;
-        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
-        afterEl=rec&&rec.span;
-      } else if(anchor.kind==='section'){
-        key='section\t'+anchor.section;
-        afterEl=[...planEl.querySelectorAll('[id]')].find(withId=>headingTextOf(withId)===anchor.section);
+      if(!rows.length&&!all.some(t=>!t.placed)){
+        const li=mk('li','hr-comments-empty','No threads yet -- select text on the page and click Comment.');
+        rows.push(li);
       }
-      const insertAfter=(key&&lastAnswerElByKey.get(key))||afterEl;
-      if(insertAfter){
-        insertAfter.insertAdjacentElement('afterend',div);
-        if(key) lastAnswerElByKey.set(key,div);
-        return;
-      }
-      planEl.appendChild(div);
+      listEl.replaceChildren(...rows);
+      const unplaced=all.filter(t=>!t.placed);
+      unplacedWrap.hidden=!unplaced.length;
+      for(const t of unplaced) if(t.el.parentElement!==unplacedBox) unplacedBox.appendChild(t.el);
     }
 
-    window.__cwOnAnswer=record=>{ upsertQa(record); insertAnswer(record); };
+    threadsBtn.addEventListener('click',()=>{ renderList(); dlg.showModal(); });
+    dlgClose.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('close',()=>{ threadsBtn.focus(); });
+    renderList();
 
-    function updateAskButton(){
+    function updateCommentButton(){
       const sel=window.getSelection();
-      if(!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)){
-        askBtn.hidden=true;
+      if(!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)||inLiveUi(sel.anchorNode)){
+        commentBtn.hidden=true;
         return;
       }
       const rect=sel.getRangeAt(0).getBoundingClientRect();
-      askBtn.style.left=Math.max(4,rect.left)+'px';
-      askBtn.style.top=Math.max(4,rect.top-32)+'px';
-      askBtn.hidden=false;
+      commentBtn.style.left=Math.max(4,rect.left)+'px';
+      commentBtn.style.top=Math.max(4,rect.top-32)+'px';
+      commentBtn.hidden=false;
     }
     let selTimer=null;
     document.addEventListener('selectionchange',()=>{
       if(selTimer) clearTimeout(selTimer);
-      selTimer=setTimeout(updateAskButton,150);
+      selTimer=setTimeout(updateCommentButton,150);
     });
 
-    askBtn.addEventListener('click',()=>{
+    let openBox=null;
+    function closeBox(){ if(openBox){ openBox.remove(); openBox=null; } }
+
+    commentBtn.addEventListener('click',()=>{
       const sel=window.getSelection();
       if(!sel||sel.isCollapsed||!sel.toString().trim()) return;
-      dlg.dataset.anchor=JSON.stringify(buildAskAnchor(sel));
-      quoteEl.textContent=sel.toString();
-      questionEl.value='';
-      statusEl.textContent='';
-      askBtn.hidden=true;
-      dlg.showModal();
-      questionEl.focus();
+      const anchor=buildAskAnchor(sel);
+      const ref=anchor&&placementFor(anchor);
+      if(!ref) return;
+      closeBox();
+      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeBox,closeBox);
+      openBox=c.box;
+      insertAfterThreads(ref,c.box);
+      commentBtn.hidden=true;
+      c.ta.focus();
     });
-    askClose.addEventListener('click',()=>dlg.close());
-    dlg.addEventListener('close',()=>{
-      updateAskButton();
-      if(!askBtn.hidden) askBtn.focus();
-    });
-
-    sendBtn.addEventListener('click',()=>{
-      const anchor=JSON.parse(dlg.dataset.anchor||'{}');
-      const question=questionEl.value.trim();
-      if(!question){ statusEl.textContent='Type a question first.'; return; }
-      sendBtn.disabled=true;
-      statusEl.textContent='Sending…';
-      fetch(window.CW_LIVE.api+'/ask',{
-        method:'POST',
-        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
-        body:JSON.stringify({anchor,question}),
-      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
-        .then(({ok,body})=>{
-          sendBtn.disabled=false;
-          if(!ok){
-            statusEl.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
-            return;
-          }
-          statusEl.textContent='Sent -- the answer will appear on the page shortly.';
-          dlg.close();
-        })
-        .catch(()=>{
-          sendBtn.disabled=false;
-          statusEl.textContent='Request failed -- check the daemon is still running.';
-        });
-    });
-
-    qaBtn.addEventListener('click',()=>{ qaDlg.showModal(); });
-    $('cw-qa-close').addEventListener('click',()=>qaDlg.close());
-    qaDlg.addEventListener('close',()=>{ qaBtn.focus(); });
 
     fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
       .then(r=>r.ok?r.json():null)
       .then(data=>{
-        if(!data||!Array.isArray(data.qa)) return;
-        data.qa.forEach(r=>{ qaRecords.push(r); insertAnswer(r); });
-        renderQaList();
+        if(!data||!Array.isArray(data.turns)) return;
+        data.turns.forEach(x=>upsertTurn(x,true));
+        (data.resolved||[]).forEach(tid=>applyResolve(tid,true));
       })
       .catch(()=>{});
   }
@@ -4162,8 +4344,8 @@ document.querySelectorAll('summary a').forEach(a => {
       renderBanner();
     });
     es.addEventListener('rebuilt',()=>{ onPageUpdated(); });
-    es.addEventListener('answer',e=>{
-      if(window.__cwOnAnswer) window.__cwOnAnswer(JSON.parse(e.data));
+    es.addEventListener('thread',e=>{
+      if(window.__cwOnThread) window.__cwOnThread(JSON.parse(e.data));
     });
     es.addEventListener('posted',e=>{
       if(window.__cwOnPosted) window.__cwOnPosted(JSON.parse(e.data));

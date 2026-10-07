@@ -197,6 +197,7 @@ def _tool_walkthrough_get(daemon, args):
             "page": str(d / _page_name(meta)),
         }
     if "qa" in parts:
+        daemon.finalise_stale_turns(d)
         result["qa"] = [
             {"qid": r.get("qid"), "question": r.get("question"), "status": r.get("status"),
              "answer": r.get("answer")}
@@ -254,6 +255,8 @@ _PAGE_RE = re.compile(r"^/walkthrough/([^/]+)/([^/]+)/?$")
 _EVENTS_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/events$")
 _NOTES_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/notes$")
 _ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
+_COMMENT_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment$")
+_RESOLVE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/threads/([^/]+)/resolve$")
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
@@ -403,7 +406,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self._tracked(self._route_shutdown)
         m = _ASK_RE.match(path)
         if m:
-            return self._tracked(lambda: self._route_ask(m.group(1), m.group(2)))
+            return self._tracked(lambda: self._route_comment(m.group(1), m.group(2), "question"))
+        m = _COMMENT_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_comment(m.group(1), m.group(2), "text"))
+        m = _RESOLVE_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_resolve(m.group(1), m.group(2), m.group(3)))
         m = _POST_PREVIEW_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_post_preview(m.group(1), m.group(2)))
@@ -514,9 +523,42 @@ class _Handler(BaseHTTPRequestHandler):
         d = self._resolve_dir(key, wid, json_errors=True)
         if d is None:
             return
-        self._send_json(200, {"qa": cw_ask.read_qa(d)})
+        self.server.cw_daemon.finalise_stale_turns(d)
+        threads = cw_ask.read_threads(d)
+        self._send_json(200, {
+            "turns": cw_ask.read_qa(d),
+            "resolved": [tid for tid, t in threads.items() if t["resolved"]],
+        })
 
-    def _route_ask(self, key, wid):
+    def _route_resolve(self, key, wid, tid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        if not cw_ask.THREAD_RE.fullmatch(tid):
+            self._send_json(400, {"error": "bad thread id"})
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        resolved = payload.get("resolved") if isinstance(payload, dict) else None
+        if not isinstance(resolved, bool):
+            self._send_json(400, {"error": "resolved must be a boolean"})
+            return
+        if tid not in cw_ask.read_threads(d):
+            self._send_json(404, {"error": "thread not found"})
+            return
+        daemon = self.server.cw_daemon
+        cw_ask.append_resolve(d, tid, resolved, on_event=lambda ev, data: daemon.hub.emit(key, wid, ev, data))
+        self._send_json(200, {"ok": True})
+
+    def _route_comment(self, key, wid, text_key):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
             return
         raw, too_big = self._read_body()
@@ -535,19 +577,33 @@ class _Handler(BaseHTTPRequestHandler):
         except cw_store.CWError as e:
             self._send_json(400, {"error": str(e), "remedy": e.remedy})
             return
-        question = payload.get("question")
-        if not isinstance(question, str) or not (1 <= len(question) <= cw_ask.QUESTION_MAX):
-            self._send_json(400, {"error": "question must be 1-2000 characters",
-                                   "remedy": "shorten the question"})
+        text = payload.get(text_key)
+        if not isinstance(text, str) or not (1 <= len(text) <= cw_ask.QUESTION_MAX):
+            self._send_json(400, {"error": f"{text_key} must be 1-2000 characters",
+                                   "remedy": f"shorten the {text_key}"})
             return
+        thread_id = payload.get("thread_id")
+        if thread_id is not None:
+            if not isinstance(thread_id, str) or not cw_ask.THREAD_RE.fullmatch(thread_id):
+                self._send_json(400, {"error": "bad thread id"})
+                return
+            thread = cw_ask.read_threads(d).get(thread_id)
+            if thread is None:
+                self._send_json(404, {"error": "thread not found"})
+                return
+            anchor = thread["turns"][0].get("anchor") or anchor
         try:
-            cw_ask.build_prompt(d, anchor, question)
+            cw_ask.build_prompt(d, anchor, text, thread_id)
         except cw_store.CWError as e:
             self._send_json(400, {"error": str(e), "remedy": e.remedy})
             return
+        if thread_id is not None and thread["resolved"]:
+            cw_ask.append_resolve(d, thread_id, False,
+                                  on_event=lambda ev, data: self.server.cw_daemon.hub.emit(key, wid, ev, data))
         qid = "q-" + secrets.token_hex(4)
-        self.server.cw_daemon.start_ask(key, wid, d, qid, anchor, question)
-        self._send_json(202, {"qid": qid})
+        thread_id = thread_id or qid
+        self.server.cw_daemon.start_ask(key, wid, d, qid, thread_id, anchor, text)
+        self._send_json(202, {"qid": qid, "thread_id": thread_id})
 
     def _post_check_meta(self, d):
         """Guard 1, shared by /post/preview and /post: posting only ever makes sense from a
@@ -810,6 +866,8 @@ class Daemon:
         self._asks = 0
         self._ask_locks = {}
         self._ask_locks_guard = threading.Lock()
+        self._qids = set()
+        self._qids_lock = threading.Lock()
 
     def start(self):
         old = cw_store.read_json(cw_store.server_json_path())
@@ -896,26 +954,42 @@ class Daemon:
 
         threading.Thread(target=_target, daemon=True).start()
 
-    def ask_lock(self, d):
-        """Per-walkthrough-directory lock so a second ask on the same walkthrough waits
-        rather than running alongside the first (one in-flight ask per walkthrough)."""
-        key = str(d)
+    def ask_lock(self, d, thread_id):
+        """Per-(walkthrough dir, thread) lock: turns of one thread queue behind each other,
+        different threads run side by side."""
+        key = (str(d), thread_id)
         with self._ask_locks_guard:
             return self._ask_locks.setdefault(key, threading.Lock())
 
-    def start_ask(self, key, wid, d, qid, anchor, question):
+    def finalise_stale_turns(self, d):
+        with self._qids_lock:
+            cw_ask.finalise_stale(d, self._qids)
+
+    def start_ask(self, key, wid, d, qid, thread_id, anchor, question):
         with self._inflight_lock:
             self._asks += 1
+        with self._qids_lock:
+            self._qids.add(qid)
         self._idle_since = None
+        emit = lambda ev, data: self.hub.emit(key, wid, ev, data)  # noqa: E731
+        try:
+            cw_ask.begin_turn(d, qid, anchor, question, thread_id, on_event=emit)
+        except BaseException:
+            with self._inflight_lock:
+                self._asks -= 1
+            with self._qids_lock:
+                self._qids.discard(qid)
+            raise
 
         def _target():
             try:
-                with self.ask_lock(d):
-                    cw_ask.answer(d, qid, anchor, question,
-                                  on_event=lambda ev, data: self.hub.emit(key, wid, ev, data))
+                with self.ask_lock(d, thread_id):
+                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id)
             finally:
                 with self._inflight_lock:
                     self._asks -= 1
+                with self._qids_lock:
+                    self._qids.discard(qid)
 
         threading.Thread(target=_target, daemon=True).start()
 

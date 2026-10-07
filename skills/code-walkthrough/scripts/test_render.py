@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Self-check for render.py. Assert-based, no framework."""
 
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -446,15 +448,53 @@ def test_the_real_template_gates_live_code_behind_window_cw_live():
     assert "if(window.CW_LIVE)" in real_template
 
 
-def test_the_real_template_carries_the_ask_dialog_behind_window_cw_live():
-    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+def _real_template():
+    return (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+
+
+def test_the_real_template_carries_the_threads_ui_behind_window_cw_live():
+    real_template = _real_template()
 
     assert "if(window.CW_LIVE) wireAsk();" in real_template
     wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    assert "cw-ask-btn" in wire_ask
-    assert "cw-qa-btn" in wire_ask
-    assert "window.CW_LIVE.api+'/ask'" in wire_ask
+    assert "cw-comment-btn" in wire_ask
+    assert "Threads (" in wire_ask
+    assert "window.CW_LIVE.api+'/comment'" in wire_ask
     assert "window.CW_LIVE.api+'/qa'" in wire_ask
+    assert "/resolve" in wire_ask
+    assert "window.__cwOnThread" in wire_ask
+    assert "addEventListener('thread'" in real_template
+    assert "__cwOnAnswer" not in real_template
+
+
+def test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips():
+    real_template = _real_template()
+
+    assert "planEl.appendChild(div)" not in real_template
+    assert "cw-ask" not in real_template
+    assert "cw-qa" not in real_template
+    assert "cw-chip" not in real_template
+    assert "data-intent" not in real_template
+    assert "dataset.intent" not in real_template
+
+
+def test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function blockKeyFrom(" + _real_template().split("function blockKeyFrom(")[1].split("function wireAsk(){")[0]
+    script = src + """
+const re = /^[A-Za-z0-9:_.|-]{1,200}$/;
+const a = blockKeyFrom('s1', 'Hello   world\\n again');
+if (a !== blockKeyFrom('s1', ' Hello world again ')) throw new Error('whitespace changed key');
+if (a === blockKeyFrom('s2', 'Hello world again')) throw new Error('section ignored');
+if (a === blockKeyFrom('s1', 'Hello world')) throw new Error('text ignored');
+for (const k of [a, blockKeyFrom('Why it works? / \u00e9', 'x'), blockKeyFrom('', ''), blockKeyFrom('a'.repeat(500), 'x')])
+  if (!re.test(k)) throw new Error('bad key ' + k);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off():
@@ -519,7 +559,9 @@ if __name__ == "__main__":
         test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
         test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
         test_the_real_template_gates_live_code_behind_window_cw_live,
-        test_the_real_template_carries_the_ask_dialog_behind_window_cw_live,
+        test_the_real_template_carries_the_threads_ui_behind_window_cw_live,
+        test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips,
+        test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe,
         test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off,
     ]
     for test in tests:
