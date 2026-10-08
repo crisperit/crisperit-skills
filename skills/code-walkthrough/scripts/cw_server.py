@@ -16,6 +16,7 @@ import queue
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -257,9 +258,13 @@ _NOTES_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/notes$")
 _ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
 _COMMENT_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment$")
 _RESOLVE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/threads/([^/]+)/resolve$")
+_CANCEL_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment/(q-[0-9a-f]{8})/cancel$")
+_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit)$")
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
+
+THREAD_TURN_CAP = 20
 
 NO_PR_MSG = "No PR for this comparison -- use Copy for agent instead."
 HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet -- use Copy for agent instead."
@@ -410,6 +415,12 @@ class _Handler(BaseHTTPRequestHandler):
         m = _COMMENT_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_comment(m.group(1), m.group(2), "text"))
+        m = _CANCEL_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_cancel(m.group(1), m.group(2), m.group(3)))
+        m = _OUTCOME_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_outcome(m.group(1), m.group(2), m.group(3), m.group(4)))
         m = _RESOLVE_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_resolve(m.group(1), m.group(2), m.group(3)))
@@ -454,18 +465,19 @@ class _Handler(BaseHTTPRequestHandler):
         if d is None:
             return
         daemon = self.server.cw_daemon
-        meta = cw_store.read_meta(d) or {}
-        live = _live_payload(key, wid, meta, d, daemon.token, daemon.port)
-        snapshot = _snapshot_payload(live)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.end_headers()
-
         q = daemon.hub.register(key, wid)
         try:
+            meta = cw_store.read_meta(d) or {}
+            live = _live_payload(key, wid, meta, d, daemon.token, daemon.port)
+            snapshot = _snapshot_payload(live)
+            snapshot["turns"] = daemon.inflight(key, wid)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+
             self._write_sse("snapshot", snapshot)
             last_beat = time.monotonic()
             while True:
@@ -528,7 +540,52 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {
             "turns": cw_ask.read_qa(d),
             "resolved": [tid for tid, t in threads.items() if t["resolved"]],
+            "outcomes": cw_ask.read_outcomes(d),
         })
+
+    def _route_cancel(self, key, wid, qid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        if self._resolve_dir(key, wid, json_errors=True) is None:
+            return
+        if not self.server.cw_daemon.cancel(key, wid, qid):
+            self._send_json(404, {"error": "turn not running"})
+            return
+        self._send_json(200, {"ok": True})
+
+    def _route_outcome(self, key, wid, oid, action):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            body = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        payload = body.get("payload") if isinstance(body, dict) else None
+        if action == "edit" and not isinstance(payload, dict):
+            self._send_json(400, {"error": "payload must be an object", "remedy": "send {thread, why}"})
+            return
+        daemon = self.server.cw_daemon
+        try:
+            folded = cw_ask.outcome_action(d, oid, action, payload,
+                                           on_event=lambda ev, data: daemon.hub.emit(key, wid, ev, data))
+        except cw_ask.OutcomeError as e:
+            status = {"not_found": 404, "conflict": 409}.get(e.kind, 400)
+            body = {"error": str(e)}
+            if status == 400:
+                body["remedy"] = e.remedy
+            self._send_json(status, body)
+            return
+        self._send_json(200, {"ok": True, "outcome": folded})
 
     def _route_resolve(self, key, wid, tid):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
@@ -590,6 +647,11 @@ class _Handler(BaseHTTPRequestHandler):
             thread = cw_ask.read_threads(d).get(thread_id)
             if thread is None:
                 self._send_json(404, {"error": "thread not found"})
+                return
+            live_turns = sum(1 for t in thread["turns"] if t.get("status") in ("ok", "pending"))
+            if live_turns >= THREAD_TURN_CAP:
+                self._send_json(409, {"error": f"thread has {THREAD_TURN_CAP} turns",
+                                       "remedy": "start a new thread"})
                 return
             anchor = thread["turns"][0].get("anchor") or anchor
         try:
@@ -1054,6 +1116,7 @@ class Daemon:
         self._ask_locks_guard = threading.Lock()
         self._qids = set()
         self._qids_lock = threading.Lock()
+        self._turns = {}
 
     def start(self):
         old = cw_store.read_json(cw_store.server_json_path())
@@ -1094,6 +1157,17 @@ class Daemon:
         if self._stopped.is_set():
             return
         self._stopped.set()
+        with self._qids_lock:
+            lives = [t["live"] for t in self._turns.values()]
+        for live in lives:
+            live["cancelled"] = True
+        procs = [live.get("proc") for live in lives]
+        for proc in procs:
+            if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
         if self.write_server_json:
             info = cw_store.read_json(cw_store.server_json_path())
             if isinstance(info, dict) and info.get("pid") == os.getpid():
@@ -1151,11 +1225,50 @@ class Daemon:
         with self._qids_lock:
             cw_ask.finalise_stale(d, self._qids)
 
+    def inflight(self, key, wid):
+        """Buffers of the running turns of one walkthrough, for the SSE snapshot."""
+        with self._qids_lock:
+            turns = [(qid, t) for qid, t in self._turns.items() if t["key"] == key and t["wid"] == wid]
+        out = []
+        for qid, t in turns:
+            live = t["live"]
+            with live["lock"]:
+                seq, text, progress = live["seq"], live["text"], live["progress"]
+            out.append({"qid": qid, "thread_id": t["thread_id"], "seq": seq, "text": text, "progress": progress})
+        return out
+
+    def cancel(self, key, wid, qid):
+        with self._qids_lock:
+            t = self._turns.get(qid)
+            if t is None or t["key"] != key or t["wid"] != wid:
+                return False
+            live = t["live"]
+            live["cancelled"] = True
+            proc = live.get("proc")
+        if proc is not None:
+            def _kill(sig):
+                try:
+                    os.killpg(proc.pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            _kill(signal.SIGTERM)
+
+            def _escalate():
+                if proc.poll() is None:
+                    _kill(signal.SIGKILL)
+            timer = threading.Timer(3, _escalate)
+            timer.daemon = True
+            timer.start()
+        return True
+
     def start_ask(self, key, wid, d, qid, thread_id, anchor, question):
         with self._inflight_lock:
             self._asks += 1
+        live = {"text": "", "seq": 0, "progress": None, "proc": None, "cancelled": False,
+                "lock": threading.Lock()}
         with self._qids_lock:
             self._qids.add(qid)
+            self._turns[qid] = {"live": live, "key": key, "wid": wid, "thread_id": thread_id}
         self._idle_since = None
         emit = lambda ev, data: self.hub.emit(key, wid, ev, data)  # noqa: E731
         try:
@@ -1165,17 +1278,29 @@ class Daemon:
                 self._asks -= 1
             with self._qids_lock:
                 self._qids.discard(qid)
+                self._turns.pop(qid, None)
             raise
 
         def _target():
             try:
                 with self.ask_lock(d, thread_id):
-                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id)
+                    if live["cancelled"] or self._stopped.is_set():
+                        now = cw_store.now_iso()
+                        record = {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
+                                  "anchor": anchor, "comment": question, "question": question,
+                                  "status": "cancelled", "answer": "", "error": None, "remedy": None,
+                                  "profile": None, "model": None, "session_id": None,
+                                  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}
+                        cw_ask._append_qa(d, record)
+                        emit("thread", {"kind": "turn", "record": record})
+                        return
+                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live)
             finally:
                 with self._inflight_lock:
                     self._asks -= 1
                 with self._qids_lock:
                     self._qids.discard(qid)
+                    self._turns.pop(qid, None)
 
         threading.Thread(target=_target, daemon=True).start()
 

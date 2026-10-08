@@ -6,6 +6,7 @@ test leaks a thread or a bound socket."""
 import contextlib
 import http.client
 import json
+import os
 import socket
 import sys
 import threading
@@ -13,6 +14,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_ask  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
@@ -543,6 +545,405 @@ def test_direct_draft_and_reply_draft_make_no_model_call_and_keep_exact_body():
             assert (qa.read_text() if qa.exists() else "") == qa_before
 
 
+# -- in-flight turn buffers ----------------------------------------------------
+
+def _sse_events(buf):
+    events = []
+    for block in buf.decode().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line and not line.startswith(":"))
+        if "event" in lines and "data" in lines:
+            events.append((lines["event"], json.loads(lines["data"])))
+    return events
+
+
+def _sse_until_final(sock, timeout=10):
+    """Read the stream until a non-pending thread turn arrives; returns the parsed events."""
+    sock.settimeout(1)
+    buf = b""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            continue
+        if not chunk:
+            break
+        buf += chunk
+        if any(ev == "thread" and d.get("kind") == "turn" and d["record"]["status"] != "pending"
+               for ev, d in _sse_events(buf)):
+            break
+    return _sse_events(buf)
+
+
+def _reduce(events):
+    """What the page does: a snapshot replaces the buffers, a delta applies once per seq."""
+    turns = {}
+    for ev, data in events:
+        if ev == "snapshot":
+            turns = {t["qid"]: {"seq": t["seq"], "text": t["text"]} for t in data.get("turns", [])}
+        elif ev == "delta":
+            t = turns.setdefault(data["qid"], {"seq": 0, "text": ""})
+            if data["seq"] > t["seq"]:
+                t["seq"], t["text"] = data["seq"], t["text"] + data["text"]
+    return {qid: t["text"] for qid, t in turns.items()}
+
+
+def _streamed_turn_fixture(tmp, home, chunks, delay):
+    import test_cw_ask as ask
+
+    d = ask._claude_done(home, tmp)
+    entry = cw_testlib.claude_stream_entry(chunks, delay=delay)
+    tool = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "foo.py"}}]}}
+    entry["stream"].insert(3, tool)
+    return ask, d, entry
+
+
+def test_snapshot_mid_turn_carries_buffer_and_late_client_converges():
+    import tempfile
+
+    chunks = [f"w{i} " for i in range(10)]
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), running_daemon() as daemon:
+            key, wid = d.parent.name, d.name
+            sock_a = _sse_connect(daemon, key, wid)
+            sock_b = None
+            try:
+                _sse_read_until(sock_a, b"event: snapshot")
+                status, raw = ask._post_comment(daemon, key, wid, ask.ANCHOR_SECTION, "why?")
+                assert status == 202, raw
+                qid = json.loads(raw)["qid"]
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    mid = daemon.inflight(key, wid)
+                    if mid and mid[0]["seq"] >= 3:
+                        break
+                    time.sleep(0.02)
+                assert mid and mid[0]["qid"] == qid and mid[0]["thread_id"] == qid, mid
+                assert set(mid[0]) == {"qid", "thread_id", "seq", "text", "progress"}
+                assert daemon.inflight(key, "cmp-ffffffff") == []
+
+                sock_b = _sse_connect(daemon, key, wid)
+                events_b = _sse_until_final(sock_b)
+                events_a = _sse_until_final(sock_a)
+            finally:
+                sock_a.close()
+                if sock_b:
+                    sock_b.close()
+
+            snap = next(data for ev, data in events_b if ev == "snapshot")
+            assert [t["qid"] for t in snap["turns"]] == [qid]
+            assert snap["turns"][0]["seq"] >= 3 and snap["turns"][0]["text"]
+
+            kinds_a = [ev for ev, _ in events_a]
+            assert "delta" in kinds_a and "progress" in kinds_a
+            progress = next(data for ev, data in events_a if ev == "progress")
+            assert progress["tool"] == "Read" and progress["qid"] == qid
+
+            full = "".join(chunks)
+            assert _reduce(events_a)[qid] == full
+            assert _reduce(events_b)[qid] == full
+            assert daemon.inflight(key, wid) == []
+
+
+def test_events_registers_before_building_snapshot():
+    with cw_testlib.temp_home() as home:
+        _make_walkthrough(home)
+        with running_daemon() as daemon:
+            real = daemon.inflight
+
+            def inflight_then_emit(key, wid):
+                turns = real(key, wid)
+                daemon.hub.emit(key, wid, "delta", {"qid": "q-0", "thread_id": "q-0", "seq": 1, "text": "x"})
+                return turns
+
+            daemon.inflight = inflight_then_emit
+            sock = _sse_connect(daemon, KEY, WID)
+            try:
+                buf = _sse_read_until(sock, b"event: delta")
+            finally:
+                sock.close()
+            kinds = [ev for ev, _ in _sse_events(buf)]
+            assert kinds[:2] == ["snapshot", "delta"], kinds
+
+
+def test_stop_kills_in_flight_turn_group():
+    import os
+    import tempfile
+
+    chunks = [f"w{i} " for i in range(40)]
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc:
+            daemon = cw_server.Daemon(idle_s=None, write_server_json=False).start()
+            try:
+                status, raw = ask._post_comment(daemon, d.parent.name, d.name, ask.ANCHOR_SECTION, "why?")
+                assert status == 202, raw
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not (
+                        fc.starts() and daemon.inflight(d.parent.name, d.name)
+                        and daemon.inflight(d.parent.name, d.name)[0]["seq"] >= 1):
+                    time.sleep(0.02)
+                start = fc.starts()[0]
+                os.kill(start["pid"], 0)
+            finally:
+                daemon.stop()
+
+            def gone():
+                try:
+                    os.killpg(start["pgid"], 0)
+                except ProcessLookupError:
+                    return True
+                return False
+
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not gone():
+                time.sleep(0.05)
+            assert gone()
+            while time.monotonic() < deadline + 5 and daemon._asks:
+                time.sleep(0.05)
+
+
+# -- cancel, outcomes, turn cap ------------------------------------------------
+
+def _post(daemon, path, body=None, **kw):
+    kw.setdefault("token", daemon.token)
+    status, raw = _request(daemon, "POST", path, body=json.dumps({} if body is None else body), **kw)
+    return status, (json.loads(raw) if raw else None)
+
+
+def _append_qa(d, *records):
+    with open(d / "qa.jsonl", "a") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+
+def _guard_checks(daemon, path, body):
+    assert _post(daemon, path, body, host="evil.example:9999")[0] == 403
+    assert _post(daemon, path, body, token="")[0] == 403
+    assert _post(daemon, path, body, origin="http://attacker.example")[0] == 403
+
+
+def _wait_status(d, qid, want, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        turn = next((t for t in cw_ask.read_qa(d) if t["qid"] == qid), None)
+        if turn and turn["status"] == want:
+            return turn
+        time.sleep(0.02)
+    raise AssertionError(f"{qid} never reached {want}: {cw_ask.read_qa(d)}")
+
+
+def _pgid_gone(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def test_cancel_route_guards_and_unknown_qid():
+    with cw_testlib.temp_home() as home:
+        _make_walkthrough(home)
+        with running_daemon() as daemon:
+            path = f"/api/walkthrough/{KEY}/{WID}/comment/q-0123abcd/cancel"
+            _guard_checks(daemon, path, {})
+            status, body = _post(daemon, path)
+            assert status == 404 and body == {"error": "turn not running"}, (status, body)
+
+
+def test_cancel_running_streamed_turn_keeps_partial_and_kills_group():
+    import tempfile
+
+    chunks = [f"w{i} " for i in range(40)]
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
+        key, wid = d.parent.name, d.name
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, running_daemon() as daemon:
+            status, raw = ask._post_comment(daemon, key, wid, ask.ANCHOR_SECTION, "why?")
+            assert status == 202, raw
+            qid = json.loads(raw)["qid"]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (
+                    fc.starts() and daemon.inflight(key, wid) and daemon.inflight(key, wid)[0]["seq"] >= 2):
+                time.sleep(0.02)
+            start = fc.starts()[0]
+            status, body = _post(daemon, f"/api/walkthrough/{key}/{wid}/comment/{qid}/cancel")
+            assert (status, body) == (200, {"ok": True}), (status, body)
+            turn = _wait_status(d, qid, "cancelled")
+            assert turn["answer"].startswith("w0 w1"), turn["answer"]
+            assert "w39" not in turn["answer"]
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not _pgid_gone(start["pgid"]):
+                time.sleep(0.05)
+            assert _pgid_gone(start["pgid"])
+            status, _ = _post(daemon, f"/api/walkthrough/{key}/{wid}/comment/{qid}/cancel")
+            assert status == 404
+
+
+def test_cancel_queued_turn_never_spawns():
+    import tempfile
+
+    chunks = [f"w{i} " for i in range(40)]
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
+        key, wid = d.parent.name, d.name
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry, entry]}) as fc, running_daemon() as daemon:
+            status, raw = ask._post_comment(daemon, key, wid, ask.ANCHOR_SECTION, "first")
+            first = json.loads(raw)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not fc.starts():
+                time.sleep(0.02)
+            status, raw = ask._post_comment(daemon, key, wid, ask.ANCHOR_SECTION, "second", first["thread_id"])
+            assert status == 202, raw
+            second = json.loads(raw)["qid"]
+            base = f"/api/walkthrough/{key}/{wid}/comment"
+            assert _post(daemon, f"{base}/{second}/cancel")[0] == 200
+            assert _post(daemon, f"{base}/{first['qid']}/cancel")[0] == 200
+            turn = _wait_status(d, second, "cancelled", timeout=5)
+            assert turn["answer"] == "" and turn["thread_id"] == first["thread_id"]
+            assert {"error", "remedy", "profile", "model", "session_id", "usage"} <= set(turn)
+            assert turn["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}
+            _wait_status(d, first["qid"], "cancelled", timeout=5)
+            assert len(fc.starts()) == 1
+
+
+OID = "o-0a1b2c3d"
+OQID = "q-11223344"
+
+
+def _outcome_fixture(home):
+    d, _ = _make_walkthrough(home)
+    (d / "turns").mkdir(exist_ok=True)
+    cw_store.write_json(d / "turns" / f"{OQID}.anchor.json",
+                        {"qid": OQID, "thread_id": OQID, "anchor": {},
+                         "resolvable": [{"id": "gh-1", "path": "a.py", "line": 3, "author": "r", "body": "b"}]})
+    _append_qa(d, {"qid": OQID, "thread_id": OQID, "status": "ok", "answer": "a", "comment": "c", "question": "c"},
+               {"type": "outcome", "oid": OID, "qid": OQID, "thread_id": OQID, "outcome": "resolve",
+                "payload": {"thread": "gh-1", "why": "fixed at a.py:3"}, "state": "proposed", "at": "t"})
+    return d
+
+
+def test_outcome_routes_guards_404_dismiss_and_conflict():
+    with cw_testlib.temp_home() as home:
+        d = _outcome_fixture(home)
+        with running_daemon() as daemon:
+            base = f"/api/walkthrough/{KEY}/{WID}/outcomes"
+            _guard_checks(daemon, f"{base}/{OID}/dismiss", {})
+            _guard_checks(daemon, f"{base}/{OID}/edit", {"payload": {"thread": "gh-1", "why": "x"}})
+            assert _post(daemon, f"{base}/o-ffffffff/dismiss")[0] == 404
+            assert _get_qa(daemon)["outcomes"][0]["state"] == "proposed"
+            sock = _sse_connect(daemon, KEY, WID)
+            try:
+                status, body = _post(daemon, f"{base}/{OID}/dismiss")
+                assert status == 200 and body["outcome"]["state"] == "dismissed", (status, body)
+                buf = _sse_read_until(sock, b"event: outcome")
+            finally:
+                sock.close()
+            ev = next(data for name, data in _sse_events(buf) if name == "outcome")
+            assert ev["oid"] == OID and ev["state"] == "dismissed"
+            assert _get_qa(daemon)["outcomes"][0]["state"] == "dismissed"
+            status, body = _post(daemon, f"{base}/{OID}/dismiss")
+            assert (status, body) == (409, {"error": "outcome is not open"})
+            assert _post(daemon, f"{base}/{OID}/edit", {"payload": {"thread": "gh-1", "why": "x"}})[0] == 409
+
+
+def test_outcome_edit_ok_and_bad_edit_gives_validator_text():
+    with cw_testlib.temp_home() as home:
+        _outcome_fixture(home)
+        with running_daemon() as daemon:
+            path = f"/api/walkthrough/{KEY}/{WID}/outcomes/{OID}/edit"
+            status, body = _post(daemon, path, {"payload": {"thread": "gh-9", "why": "x"}})
+            assert status == 400 and "gh-9 is not a review thread" in body["error"] and body["remedy"], body
+            status, body = _post(daemon, path, {"payload": {"thread": "gh-1", "why": "  "}})
+            assert status == 400 and body["error"] == "why is required", body
+            assert _post(daemon, path, {})[0] == 400
+            status, body = _post(daemon, path, {"payload": {"thread": "gh-1", "why": " better "}})
+            assert status == 200 and body["outcome"]["payload"] == {"thread": "gh-1", "why": "better"}
+            assert body["outcome"]["state"] == "proposed"
+
+
+def _get_qa(daemon):
+    status, raw = _request(daemon, "GET", f"/api/walkthrough/{KEY}/{WID}/qa", token=daemon.token)
+    assert status == 200, raw
+    return json.loads(raw)
+
+
+def test_thread_turn_cap_gives_409_on_the_21st_turn():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        anchor = {"kind": "section", "section": "Overview", "quote": "q"}
+        _append_qa(d, *({"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": "ok",
+                         "answer": "a", "comment": "c", "question": "c"} for i in range(20)))
+        with running_daemon() as daemon:
+            status, body = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/comment",
+                                  {"anchor": anchor, "text": "more", "thread_id": "q-00000000"})
+            assert status == 409, (status, body)
+            assert body == {"error": "thread has 20 turns", "remedy": "start a new thread"}
+            assert len(cw_ask.read_qa(d)) == 20
+
+
+def test_thread_cap_counts_only_ok_and_pending_turns():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        anchor = {"kind": "section", "section": "Overview", "quote": "q"}
+        turns = [{"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": "ok",
+                  "answer": "a", "comment": "c", "question": "c"} for i in range(19)]
+        turns += [{"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": st,
+                   "answer": "", "comment": "c", "question": "c"}
+                  for i, st in ((100, "error"), (101, "cancelled"), (102, "error"))]
+        _append_qa(d, *turns)
+        with running_daemon() as daemon:
+            body = {"anchor": anchor, "text": "more", "thread_id": "q-00000000"}
+            path = f"/api/walkthrough/{KEY}/{WID}/comment"
+            assert _post(daemon, path, body)[0] != 409
+
+
+def test_stopped_daemon_never_spawns_a_queued_turn():
+    import tempfile
+
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, entry = _streamed_turn_fixture(tmp, home, ["a "], 0)
+        key, wid = d.parent.name, d.name
+        tid = "q-00000000"
+        _append_qa(d, {"qid": tid, "thread_id": tid, "anchor": ask.ANCHOR_SECTION, "status": "ok",
+                       "answer": "a", "comment": "c", "question": "c"})
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, running_daemon() as daemon:
+            lock = daemon.ask_lock(d, tid)
+            with lock:
+                status, raw = ask._post_comment(daemon, key, wid, ask.ANCHOR_SECTION, "next", tid)
+                assert status == 202, raw
+                qid = json.loads(raw)["qid"]
+                daemon.stop()
+            _wait_status(d, qid, "cancelled", timeout=5)
+            assert fc.starts() == []
+
+
+def test_inflight_text_and_seq_are_consistent_under_the_live_lock():
+    daemon = cw_server.Daemon(write_server_json=False)
+    live = {"text": "", "seq": 0, "progress": None, "lock": threading.Lock()}
+    daemon._turns["q-1"] = {"live": live, "key": KEY, "wid": WID, "thread_id": "q-1"}
+    done = threading.Event()
+
+    def writer():
+        while not done.is_set():
+            with live["lock"]:
+                live["seq"] += 1
+                live["text"] += "x"
+                time.sleep(0)
+
+    th = threading.Thread(target=writer)
+    th.start()
+    try:
+        for _ in range(2000):
+            (snap,) = daemon.inflight(KEY, WID)
+            assert len(snap["text"]) == snap["seq"]
+    finally:
+        done.set()
+        th.join()
+
+
 if __name__ == "__main__":
     tests = [
         test_host_guard_rejects_wrong_host,
@@ -567,6 +968,18 @@ if __name__ == "__main__":
         test_prune_removes_old_without_drafts_keeps_with_drafts,
         test_prune_state_json_requires_both_local_origin_and_draft_state,
         test_direct_draft_and_reply_draft_make_no_model_call_and_keep_exact_body,
+        test_snapshot_mid_turn_carries_buffer_and_late_client_converges,
+        test_events_registers_before_building_snapshot,
+        test_thread_cap_counts_only_ok_and_pending_turns,
+        test_stopped_daemon_never_spawns_a_queued_turn,
+        test_inflight_text_and_seq_are_consistent_under_the_live_lock,
+        test_stop_kills_in_flight_turn_group,
+        test_cancel_route_guards_and_unknown_qid,
+        test_cancel_running_streamed_turn_keeps_partial_and_kills_group,
+        test_cancel_queued_turn_never_spawns,
+        test_outcome_routes_guards_404_dismiss_and_conflict,
+        test_outcome_edit_ok_and_bad_edit_gives_validator_text,
+        test_thread_turn_cap_gives_409_on_the_21st_turn,
     ]
     for test in tests:
         test()

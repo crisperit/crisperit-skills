@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
+import cw_mcp  # noqa: E402
 import cw_run  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
@@ -192,7 +193,7 @@ def test_ask_gives_qa_record_and_sse_answer():
         assert qa[0]["status"] == "ok"
         assert qa[0]["answer"]
         meta = cw_store.read_meta(d)
-        assert meta["usage"]["ask"]["calls"] == 2
+        assert meta["usage"]["thread"]["calls"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +348,7 @@ def test_comment_is_persisted_pending_before_turn_starts():
                     assert turns[0]["thread_id"] == qid
                     status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
                                             token=daemon.token)
-                    assert json.loads(raw) == {"turns": turns, "resolved": []}
+                    assert json.loads(raw) == {"turns": turns, "resolved": [], "outcomes": []}
                 finally:
                     release.set()
                 records = _wait_final(d, 1)
@@ -647,36 +648,460 @@ def test_idle_exit_waits_for_in_flight_ask():
 # ask role on the claude-code backend
 # ---------------------------------------------------------------------------
 
+def _claude_done(home, tmp, roles=None, profiles=None):
+    with cw_testlib.StubLLM(_combined_script(lambda body, n: _small_route_reply(body))) as stub:
+        d = _build_done(home, tmp, stub)
+    cw_testlib.write_config(
+        home, profiles or {"k": {"kind": "claude-code", "model": "sonnet"}}, roles or {"ask": "k"})
+    return d
+
+
+def _cturn(d, qid, comment, thread_id=None, live=None, anchor=None, on_event=None):
+    events = []
+    record = cw_ask.answer(
+        d, qid, cw_ask.validate_anchor(dict(anchor or ANCHOR_SECTION)), comment,
+        on_event=lambda kind, data: (events.append((kind, data)), on_event and on_event(kind, data)),
+        thread_id=thread_id, live=live)
+    return record, events
+
+
 def test_ask_on_claude_code_sums_usage_and_omits_json_schema():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        with cw_testlib.StubLLM(_combined_script(lambda body, n: _small_route_reply(body))) as stub:
-            cw_testlib.write_config(
-                home,
-                {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m"),
-                 "k": {"kind": "claude-code", "model": "sonnet"}},
-                {"analysis": "a", "prose": "p", "ask": "k"},
-            )
-            repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
-            d, _meta, _reused = cw_run.prepare_walkthrough(
-                {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t"})
-            status = cw_run.run(d, lambda ev, data: None)
-            assert status == "done", status
-
-        with cw_testlib.fake_claude(tmp, {"sonnet": [cw_testlib.claude_result(
-                result="It assigns X on line 2.",
-                usage={"input_tokens": 7, "output_tokens": 3,
-                       "cache_creation_input_tokens": 2, "cache_read_input_tokens": 1})]}) as fc:
-            anchor = cw_ask.validate_anchor(dict(ANCHOR_SECTION))
-            record = cw_ask.answer(d, "q-claude", anchor, "why?", on_event=None)
+        d = _claude_done(home, tmp)
+        usage = {"input_tokens": 7, "output_tokens": 3,
+                 "cache_creation_input_tokens": 2, "cache_read_input_tokens": 1}
+        with cw_testlib.fake_claude(tmp, {"sonnet": [cw_testlib.claude_stream_entry(
+                ["It assigns X ", "on line 2."], session_id="s-1", usage=usage)]}) as fc:
+            record, _events = _cturn(d, "q-claude", "why?")
 
         assert record["status"] == "ok"
         assert record["answer"] == "It assigns X on line 2."
+        assert record["session_id"] == "s-1"
         assert record["usage"]["prompt_tokens"] == 7 + 2 + 1
         assert record["usage"]["completion_tokens"] == 3
         assert record["usage"]["cost_usd"] is None
         entry = fc.log()[-1]
         assert not any(a.startswith("--json-schema") for a in entry["argv"])
+        assert "--safe-mode" not in entry["argv"]
+        assert any(a.startswith("--session-id") or a == "--session-id" for a in entry["argv"])
         assert Path(entry["cwd"]).resolve() == (d / "head").resolve()
+        assert (d / "ctx" / "analysis.json").is_file() and (d / "ctx" / "raw.diff").is_file()
+        assert cw_store.read_json(d / "meta.json")["usage"]["thread"]["calls"] == 1
+
+
+def test_claude_deltas_are_ordered_and_coalesced():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        chunks = [f"w{i} " for i in range(40)]
+        with cw_testlib.fake_claude(tmp, {"sonnet": [
+                cw_testlib.claude_stream_entry(chunks, delay=0.005)]}):
+            live = {}
+            record, events = _cturn(d, "q1", "why?", live=live)
+        deltas = [data for kind, data in events if kind == "delta"]
+        assert 0 < len(deltas) < len(chunks), len(deltas)
+        assert [x["seq"] for x in deltas] == list(range(1, len(deltas) + 1))
+        assert "".join(x["text"] for x in deltas) == "".join(chunks)
+        assert all(x["qid"] == "q1" and x["thread_id"] == "q1" for x in deltas)
+        assert live["text"] == record["answer"] == "".join(chunks)
+        assert events[-1][0] == "thread"
+
+
+def test_claude_live_text_and_seq_move_with_each_delta():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        chunks = [f"w{i} " for i in range(40)]
+        live, seen, bad = {}, [], []
+
+        def hook(kind, data):
+            if kind == "delta":
+                seen.append(data["text"])
+                if live.get("text") != "".join(seen) or live.get("seq") != data["seq"]:
+                    bad.append(data["seq"])
+
+        with cw_testlib.fake_claude(tmp, {"sonnet": [
+                cw_testlib.claude_stream_entry(chunks, delay=0.005)]}):
+            record, _ = _cturn(d, "q1", "why?", live=live, on_event=hook)
+        assert seen and not bad, bad
+        assert record["answer"] == "".join(chunks)
+
+
+def test_claude_answer_joins_text_blocks_and_reports_progress():
+    def block(text_):
+        return [{"type": "stream_event", "event": {
+                    "type": "content_block_start", "index": 0, "content_block": {"type": "text"}}},
+                {"type": "stream_event", "event": {
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": text_}}},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": text_}]}}]
+
+    entry = cw_testlib.claude_stream_entry(["x"], result="After.")
+    entry["stream"] = (
+        entry["stream"][:1] + block("Before.")
+        + [{"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/a/b.py"}}]}}]
+        + block("After.") + entry["stream"][-1:])
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            record, events = _cturn(d, "q1", "why?")
+    assert record["answer"] == "Before.\n\nAfter."
+    assert "".join(x["text"] for k, x in events if k == "delta") == "Before.\n\nAfter."
+    progress = [x for k, x in events if k == "progress"]
+    assert [(x["tool"], x["detail"]) for x in progress] == [("Read", "/a/b.py")]
+
+
+def test_claude_followup_resumes_and_failed_resume_reseeds():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        script = {"sonnet": [
+            cw_testlib.claude_stream_entry(["one"], session_id="s-1"),
+            cw_testlib.claude_stream_entry(["two"], session_id="s-1"),
+            {"stream": [], "exit": 1, "stderr": "no conversation found"},
+            cw_testlib.claude_stream_entry(["three"], session_id="s-2"),
+        ]}
+        with cw_testlib.fake_claude(tmp, script) as fc:
+            _cturn(d, "q1", "first?")
+            record, _ = _cturn(d, "q2", "second?", thread_id="q1")
+            assert record["answer"] == "two"
+            resumed = fc.log()[1]
+            assert resumed["argv"][resumed["argv"].index("--resume") + 1] == "s-1"
+            assert "Previous Q&A" not in resumed["stdin"]
+            assert "second?" in resumed["stdin"]
+
+            record, _ = _cturn(d, "q3", "third?", thread_id="q1")
+        assert record["status"] == "ok" and record["answer"] == "three"
+        assert record["session_id"] == "s-2"
+        reseeded = fc.log()[3]
+        assert "--resume" not in reseeded["argv"] and "--session-id" in reseeded["argv"]
+        assert "Previous Q&A" in reseeded["stdin"]
+        assert "reseeded" in cw_store.log_path().read_text()
+
+
+def test_thread_role_wins_over_ask_and_falls_back():
+    profiles = {"k": {"kind": "claude-code", "model": "ask-m"},
+                "t": {"kind": "claude-code", "model": "thr-m"}}
+    script = {"ask-m": [cw_testlib.claude_stream_entry(["from ask"])],
+              "thr-m": [cw_testlib.claude_stream_entry(["from thread"])]}
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp, roles={"ask": "k", "thread": "t"}, profiles=profiles)
+        with cw_testlib.fake_claude(tmp, script):
+            assert _cturn(d, "q1", "why?")[0]["answer"] == "from thread"
+        cw_testlib.write_config(home, profiles, {"ask": "k"})
+        with cw_testlib.fake_claude(tmp, script):
+            assert _cturn(d, "q2", "why?")[0]["answer"] == "from ask"
+
+
+def test_claude_aborts_fast_when_outcome_server_missing():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        entry = cw_testlib.claude_stream_entry(["a", "b"], init_cw=False, delay=10)
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            started = time.time()
+            record, _ = _cturn(d, "q1", "why?")
+        assert time.time() - started < 5
+        assert record["status"] == "error"
+        assert record["error"] == "the outcome server did not start"
+        assert record["remedy"] == "see server.log"
+
+
+def test_claude_cancel_keeps_partial_text():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        entry = cw_testlib.claude_stream_entry(["part ", "two ", "three"], delay=3)
+        live = {}
+
+        def cancel():
+            deadline = time.time() + 20
+            while not live.get("text") and time.time() < deadline:
+                time.sleep(0.02)
+            live["cancelled"] = True
+            cw_ask._kill(live["proc"])
+
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            t = threading.Thread(target=cancel)
+            t.start()
+            record, events = _cturn(d, "q1", "why?", live=live)
+            t.join()
+        assert record["status"] == "cancelled"
+        assert record["answer"] == "part "
+        assert record["error"] is None
+
+
+def _seed_review_threads(d, **overrides):
+    note = {"id": "gh-501", "origin": "github", "gh_thread_id": "T1", "path": "foo.py", "line": 2,
+            "author": "rev", "body": "please fix", "state": "posted", **overrides}
+    reply = {**note, "id": "gh-502", "in_reply_to": "gh-501"}
+    cw_store.write_json(d / "state.json", {"notes": [note, reply]})
+
+
+def _propose(thread="$FIRST_RESOLVABLE", at=1):
+    return [{"at": at, "name": "propose_resolve", "arguments": {"thread": thread, "why": "foo.py:2 now assigns X"}}]
+
+
+def test_resolvable_is_for_line_anchors_over_open_root_review_threads():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        found = cw_ask._resolvable(d, ANCHOR_LINE)
+        assert [(c["id"], c["path"], c["line"], c["author"], c["body"]) for c in found] == [
+            ("gh-501", "foo.py", 2, "rev", "please fix")]
+        assert cw_ask._resolvable(d, ANCHOR_SECTION) == cw_ask._resolvable(d, ANCHOR_BLOCK) == []
+        assert cw_ask._resolvable(d, {**ANCHOR_LINE, "line": 3}) == []
+        assert len(cw_ask._resolvable(d, {**ANCHOR_LINE, "line": 1, "end_line": 2})) == 1
+        _seed_review_threads(d, resolved=True)
+        assert cw_ask._resolvable(d, ANCHOR_LINE) == []
+
+
+def test_proposed_resolve_lands_as_outcome_before_the_final_thread_event():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        entry = cw_testlib.claude_stream_entry(["fixed"], mcp_calls=_propose())
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc:
+            record, events = _cturn(d, "q1", "ok?", anchor=ANCHOR_LINE)
+        assert record["status"] == "ok"
+        kinds = [k for k, _ in events]
+        assert kinds.count("outcome") == 1 and kinds.index("outcome") < kinds.index("thread")
+        outcome = dict(events)["outcome"]
+        assert outcome["payload"]["thread"] == "gh-501" and outcome["state"] == "proposed"
+        assert "gh-501, foo.py:2, rev" in fc.log()[-1]["stdin"]
+        assert cw_ask.read_threads(d)["q1"]["outcomes"] == [outcome]
+        assert [r for r in cw_ask._read_records(d) if r.get("type") == "outcome"][0]["qid"] == "q1"
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert len(cw_ask.read_outcomes(d)) == 1
+
+
+def test_resolve_for_a_non_candidate_thread_is_refused_and_records_nothing():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        entry = cw_testlib.claude_stream_entry(["no"], mcp_calls=_propose("gh-999"))
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            record, events = _cturn(d, "q1", "ok?", anchor=ANCHOR_LINE)
+        assert record["status"] == "ok"
+        assert cw_ask.read_outcomes(d) == [] and "outcome" not in [k for k, _ in events]
+        assert not (d / "turns" / "q1.outcomes.jsonl").exists()
+
+
+def test_openai_turn_records_propose_resolve_and_keeps_looping():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        def ask_handler(body, n):
+            if n == 0:
+                return cw_testlib.tool_call("propose_resolve", {"thread": "gh-501", "why": "foo.py:2 ok"})
+            return cw_testlib.text("Looks settled.")
+
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            _seed_review_threads(d)
+            record, events = _cturn(d, "q1", "ok?", anchor=ANCHOR_LINE)
+        assert record["status"] == "ok" and record["answer"] == "Looks settled."
+        assert [o["payload"]["thread"] for o in cw_ask.read_outcomes(d)] == ["gh-501"]
+        kinds = [k for k, _ in events]
+        assert kinds.index("outcome") < kinds.index("thread") and "delta" not in kinds
+        assert ("progress", "propose_resolve") in [(k, x["tool"]) for k, x in events if k == "progress"]
+
+
+def test_dismissed_suggestion_is_fed_into_the_next_turn():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_propose()),
+                             cw_testlib.claude_stream_entry(["two"]),
+                             cw_testlib.claude_stream_entry(["three"])]}
+        with cw_testlib.fake_claude(tmp, script) as fc:
+            _cturn(d, "q1", "first?", anchor=ANCHOR_LINE)
+            oid = cw_ask.read_outcomes(d)[0]["oid"]
+            cw_ask.outcome_action(d, oid, "dismiss")
+            _cturn(d, "q2", "second?", thread_id="q1", anchor=ANCHOR_LINE)
+            _cturn(d, "q3", "third?", thread_id="q1", anchor=ANCHOR_LINE)
+        second, third = fc.log()[1]["stdin"], fc.log()[2]["stdin"]
+        assert "dismissed your suggestion to resolve foo.py:2: foo.py:2 now assigns X" in second
+        assert "gh-501, foo.py:2, rev" in second
+        assert "dismissed" not in third
+
+
+def test_text_is_flushed_before_a_following_tool_event():
+    entry = cw_testlib.claude_stream_entry(["a", "b"])
+    entry["stream"].insert(4, {"type": "assistant", "message": {"content": [{
+        "type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/x"}}]}})
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            _record, events = _cturn(d, "q1", "why?")
+    kinds = [k for k, _ in events]
+    assert kinds[:3] == ["delta", "delta", "progress"], kinds
+    assert [x["text"] for k, x in events if k == "delta"] == ["a", "b"]
+
+
+def test_cancel_after_result_completes_and_books_usage():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        live = {}
+        entry = cw_testlib.claude_stream_entry(["done"])
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            record, _ = _cturn(d, "q1", "why?", live=live,
+                               on_event=lambda k, _x: live.update(cancelled=True) if k == "delta" else None)
+        assert record["status"] == "ok" and record["answer"] == "done"
+        assert record["usage"]["prompt_tokens"] == 10 and record["usage"]["completion_tokens"] == 5
+
+
+def test_cancel_without_result_keeps_the_buffered_tail():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        entry = cw_testlib.claude_stream_entry(["a", "b"])
+        entry["stream"] = entry["stream"][:4] + [{"_sleep": 30}]
+        live = {}
+
+        def cancel():
+            deadline = time.time() + 20
+            while not live.get("text") and time.time() < deadline:
+                time.sleep(0.02)
+            time.sleep(0.5)
+            live["cancelled"] = True
+            cw_ask._kill(live["proc"])
+
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
+            t = threading.Thread(target=cancel)
+            t.start()
+            record, _ = _cturn(d, "q1", "why?", live=live)
+            t.join()
+        assert record["status"] == "cancelled" and record["answer"] == "ab"
+        assert record["usage"]["prompt_tokens"] == 0
+
+
+def test_openai_cancel_stops_at_the_next_tool_boundary():
+    live = {}
+
+    def ask_handler(body, n):
+        live["cancelled"] = True
+        return cw_testlib.tool_call("read_file", {"path": "foo.py"})
+
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            before = stub.count("ask-m")
+            record, _ = _cturn(d, "q1", "why?", live=live)
+            assert stub.count("ask-m") - before == 1
+        assert record["status"] == "cancelled" and record["answer"] == "" and record["error"] is None
+
+
+def test_openai_late_cancel_keeps_a_fully_generated_answer():
+    live = {}
+
+    def ask_handler(body, n):
+        if n == 0:
+            return cw_testlib.tool_call("read_file", {"path": "foo.py"})
+        live["cancelled"] = True
+        return cw_testlib.text("the full answer")
+
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            record, _ = _cturn(d, "q1", "why?", live=live)
+        assert record["status"] == "ok" and record["answer"] == "the full answer"
+
+
+def test_claude_reseed_replaces_live_text_bumps_seq_and_books_failed_usage():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        failed = cw_testlib.claude_stream_entry(["stale ", "text"], session_id="s-x")
+        failed["stream"] = failed["stream"][1:]
+        failed.update(exit=1, stderr="no conversation found")
+        script = {"sonnet": [
+            cw_testlib.claude_stream_entry(["one"], session_id="s-1"),
+            failed,
+            cw_testlib.claude_stream_entry(["fresh"], session_id="s-2"),
+        ]}
+        with cw_testlib.fake_claude(tmp, script):
+            _cturn(d, "q1", "first?")
+            live, deltas = {}, []
+            record, _ = _cturn(
+                d, "q2", "second?", thread_id="q1", live=live,
+                on_event=lambda k, x: deltas.append(x["seq"]) if k == "delta" else None)
+        assert record["answer"] == "fresh" and live["text"] == "fresh"
+        assert max(deltas) >= 3 and live["seq"] > max(deltas)
+        assert record["usage"]["prompt_tokens"] == 20
+
+
+def test_system_prompt_ctx_note_only_on_the_claude_path():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        with cw_testlib.fake_claude(tmp, {"sonnet": [cw_testlib.claude_stream_entry(["x"])]}) as fc:
+            _cturn(d, "q1", "why?")
+        argv = fc.log()[-1]["argv"]
+        system = argv[argv.index("--system-prompt") + 1] if "--system-prompt" in argv else " ".join(argv)
+        assert str((d / "ctx").resolve()) in system and "{ctx_note}" not in system
+
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("fine"))) as stub:
+            d = _build_done(home, tmp, stub)
+            _cturn(d, "q1", "why?")
+            content = [r for r in stub.requests if r.get("model") == "ask-m"][-1]["messages"][0]["content"]
+        assert "analysis.json" not in content and "{ctx_note}" not in content and "\n\n\n" not in content
+
+
+def test_reseeded_prompt_lists_earlier_dismissed_suggestion():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_propose()),
+                             {"stream": [], "exit": 1, "stderr": "no conversation found"},
+                             cw_testlib.claude_stream_entry(["two"], session_id="s-2")]}
+        with cw_testlib.fake_claude(tmp, script) as fc:
+            _cturn(d, "q1", "first?", anchor=ANCHOR_LINE)
+            cw_ask.outcome_action(d, cw_ask.read_outcomes(d)[0]["oid"], "dismiss")
+            _cturn(d, "q2", "second?", thread_id="q1", anchor=ANCHOR_LINE)
+        assert "dismissed your suggestion to resolve foo.py:2" in fc.log()[2]["stdin"]
+
+
+def test_finalise_stale_keeps_outcomes_accepted_before_the_kill():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        cw_ask.begin_turn(d, "q-dead", ANCHOR_LINE, "c")
+        cw_ask.write_turn_anchor(d, "q-dead", "q-dead", ANCHOR_LINE)
+        ok, _text = cw_mcp.accept_outcome(d, "q-dead", "propose_resolve", {"thread": "gh-501", "why": "w"})
+        assert ok
+        cw_ask.finalise_stale(d, set())
+        assert [(o["qid"], o["thread_id"], o["state"]) for o in cw_ask.read_outcomes(d)] == [
+            ("q-dead", "q-dead", "proposed")]
+        assert cw_ask.read_qa(d)[0]["status"] == "error"
+
+
+def test_outcome_action_states_and_done_folding():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        _seed_review_threads(d)
+        cw_ask.write_turn_anchor(d, "q1", "q1", ANCHOR_LINE)
+        cw_mcp.accept_outcome(d, "q1", "propose_resolve", {"thread": "gh-501", "why": "w"})
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        oid = cw_ask.read_outcomes(d)[0]["oid"]
+        events = []
+        on_event = lambda kind, data: events.append((kind, data))
+
+        def refused(action, payload=None, target=oid):
+            try:
+                cw_ask.outcome_action(d, target, action, payload)
+            except cw_ask.OutcomeError as e:
+                return e.kind, str(e)
+            raise AssertionError("not refused")
+
+        assert refused("dismiss", target="o-00000000")[0] == "not_found"
+        kind, message = refused("edit", {"thread": "gh-999", "why": "w"})
+        assert kind == "invalid" and "gh-999" in message
+        assert refused("edit", {"thread": "gh-501", "why": " "})[0] == "invalid"
+        edited = cw_ask.outcome_action(d, oid, "edit", {"thread": "gh-501", "why": " better "}, on_event)
+        assert edited["state"] == "proposed" and edited["payload"]["why"] == "better"
+        dismissed = cw_ask.outcome_action(d, oid, "dismiss", on_event=on_event)
+        assert dismissed["state"] == "dismissed" and [k for k, _ in events] == ["outcome", "outcome"]
+        assert refused("dismiss") == ("conflict", "outcome is not open")
+        assert cw_ask.read_outcomes(d) == [dismissed]
+
+        cw_ask.write_turn_anchor(d, "q2", "q1", ANCHOR_LINE)
+        cw_mcp.accept_outcome(d, "q2", "propose_resolve", {"thread": "gh-501", "why": "again"})
+        _seed_review_threads(d, resolved=True)
+        cw_ask.sweep_outcomes(d, "q2", "q1")
+        assert [o["state"] for o in cw_ask.read_outcomes(d)] == ["dismissed", "done"]
 
 
 if __name__ == "__main__":
@@ -698,6 +1123,25 @@ if __name__ == "__main__":
         test_guards_and_walkthrough_get_qa,
         test_idle_exit_waits_for_in_flight_ask,
         test_ask_on_claude_code_sums_usage_and_omits_json_schema,
+        test_claude_deltas_are_ordered_and_coalesced,
+        test_claude_answer_joins_text_blocks_and_reports_progress,
+        test_claude_followup_resumes_and_failed_resume_reseeds,
+        test_thread_role_wins_over_ask_and_falls_back,
+        test_claude_aborts_fast_when_outcome_server_missing,
+        test_claude_cancel_keeps_partial_text,
+        test_resolvable_is_for_line_anchors_over_open_root_review_threads,
+        test_proposed_resolve_lands_as_outcome_before_the_final_thread_event,
+        test_resolve_for_a_non_candidate_thread_is_refused_and_records_nothing,
+        test_openai_turn_records_propose_resolve_and_keeps_looping,
+        test_dismissed_suggestion_is_fed_into_the_next_turn,
+        test_text_is_flushed_before_a_following_tool_event,
+        test_cancel_after_result_completes_and_books_usage,
+        test_cancel_without_result_keeps_the_buffered_tail,
+        test_openai_cancel_stops_at_the_next_tool_boundary,
+        test_system_prompt_ctx_note_only_on_the_claude_path,
+        test_reseeded_prompt_lists_earlier_dismissed_suggestion,
+        test_finalise_stale_keeps_outcomes_accepted_before_the_kill,
+        test_outcome_action_states_and_done_folding,
     ]
     for test in tests:
         test()
