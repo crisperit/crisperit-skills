@@ -507,7 +507,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "notes must be a list"})
             return
         st = cw_store.read_json(d / "state.json", default={})
-        posted_ids = {n.get("id") for n in (st or {}).get("notes", []) if n.get("state") == "posted"}
+        posted_ids = {n.get("id") for n in (st or {}).get("notes", []) if n.get("state") in ("posted", "in_review")}
         kept = [
             n for n in incoming
             if isinstance(n, dict) and isinstance(n.get("id"), str) and VALID_ID_RE.fullmatch(n["id"])
@@ -632,7 +632,7 @@ class _Handler(BaseHTTPRequestHandler):
             return None, {"error": HEAD_NOT_PUSHED_MSG}
         return st, None
 
-    def _post_items(self, d, st, resolve_ids):
+    def _post_items(self, d, st, resolve_ids, ids=None):
         """Steps 3-4 shared by preview and post: fold page-notes.json into state.json first
         (an edit made just before clicking Post must count), then list exactly what
         notes.pending_publish_ids calls ready -- the same in-process predicate /post
@@ -653,11 +653,12 @@ class _Handler(BaseHTTPRequestHandler):
         for note_id in notes.pending_publish_ids(st):
             note = by_id[note_id]
             body = note.get("body") or ""
-            if not body.strip():
+            if not body.strip() or (ids is not None and note_id not in ids):
                 continue
             notes_items.append({
                 "id": note_id, "path": note.get("path"), "line": note.get("line"),
-                "side": note.get("side"), "body": body, "reply_to": note.get("reply_to"),
+                "side": note.get("side"), "body": body,
+                "reply_to": note.get("reply_to") or note.get("in_reply_to"),
             })
         resolves_items = []
         for root_id in resolve_ids or []:
@@ -709,19 +710,124 @@ class _Handler(BaseHTTPRequestHandler):
             if err:
                 self._send_json(409, err)
                 return
-            if meta.get("pr") and meta.get("gh_repo"):
-                _runner().sync_pr(d, meta)
-                # sync_pr can flip a draft to posted on disk; st above predates that write.
-                refreshed = cw_store.read_json(d / "state.json")
-                if isinstance(refreshed, dict):
-                    st = refreshed
+            ids = self._post_ids(payload)
+            if ids is False:
+                self._send_json(400, {"error": "ids must be a list of strings"})
+                return
+            resolve_ids = self._post_resolve(payload)
+            if resolve_ids is False:
+                self._send_json(400, {"error": "resolve must be a list of strings"})
+                return
+            st = self._post_sync(d, meta, st)
+            st, reset = self._reset_stuck(d, meta, st)
+            waiting = self._in_review_ids(st)
             try:
-                st, notes_items, resolves_items = self._post_items(d, st, payload.get("resolve"))
+                st, notes_items, resolves_items = self._post_items(d, st, resolve_ids, ids)
             except cw_store.CWError as e:
                 self._send_json(500, {"error": str(e)})
                 return
+            parent_err = self._post_reply_parent_error(st, ids)
+            if parent_err:
+                self._send_json(400, parent_err)
+                return
             nonce = self._post_nonce(notes_items, resolves_items)
-        self._send_json(200, {"notes": notes_items, "resolves": resolves_items, "nonce": nonce})
+            info = self._review_info(meta, d) or {}
+            by_id = {n["id"]: n for n in st.get("notes", [])}
+            in_review = [{"id": i, "path": by_id[i].get("path"), "line": by_id[i].get("line"),
+                          "body": by_id[i].get("body")} for i in waiting if i in by_id]
+            own_pr = self._own_pr(meta)
+        self._send_json(200, {
+            "notes": notes_items, "resolves": resolves_items, "nonce": nonce,
+            "review": {"pending": bool(info.get("review_id")), "comments": info.get("comments", 0)},
+            "in_review": in_review, "own_pr": own_pr, "reset": reset,
+        })
+
+    @staticmethod
+    def _post_ids(payload):
+        """None when the caller sent no `ids` (every ready draft), the id set when it did, False
+        when `ids` is malformed."""
+        ids = payload.get("ids")
+        if ids is None:
+            return None
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return False
+        return set(ids)
+
+    @staticmethod
+    def _post_resolve(payload):
+        """The `resolve` list, [] when absent, False when it is not a list of strings."""
+        resolve = payload.get("resolve")
+        if resolve is None:
+            return []
+        if not isinstance(resolve, list) or not all(isinstance(i, str) for i in resolve):
+            return False
+        return resolve
+
+    @staticmethod
+    def _post_reply_parent_error(st, ids):
+        """With `ids`, a selected reply draft whose parent is itself a local draft needs that
+        parent selected too: the reply can only be delivered into the parent's thread."""
+        if ids is None:
+            return None
+        by_id = {n["id"]: n for n in st.get("notes", [])}
+        for note_id in ids:
+            note = by_id.get(note_id)
+            parent = by_id.get((note or {}).get("reply_to") or "")
+            if (note and note.get("state") == "draft" and parent is not None
+                    and parent.get("origin") == "local" and parent.get("state") == "draft"
+                    and parent["id"] not in ids):
+                return {"error": f"{note_id} replies to the draft {parent['id']}, which is not selected",
+                        "remedy": "a reply needs its parent comment: tick it too"}
+        return None
+
+    def _reset_stuck(self, d, meta, st):
+        """Notes in_review whose pending review no longer exists on GitHub (submitted or
+        discarded in the web UI) go back to draft so they can be delivered again. Runs after
+        sync, whose dedupe already turned the ones submitted elsewhere into posted. A failed
+        review-info lookup resets nothing."""
+        if not self._in_review_ids(st):
+            return st, []
+        info = self._review_info(meta, d)
+        if info is None or info.get("review_id"):
+            return st, []
+        reset = notes.reset_in_review(st)
+        cw_store.write_json(d / "state.json", st)
+        return st, reset
+
+    @staticmethod
+    def _in_review_ids(st):
+        return [n["id"] for n in st.get("notes", []) if n.get("state") == "in_review"]
+
+    def _post_sync(self, d, meta, st):
+        if meta.get("pr") and meta.get("gh_repo"):
+            _runner().sync_pr(d, meta)
+            refreshed = cw_store.read_json(d / "state.json")
+            if isinstance(refreshed, dict):
+                return refreshed
+        return st
+
+    def _review_info(self, meta, d):
+        result = cw_run._notes(meta, ["review-info", "--state", str(d / "state.json")])
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout)
+        except ValueError:
+            return None
+
+    def _own_pr(self, meta):
+        """True/False when the PR author is / is not the gh viewer; None when either lookup fails."""
+        try:
+            viewer = cw_run._gh(meta, ["api", "user"])
+            author = cw_run._gh(meta, ["pr", "view", str(meta["pr"]), "--repo", meta["gh_repo"],
+                                        "--json", "author"])
+            if viewer.returncode != 0 or author.returncode != 0:
+                return None
+            login = json.loads(viewer.stdout).get("login")
+            pr_author = (json.loads(author.stdout).get("author") or {}).get("login")
+        except (cw_store.CWError, ValueError, AttributeError, OSError):
+            return None
+        return None if not login or not pr_author else login == pr_author
 
     def _route_post(self, key, wid):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
@@ -737,6 +843,26 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "bad json"})
             return
+        event = payload.get("event") or "COMMENT"
+        review_body = payload.get("body") or ""
+        ids = self._post_ids(payload)
+        if event not in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
+            self._send_json(400, {"error": "event must be COMMENT, APPROVE or REQUEST_CHANGES"})
+            return
+        if not isinstance(review_body, str):
+            self._send_json(400, {"error": "body must be a string"})
+            return
+        if event == "REQUEST_CHANGES" and not review_body.strip():
+            self._send_json(400, {"error": "Request changes needs a review body"})
+            return
+        if ids is False:
+            self._send_json(400, {"error": "ids must be a list of strings"})
+            return
+        resolve_ids = self._post_resolve(payload)
+        if resolve_ids is False:
+            self._send_json(400, {"error": "resolve must be a list of strings"})
+            return
+        submit_only = payload.get("submit_only") is True
         daemon = self.server.cw_daemon
         if daemon.is_running(d):
             self._send_json(409, {"error": STILL_BUILDING_MSG})
@@ -750,66 +876,126 @@ class _Handler(BaseHTTPRequestHandler):
             if err:
                 self._send_json(409, err)
                 return
+            if not submit_only:
+                st = self._post_sync(d, meta, st)
+            st, reset = self._reset_stuck(d, meta, st)
+            waiting = set(self._in_review_ids(st))
             try:
-                st, notes_items, resolves_items = self._post_items(d, st, payload.get("resolve"))
+                st, notes_items, resolves_items = self._post_items(d, st, resolve_ids, ids)
             except cw_store.CWError as e:
                 self._send_json(500, {"error": str(e)})
                 return
-            nonce = self._post_nonce(notes_items, resolves_items)
-            if nonce != payload.get("nonce"):
-                self._send_json(409, {"error": "changed since preview", "remedy": "review the list again"})
+            parent_err = self._post_reply_parent_error(st, ids)
+            if parent_err:
+                self._send_json(400, parent_err)
                 return
+            if submit_only:
+                notes_items = []
+            if not notes_items and not waiting and (event != "COMMENT" or review_body.strip()):
+                if not (self._review_info(meta, d) or {}).get("review_id"):
+                    self._send_json(400, {
+                        "error": "nothing to submit: there are no comments in the review",
+                        "remedy": "approve or request changes on GitHub, or add a comment first"})
+                    return
+            if not submit_only:
+                nonce = self._post_nonce(notes_items, resolves_items)
+                if nonce != payload.get("nonce"):
+                    self._send_json(409, {"error": "changed since preview", "remedy": "review the list again"})
+                    return
 
             results = []
             state_path = str(d / "state.json")
-            for item in notes_items:
-                result = cw_run._notes(meta, ["deliver", "--state", state_path, "--id", item["id"]])
-                entry = {"kind": "note", "id": item["id"], "ok": result.returncode == 0,
-                         "error": None if result.returncode == 0 else result.stderr.strip()[-500:]}
+
+            def record(entry):
                 results.append(entry)
                 daemon.hub.emit(key, wid, "posted", entry)
+
+            def err_of(result):
+                return None if result.returncode == 0 else result.stderr.strip()[-500:]
+
+            for item in notes_items:
+                result = cw_run._notes(meta, ["deliver", "--state", state_path, "--id", item["id"]])
+                ok = result.returncode == 0
+                record({"kind": "note", "id": item["id"], "ok": ok,
+                        "state": "in_review" if ok else None, "error": err_of(result)})
+
+            delivered_ids = {r["id"] for r in results if r["ok"]}
+            failed = [{"id": r["id"], "error": r["error"]} for r in results if not r["ok"]]
+            if not submit_only and delivered_ids:
+                self._drop_from_page_notes(d, delivered_ids)
+
+            def partial(failures):
+                total = len(self._in_review_ids(cw_store.read_json(d / "state.json") or {}))
+                body = {"ok": False, "partial": True, "results": results,
+                        "delivered": len(delivered_ids), "failed": failures,
+                        "in_review": total, "reset": reset}
+                meta2, render_error = self._render_page(d, meta, key, wid)
+                if render_error:
+                    body["render_error"] = render_error
+                else:
+                    daemon.hub.emit(key, wid, "rebuilt",
+                                    {"rev": meta2["rev"], "page": "final", "fragments": []})
+                self._send_json(200, body)
+
+            if failed:
+                partial(failed)
+                return
+
+            submitted = False
+            if not (submit_only or delivered_ids) and waiting:
+                has_review = bool((self._review_info(meta, d) or {}).get("review_id"))
+            else:
+                has_review = True
+            if (submit_only or delivered_ids or waiting) and has_review:
+                body_path = d / "review-body.txt"
+                body_path.write_text(review_body)
+                result = cw_run._notes(meta, ["submit", "--state", state_path, "--event", event,
+                                              "--body-file", str(body_path)])
+                record({"kind": "submit", "id": None, "ok": result.returncode == 0,
+                        "event": event, "error": err_of(result)})
+                if result.returncode != 0:
+                    partial([{"id": "submit", "error": err_of(result)}])
+                    return
+                submitted = True
+
             for item in resolves_items:
                 result = cw_run._notes(meta, ["resolve", "--state", state_path,
                                               "--thread-id", item["thread_id"]])
-                entry = {"kind": "resolve", "id": item["thread_id"], "ok": result.returncode == 0,
-                         "error": None if result.returncode == 0 else result.stderr.strip()[-500:]}
-                results.append(entry)
-                daemon.hub.emit(key, wid, "posted", entry)
-            if payload.get("submit"):
-                body_path = d / "review-body.txt"
-                body_path.write_text("")
-                result = cw_run._notes(meta, ["submit", "--state", state_path, "--event", "COMMENT",
-                                              "--body-file", str(body_path)])
-                entry = {"kind": "submit", "id": None, "ok": result.returncode == 0,
-                         "error": None if result.returncode == 0 else result.stderr.strip()[-500:]}
-                results.append(entry)
-                daemon.hub.emit(key, wid, "posted", entry)
+                record({"kind": "resolve", "id": item["thread_id"], "ok": result.returncode == 0,
+                        "error": err_of(result)})
 
-            delivered_ids = {r["id"] for r in results if r["kind"] == "note" and r["ok"]}
-            page_notes = cw_store.read_json(d / "page-notes.json")
-            if isinstance(page_notes, dict):
-                remaining = [n for n in page_notes.get("notes", []) if n.get("id") not in delivered_ids]
-                cw_store.write_json(d / "page-notes.json", {"notes": remaining})
-
-            render_args = ["render", "--dir", str(d), "--slug", meta["slug"]]
-            if meta.get("title"):
-                render_args += ["--title", meta["title"]]
-            render_result = subprocess.run(
-                [sys.executable, str(cw_run.SCRIPTS_DIR / "pipeline.py"), *render_args],
-                capture_output=True, text=True)
-            if render_result.returncode != 0:
-                gate_lines = [line for line in render_result.stderr.splitlines() if line.strip()]
-                cw_store.update_meta(d, lambda m: m.update({"status": "failed", "gate": gate_lines}))
-                daemon.hub.emit(key, wid, "step",
-                                 {"name": "render", "status": "failed", "error": gate_lines})
-                self._send_json(200, {"ok": False, "results": results,
-                                       "render_error": render_result.stderr.strip()[-500:]})
+            meta2, render_error = self._render_page(d, meta, key, wid)
+            if render_error:
+                self._send_json(200, {"ok": False, "results": results, "render_error": render_error})
                 return
-            meta2 = cw_store.update_meta(d, lambda m: m.update(
-                {"page": "final", "rev": m.get("rev", 0) + 1}))
 
         daemon.hub.emit(key, wid, "rebuilt", {"rev": meta2["rev"], "page": "final", "fragments": []})
-        self._send_json(200, {"ok": True, "results": results})
+        self._send_json(200, {"ok": True, "results": results, "submitted": submitted, "reset": reset})
+
+    def _render_page(self, d, meta, key, wid):
+        """Re-render the final page and bump rev. (meta2, None) on success; (None, stderr tail)
+        after marking the walkthrough failed when the render gate rejects."""
+        render_args = ["render", "--dir", str(d), "--slug", meta["slug"]]
+        if meta.get("title"):
+            render_args += ["--title", meta["title"]]
+        render_result = subprocess.run(
+            [sys.executable, str(cw_run.SCRIPTS_DIR / "pipeline.py"), *render_args],
+            capture_output=True, text=True)
+        if render_result.returncode != 0:
+            gate_lines = [line for line in render_result.stderr.splitlines() if line.strip()]
+            cw_store.update_meta(d, lambda m: m.update({"status": "failed", "gate": gate_lines}))
+            self.server.cw_daemon.hub.emit(key, wid, "step",
+                                           {"name": "render", "status": "failed", "error": gate_lines})
+            return None, render_result.stderr.strip()[-500:]
+        return cw_store.update_meta(d, lambda m: m.update(
+            {"page": "final", "rev": m.get("rev", 0) + 1})), None
+
+    @staticmethod
+    def _drop_from_page_notes(d, delivered_ids):
+        page_notes = cw_store.read_json(d / "page-notes.json")
+        if isinstance(page_notes, dict):
+            remaining = [n for n in page_notes.get("notes", []) if n.get("id") not in delivered_ids]
+            cw_store.write_json(d / "page-notes.json", {"notes": remaining})
 
     def _route_rpc(self):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():

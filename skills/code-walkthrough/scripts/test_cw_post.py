@@ -127,15 +127,15 @@ def _request(daemon, method, path, *, token=None, body=None):
         conn.close()
 
 
-def _preview(daemon, key, wid, resolve):
+def _preview(daemon, key, wid, resolve, **extra):
     return _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/post/preview",
-                     token=daemon.token, body=json.dumps({"resolve": resolve}))
+                     token=daemon.token, body=json.dumps({"resolve": resolve, **extra}))
 
 
-def _post(daemon, key, wid, nonce, resolve, submit):
+def _post(daemon, key, wid, nonce, resolve, **extra):
     return _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/post",
                      token=daemon.token,
-                     body=json.dumps({"nonce": nonce, "resolve": resolve, "submit": submit}))
+                     body=json.dumps({"nonce": nonce, "resolve": resolve, **extra}))
 
 
 def _put_notes(daemon, key, wid, notes_list):
@@ -159,13 +159,14 @@ def test_preview_lists_exactly_what_notes_py_considers_ready():
             stale_draft = _note(id="n-stale", body="stale", stale=True)
             unposted_parent = _note(id="n-unposted-parent", body="parent draft", gh_id=None)
             reply_unposted = _note(id="n-reply-unposted", body="reply", reply_to="n-unposted-parent")
+            page_reply = _note(id="n-page-reply", body="page reply", reply_to=None, in_reply_to="gh-501")
             reply_to_synced = _note(id="n-reply-synced", body="reply to synced", reply_to="gh-501")
             posted_note = _note(id="n-posted", body="already posted", state="posted", gh_id=999)
             blank_draft = _note(id="n-blank", body="")
 
             state_path = _add_notes(d, [
                 github_parent, local_draft, stale_draft, unposted_parent, reply_unposted,
-                reply_to_synced, posted_note, blank_draft,
+                reply_to_synced, page_reply, posted_note, blank_draft,
             ])
 
             key, wid = d.parent.name, d.name
@@ -178,6 +179,8 @@ def test_preview_lists_exactly_what_notes_py_considers_ready():
         expected = set(notes.pending_publish_ids(final_state)) - {"n-blank"}
         assert {n["id"] for n in reply["notes"]} == expected
         assert "n-blank" not in {n["id"] for n in reply["notes"]}
+        page_row = next(n for n in reply["notes"] if n["id"] == "n-page-reply")
+        assert page_row["reply_to"] == "gh-501"
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +210,7 @@ def test_edit_or_added_resolve_between_preview_and_post_gives_409():
                 status, raw = _put_notes(daemon, key, wid, [_note(id="n-draft", body="v2")])
                 assert status == 200, (status, raw)
 
-                status, raw = _post(daemon, key, wid, nonce1, [], False)
+                status, raw = _post(daemon, key, wid, nonce1, [])
                 assert status == 409, (status, raw)
                 assert json.loads(raw)["error"] == "changed since preview"
                 assert gh.count("NewThread") == 0
@@ -218,7 +221,7 @@ def test_edit_or_added_resolve_between_preview_and_post_gives_409():
                 assert status == 200, (status, raw)
                 nonce2 = json.loads(raw)["nonce"]
 
-                status, raw = _post(daemon, key, wid, nonce2, ["gh-501"], False)
+                status, raw = _post(daemon, key, wid, nonce2, ["gh-501"])
                 assert status == 409, (status, raw)
                 assert json.loads(raw)["error"] == "changed since preview"
                 assert gh.count("NewThread") == 0
@@ -247,7 +250,7 @@ def test_retry_after_timeout_does_not_double_post():
                     nonce = json.loads(raw)["nonce"]
                     assert "n-slow" in {n["id"] for n in json.loads(raw)["notes"]}
 
-                    status, raw = _post(daemon, key, wid, nonce, [], False)
+                    status, raw = _post(daemon, key, wid, nonce, [])
                     assert status == 200, (status, raw)
                     results = json.loads(raw)["results"]
                     first = next(r for r in results if r["id"] == "n-slow")
@@ -262,7 +265,7 @@ def test_retry_after_timeout_does_not_double_post():
                     reply = json.loads(raw)
                     assert "n-slow" not in {n["id"] for n in reply["notes"]}
 
-                    status, raw = _post(daemon, key, wid, reply["nonce"], [], False)
+                    status, raw = _post(daemon, key, wid, reply["nonce"], [])
                     assert status == 200, (status, raw)
                     assert gh.count("NewThread") == 1  # no second thread opened
 
@@ -278,45 +281,220 @@ def test_retry_after_timeout_does_not_double_post():
 
 
 # ---------------------------------------------------------------------------
-# Without the checkbox, submit is never called; with it, exactly once
+# One Submit review: open once, deliver each draft, submit once, then resolve
 # ---------------------------------------------------------------------------
 
-def test_submit_only_called_when_the_checkbox_is_set():
+def _ops(gh):
+    return [e["op"] for e in gh.log() if e["op"] in
+            ("OpenReview", "NewThread", "ReplyThread", "SubmitReview", "ResolveThread")]
+
+
+def _preview_ok(daemon, key, wid, resolve=(), **extra):
+    status, raw = _preview(daemon, key, wid, list(resolve), **extra)
+    assert status == 200, (status, raw)
+    return json.loads(raw)
+
+
+def test_submit_review_opens_once_delivers_all_submits_once_then_resolves():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
                 cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
             repo, base, head, d = _build_done_pr(home, tmp, stub)
-            n1 = _note(id="n-1", body="first body", path="foo.py", line=2, side="RIGHT")
-            state_path = _add_notes(d, [n1])
-
+            root = _note(id="gh-501", origin="github", state="posted", gh_id=501,
+                         gh_node_id="NODE_501", gh_thread_id="THREAD_1", resolved=False, body="root")
+            _add_notes(d, [root, *[_note(id=f"n-{i}", body=f"body {i}", order=i) for i in (1, 2, 3)]])
             key, wid = d.parent.name, d.name
             with running_daemon() as daemon:
-                status, raw = _preview(daemon, key, wid, [])
-                assert status == 200, (status, raw)
-                nonce = json.loads(raw)["nonce"]
-                assert {n["id"] for n in json.loads(raw)["notes"]} == {"n-1"}
+                pre = _preview_ok(daemon, key, wid, ["gh-501"])
+                assert pre["review"] == {"pending": False, "comments": 0}
+                assert pre["in_review"] == [] and pre["own_pr"] is True
+                assert {n["id"] for n in pre["notes"]} == {"n-1", "n-2", "n-3"}
+                gh_ops_before = len(gh.log())
 
-                status, raw = _post(daemon, key, wid, nonce, [], False)
+                status, raw = _post(daemon, key, wid, pre["nonce"], ["gh-501"], event="APPROVE",
+                                    body="ship it", submit=False)
                 assert status == 200, (status, raw)
+                reply = json.loads(raw)
+                assert reply["ok"] is True and reply["submitted"] is True
+                note_results = [r for r in reply["results"] if r["kind"] == "note"]
+                assert [r["state"] for r in note_results] == ["in_review"] * 3
+
+            ops = [e["op"] for e in gh.log()[gh_ops_before:] if e["op"] in
+                   ("OpenReview", "NewThread", "SubmitReview", "ResolveThread")]
+            assert ops == ["OpenReview", "NewThread", "NewThread", "NewThread", "SubmitReview",
+                           "ResolveThread"], ops
+            submit = next(e for e in gh.log() if e["op"] == "SubmitReview")
+            assert submit["variables"]["event"] == "APPROVE" and submit["variables"]["body"] == "ship it"
+            states = {n["id"]: n["state"] for n in json.loads((d / "state.json").read_text())["notes"]}
+            assert [states[f"n-{i}"] for i in (1, 2, 3)] == ["posted"] * 3
+
+
+def test_empty_preview_never_opens_a_review():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                assert pre["notes"] == [] and pre["resolves"] == [] and pre["in_review"] == []
+                status, raw = _post(daemon, key, wid, pre["nonce"], [], submit=True)
+                assert status == 200, (status, raw)
+                assert json.loads(raw)["submitted"] is False
+            assert _ops(gh) == []
+
+
+def test_invalid_event_and_empty_request_changes_body_are_400_before_any_gh_call():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="b")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                n_calls = len(gh.log())
+                for extra in ({"event": "REQUEST_CHANGES", "body": "  \n"}, {"event": "REQUEST_CHANGES"},
+                              {"event": "DISMISS"}):
+                    status, raw = _post(daemon, key, wid, pre["nonce"], [], **extra)
+                    assert status == 400, (extra, status, raw)
+                assert len(gh.log()) == n_calls
+
+
+def test_existing_pending_review_is_reused_and_its_comment_count_previewed():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], pending=2, pr_author="someone") as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="b")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                assert pre["review"] == {"pending": True, "comments": 2}
+                assert pre["own_pr"] is False
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                assert status == 200, (status, raw)
+                assert json.loads(raw)["submitted"] is True
+            assert gh.count("OpenReview") == 0 and gh.count("SubmitReview") == 1
+
+
+def test_partial_failure_keeps_delivered_in_review_runs_no_resolve_and_retry_sends_only_failed():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_nth={"NewThread": [2]}) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            root = _note(id="gh-501", origin="github", state="posted", gh_id=501,
+                         gh_node_id="NODE_501", gh_thread_id="THREAD_1", resolved=False, body="root")
+            _add_notes(d, [root, *[_note(id=f"n-{i}", body=f"body {i}", order=i) for i in (1, 2, 3)]])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid, ["gh-501"])
+                status, raw = _post(daemon, key, wid, pre["nonce"], ["gh-501"])
+                assert status == 200, (status, raw)
+                reply = json.loads(raw)
+                assert reply["ok"] is False and reply["partial"] is True
+                assert reply["delivered"] == 2 and reply["in_review"] == 2
+                assert [f["id"] for f in reply["failed"]] == ["n-2"] and reply["failed"][0]["error"]
+                assert [(r["id"], r["ok"]) for r in reply["results"]] == [
+                    ("n-1", True), ("n-2", False), ("n-3", True)]
+                assert gh.count("SubmitReview") == 0 and gh.count("ResolveThread") == 0
+                states = {n["id"]: n["state"] for n in json.loads((d / "state.json").read_text())["notes"]}
+                assert (states["n-1"], states["n-2"], states["n-3"]) == ("in_review", "draft", "in_review")
+
+                pre2 = _preview_ok(daemon, key, wid, ["gh-501"])
+                assert [n["id"] for n in pre2["notes"]] == ["n-2"]
+                assert {i["id"] for i in pre2["in_review"]} == {"n-1", "n-3"}
+                assert pre2["review"]["comments"] == 2
+                status, raw = _post(daemon, key, wid, pre2["nonce"], ["gh-501"])
+                assert status == 200 and json.loads(raw)["ok"] is True, raw
+            assert gh.count("NewThread") == 4  # three first tries (one rejected) + the one retry
+            assert gh.count("OpenReview") == 1 and gh.count("SubmitReview") == 1
+            assert gh.count("ResolveThread") == 1
+
+
+def test_submit_only_submits_the_pending_review_without_redelivering():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_nth={"NewThread": [2]}) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id=f"n-{i}", body=f"body {i}", order=i) for i in (1, 2)])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                assert json.loads(raw)["partial"] is True
+                status, raw = _post(daemon, key, wid, "stale-nonce-ignored", [], submit_only=True,
+                                    event="COMMENT", body="partial")
+                assert status == 200, (status, raw)
+                assert json.loads(raw)["submitted"] is True
+            assert gh.count("NewThread") == 2 and gh.count("SubmitReview") == 1
+            states = {n["id"]: n["state"] for n in json.loads((d / "state.json").read_text())["notes"]}
+            assert (states["n-1"], states["n-2"]) == ("posted", "draft")
+
+
+def test_retry_after_a_lost_response_does_not_deliver_twice():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], lose_response_ops=("NewThread",)) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="lost body")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                assert json.loads(raw)["partial"] is True
+                assert gh.count("NewThread") == 1
+
+                pre2 = _preview_ok(daemon, key, wid)
+                assert pre2["notes"] == []
+                status, raw = _post(daemon, key, wid, pre2["nonce"], [])
+                assert status == 200, (status, raw)
+                assert gh.count("NewThread") == 1
+                # the comment is still in the user's pending review, reachable via submit_only
+                assert pre2["review"] == {"pending": True, "comments": 1}
                 assert gh.count("SubmitReview") == 0
 
-                # A second, independent draft -- submitted with the checkbox set this time.
-                n2 = _note(id="n-2", body="second body", path="foo.py", line=2, side="RIGHT")
-                _add_notes(d, [n2])
 
-                status, raw = _preview(daemon, key, wid, [])
+def test_ids_narrow_the_preview_and_the_nonce_tracks_the_id_set_and_bodies():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id=f"n-{i}", body=f"body {i}", order=i) for i in (1, 2)])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                both = _preview_ok(daemon, key, wid)
+                one = _preview_ok(daemon, key, wid, ids=["n-1"])
+                assert [n["id"] for n in one["notes"]] == ["n-1"]
+                assert one["nonce"] != both["nonce"]
+
+                status, raw = _post(daemon, key, wid, both["nonce"], [], ids=["n-1"])
+                assert status == 409
+                _put_notes(daemon, key, wid, [_note(id="n-1", body="edited")])
+                assert _preview_ok(daemon, key, wid, ids=["n-1"])["nonce"] != one["nonce"]
+
+                status, raw = _post(daemon, key, wid, _preview_ok(daemon, key, wid, ids=["n-1"])["nonce"],
+                                    [], ids=["n-1"])
                 assert status == 200, (status, raw)
-                nonce2 = json.loads(raw)["nonce"]
-                assert {n["id"] for n in json.loads(raw)["notes"]} == {"n-2"}
+            assert gh.count("NewThread") == 1
 
-                status, raw = _post(daemon, key, wid, nonce2, [], True)
-                assert status == 200, (status, raw)
-                assert gh.count("SubmitReview") == 1
 
-            # Bodies never reach argv across any of the above calls.
-            for entry in gh.log():
-                for body_text in ("first body", "second body"):
-                    assert not any(body_text in str(arg) for arg in entry["argv"]), entry
+def test_in_review_notes_survive_a_notes_put():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_nth={"NewThread": [2]}):
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id=f"n-{i}", body=f"body {i}", order=i) for i in (1, 2)])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                _post(daemon, key, wid, pre["nonce"], [])
+                status, raw = _put_notes(daemon, key, wid, [_note(id="n-1", body="overwrite"),
+                                                            _note(id="n-2", body="body 2")])
+                assert status == 200 and json.loads(raw)["count"] == 1, raw
+                notes_in_state = {n["id"]: n for n in json.loads((d / "state.json").read_text())["notes"]}
+                assert notes_in_state["n-1"]["state"] == "in_review"
+                assert notes_in_state["n-1"]["body"] == "body 1"
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +550,7 @@ def test_gh_calls_run_in_toplevel_with_no_tokens():
                     status, raw = _preview(daemon, key, wid, ["gh-501"])
                     assert status == 200, (status, raw)
                     nonce = json.loads(raw)["nonce"]
-                    status, raw = _post(daemon, key, wid, nonce, ["gh-501"], True)
+                    status, raw = _post(daemon, key, wid, nonce, ["gh-501"])
                     assert status == 200, (status, raw)
 
                 log = gh.log()
@@ -408,7 +586,7 @@ def test_page_notes_json_rewritten_and_put_drops_a_posted_id():
                 status, raw = _preview(daemon, key, wid, [])
                 assert status == 200, (status, raw)
                 nonce = json.loads(raw)["nonce"]
-                status, raw = _post(daemon, key, wid, nonce, [], False)
+                status, raw = _post(daemon, key, wid, nonce, [])
                 assert status == 200, (status, raw)
 
                 page_notes = json.loads((d / "page-notes.json").read_text())
@@ -442,7 +620,7 @@ def test_post_preview_and_post_409_on_a_genuinely_non_pr_walkthrough():
                 assert status == 409, (status, raw)
                 assert json.loads(raw)["error"] == NO_PR_MSG
 
-                status, raw = _post(daemon, key, wid, "whatever", [], False)
+                status, raw = _post(daemon, key, wid, "whatever", [])
                 assert status == 409, (status, raw)
                 assert json.loads(raw)["error"] == NO_PR_MSG
 
@@ -470,7 +648,7 @@ def test_render_failure_after_post_reports_ok_false_with_render_error():
 
                 (d / "analysis.json").unlink()  # force pipeline.py render to fail
 
-                status, raw = _post(daemon, key, wid, nonce, [], False)
+                status, raw = _post(daemon, key, wid, nonce, [])
                 assert status == 200, (status, raw)
                 body = json.loads(raw)
                 assert body["ok"] is False
@@ -500,18 +678,181 @@ def test_failed_or_interrupted_meta_gives_its_own_message():
                     assert body.get("remedy")
 
 
+# ---------------------------------------------------------------------------
+# Review-fix: empty approve, stuck in_review, partial consistency, payload validation
+# ---------------------------------------------------------------------------
+
+def test_approve_or_body_with_nothing_in_the_review_is_400_without_any_mutation():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                for extra in ({"event": "APPROVE"}, {"event": "COMMENT", "body": "hi"},
+                              {"event": "REQUEST_CHANGES", "body": "no"}):
+                    status, raw = _post(daemon, key, wid, pre["nonce"], [], **extra)
+                    assert status == 400, (extra, status, raw)
+                    assert "nothing to submit" in json.loads(raw)["error"]
+                    assert json.loads(raw)["remedy"]
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                assert status == 200 and json.loads(raw)["submitted"] is False
+            assert _ops(gh) == []
+
+
+def test_approve_and_request_changes_with_drafts_submit_with_that_event():
+    for event, body in (("APPROVE", ""), ("REQUEST_CHANGES", "fix it")):
+        with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+            with cw_testlib.StubLLM(lambda b, _n: _small_route_reply(b)) as stub, \
+                    cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+                repo, base, head, d = _build_done_pr(home, tmp, stub)
+                _add_notes(d, [_note(id="n-1", body="b")])
+                key, wid = d.parent.name, d.name
+                with running_daemon() as daemon:
+                    pre = _preview_ok(daemon, key, wid)
+                    status, raw = _post(daemon, key, wid, pre["nonce"], [], event=event, body=body)
+                    assert status == 200 and json.loads(raw)["submitted"] is True, raw
+                submit = next(e for e in gh.log() if e["op"] == "SubmitReview")
+                assert submit["variables"]["event"] == event
+
+
+def test_submit_failure_after_deliveries_is_partial_with_no_resolves_and_notes_stay_in_review():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_ops=("SubmitReview",)) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            root = _note(id="gh-501", origin="github", state="posted", gh_id=501,
+                         gh_node_id="NODE_501", gh_thread_id="THREAD_1", resolved=False, body="root")
+            _add_notes(d, [root, _note(id="n-1", body="b")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid, ["gh-501"])
+                status, raw = _post(daemon, key, wid, pre["nonce"], ["gh-501"])
+                reply = json.loads(raw)
+                assert status == 200 and reply["partial"] is True and reply["ok"] is False
+                assert [f["id"] for f in reply["failed"]] == ["submit"]
+                assert reply["delivered"] == 1 and reply["in_review"] == 1
+            assert gh.count("ResolveThread") == 0
+            states = {n["id"]: n["state"] for n in json.loads((d / "state.json").read_text())["notes"]}
+            assert states["n-1"] == "in_review"
+
+
+def test_in_review_with_the_pending_review_gone_is_reset_and_deliverable_again():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="b", state="in_review", gh_id=9,
+                                 gh_node_id="N9", gh_thread_id="T9", gh_url="u")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                assert pre["reset"] == ["n-1"] and pre["in_review"] == []
+                assert [n["id"] for n in pre["notes"]] == ["n-1"]
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                reply = json.loads(raw)
+                assert status == 200 and reply["ok"] is True and reply["submitted"] is True, raw
+                assert reply["reset"] == []
+            assert gh.count("NewThread") == 1 and gh.count("SubmitReview") == 1
+            note = next(n for n in json.loads((d / "state.json").read_text())["notes"] if n["id"] == "n-1")
+            assert note["state"] == "posted" and note["gh_thread_id"] != "T9"
+
+
+def test_in_review_note_already_submitted_elsewhere_becomes_posted_not_reset():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        gh_comment = {"id": 77, "node_id": "N77", "path": "foo.py", "line": 2, "original_line": 2,
+                      "side": "RIGHT", "body": "same body", "user": {"login": "me"},
+                      "html_url": "u", "created_at": "2000-01-01T00:00:00Z",
+                      "in_reply_to_id": None, "commit_id": "x", "original_commit_id": "x"}
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[gh_comment], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="same body", state="in_review")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                assert pre["reset"] == [] and pre["notes"] == [] and pre["in_review"] == []
+            note = next(n for n in json.loads((d / "state.json").read_text())["notes"] if n["id"] == "n-1")
+            assert note["state"] == "posted"
+
+
+def test_ids_without_a_draft_parent_and_bad_resolve_payloads_are_400():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-parent", body="p", order=1),
+                           _note(id="n-reply", body="r", order=2, reply_to="n-parent")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                for call in (lambda **kw: _preview(daemon, key, wid, [], **kw),
+                             lambda **kw: _post(daemon, key, wid, "x", [], **kw)):
+                    status, raw = call(ids=["n-reply"])
+                    assert status == 400, (status, raw)
+                    assert "parent" in json.loads(raw)["remedy"]
+                for bad in ("n-1", ["n-1", 3], {"a": 1}):
+                    status, raw = _preview(daemon, key, wid, bad)
+                    assert status == 400, (bad, status, raw)
+                    status, raw = _post(daemon, key, wid, "x", bad)
+                    assert status == 400, (bad, status, raw)
+            assert _ops(gh) == []
+
+
+def test_partial_result_rerenders_and_cleans_page_notes():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_nth={"NewThread": [2]}) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                status, raw = _put_notes(daemon, key, wid, [_note(id="n-1", body="one", order=1),
+                                                            _note(id="n-2", body="two", order=2)])
+                assert status == 200, (status, raw)
+                rev_before = cw_store.read_meta(d)["rev"]
+                q = daemon.hub.register(key, wid)
+                pre = _preview_ok(daemon, key, wid)
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                reply = json.loads(raw)
+                assert reply["partial"] is True and reply["delivered"] == 1
+                assert cw_store.read_meta(d)["rev"] == rev_before + 1
+                events = []
+                while not q.empty():
+                    events.append(q.get_nowait())
+                assert any("rebuilt" in str(e) for e in events), events
+                daemon.hub.unregister(key, wid, q)
+                remaining = {n["id"] for n in json.loads((d / "page-notes.json").read_text())["notes"]}
+                assert remaining == {"n-2"}
+            assert gh.count("SubmitReview") == 0
+
+
 if __name__ == "__main__":
     tests = [
         test_preview_lists_exactly_what_notes_py_considers_ready,
         test_edit_or_added_resolve_between_preview_and_post_gives_409,
         test_retry_after_timeout_does_not_double_post,
-        test_submit_only_called_when_the_checkbox_is_set,
+        test_submit_review_opens_once_delivers_all_submits_once_then_resolves,
+        test_empty_preview_never_opens_a_review,
+        test_invalid_event_and_empty_request_changes_body_are_400_before_any_gh_call,
+        test_existing_pending_review_is_reused_and_its_comment_count_previewed,
+        test_partial_failure_keeps_delivered_in_review_runs_no_resolve_and_retry_sends_only_failed,
+        test_submit_only_submits_the_pending_review_without_redelivering,
+        test_retry_after_a_lost_response_does_not_deliver_twice,
+        test_ids_narrow_the_preview_and_the_nonce_tracks_the_id_set_and_bodies,
+        test_in_review_notes_survive_a_notes_put,
         test_no_pr_or_unpushed_head_blocks_posting_with_exact_messages,
         test_gh_calls_run_in_toplevel_with_no_tokens,
         test_page_notes_json_rewritten_and_put_drops_a_posted_id,
         test_post_preview_and_post_409_on_a_genuinely_non_pr_walkthrough,
         test_render_failure_after_post_reports_ok_false_with_render_error,
         test_failed_or_interrupted_meta_gives_its_own_message,
+        test_approve_or_body_with_nothing_in_the_review_is_400_without_any_mutation,
+        test_approve_and_request_changes_with_drafts_submit_with_that_event,
+        test_submit_failure_after_deliveries_is_partial_with_no_resolves_and_notes_stay_in_review,
+        test_in_review_with_the_pending_review_gone_is_reset_and_deliverable_again,
+        test_in_review_note_already_submitted_elsewhere_becomes_posted_not_reset,
+        test_ids_without_a_draft_parent_and_bad_resolve_payloads_are_400,
+        test_partial_result_rerenders_and_cleans_page_notes,
     ]
     for test in tests:
         test()

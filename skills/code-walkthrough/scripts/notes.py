@@ -22,7 +22,8 @@ notes.py never calls git. `gh` is the one subprocess it runs, and only for `deli
 "GitHub delivery").
 Everything else here is a pure state transformer over state.json's notes[] array (schema: see state.py).
 
-Lifecycle is draft -> posted. A record is never deleted and never rewritten in place by any
+Lifecycle is draft -> in_review (delivered into the user's pending review, invisible to
+others) -> posted (the review was submitted). A record is never deleted and never rewritten in place by any
 other step; a failed post leaves the note a draft, so nothing is lost.
 
 sync ingests `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate` output from stdin.
@@ -98,11 +99,13 @@ opens a new one (`addPullRequestReviewThread`, after resolving the anchor -- see
 web UI deleted that thread mid-session, not an error: `deliver` falls back to opening a fresh
 thread instead. The GitHub post and the local state update happen in the same call, so a
 crash between the two can never lose the record of a comment that landed. `do_deliver` also
-refuses to re-deliver a note already `state == "posted"`, so retrying `deliver` after a `gh`
+refuses to re-deliver a note already `in_review` or `posted`, so retrying `deliver` after a `gh`
 timeout (the natural response to it) can't double-post a thread whose first attempt actually
-landed -- see GH_TIMEOUT above. `submit` publishes the pending review with
+landed -- see GH_TIMEOUT above. `deliver` leaves the note `in_review`, not posted. `submit` publishes the pending review with
 `submitPullRequestReview`, and `do_submit` raises if that comes back null (a silently rejected
-submission) rather than reporting success. `resolve` is unrelated to the pending review -- it
+submission) rather than reporting success; only then does every `in_review` note become
+`posted`. `reset_in_review` sends in_review notes back to draft (gh ids cleared) when the
+pending review they sit in has vanished from GitHub, so they can be delivered again. `resolve` is unrelated to the pending review -- it
 runs `RESOLVE_THREAD_MUTATION` directly against a thread id and marks every note sharing that
 `gh_thread_id` resolved, raising if GitHub's response doesn't come back `isResolved`. Every `gh` call sends its query and
 variables as one JSON document on stdin via `gh api graphql --input -`: a note body is
@@ -175,7 +178,7 @@ query PendingReview($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       id
-      reviews(states: PENDING, first: 1) { nodes { id } }
+      reviews(states: PENDING, first: 1) { nodes { id comments { totalCount } } }
     }
   }
 }
@@ -380,7 +383,7 @@ def _dedupe_drafts(notes):
     """
     github_notes = [note for note in notes if note.get("origin") == "github"]
     for note in notes:
-        if note.get("origin") != "local" or note.get("state") != "draft":
+        if note.get("origin") != "local" or note.get("state") not in ("draft", "in_review"):
             continue
         for gh_note in github_notes:
             if (
@@ -579,8 +582,8 @@ def payloads_for(state, commit_id):
         reply_to = note.get("reply_to") or note.get("in_reply_to")
         if reply_to:
             parent = by_id.get(reply_to)
-            if parent is None or parent.get("gh_id") is None:
-                continue  # parent isn't posted yet, nothing to reply to
+            if parent is None or parent.get("gh_id") is None or not parent.get("gh_node_id"):
+                continue
             out.append((note["id"], {"body": note["body"], "in_reply_to": parent["gh_id"]}))
         else:
             if note.get("stale"):
@@ -878,7 +881,7 @@ def deliver_note(state, note, diff_text, gh_run):
         note["gh_id"] = thread_comment.get("databaseId")
         note["anchor_status"] = anchor_status
 
-    note["state"] = "posted"
+    note["state"] = "in_review"
     return note
 
 
@@ -893,6 +896,32 @@ def submit_review(state, event, body, gh_run):
         raise RuntimeError("no pending review to submit: post a comment first")
     resp = gh_run(SUBMIT_MUTATION, {"reviewId": review_id, "event": event, "body": body})
     return ((resp.get("data") or {}).get("submitPullRequestReview") or {}).get("pullRequestReview")
+
+
+def reset_in_review(state):
+    """Back to draft, gh ids cleared, for every in_review note -- the pending review they were
+    delivered into is gone. Returns their ids."""
+    reset = []
+    for note in state.get("notes", []):
+        if note.get("state") == "in_review":
+            note["state"] = "draft"
+            for key in ("gh_id", "gh_url", "gh_node_id", "gh_thread_id"):
+                note[key] = None
+            note.pop("anchor_status", None)
+            reset.append(note["id"])
+    return reset
+
+
+def pending_review_info(state, gh_run):
+    """{review_id, comments} for the viewer's pending review; comments counts everything
+    already in it, including notes delivered earlier."""
+    owner, name = _repo_owner_name(state)
+    number = (state.get("meta") or {}).get("pr")
+    resp = gh_run(PENDING_REVIEW_QUERY, {"owner": owner, "repo": name, "number": number})
+    nodes = (((resp["data"]["repository"]["pullRequest"]).get("reviews")) or {}).get("nodes") or []
+    if not nodes:
+        return {"review_id": None, "comments": 0}
+    return {"review_id": nodes[0]["id"], "comments": (nodes[0].get("comments") or {}).get("totalCount", 0)}
 
 
 def do_sync(args):
@@ -1038,8 +1067,8 @@ def do_deliver(args):
     if note is None:
         print(f"no note with id {args.id}", file=sys.stderr)
         return 1
-    if note.get("state") == "posted":
-        print(f"{args.id} already posted")
+    if note.get("state") in ("posted", "in_review"):
+        print(f"{args.id} already {note['state']}")
         return 0
     diff_path = Path(args.diff) if args.diff else Path(args.state).parent / "raw.diff"
     diff_text = diff_path.read_text(errors="replace") if diff_path.exists() else ""
@@ -1077,7 +1106,16 @@ def do_submit(args):
     review = submit_review(state, args.event, body, _gh_graphql)
     if review is None:
         raise RuntimeError("GitHub rejected the submission: submitPullRequestReview returned null")
+    for note in state.get("notes", []):
+        if note.get("state") == "in_review":
+            note["state"] = "posted"
+    _save_state(args.state, state)
     print("submitted")
+    return 0
+
+
+def do_review_info(args):
+    print(json.dumps(pending_review_info(_load_state(args.state), _gh_graphql)))
     return 0
 
 
@@ -1153,6 +1191,10 @@ def main():
                                 choices=["COMMENT", "APPROVE", "REQUEST_CHANGES"])
     submit_parser.add_argument("--body-file", required=True)
     submit_parser.set_defaults(func=do_submit)
+
+    review_info_parser = sub.add_parser("review-info")
+    review_info_parser.add_argument("--state", required=True)
+    review_info_parser.set_defaults(func=do_review_info)
 
     args = parser.parse_args()
     try:

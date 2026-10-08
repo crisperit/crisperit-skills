@@ -58,7 +58,7 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
     font-size:var(--fs-base);line-height:1.6;
-    padding:32px 20px 64px}
+    padding:32px 20px calc(64px + var(--cw-bar-h,0px))}
   .wrap{max-width:min(1400px,92vw);margin:0 auto}
   /* Prose runs the full wrapper width, matching the panels and diagrams, because that is what
      was asked for twice. It puts a line past the 65-80 characters a measure normally wants, so
@@ -544,7 +544,7 @@
     padding:6px 14px;font-size:var(--fs-xs);color:var(--muted);
     font-family:var(--mono);text-align:center}
   #cw-live-banner.failed{color:var(--red)}
-  #cw-live-reload{position:fixed;left:16px;bottom:16px;z-index:40;border:none;
+  #cw-live-reload{position:fixed;left:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;border:none;
     background:var(--accent);color:var(--bg);border-radius:999px;padding:10px 18px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;
     box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent)}
@@ -844,7 +844,7 @@
      .fb-primary supplies the accent fill; only shape, placement and feedback states are added
      here. Shadow is tinted with the accent hue rather than plain black, so it reads as part of
      this palette instead of a generic drop shadow. */
-  #hr-comments-btn{position:fixed;right:16px;bottom:16px;z-index:40;border:none;
+  #hr-comments-btn{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;border:none;
     border-radius:999px;padding:10px 18px;font:600 var(--fs-sm) system-ui;cursor:pointer;
     box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent);
     transition:transform .15s,box-shadow .15s}
@@ -959,7 +959,7 @@
   #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
     font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:#fff;
     box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
-  #cw-threads-btn{position:fixed;right:16px;bottom:62px;z-index:40;border:1px solid var(--border);
+  #cw-threads-btn{position:fixed;right:16px;bottom:calc(62px + var(--cw-bar-h,0px));z-index:40;border:1px solid var(--border);
     border-radius:999px;padding:8px 16px;font:600 var(--fs-sm) system-ui;cursor:pointer;
     background:var(--panel2);color:var(--text)}
   #cw-comment-btn:focus-visible,#cw-threads-btn:focus-visible,#cw-threads-close:focus-visible,
@@ -1028,8 +1028,26 @@
   #cw-post-confirm-notes pre,#cw-post-confirm-resolves pre{margin:2px 0 0;padding:6px 8px;
     background:var(--panel2);border:1px solid var(--border);border-radius:6px;
     white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--fs-xs)}
-  #cw-post-confirm-submit-row{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm)}
-  #cw-post-confirm-hint{margin:4px 0 12px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-post-confirm-notes label{display:flex;align-items:flex-start;gap:6px;font-size:var(--fs-sm)}
+  #cw-post-confirm-pending{margin:0 0 12px;padding:8px 10px;border:1px solid var(--border);
+    border-radius:6px;background:var(--panel2);font-size:var(--fs-sm)}
+  #cw-post-options{margin:0 0 12px;font-size:var(--fs-sm)}
+  #cw-post-options summary{cursor:pointer}
+  #cw-post-options fieldset{border:0;margin:8px 0;padding:0;display:flex;flex-direction:column;gap:4px}
+  #cw-post-options label{display:flex;align-items:center;gap:6px}
+  #cw-post-approve-note{margin:0 0 6px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-post-summary{width:100%;min-height:70px;background:var(--panel2);border:1px solid var(--border);
+    color:var(--text);border-radius:6px;padding:8px;font:inherit;font-size:var(--fs-sm)}
+  #cw-post-confirm-partial{margin:0 0 12px;font-size:var(--fs-sm)}
+  #cw-post-confirm-partial .fb-actions{flex-wrap:wrap}
+  #cw-post-confirm-actions[hidden]{display:none}
+  #cw-drafts-bar{position:fixed;left:0;right:0;bottom:0;z-index:45;display:flex;flex-wrap:wrap;
+    align-items:center;gap:8px 12px;padding:8px 16px;background:var(--panel);
+    border-top:1px solid var(--border);font-size:var(--fs-sm)}
+  #cw-drafts-bar[hidden]{display:none}
+  #cw-drafts-text{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+  #cw-threads-submit{margin:0 0 10px}
+  .fb-review-tag{margin-left:6px;color:var(--accent);font-size:var(--fs-xs)}
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
 
@@ -1051,6 +1069,7 @@
     #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button{min-height:44px}
     #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
+    #cw-drafts-bar button,#cw-threads-submit,#cw-post-confirm button{min-height:44px}
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
@@ -1094,7 +1113,7 @@
     <ul id="hr-comments-list"></ul>
     <div id="hr-comments-actions" class="fb-actions">
       <button type="button" id="hr-comments-gh-btn" class="fb-ghost">Copy gh command</button>
-      <button type="button" id="hr-comments-post-btn" class="fb-primary" hidden>Post to GitHub</button>
+      <button type="button" id="hr-comments-post-btn" class="fb-primary" hidden>Submit review</button>
       <button type="button" id="hr-comments-agent-btn" class="fb-primary">Copy for agent</button>
     </div>
     <p id="hr-comments-gh-note" hidden></p>
@@ -1129,23 +1148,48 @@
 
 <dialog id="cw-post-confirm" aria-labelledby="cw-post-confirm-title">
   <div id="cw-post-confirm-head">
-    <span id="cw-post-confirm-title">Post to GitHub</span>
+    <span id="cw-post-confirm-title">Submit review</span>
     <button type="button" id="cw-post-confirm-close" aria-label="Close">✕</button>
   </div>
   <div id="cw-post-confirm-body">
+    <p id="cw-post-confirm-pending" hidden></p>
     <ul id="cw-post-confirm-notes"></ul>
     <ul id="cw-post-confirm-resolves"></ul>
-    <label id="cw-post-confirm-submit-row">
-      <input type="checkbox" id="cw-post-submit"> Submit review as COMMENT
-    </label>
-    <p id="cw-post-confirm-hint">unchecked: comments stay in a pending review only you can see</p>
+    <ul id="cw-post-confirm-inreview"></ul>
+    <details id="cw-post-options">
+      <summary>Review options</summary>
+      <fieldset>
+        <legend>Event</legend>
+        <label><input type="radio" name="cw-post-event" value="COMMENT" checked> Comment</label>
+        <label><input type="radio" name="cw-post-event" value="APPROVE"> Approve</label>
+        <label><input type="radio" name="cw-post-event" value="REQUEST_CHANGES"> Request changes</label>
+      </fieldset>
+      <p id="cw-post-approve-note" hidden></p>
+      <label for="cw-post-summary">Summary</label>
+      <textarea id="cw-post-summary" placeholder="Review summary (optional)"></textarea>
+    </details>
     <ul id="cw-post-confirm-items"></ul>
-    <div class="fb-actions">
-      <button type="button" id="cw-post-confirm-send" class="fb-primary">Confirm</button>
+    <div id="cw-post-confirm-partial" role="status" hidden>
+      <p id="cw-post-partial-text"></p>
+      <div class="fb-actions">
+        <button type="button" id="cw-post-retry" class="fb-primary">Retry the failed one</button>
+        <button type="button" id="cw-post-send-now" class="fb-ghost">Submit the now</button>
+        <button type="button" id="cw-post-leave" class="fb-ghost">Leave pending</button>
+      </div>
+    </div>
+    <div id="cw-post-confirm-actions" class="fb-actions">
+      <button type="button" id="cw-post-confirm-send" class="fb-primary">Submit review</button>
+      <button type="button" id="cw-post-confirm-cancel" class="fb-ghost">Cancel</button>
     </div>
     <p id="cw-post-confirm-status" role="status"></p>
   </div>
 </dialog>
+
+<div id="cw-drafts-bar" role="region" aria-label="Drafts" hidden>
+  <span id="cw-drafts-text"></span>
+  <button type="button" id="cw-drafts-jump" class="fb-ghost">Jump to drafts</button>
+  <button type="button" id="cw-drafts-submit" class="fb-primary">Submit review</button>
+</div>
 
 <script><!-- MERMAID_JS --></script>
 <script><!-- HLJS_JS --></script>
@@ -1988,6 +2032,8 @@
   const detailsByPath=new Map(); // path -> its <details.hunk>, for the per-file comment-count badge
   let docOrder=0;
   let refreshCommentsPanel=()=>{}; // replaced once wireCommentsPanel() finds its markup
+  let refreshDraftsBar=()=>{}; // replaced by wirePost on a live page with a PR to submit to
+  let openSubmitReview=()=>{};
   let resolutionOpener=null; // chip that opened #hr-resolution, so close can focus it back
 
   function nowIso(){ return new Date().toISOString(); }
@@ -2045,6 +2091,7 @@
   function persistLocal(){
     try{ localStorage.setItem(lsKey('hr-notes',state.meta.id), JSON.stringify(state.notes)); }catch(e){}
     if(window.CW_LIVE) schedulePutNotes();
+    refreshDraftsBar();
   }
 
   let putNotesTimer=null;
@@ -2093,6 +2140,7 @@
   let pendingResolveSet=loadPendingResolve();
   function persistPendingResolve(){
     try{ localStorage.setItem(lsKey('hr-resolve',state.meta.id), JSON.stringify([...pendingResolveSet])); }catch(e){}
+    refreshDraftsBar();
   }
   function markPendingResolve(id){ pendingResolveSet.add(id); persistPendingResolve(); }
   function clearPendingResolve(id){ if(pendingResolveSet.delete(id)) persistPendingResolve(); }
@@ -2414,6 +2462,11 @@
     if(ownDraft){
       const tag=document.createElement('span'); tag.className='fb-draft-tag';
       tag.textContent='draft, not published';
+      head.appendChild(tag);
+    }
+    if(n.origin==='local'&&n.state==='in_review'){
+      const tag=document.createElement('span'); tag.className='fb-review-tag';
+      tag.textContent='in your pending review';
       head.appendChild(tag);
     }
     d.appendChild(head);
@@ -3091,109 +3144,310 @@
   }
 
   function wirePost(canGhCommand){
-    const postBtn=$('hr-comments-post-btn'), dlg=$('cw-post-confirm'),
-      close=$('cw-post-confirm-close'), notesList=$('cw-post-confirm-notes'),
-      resolvesList=$('cw-post-confirm-resolves'), submitCb=$('cw-post-submit'),
-      itemsList=$('cw-post-confirm-items'), sendBtn=$('cw-post-confirm-send'),
-      status=$('cw-post-confirm-status');
-    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!submitCb||!itemsList||!sendBtn||!status) return;
+    const $$=id=>document.getElementById(id);
+    const postBtn=$$('hr-comments-post-btn'), dlg=$$('cw-post-confirm'),
+      close=$$('cw-post-confirm-close'), titleEl=$$('cw-post-confirm-title'),
+      pendingNote=$$('cw-post-confirm-pending'), notesList=$$('cw-post-confirm-notes'),
+      resolvesList=$$('cw-post-confirm-resolves'), inReviewList=$$('cw-post-confirm-inreview'),
+      options=$$('cw-post-options'), approveNote=$$('cw-post-approve-note'),
+      summary=$$('cw-post-summary'), itemsList=$$('cw-post-confirm-items'),
+      partial=$$('cw-post-confirm-partial'), partialText=$$('cw-post-partial-text'),
+      retryBtn=$$('cw-post-retry'), nowBtn=$$('cw-post-send-now'), leaveBtn=$$('cw-post-leave'),
+      sendBtn=$$('cw-post-confirm-send'), cancelBtn=$$('cw-post-confirm-cancel'),
+      actionsEl=$$('cw-post-confirm-actions'),
+      status=$$('cw-post-confirm-status'), bar=$$('cw-drafts-bar'), barText=$$('cw-drafts-text'),
+      barJump=$$('cw-drafts-jump'), barSubmit=$$('cw-drafts-submit');
+    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!itemsList||!sendBtn||!status||!bar||!summary||!partial) return;
     postBtn.hidden=!canGhCommand;
+    postBtn.textContent='Submit review';
 
-    let nonce=null, lastResolves=[];
+    const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+    const firstLine=t=>String(t||'').split('\n')[0];
+    const where=n=>n.path+':'+n.line;
+    const evRadios=[...dlg.querySelectorAll('input[name="cw-post-event"]')];
+    const selEvent=()=>(evRadios.find(r=>r.checked)||evRadios[0]).value;
+    const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
+    const errText=b=>(b.error||'Request failed')+(b.remedy?' ('+b.remedy+')':'');
 
-    function renderBody(data){
-      nonce=data.nonce;
-      lastResolves=data.resolves;
+    function localDrafts(){
+      return state.notes.filter(n=>n.origin==='local'&&n.state==='draft'&&(n.body||'').trim());
+    }
+    function updateBar(){
+      const d=localDrafts().length, r=pendingResolveSet.size, show=canGhCommand&&(d>0||r>0);
+      bar.hidden=!show;
+      barText.textContent=plural(d,'draft')+', '+plural(r,'resolve')+', only on this machine until you submit';
+      barSubmit.textContent='Submit review ('+plural(d,'draft')+', '+plural(r,'resolve')+')';
+      const ths=document.getElementById('cw-threads-submit');
+      if(ths){ ths.hidden=!show; ths.textContent=barSubmit.textContent; }
+      document.documentElement.style.setProperty('--cw-bar-h',show?bar.offsetHeight+'px':'0px');
+    }
+    refreshDraftsBar=updateBar;
+    window.addEventListener('resize',updateBar);
+
+    barJump.addEventListener('click',()=>{
+      const n=localDrafts().sort((a,b)=>(a.order||0)-(b.order||0))[0]
+        ||state.notes.find(x=>pendingResolveSet.has(x.id));
+      if(!n) return;
+      const rec=rowById.get(n.id);
+      const target=rec?rec.el:(spanByLineKey.get(n.path+'\t'+n.side+'\t'+n.line)||{}).span;
+      if(target){ openAncestorDetails(target); target.scrollIntoView({block:'center'}); target.focus(); }
+    });
+
+    let nonce=null, lastResolves=[], full=[], excluded=new Set(), review={pending:false,comments:0},
+      loading=false, posting=false, starting=false, done=false, seq=0, opener=postBtn, progress=new Map(), failedNoteIds=[];
+
+    const selectedIds=()=>full.filter(n=>!excluded.has(n.id)).map(n=>n.id);
+
+    function syncSend(){
+      const rc=selEvent()==='REQUEST_CHANGES'&&!summary.value.trim();
+      const idle=!selectedIds().length&&!lastResolves.length&&!review.pending;
+      sendBtn.disabled=nonce==null||loading||posting||done||rc||idle;
+    }
+
+    function renderRows(){
       notesList.innerHTML='';
-      for(const n of data.notes){
+      for(const n of full){
         const li=document.createElement('li');
-        const where=document.createElement('div'); where.className='hr-comments-where';
-        where.textContent=n.path+':'+n.line;
-        const pre=document.createElement('pre'); pre.textContent=n.body;
-        li.append(where,pre);
+        const label=document.createElement('label');
+        const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=!excluded.has(n.id);
+        cb.addEventListener('change',()=>{
+          if(cb.checked) excluded.delete(n.id); else excluded.add(n.id);
+          preview(true);
+        });
+        const w=document.createElement('span'); w.className='hr-comments-where';
+        const parent=n.reply_to&&state.notes.find(x=>x.id===n.reply_to);
+        w.textContent=(n.reply_to?(parent&&parent.author?'reply to '+parent.author:'reply')+' at ':'')+where(n);
+        label.append(cb,w);
+        const pre=document.createElement('pre'); pre.textContent=firstLine(n.body);
+        li.append(label,pre);
         notesList.appendChild(li);
       }
+    }
+
+    function renderRest(data){
       resolvesList.innerHTML='';
-      for(const r of data.resolves){
+      for(const r of data.resolves||[]){
         const li=document.createElement('li');
-        const where=document.createElement('div'); where.className='hr-comments-where';
-        where.textContent='Resolve '+r.path+':'+r.line;
-        const pre=document.createElement('pre'); pre.textContent=r.body;
-        li.append(where,pre);
+        const w=document.createElement('div'); w.className='hr-comments-where';
+        w.textContent='resolve thread at '+where(r);
+        const pre=document.createElement('pre'); pre.textContent=firstLine(r.body);
+        li.append(w,pre);
         resolvesList.appendChild(li);
       }
+      inReviewList.innerHTML='';
+      for(const n of data.in_review||[]){
+        const li=document.createElement('li');
+        li.textContent='already in your pending review: '+where(n)+' '+firstLine(n.body);
+        inReviewList.appendChild(li);
+      }
+      review=data.review||{pending:false,comments:0};
+      pendingNote.hidden=!review.pending;
+      pendingNote.textContent='You already have a pending review on GitHub with '+review.comments
+        +' comments. They will be submitted with this review.';
+      const own=data.own_pr===true;
+      const approve=evRadios.find(r=>r.value==='APPROVE');
+      approve.disabled=own;
+      approveNote.hidden=!own;
+      approveNote.textContent=own?"You can't approve your own pull request.":'';
+      if(own&&approve.checked) evRadios[0].checked=true;
     }
 
-    function preview(){
+    function resetLocal(ids){
+      let changed=false;
+      for(const id of ids||[]){
+        const m=state.notes.find(x=>x.id===id);
+        if(m&&m.state!=='draft'){ m.state='draft'; changed=true; }
+      }
+      if(changed){ persistLocal(); renderNotes(); updateBar(); }
+    }
+
+    function preview(narrow){
+      const mine=++seq;
+      loading=true; syncSend();
       status.textContent='Loading…';
-      sendBtn.disabled=true;
+      const req={resolve:[...pendingResolveSet]};
+      if(narrow) req.ids=selectedIds();
       return fetch(window.CW_LIVE.api+'/post/preview',{
-        method:'POST',
-        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
-        body:JSON.stringify({resolve:[...pendingResolveSet]}),
+        method:'POST',headers:headers(),body:JSON.stringify(req),
       }).then(r=>r.json().then(body=>({ok:r.ok,body})))
         .then(({ok,body})=>{
-          sendBtn.disabled=false;
-          if(!ok){
-            status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
-            return;
-          }
+          if(mine!==seq) return;
+          loading=false;
+          if(!ok){ nonce=null; status.textContent=errText(body); syncSend(); return; }
           status.textContent='';
-          renderBody(body);
+          actionsEl.hidden=false;
+          resetLocal(body.reset);
+          nonce=body.nonce; lastResolves=body.resolves||[];
+          if(!narrow){ full=body.notes||[]; excluded.clear(); renderRows(); }
+          renderRest(body);
+          syncSend();
         })
         .catch(()=>{
-          sendBtn.disabled=false;
+          if(mine!==seq) return;
+          loading=false; nonce=null;
           status.textContent='Request failed -- check the daemon is still running.';
+          syncSend();
         });
     }
 
-    postBtn.addEventListener('click',()=>{
-      postBtn.disabled=true;
+    function resetDialog(){
+      excluded=new Set(); full=[]; nonce=null; done=false; posting=false;
+      progress=new Map(); itemsList.innerHTML=''; partial.hidden=true; actionsEl.hidden=false; status.textContent='';
+      notesList.innerHTML=''; resolvesList.innerHTML=''; inReviewList.innerHTML='';
+      pendingNote.hidden=true; approveNote.hidden=true;
+      evRadios.forEach(r=>{ r.checked=r.value==='COMMENT'; r.disabled=false; });
+      summary.value=''; options.open=false; cancelBtn.textContent='Cancel';
+      const pr=state.meta&&state.meta.pr;
+      titleEl.textContent=pr!=null?'Submit review on #'+pr:'Submit review';
+      syncSend();
+    }
+
+    function start(from){
+      if(starting||posting||dlg.open) return;
+      starting=true;
+      opener=from;
+      from.disabled=true;
       putNotesNow(false).then(()=>{
-        postBtn.disabled=false;
-        submitCb.checked=false;
-        itemsList.innerHTML='';
-        status.textContent='';
+        from.disabled=false; starting=false;
+        if(dlg.open) return;
+        resetDialog();
         dlg.showModal();
-        preview();
-      });
+        preview(false);
+      },()=>{ from.disabled=false; starting=false; });
+    }
+    postBtn.addEventListener('click',()=>start(postBtn));
+    barSubmit.addEventListener('click',()=>start(barSubmit));
+    openSubmitReview=()=>start(barSubmit);
+
+    evRadios.forEach(r=>r.addEventListener('change',syncSend));
+    summary.addEventListener('input',syncSend);
+    const closeIdle=()=>{ if(!posting) dlg.close(); };
+    close.addEventListener('click',closeIdle);
+    cancelBtn.addEventListener('click',closeIdle);
+    leaveBtn.addEventListener('click',closeIdle);
+    dlg.addEventListener('cancel',e=>{ if(posting) e.preventDefault(); });
+    dlg.addEventListener('close',()=>{
+      const o=opener&&opener.isConnected&&!opener.hidden&&!opener.disabled&&opener.offsetParent!==null?opener
+        :document.getElementById('hr-comments-btn')||document.body;
+      o.focus();
     });
 
-    close.addEventListener('click',()=>dlg.close());
-    dlg.addEventListener('close',()=>{ postBtn.focus(); });
+    function setRow(key,text){
+      let li=progress.get(key);
+      if(!li){ li=document.createElement('li'); progress.set(key,li); itemsList.appendChild(li); }
+      li.textContent=text;
+    }
+    const rowText=(label,item,okText)=>(item.ok?'✓ ':'✗ ')+label+(item.ok?' '+okText:': '+(item.error||'failed'));
 
     window.__cwOnPosted=item=>{
-      const li=document.createElement('li');
-      li.textContent=(item.ok?'Posted ':'Failed ')+item.kind+' '+item.id+(item.error?': '+item.error:'');
-      itemsList.appendChild(li);
+      if(!item) return;
+      if(item.kind==='note'){
+        const n=full.find(x=>x.id===item.id);
+        setRow('note:'+item.id,rowText(n?where(n):item.id,item,'in your pending review'));
+        const mine=state.notes.find(x=>x.id===item.id);
+        if(item.ok&&mine&&mine.state==='draft'){ mine.state='in_review'; persistLocal(); renderNotes(); }
+      } else if(item.kind==='submit'){
+        setRow('submit',rowText('submit review'+(item.event?' ('+item.event+')':''),item,'done'));
+      } else if(item.kind==='resolve'){
+        const r=lastResolves.find(x=>x.thread_id===item.id);
+        setRow('resolve:'+item.id,rowText(r?'resolve '+where(r):'resolve '+item.id,item,'resolved'));
+      }
     };
 
-    sendBtn.addEventListener('click',()=>{
-      if(nonce==null) return;
-      sendBtn.disabled=true;
+    function prefillRows(){
+      progress=new Map(); itemsList.innerHTML='';
+      for(const n of full) if(!excluded.has(n.id)) setRow('note:'+n.id,'… '+where(n));
+      for(const r of lastResolves) setRow('resolve:'+r.thread_id,'… resolve '+where(r));
+    }
+
+    function clearResolved(body){
+      const ok=new Set((body.results||[]).filter(r=>r.kind==='resolve'&&r.ok).map(r=>r.id));
+      lastResolves.filter(r=>ok.has(r.thread_id)).forEach(r=>clearPendingResolve(r.root_id));
+    }
+
+    function finish(body){
+      if(body.ok){
+        clearResolved(body);
+        done=true; status.textContent='Review submitted.'; cancelBtn.textContent='Close';
+      } else if(body.partial){
+        clearResolved(body);
+        const kindOf=id=>((body.results||[]).find(r=>r.id===id)||{}).kind;
+        const failed=body.failed||[];
+        const failedNotes=failed.filter(f=>kindOf(f.id)==='note');
+        const failedResolves=failed.filter(f=>kindOf(f.id)==='resolve');
+        const submitFailed=failed.some(f=>f.id==='submit');
+        const n=body.in_review||0, k=failedNotes.length;
+        let text=k
+          ?n+' of '+(n+k)+(n+k===1?' comment is':' comments are')+' in your pending review, which only you can see. '
+            +k+' failed and '+(k===1?'is still a local draft.':'are still local drafts.')
+          :plural(n,'comment')+(n===1?' is':' are')+' in your pending review, which only you can see.';
+        if(failedResolves.length) text+=' '+plural(failedResolves.length,'thread')+' could not be resolved: '+(failedResolves[0].error||'unknown error')+'.';
+        if(submitFailed) text+=' Submitting it failed: '+((failed.find(f=>f.id==='submit')||{}).error||'unknown error')+'.';
+        partialText.textContent=text;
+        failedNoteIds=failedNotes.map(f=>f.id);
+        nowBtn.textContent='Submit the '+n+' now';
+        retryBtn.onclick=k?retry:submitNow;
+        partial.hidden=false; actionsEl.hidden=true; status.textContent='';
+        syncSend();
+        return;
+      } else {
+        clearResolved(body);
+        done=true; status.textContent=body.render_error||body.error||'Posted with errors.';
+      }
+      partial.hidden=true; syncSend();
+    }
+
+    function postJson(payload){
+      posting=true; syncSend();
       status.textContent='Posting…';
-      itemsList.innerHTML='';
-      fetch(window.CW_LIVE.api+'/post',{
-        method:'POST',
-        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
-        body:JSON.stringify({nonce,resolve:[...pendingResolveSet],submit:submitCb.checked}),
-      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
-        .then(({ok,body})=>{
-          sendBtn.disabled=false;
+      return fetch(window.CW_LIVE.api+'/post',{
+        method:'POST',headers:headers(),body:JSON.stringify(payload),
+      }).then(r=>r.json().then(body=>({ok:r.ok,status:r.status,body})))
+        .then(({ok,status:code,body})=>{
+          posting=false;
           if(!ok){
-            status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
-            if(body.error==='changed since preview') preview();
+            progress=new Map(); itemsList.innerHTML='';
+            status.textContent=errText(body);
+            if(code===409&&body.error==='changed since preview'){
+              partial.hidden=true;
+              preview(false).then(()=>{ if(nonce!=null) status.textContent='The list changed since you opened this; review it again.'; });
+            }
+            syncSend();
             return;
           }
-          const resolvedOk=new Set(body.results.filter(r=>r.kind==='resolve'&&r.ok).map(r=>r.id));
-          lastResolves.filter(r=>resolvedOk.has(r.thread_id)).forEach(r=>clearPendingResolve(r.root_id));
-          status.textContent=body.ok?'Posted.':body.render_error;
+          finish(body);
         })
         .catch(()=>{
-          sendBtn.disabled=false;
+          posting=false;
+          progress=new Map(); itemsList.innerHTML='';
           status.textContent='Request failed -- check the daemon is still running.';
+          syncSend();
         });
-    });
+    }
+
+    function send(){
+      if(nonce==null) return;
+      partial.hidden=true; prefillRows();
+      return postJson({nonce,resolve:[...pendingResolveSet],ids:selectedIds(),
+        event:selEvent(),body:summary.value});
+    }
+    function retry(){
+      partial.hidden=true;
+      const only=new Set(failedNoteIds);
+      preview(false).then(()=>{
+        if(nonce==null) return;
+        excluded=new Set(full.filter(n=>!only.has(n.id)).map(n=>n.id));
+        renderRows();
+        return preview(true).then(()=>{ if(nonce!=null) send(); });
+      });
+    }
+    function submitNow(){
+      partial.hidden=true;
+      return postJson({submit_only:true,event:selEvent(),body:summary.value,resolve:[...pendingResolveSet]});
+    }
+    sendBtn.addEventListener('click',send);
+    nowBtn.addEventListener('click',submitNow);
+    updateBar();
   }
 
   function wireCommentsPanel(){
@@ -3653,7 +3907,10 @@
     const unplacedWrap=mk('section'); unplacedWrap.id='cw-threads-unplaced';
     const unplacedBox=mk('div');
     unplacedWrap.append(mk('h3',null,'Unplaced'),unplacedBox);
-    dlgBody.append(listEl,unplacedWrap);
+    const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-threads-submit'; thSubmit.hidden=true;
+    thSubmit.addEventListener('click',()=>{ dlg.close(); openSubmitReview(); });
+    dlgBody.append(thSubmit,listEl,unplacedWrap);
+    refreshDraftsBar();
     dlg.append(dlgHead,dlgBody);
     document.body.appendChild(dlg);
 
