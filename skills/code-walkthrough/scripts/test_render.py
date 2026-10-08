@@ -657,3 +657,43 @@ if __name__ == "__main__":
         test()
         print(f"ok  {test.__name__}")
     print(f"\n{len(tests)} passed")
+
+
+def test_the_live_page_streams_deltas_progress_and_outcomes_into_window_hooks():
+    real_template = _real_template()
+    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+
+    assert "['delta','progress','outcome'].forEach" in real_template
+    assert "window.__cwOnSnapshot(data)" in real_template
+    for hook in ("__cwOnDelta", "__cwOnProgress", "__cwOnOutcome", "__cwOnSnapshot"):
+        assert "window." + hook + "=" in wire_ask
+    assert "data.outcomes" in wire_ask
+
+
+def test_stream_and_outcome_code_never_uses_inner_html():
+    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    live = wire_ask.split("const streams=new Map()")[1].split("function buildThread(")[0]
+    hooks = wire_ask.split("window.__cwOnDelta=")[1].split("const commentBtn=")[0]
+
+    assert "innerHTML" not in live
+    assert "innerHTML" not in hooks
+
+
+def test_stop_posts_to_cancel_and_keep_marks_the_resolve_pending():
+    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    stop = wire_ask.split("function stopBtn(")[1].split("function retryBtn(")[0]
+    card = wire_ask.split("function outcomeEl(")[1].split("function turnEl(")[0]
+
+    assert "/cancel" in stop
+    assert "markPendingResolve(id)" in card
+    assert "/dismiss" in card
+    assert "clearPendingResolve(id)" in card
+
+
+def test_the_caret_blinks_only_when_motion_is_allowed():
+    template = _real_template()
+    motion = template.split("@media (prefers-reduced-motion:no-preference){")
+
+    assert "animation:cw-caret" in "".join(m.split("\n  }")[0] for m in motion[1:])
+    assert "animation:cw-caret" not in motion[0]
+    assert ".cw-outcome{display:flex;flex-wrap:wrap" in template
