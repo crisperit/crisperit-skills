@@ -27,6 +27,7 @@ cw_llm.BACKOFF_S = [0, 0]
 ANCHOR_LINE = {"kind": "line", "path": "foo.py", "side": "RIGHT", "line": 2,
                "end_line": None, "hunk_id": "foo.py\t@@ -1,3 +1,3 @@", "quote": "X"}
 ANCHOR_SECTION = {"kind": "section", "section": "Overview", "quote": "q"}
+ANCHOR_BLOCK = {"kind": "block", "block": "overview:p1", "section": "Overview", "quote": "q"}
 
 
 def _small_route_reply(body):
@@ -108,6 +109,24 @@ def _post_ask(daemon, key, wid, anchor, question, *, token=None):
                      body=json.dumps({"anchor": anchor, "question": question}))
 
 
+def _post_comment(daemon, key, wid, anchor, text, thread_id=None, *, token=None):
+    body = {"anchor": anchor, "text": text}
+    if thread_id:
+        body["thread_id"] = thread_id
+    return _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
+                     token=daemon.token if token is None else token, body=json.dumps(body))
+
+
+def _wait_final(d, count, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        turns = cw_ask.read_qa(d)
+        if len(turns) >= count and all(t["status"] != "pending" for t in turns):
+            break
+        time.sleep(0.05)
+    return cw_ask.read_qa(d)
+
+
 def _rpc(daemon, tool, args):
     status, data = _request(daemon, "POST", "/api/rpc", token=daemon.token,
                              body=json.dumps({"tool": tool, "args": args}))
@@ -161,8 +180,10 @@ def test_ask_gives_qa_record_and_sse_answer():
                     status, raw = _post_ask(daemon, key, wid, ANCHOR_LINE, "why X?")
                     assert status == 202, (status, raw)
                     assert json.loads(raw)["qid"].startswith("q-")
-                    more = _sse_read_until(sock, b"event: answer")
-                    assert b"event: answer" in more, more
+                    more = _sse_read_until(sock, b'"status": "ok"')
+                    assert b"event: thread" in more, more
+                    assert b'"kind": "turn"' in more and b'"status": "pending"' in more, more
+                    assert b'"status": "ok"' in more, more
                 finally:
                     sock.close()
 
@@ -220,13 +241,13 @@ def test_prompt_order_hunk_notes_and_pair_limit():
 
             for i in range(7):
                 cw_ask._append_qa(d, {
-                    "qid": f"q-{i}", "started_at": "t", "finished_at": "t", "anchor": {},
-                    "question": f"question-{i}", "status": "ok", "answer": f"answer-{i}",
+                    "qid": f"q-{i}", "thread_id": "t1", "started_at": "t", "finished_at": "t", "anchor": {},
+                    "comment": f"question-{i}", "question": f"question-{i}", "status": "ok", "answer": f"answer-{i}",
                     "error": None, "remedy": None, "profile": "k", "model": "ask-m", "usage": {},
                 })
 
             anchor = cw_ask.validate_anchor(dict(ANCHOR_LINE))
-            prompt = cw_ask.build_prompt(d, anchor, "why is X here?")
+            prompt = cw_ask.build_prompt(d, anchor, "why is X here?", "t1")
 
             assert len(prompt) < cw_ask.PROMPT_CAP
             assert "question-0" not in prompt
@@ -261,11 +282,10 @@ def test_answer_never_raises_on_a_malformed_ask_profile():
             assert record["error"]
 
 
-# ---------------------------------------------------------------------------
-# Two asks on one walkthrough run one after the other
+# Same-thread comments run one after the other, different threads side by side
 # ---------------------------------------------------------------------------
 
-def test_two_asks_run_sequentially():
+def test_same_thread_comments_run_sequentially():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         def ask_handler(body, n):
             return cw_testlib.delayed(0.5, cw_testlib.text("ans"))
@@ -274,19 +294,267 @@ def test_two_asks_run_sequentially():
             d = _build_done(home, tmp, stub)
             key, wid = d.parent.name, d.name
             with running_daemon() as daemon:
-                status1, _ = _post_ask(daemon, key, wid, ANCHOR_SECTION, "q1")
+                status1, raw1 = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q1")
                 assert status1 == 202
-                status2, _ = _post_ask(daemon, key, wid, ANCHOR_SECTION, "q2")
+                tid = json.loads(raw1)["thread_id"]
+                status2, raw2 = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q2", tid)
                 assert status2 == 202
+                assert json.loads(raw2)["thread_id"] == tid
+                records = _wait_final(d, 2)
 
-                deadline = time.monotonic() + 10
-                while len(cw_ask.read_qa(d)) < 2 and time.monotonic() < deadline:
-                    time.sleep(0.05)
-
-            records = cw_ask.read_qa(d)
             assert len(records) == 2, records
-            first, second = records[0], records[1]
+            first, second = records
             assert first["finished_at"] <= second["started_at"]
+            assert stub.peak_in_flight == 1
+
+
+def test_different_threads_run_concurrently():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        def ask_handler(body, n):
+            return cw_testlib.delayed(0.8, cw_testlib.text("ans"))
+
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q1")[0] == 202
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q2")[0] == 202
+                records = _wait_final(d, 2)
+
+            assert len(records) == 2 and records[0]["thread_id"] != records[1]["thread_id"]
+            assert stub.peak_in_flight == 2
+
+
+def test_comment_is_persisted_pending_before_turn_starts():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        release = threading.Event()
+
+        def ask_handler(body, n):
+            release.wait(timeout=5)
+            return cw_testlib.text("ans")
+
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                try:
+                    status, raw = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "hold on")
+                    assert status == 202
+                    qid = json.loads(raw)["qid"]
+                    turns = cw_ask.read_qa(d)
+                    assert [(t["qid"], t["status"], t["comment"], t["question"]) for t in turns] == [
+                        (qid, "pending", "hold on", "hold on")]
+                    assert turns[0]["thread_id"] == qid
+                    status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
+                                            token=daemon.token)
+                    assert json.loads(raw) == {"turns": turns, "resolved": []}
+                finally:
+                    release.set()
+                records = _wait_final(d, 1)
+            assert records[0]["status"] == "ok" and records[0]["answer"] == "ans"
+
+
+# ---------------------------------------------------------------------------
+# Anchors, per-thread history, folding, resolve
+# ---------------------------------------------------------------------------
+
+def test_block_anchor_accepted_and_bad_key_refused():
+    anchor = cw_ask.validate_anchor(dict(ANCHOR_BLOCK))
+    assert anchor == {"kind": "block", "block": "overview:p1", "section": "Overview", "quote": "q"}
+    assert cw_ask.validate_anchor({"kind": "block", "block": "a.b|c-d_e", "quote": "q"})["section"] is None
+    for bad in ({"kind": "block", "block": "has space", "quote": "q"},
+                {"kind": "block", "block": "", "quote": "q"},
+                {"kind": "block", "block": "x" * 201, "quote": "q"},
+                {"kind": "block", "quote": "q"},
+                {"kind": "block", "block": "ok", "quote": ""},
+                {"kind": "block", "block": "ok", "section": 3, "quote": "q"}):
+        try:
+            cw_ask.validate_anchor(bad)
+            raise AssertionError(f"expected CWError for {bad}")
+        except cw_store.CWError as e:
+            assert str(e).startswith("bad anchor")
+
+
+def _turn(qid, comment, answer, thread_id=None, status="ok"):
+    record = {"qid": qid, "anchor": {}, "question": comment, "status": status, "answer": answer}
+    if thread_id:
+        record.update(thread_id=thread_id, comment=comment)
+    return record
+
+
+def test_prompt_history_is_per_thread_and_ignores_unfinished_turns():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _build_done(home, tmp, stub)
+            cw_ask._append_qa(d, _turn("q-a1", "mine-1", "ans-mine-1", "t-a"))
+            cw_ask._append_qa(d, _turn("q-b1", "theirs-1", "ans-theirs", "t-b"))
+            cw_ask._append_qa(d, _turn("q-a2", "mine-2", None, "t-a", status="pending"))
+            cw_ask._append_qa(d, _turn("q-a3", "mine-err", None, "t-a", status="error"))
+            anchor = cw_ask.validate_anchor(dict(ANCHOR_BLOCK))
+
+            prompt = cw_ask.build_prompt(d, anchor, "next", "t-a")
+            assert "Section: Overview" in prompt
+            assert "mine-1" in prompt and "ans-mine-1" in prompt
+            assert "theirs-1" not in prompt
+            assert "mine-2" not in prompt and "mine-err" not in prompt
+            assert "Previous Q&A" not in cw_ask.build_prompt(d, anchor, "next")
+
+
+def test_old_record_without_thread_id_folds_as_its_own_thread():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _build_done(home, tmp, stub)
+            cw_ask._append_qa(d, _turn("q-old", "legacy", "old answer"))
+            cw_ask._append_qa(d, {"qid": "q-new", "thread_id": "q-new", "comment": "c",
+                                  "question": "c", "status": "pending"})
+            cw_ask._append_qa(d, {"qid": "q-new", "thread_id": "q-new", "comment": "c",
+                                  "question": "c", "status": "ok", "answer": "a"})
+            turns = cw_ask.read_qa(d)
+            assert [t["qid"] for t in turns] == ["q-old", "q-new"]
+            assert turns[0]["thread_id"] == "q-old" and turns[0]["comment"] == "legacy"
+            assert turns[1]["status"] == "ok"
+            anchor = cw_ask.validate_anchor(dict(ANCHOR_BLOCK))
+            assert "legacy" in cw_ask.build_prompt(d, anchor, "more", "q-old")
+            assert "legacy" not in cw_ask.build_prompt(d, anchor, "more", "q-new")
+
+
+def test_read_threads_folds_resolve_events_and_readers_skip_them():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _build_done(home, tmp, stub)
+            cw_ask._append_qa(d, _turn("q-1", "c1", "a1", "q-1"))
+            cw_ask._append_qa(d, _turn("q-2", "c2", "a2", "q-1"))
+            cw_ask._append_qa(d, _turn("q-3", "c3", "a3", "q-3"))
+            cw_ask.append_resolve(d, "q-1", True)
+            cw_ask.append_resolve(d, "q-3", True)
+            cw_ask.append_resolve(d, "q-3", False)
+            threads = cw_ask.read_threads(d)
+            assert [t["qid"] for t in threads["q-1"]["turns"]] == ["q-1", "q-2"]
+            assert threads["q-1"]["resolved"] is True
+            assert threads["q-3"]["resolved"] is False
+            assert all("type" not in t for t in cw_ask.read_qa(d))
+            assert len(cw_ask.read_qa(d)) == 3
+
+
+def test_resolve_route_guards_and_effect():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            cw_ask._append_qa(d, _turn("q-1", "c1", "a1", "q-1"))
+            path = f"/api/walkthrough/{key}/{wid}/threads/q-1/resolve"
+            body = json.dumps({"resolved": True})
+            with running_daemon() as daemon:
+                sock = _sse_connect(daemon, key, wid)
+                try:
+                    _sse_read_until(sock, b"event: snapshot")
+                    assert _request(daemon, "POST", path, body=body)[0] == 403
+                    assert _request(daemon, "POST", path, token="wrong", body=body)[0] == 403
+                    assert _request(daemon, "POST", path, token=daemon.token, host="evil.example:9",
+                                     body=body)[0] == 403
+                    assert _request(daemon, "POST", path, token=daemon.token,
+                                     origin="http://attacker.example", body=body)[0] == 403
+                    assert cw_ask.read_threads(d)["q-1"]["resolved"] is False
+
+                    bad = f"/api/walkthrough/{key}/{wid}/threads/bad.id/resolve"
+                    assert _request(daemon, "POST", bad, token=daemon.token, body=body)[0] == 400
+                    missing = f"/api/walkthrough/{key}/{wid}/threads/q-nope/resolve"
+                    assert _request(daemon, "POST", missing, token=daemon.token, body=body)[0] == 404
+                    assert _request(daemon, "POST", path, token=daemon.token,
+                                     body=json.dumps({"resolved": "yes"}))[0] == 400
+
+                    status, raw = _request(daemon, "POST", path, token=daemon.token,
+                                            origin=f"http://127.0.0.1:{daemon.port}", body=body)
+                    assert (status, json.loads(raw)) == (200, {"ok": True})
+                    events = _sse_read_until(sock, b'"kind": "resolve"')
+                    assert b'"thread_id": "q-1"' in events and b'"resolved": true' in events, events
+                finally:
+                    sock.close()
+                status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=daemon.token)
+                assert json.loads(raw)["resolved"] == ["q-1"]
+
+
+def test_stale_pending_becomes_error_but_in_flight_stays_pending():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        release = threading.Event()
+
+        def ask_handler(body, n):
+            release.wait(timeout=5)
+            return cw_testlib.text("ans")
+
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            cw_ask._append_qa(d, {"qid": "q-dead", "thread_id": "q-dead", "anchor": ANCHOR_BLOCK,
+                                  "comment": "c", "question": "c", "started_at": "t0", "status": "pending"})
+            with running_daemon() as daemon:
+                try:
+                    status, raw = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "live")
+                    live = json.loads(raw)["qid"]
+                    status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
+                                            token=daemon.token)
+                    by_qid = {t["qid"]: t for t in json.loads(raw)["turns"]}
+                    assert by_qid[live]["status"] == "pending"
+                    dead = by_qid["q-dead"]
+                    assert (dead["status"], dead["error"], dead["remedy"]) == (
+                        "error", "turn was interrupted", "send the comment again")
+                    assert dead["anchor"] == ANCHOR_BLOCK and dead["started_at"] == "t0" and dead["finished_at"]
+                finally:
+                    release.set()
+                _wait_final(d, 2)
+
+
+def test_follow_up_keeps_first_turn_anchor():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("ans"))) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                tid = json.loads(_post_comment(daemon, key, wid, ANCHOR_BLOCK, "q1")[1])["thread_id"]
+                _wait_final(d, 1)
+                assert _post_comment(daemon, key, wid, ANCHOR_SECTION, "q2", tid)[0] == 202
+                records = _wait_final(d, 2)
+            assert [r["anchor"] for r in records] == [ANCHOR_BLOCK, ANCHOR_BLOCK]
+
+
+def test_comment_on_resolved_thread_reopens_it_and_emits_resolve():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("ans"))) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            cw_ask._append_qa(d, _turn("q-1", "c1", "a1", "q-1"))
+            cw_ask.append_resolve(d, "q-1", True)
+            with running_daemon() as daemon:
+                sock = _sse_connect(daemon, key, wid)
+                try:
+                    _sse_read_until(sock, b"event: snapshot")
+                    assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "again", "q-1")[0] == 202
+                    events = _sse_read_until(sock, b'"resolved": false')
+                    assert b'"kind": "resolve"' in events and b'"thread_id": "q-1"' in events, events
+                finally:
+                    sock.close()
+                _wait_final(d, 2)
+            assert cw_ask.read_threads(d)["q-1"]["resolved"] is False
+
+
+def test_comment_route_guards_and_unknown_thread():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _build_done(home, tmp, stub)
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "c", token="")[0] == 403
+                assert _post_comment(daemon, key, wid, {"kind": "block", "block": "no good", "quote": "q"},
+                                      "c")[0] == 400
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "")[0] == 400
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "x" * 2001)[0] == 400
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "c", "q-nope")[0] == 404
+                assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "c", "bad id")[0] == 400
+                status, _ = _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
+                                      token=daemon.token, origin="http://attacker.example",
+                                      body=json.dumps({"anchor": ANCHOR_BLOCK, "text": "c"}))
+                assert status == 403
+                assert cw_ask.read_qa(d) == []
 
 
 # ---------------------------------------------------------------------------
@@ -342,8 +610,9 @@ def test_guards_and_walkthrough_get_qa():
 
                 status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=daemon.token)
                 assert status == 200
-                full = json.loads(raw)["qa"]
-                assert any(r["qid"] == "q-abc" and r["profile"] == "k" for r in full)
+                full = json.loads(raw)["turns"]
+                assert any(r["qid"] == "q-abc" and r["profile"] == "k" and r["thread_id"] == "q-abc"
+                           and r["comment"] == "hi" for r in full)
 
 
 def test_idle_exit_waits_for_in_flight_ask():
@@ -416,7 +685,15 @@ if __name__ == "__main__":
         test_oversized_selection_refused_quote_never_cut,
         test_prompt_order_hunk_notes_and_pair_limit,
         test_answer_never_raises_on_a_malformed_ask_profile,
-        test_two_asks_run_sequentially,
+        test_same_thread_comments_run_sequentially,
+        test_different_threads_run_concurrently,
+        test_comment_is_persisted_pending_before_turn_starts,
+        test_block_anchor_accepted_and_bad_key_refused,
+        test_prompt_history_is_per_thread_and_ignores_unfinished_turns,
+        test_old_record_without_thread_id_folds_as_its_own_thread,
+        test_read_threads_folds_resolve_events_and_readers_skip_them,
+        test_resolve_route_guards_and_effect,
+        test_comment_route_guards_and_unknown_thread,
         test_hung_endpoint_cut_at_timeout,
         test_guards_and_walkthrough_get_qa,
         test_idle_exit_waits_for_in_flight_ask,

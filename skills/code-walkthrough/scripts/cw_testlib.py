@@ -282,7 +282,7 @@ def _log(op, argv, variables):
 
 def _reply(op, argv, variables, data):
     _log(op, argv, variables)
-    if op in cfg.get("fail_ops", []):
+    if op in cfg.get("fail_ops", []) or op in cfg.get("lose_response_ops", []):
         sys.stderr.write("fake gh: %s configured to fail\\n" % op)
         sys.exit(1)
     sleep_s = cfg.get("sleep", {}).get(op)
@@ -293,6 +293,12 @@ def _reply(op, argv, variables, data):
 
 
 argv = sys.argv[1:]
+
+if argv[:2] == ["api", "user"]:
+    _reply("viewer", argv, None, {"login": cfg.get("viewer", "me")})
+
+if argv[:2] == ["pr", "view"]:
+    _reply("pr-author", argv, None, {"author": {"login": cfg.get("pr_author", "me")}})
 
 if len(argv) >= 2 and argv[0] == "api" and re.match(r"^repos/[^/]+/[^/]+/pulls/\\d+/comments$", argv[1]):
     _reply("rest-comments", argv, None, _load("comments.json", []))
@@ -305,12 +311,21 @@ if len(argv) >= 2 and argv[0] == "api" and argv[1] == "graphql":
     op = match.group(1) if match else "unknown"
     state = _load("state.json", {"review_opened": False, "comment_n": 0})
 
+    calls = state.setdefault("calls", {})
+    calls[op] = calls.get(op, 0) + 1
+    _save("state.json", state)
+    if op in cfg.get("fail_ops", []) or calls[op] in cfg.get("fail_nth", {}).get(op, []):
+        _log(op, argv, variables)
+        sys.stderr.write("fake gh: %s configured to fail\\n" % op)
+        sys.exit(1)
+
     if op == "ReviewThreads":
         threads = _load("threads.json", [])
         _reply(op, argv, variables, {"data": {"repository": {"pullRequest": {
             "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": threads}}}}})
     elif op == "PendingReview":
-        nodes = [{"id": "R_1"}] if state.get("review_opened") else []
+        count = state.get("seed", 0) + state.get("delivered", 0)
+        nodes = [{"id": "R_1", "comments": {"totalCount": count}}] if state.get("review_opened") else []
         _reply(op, argv, variables, {"data": {"repository": {"pullRequest": {
             "id": "PR_1", "reviews": {"nodes": nodes}}}}})
     elif op == "OpenReview":
@@ -320,10 +335,11 @@ if len(argv) >= 2 and argv[0] == "api" and argv[1] == "graphql":
             "pullRequestReview": {"id": "R_1"}}}})
     elif op == "NewThread":
         state["comment_n"] = state.get("comment_n", 0) + 1
+        state["delivered"] = state.get("delivered", 0) + 1
         n = state["comment_n"]
         _save("state.json", state)
         comments = _load("comments.json", [])
-        comments.append({"id": 1000 + n, "path": variables.get("path"),
+        comments.append({"id": 1000 + n, "node_id": "C_%d" % n, "path": variables.get("path"),
                           "line": variables.get("line"), "side": variables.get("side"),
                           "body": variables.get("body"), "user": {"login": "fake"},
                           "created_at": "2000-01-01T00:00:00Z", "html_url": "",
@@ -334,11 +350,23 @@ if len(argv) >= 2 and argv[0] == "api" and argv[1] == "graphql":
             "comments": {"nodes": [{"id": "C_%d" % n, "databaseId": 1000 + n}]}}}}})
     elif op == "ReplyThread":
         state["comment_n"] = state.get("comment_n", 0) + 1
+        state["delivered"] = state.get("delivered", 0) + 1
         n = state["comment_n"]
         _save("state.json", state)
+        comments = _load("comments.json", [])
+        parent_id = int(variables["inReplyTo"].split("_")[1]) + 1000
+        parent = next((c for c in comments if c["id"] == parent_id), {})
+        comments.append({"id": 1000 + n, "node_id": "C_%d" % n, "path": parent.get("path"),
+                          "line": parent.get("line"), "side": parent.get("side"),
+                          "body": variables.get("body"), "user": {"login": "fake"},
+                          "created_at": "2000-01-01T00:00:00Z", "html_url": "",
+                          "in_reply_to_id": parent_id})
+        _save("comments.json", comments)
         _reply(op, argv, variables, {"data": {"addPullRequestReviewComment": {"comment": {
             "id": "C_%d" % n, "databaseId": 1000 + n}}}})
     elif op == "SubmitReview":
+        state.update(review_opened=False, seed=0, delivered=0)
+        _save("state.json", state)
         _reply(op, argv, variables, {"data": {"submitPullRequestReview": {"pullRequestReview": {
             "id": "R_1", "state": "COMMENTED"}}}})
     elif op == "ResolveThread":
@@ -516,20 +544,29 @@ def fake_claude(tmp, script, *, auth=None):
 
 
 @contextmanager
-def fake_gh(tmp, *, comments=(), threads=None, fail_ops=(), sleep=None):
+def fake_gh(tmp, *, comments=(), threads=None, fail_ops=(), sleep=None, pending=None,
+            lose_response_ops=(), fail_nth=None, viewer="me", pr_author="me"):
     """A `gh` on PATH that fakes the one REST call and the GraphQL ops notes.py sends,
     dispatched by the mutation/query name parsed from the request body (never from argv --
     see cw_run._gh/_notes: a note's body never reaches a command line). State a call needs
     across invocations (the pending review, the running comment counter) lives in
     CW_FAKE_GH_DIR as JSON, since each `gh` call is its own fresh process.
+
+    fail_ops fail before any side effect (a rejected call); lose_response_ops record the
+    side effect, then exit non-zero (comment landed, reply lost); fail_nth is
+    {op: [1-based call numbers]} to reject only chosen calls of an op. pending=N seeds an
+    already-open pending review holding N comments.
     """
     root = Path(tmp) / "fake-gh"
     bin_dir = root / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     (root / "comments.json").write_text(json.dumps(list(comments)))
     (root / "threads.json").write_text(json.dumps(threads if threads is not None else []))
-    (root / "config.json").write_text(json.dumps({"fail_ops": list(fail_ops), "sleep": sleep or {}}))
-    (root / "state.json").write_text(json.dumps({"review_opened": False, "comment_n": 0}))
+    (root / "config.json").write_text(json.dumps({
+        "fail_ops": list(fail_ops), "sleep": sleep or {}, "lose_response_ops": list(lose_response_ops),
+        "fail_nth": fail_nth or {}, "viewer": viewer, "pr_author": pr_author}))
+    (root / "state.json").write_text(json.dumps({
+        "review_opened": pending is not None, "comment_n": 0, "seed": pending or 0}))
     (root / "log.jsonl").write_text("")
 
     gh_path = bin_dir / "gh"

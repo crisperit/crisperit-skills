@@ -58,7 +58,7 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
     font-size:var(--fs-base);line-height:1.6;
-    padding:32px 20px 64px}
+    padding:32px 20px calc(64px + var(--cw-bar-h,0px))}
   .wrap{max-width:min(1400px,92vw);margin:0 auto}
   /* Prose runs the full wrapper width, matching the panels and diagrams, because that is what
      was asked for twice. It puts a line past the 65-80 characters a measure normally wants, so
@@ -544,7 +544,7 @@
     padding:6px 14px;font-size:var(--fs-xs);color:var(--muted);
     font-family:var(--mono);text-align:center}
   #cw-live-banner.failed{color:var(--red)}
-  #cw-live-reload{position:fixed;left:16px;bottom:16px;z-index:40;border:none;
+  #cw-live-reload{position:fixed;left:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;border:none;
     background:var(--accent);color:var(--bg);border-radius:999px;padding:10px 18px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;
     box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent)}
@@ -756,11 +756,15 @@
      isn't one of my own unposted drafts, no button to reveal it. float:none/flex overrides
      .fb-av's float:left above, since this row is a single input line, not text wrapping
      around an avatar. */
-  .fb-item.fb-reply{display:flex;align-items:center;gap:8px}
+  .fb-item.fb-reply{display:flex;align-items:flex-start;gap:8px}
   .fb-item.fb-reply .fb-av{float:none;flex:none}
-  .fb-reply-input{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--border);
+  .fb-reply-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .fb-reply-input{width:100%;box-sizing:border-box;min-height:34px;resize:vertical;background:var(--panel2);border:1px solid var(--border);
     color:var(--text);border-radius:6px;padding:6px 10px;font:inherit;font-size:var(--fs-sm)}
   .fb-reply-input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .fb-reply-col button{border:none;border-radius:6px;padding:6px 12px;margin-left:0;cursor:pointer}
+  .fb-item.fb-own-draft{border-left:3px dashed var(--yellow)}
+  .fb-draft-tag{margin-left:6px;color:var(--yellow);font-size:var(--fs-xs)}
 
   /* A resolved thread collapses like a stray's .hr-lo fold above, same <details> idiom. Flex,
      same reason hr-lo>summary is below: the chip appended after the comment count (see
@@ -840,7 +844,7 @@
      .fb-primary supplies the accent fill; only shape, placement and feedback states are added
      here. Shadow is tinted with the accent hue rather than plain black, so it reads as part of
      this palette instead of a generic drop shadow. */
-  #hr-comments-btn{position:fixed;right:16px;bottom:16px;z-index:40;border:none;
+  #hr-comments-btn{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;border:none;
     border-radius:999px;padding:10px 18px;font:600 var(--fs-sm) system-ui;cursor:pointer;
     box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent);
     transition:transform .15s,box-shadow .15s}
@@ -952,41 +956,61 @@
   .dline-note{display:block;margin:6px 0;white-space:normal;line-height:1.6;
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
-  #cw-ask-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
-    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--accent);color:#fff;
-    box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 35%,transparent)}
-  #cw-ask-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #cw-ask,#cw-qa{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
-    border:1px solid var(--border);border-radius:10px;color:var(--text)}
-  #cw-ask::backdrop,#cw-qa::backdrop{background:rgba(0,0,0,.6)}
-  #cw-ask-head,#cw-qa-head{display:flex;align-items:center;justify-content:space-between;
-    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
-  #cw-ask-close,#cw-qa-close{background:var(--panel2);border:1px solid var(--border);
-    color:var(--text);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;
-    line-height:1;transition:background .12s}
-  #cw-ask-close:hover,#cw-qa-close:hover{background:var(--border)}
-  #cw-ask-close:focus-visible,#cw-qa-close:focus-visible{outline:2px solid var(--accent);
-    outline-offset:2px}
-  #cw-ask-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
-  #cw-ask-quote{margin:0 0 10px;padding:8px 10px;background:var(--panel2);
-    border:1px solid var(--border);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;
-    font-family:var(--mono);font-size:var(--fs-xs);max-height:30vh;overflow-y:auto}
-  #cw-ask-question{display:block;width:100%;min-height:80px;background:var(--panel2);
-    border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
-    font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
-  #cw-ask-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
-  #cw-qa-btn{position:fixed;right:16px;bottom:62px;z-index:40;border:1px solid var(--border);
+  #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
+    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:#fff;
+    box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
+  #cw-threads-btn{position:fixed;right:16px;bottom:calc(62px + var(--cw-bar-h,0px));z-index:40;border:1px solid var(--border);
     border-radius:999px;padding:8px 16px;font:600 var(--fs-sm) system-ui;cursor:pointer;
     background:var(--panel2);color:var(--text)}
-  #cw-qa-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #cw-qa-list{list-style:none;margin:0;padding:14px 16px;overflow-y:auto;
-    max-height:calc(82vh - 60px);display:flex;flex-direction:column;gap:10px}
-  .cw-qa-q,.cw-answer-q{margin:0;color:var(--muted);font-style:italic;font-size:var(--fs-sm);
-    overflow-wrap:anywhere}
-  .cw-qa-a,.cw-answer-a{margin:4px 0 0;font-size:var(--fs-sm);white-space:pre-wrap;
-    overflow-wrap:anywhere}
-  .cw-answer{display:block;margin:6px 0;padding:6px 0 6px 10px;border-left:3px solid var(--accent);
-    white-space:normal;line-height:1.6;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+  #cw-comment-btn:focus-visible,#cw-threads-btn:focus-visible,#cw-threads-close:focus-visible,
+  .cw-thread button:focus-visible,.cw-compose button:focus-visible,
+  .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #cw-threads{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+    border:1px solid var(--border);border-radius:10px;color:var(--text)}
+  #cw-threads::backdrop{background:rgba(0,0,0,.6)}
+  #cw-threads-head{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
+  #cw-threads-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1}
+  #cw-threads-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
+  #cw-threads-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+  #cw-threads-unplaced h3{margin:14px 0 6px;font-size:var(--fs-sm);color:var(--muted)}
+  .cw-th-go{display:flex;gap:10px;justify-content:space-between;width:100%;text-align:left;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:6px 10px;cursor:pointer;font:inherit;font-size:var(--fs-sm)}
+  .cw-th-go:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-th-go-text{min-width:0;overflow-wrap:anywhere}
+  .cw-th-go-state{flex:none;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-thread,.cw-compose{display:block;box-sizing:border-box;max-width:100%;margin:6px 0;
+    padding:8px 10px;border-left:3px solid var(--purple);
+    background:color-mix(in srgb,var(--purple) 8%,transparent);white-space:normal;line-height:1.6;
+    font:var(--fs-sm)/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;overflow-wrap:anywhere}
+  .cw-thread [hidden]{display:none!important}
+  .cw-thread-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .cw-thread-head button,.cw-compose .fb-actions button{cursor:pointer;border:1px solid var(--border);
+    background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;
+    font-size:var(--fs-xs)}
+  .cw-th-resolve{margin-left:auto}
+  .cw-th-badge{color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
+  .cw-th-summary{min-width:0;flex:1 1 12em;color:var(--muted);font-style:italic}
+  .cw-turn{margin:8px 0}
+  .cw-turn-q{margin:0;color:var(--muted);font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap}
+  .cw-turn-a{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-turn-err{color:var(--red)}
+  .cw-dots i{display:inline-block;width:6px;height:6px;margin-right:3px;border-radius:50%;
+    background:var(--purple);opacity:.6}
+  .cw-working span+span{margin-left:4px;color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){
+    .cw-dots i{animation:cw-dot 1.2s ease-in-out infinite}
+    .cw-dots i:nth-child(2){animation-delay:.2s}
+    .cw-dots i:nth-child(3){animation-delay:.4s}
+  }
+  @keyframes cw-dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+  .cw-compose textarea{display:block;width:100%;min-height:64px;background:var(--panel2);
+    border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
+    font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
+  .cw-compose .fb-actions{margin-top:6px}
+  .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
 
   #cw-post-confirm{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
     border:1px solid var(--border);border-radius:10px;color:var(--text)}
@@ -1004,8 +1028,26 @@
   #cw-post-confirm-notes pre,#cw-post-confirm-resolves pre{margin:2px 0 0;padding:6px 8px;
     background:var(--panel2);border:1px solid var(--border);border-radius:6px;
     white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--fs-xs)}
-  #cw-post-confirm-submit-row{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm)}
-  #cw-post-confirm-hint{margin:4px 0 12px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-post-confirm-notes label{display:flex;align-items:flex-start;gap:6px;font-size:var(--fs-sm)}
+  #cw-post-confirm-pending{margin:0 0 12px;padding:8px 10px;border:1px solid var(--border);
+    border-radius:6px;background:var(--panel2);font-size:var(--fs-sm)}
+  #cw-post-options{margin:0 0 12px;font-size:var(--fs-sm)}
+  #cw-post-options summary{cursor:pointer}
+  #cw-post-options fieldset{border:0;margin:8px 0;padding:0;display:flex;flex-direction:column;gap:4px}
+  #cw-post-options label{display:flex;align-items:center;gap:6px}
+  #cw-post-approve-note{margin:0 0 6px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-post-summary{width:100%;min-height:70px;background:var(--panel2);border:1px solid var(--border);
+    color:var(--text);border-radius:6px;padding:8px;font:inherit;font-size:var(--fs-sm)}
+  #cw-post-confirm-partial{margin:0 0 12px;font-size:var(--fs-sm)}
+  #cw-post-confirm-partial .fb-actions{flex-wrap:wrap}
+  #cw-post-confirm-actions[hidden]{display:none}
+  #cw-drafts-bar{position:fixed;left:0;right:0;bottom:0;z-index:45;display:flex;flex-wrap:wrap;
+    align-items:center;gap:8px 12px;padding:8px 16px;background:var(--panel);
+    border-top:1px solid var(--border);font-size:var(--fs-sm)}
+  #cw-drafts-bar[hidden]{display:none}
+  #cw-drafts-text{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+  #cw-threads-submit{margin:0 0 10px}
+  .fb-review-tag{margin-left:6px;color:var(--accent);font-size:var(--fs-xs)}
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
 
@@ -1024,9 +1066,10 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-ask-btn,#cw-qa-btn{min-height:44px}
-    #cw-ask-close,#cw-qa-close{width:44px;height:44px;font-size:16px}
+    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button{min-height:44px}
+    #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
+    #cw-drafts-bar button,#cw-threads-submit,#cw-post-confirm button{min-height:44px}
     .fb-reply-input,.fb-actions button{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
@@ -1070,7 +1113,7 @@
     <ul id="hr-comments-list"></ul>
     <div id="hr-comments-actions" class="fb-actions">
       <button type="button" id="hr-comments-gh-btn" class="fb-ghost">Copy gh command</button>
-      <button type="button" id="hr-comments-post-btn" class="fb-primary" hidden>Post to GitHub</button>
+      <button type="button" id="hr-comments-post-btn" class="fb-primary" hidden>Submit review</button>
       <button type="button" id="hr-comments-agent-btn" class="fb-primary">Copy for agent</button>
     </div>
     <p id="hr-comments-gh-note" hidden></p>
@@ -1105,23 +1148,48 @@
 
 <dialog id="cw-post-confirm" aria-labelledby="cw-post-confirm-title">
   <div id="cw-post-confirm-head">
-    <span id="cw-post-confirm-title">Post to GitHub</span>
+    <span id="cw-post-confirm-title">Submit review</span>
     <button type="button" id="cw-post-confirm-close" aria-label="Close">✕</button>
   </div>
   <div id="cw-post-confirm-body">
+    <p id="cw-post-confirm-pending" hidden></p>
     <ul id="cw-post-confirm-notes"></ul>
     <ul id="cw-post-confirm-resolves"></ul>
-    <label id="cw-post-confirm-submit-row">
-      <input type="checkbox" id="cw-post-submit"> Submit review as COMMENT
-    </label>
-    <p id="cw-post-confirm-hint">unchecked: comments stay in a pending review only you can see</p>
+    <ul id="cw-post-confirm-inreview"></ul>
+    <details id="cw-post-options">
+      <summary>Review options</summary>
+      <fieldset>
+        <legend>Event</legend>
+        <label><input type="radio" name="cw-post-event" value="COMMENT" checked> Comment</label>
+        <label><input type="radio" name="cw-post-event" value="APPROVE"> Approve</label>
+        <label><input type="radio" name="cw-post-event" value="REQUEST_CHANGES"> Request changes</label>
+      </fieldset>
+      <p id="cw-post-approve-note" hidden></p>
+      <label for="cw-post-summary">Summary</label>
+      <textarea id="cw-post-summary" placeholder="Review summary (optional)"></textarea>
+    </details>
     <ul id="cw-post-confirm-items"></ul>
-    <div class="fb-actions">
-      <button type="button" id="cw-post-confirm-send" class="fb-primary">Confirm</button>
+    <div id="cw-post-confirm-partial" role="status" hidden>
+      <p id="cw-post-partial-text"></p>
+      <div class="fb-actions">
+        <button type="button" id="cw-post-retry" class="fb-primary">Retry the failed one</button>
+        <button type="button" id="cw-post-send-now" class="fb-ghost">Submit the now</button>
+        <button type="button" id="cw-post-leave" class="fb-ghost">Leave pending</button>
+      </div>
+    </div>
+    <div id="cw-post-confirm-actions" class="fb-actions">
+      <button type="button" id="cw-post-confirm-send" class="fb-primary">Submit review</button>
+      <button type="button" id="cw-post-confirm-cancel" class="fb-ghost">Cancel</button>
     </div>
     <p id="cw-post-confirm-status" role="status"></p>
   </div>
 </dialog>
+
+<div id="cw-drafts-bar" role="region" aria-label="Drafts" hidden>
+  <span id="cw-drafts-text"></span>
+  <button type="button" id="cw-drafts-jump" class="fb-ghost">Jump to drafts</button>
+  <button type="button" id="cw-drafts-submit" class="fb-primary">Submit review</button>
+</div>
 
 <script><!-- MERMAID_JS --></script>
 <script><!-- HLJS_JS --></script>
@@ -1964,6 +2032,8 @@
   const detailsByPath=new Map(); // path -> its <details.hunk>, for the per-file comment-count badge
   let docOrder=0;
   let refreshCommentsPanel=()=>{}; // replaced once wireCommentsPanel() finds its markup
+  let refreshDraftsBar=()=>{}; // replaced by wirePost on a live page with a PR to submit to
+  let openSubmitReview=()=>{};
   let resolutionOpener=null; // chip that opened #hr-resolution, so close can focus it back
 
   function nowIso(){ return new Date().toISOString(); }
@@ -2021,6 +2091,7 @@
   function persistLocal(){
     try{ localStorage.setItem(lsKey('hr-notes',state.meta.id), JSON.stringify(state.notes)); }catch(e){}
     if(window.CW_LIVE) schedulePutNotes();
+    refreshDraftsBar();
   }
 
   let putNotesTimer=null;
@@ -2069,6 +2140,7 @@
   let pendingResolveSet=loadPendingResolve();
   function persistPendingResolve(){
     try{ localStorage.setItem(lsKey('hr-resolve',state.meta.id), JSON.stringify([...pendingResolveSet])); }catch(e){}
+    refreshDraftsBar();
   }
   function markPendingResolve(id){ pendingResolveSet.add(id); persistPendingResolve(); }
   function clearPendingResolve(id){ if(pendingResolveSet.delete(id)) persistPendingResolve(); }
@@ -2185,9 +2257,12 @@
   // Reuses a line's existing top-level draft rather than starting a second one; a reply is
   // excluded from that lookup even though it shares the parent's path/line/side, since it is
   // never the line's "own" comment.
+  function lineDraft(meta){
+    return state.notes.find(n=>!n.stale&&n.origin==='local'&&n.state==='draft'
+      &&!n.reply_to&&!n.in_reply_to&&n.path===meta.path&&n.side===meta.side&&n.line===meta.line);
+  }
   function openOrFocusDraft(meta){
-    const existing=state.notes.find(n=>!n.stale&&n.origin==='local'&&n.state==='draft'
-      &&!n.reply_to&&n.path===meta.path&&n.side===meta.side&&n.line===meta.line);
+    const existing=lineDraft(meta);
     const note=existing||newDraft({
       path:meta.path,line:meta.line,side:meta.side,hunk_id:meta.hunkId,
       anchor_text:meta.text,anchor_line:meta.line,order:meta.order,
@@ -2201,6 +2276,9 @@
   // the first rather than leaving every previously-tapped line lit.
   let touchRevealedSpan=null;
 
+  // set by wireAsk on a live page; a static page has no daemon, so wireLine falls back to the plain draft row
+  let openLineComposer=null;
+
   function wireLine(span,meta){
     meta.text=span.textContent; // capture verbatim (incl. leading +/-/space) before the badge/button change it -- this is anchor_text
     meta.lineKey=meta.path+'\t'+meta.side+'\t'+meta.line;
@@ -2211,7 +2289,7 @@
     const badge=document.createElement('span'); badge.className='dline-num';
     badge.textContent=meta.line; badge.setAttribute('aria-hidden','true');
     span.insertBefore(badge,span.firstChild);
-    const open=()=>openOrFocusDraft(meta);
+    const open=()=>{ if(openLineComposer) openLineComposer(meta); else openOrFocusDraft(meta); };
     const plus=document.createElement('button');
     plus.type='button'; plus.className='dline-plus'; plus.tabIndex=-1;
     plus.setAttribute('aria-label','Add comment on '+meta.path+':'+meta.line+' ('+meta.side+')');
@@ -2333,7 +2411,8 @@
     // one check instead of needing their own.
     const rec=n.stale?undefined:spanByLineKey.get(lineKey);
     const d=document.createElement('div');
-    d.className='fb-item'+(rec?' dline-note':'')+(n.stale?' stale':'')+(n.reply_to?' reply':'');
+    d.className='fb-item'+(rec?' dline-note':'')+(n.stale?' stale':'')+(n.reply_to?' reply':'')
+      +(n.state==='draft'&&n.origin==='local'?' fb-own-draft':'');
     d.setAttribute('role','note');
     d.tabIndex=-1;
     d.setAttribute('aria-label','Comment on '+n.path+':'+n.line+' ('+n.side+') by '
@@ -2379,6 +2458,16 @@
         t.setAttribute('aria-label','Open comment on GitHub');
       }
       head.appendChild(t);
+    }
+    if(ownDraft){
+      const tag=document.createElement('span'); tag.className='fb-draft-tag';
+      tag.textContent='draft, not published';
+      head.appendChild(tag);
+    }
+    if(n.origin==='local'&&n.state==='in_review'){
+      const tag=document.createElement('span'); tag.className='fb-review-tag';
+      tag.textContent='in your pending review';
+      head.appendChild(tag);
     }
     d.appendChild(head);
     // rec rows (line-anchored) have path/line/side already visible from the diff line above,
@@ -2428,11 +2517,10 @@
     });
     ta.addEventListener('blur',()=>{
       clearTimeout(timer);
-      const body=ta.value.trim();
-      if(!body){ deleteNote(id); renderNotes(); return; }
+      if(!ta.value.trim()){ deleteNote(id); renderNotes(); return; }
       const note=state.notes.find(n=>n.id===id);
       if(!note) return;
-      note.body=body;
+      note.body=ta.value;
       saveNote(note);
     });
   }
@@ -2492,20 +2580,24 @@
     const d=document.createElement('div'); d.className='fb-item fb-reply';
     const av=document.createElement('span'); av.className='fb-av'; av.setAttribute('aria-hidden','true');
     av.style.background='hsl(210,45%,30%)'; av.textContent='Y';
-    const input=document.createElement('input'); input.type='text'; input.className='fb-reply-input';
+    const input=document.createElement('textarea'); input.className='fb-reply-input'; input.rows=1;
     input.placeholder='Reply...'; input.setAttribute('aria-label','Reply to this conversation');
-    d.append(av,input);
-    wireReplyBox(input,root);
+    const btn=document.createElement('button'); btn.type='button'; btn.className='fb-primary';
+    btn.textContent='Reply on GitHub';
+    const col=document.createElement('div'); col.className='fb-reply-col';
+    col.append(input,btn);
+    d.append(av,col);
+    wireReplyBox(input,root,btn);
     return d;
   }
 
   // Commits on blur or Cmd/Ctrl+Enter only -- unlike a draft's own debounced autosave, a reply
   // in progress must not turn into a posted-looking row on every keystroke. Cmd/Ctrl+Enter
   // blurs afterwards too, which re-fires this handler harmlessly against an already-cleared box.
-  function wireReplyBox(input,root){
+  function wireReplyBox(input,root,btn){
     function commit(){
-      const body=input.value.trim();
-      if(!body) return;
+      const body=input.value;
+      if(!body.trim()) return;
       // Sorts after every existing note (root and prior replies alike), never root.order --
       // copying the root's own order would tie-break a fresh reply ahead of an older sibling
       // reply whose order is already higher.
@@ -2521,6 +2613,8 @@
       renderNotes();
     }
     input.addEventListener('blur',commit);
+    btn.addEventListener('mousedown',e=>e.preventDefault());
+    btn.addEventListener('click',()=>{ commit(); input.blur(); });
     input.addEventListener('keydown',e=>{
       if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); commit(); input.blur(); }
     });
@@ -3050,109 +3144,310 @@
   }
 
   function wirePost(canGhCommand){
-    const postBtn=$('hr-comments-post-btn'), dlg=$('cw-post-confirm'),
-      close=$('cw-post-confirm-close'), notesList=$('cw-post-confirm-notes'),
-      resolvesList=$('cw-post-confirm-resolves'), submitCb=$('cw-post-submit'),
-      itemsList=$('cw-post-confirm-items'), sendBtn=$('cw-post-confirm-send'),
-      status=$('cw-post-confirm-status');
-    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!submitCb||!itemsList||!sendBtn||!status) return;
+    const $$=id=>document.getElementById(id);
+    const postBtn=$$('hr-comments-post-btn'), dlg=$$('cw-post-confirm'),
+      close=$$('cw-post-confirm-close'), titleEl=$$('cw-post-confirm-title'),
+      pendingNote=$$('cw-post-confirm-pending'), notesList=$$('cw-post-confirm-notes'),
+      resolvesList=$$('cw-post-confirm-resolves'), inReviewList=$$('cw-post-confirm-inreview'),
+      options=$$('cw-post-options'), approveNote=$$('cw-post-approve-note'),
+      summary=$$('cw-post-summary'), itemsList=$$('cw-post-confirm-items'),
+      partial=$$('cw-post-confirm-partial'), partialText=$$('cw-post-partial-text'),
+      retryBtn=$$('cw-post-retry'), nowBtn=$$('cw-post-send-now'), leaveBtn=$$('cw-post-leave'),
+      sendBtn=$$('cw-post-confirm-send'), cancelBtn=$$('cw-post-confirm-cancel'),
+      actionsEl=$$('cw-post-confirm-actions'),
+      status=$$('cw-post-confirm-status'), bar=$$('cw-drafts-bar'), barText=$$('cw-drafts-text'),
+      barJump=$$('cw-drafts-jump'), barSubmit=$$('cw-drafts-submit');
+    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!itemsList||!sendBtn||!status||!bar||!summary||!partial) return;
     postBtn.hidden=!canGhCommand;
+    postBtn.textContent='Submit review';
 
-    let nonce=null, lastResolves=[];
+    const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+    const firstLine=t=>String(t||'').split('\n')[0];
+    const where=n=>n.path+':'+n.line;
+    const evRadios=[...dlg.querySelectorAll('input[name="cw-post-event"]')];
+    const selEvent=()=>(evRadios.find(r=>r.checked)||evRadios[0]).value;
+    const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
+    const errText=b=>(b.error||'Request failed')+(b.remedy?' ('+b.remedy+')':'');
 
-    function renderBody(data){
-      nonce=data.nonce;
-      lastResolves=data.resolves;
+    function localDrafts(){
+      return state.notes.filter(n=>n.origin==='local'&&n.state==='draft'&&(n.body||'').trim());
+    }
+    function updateBar(){
+      const d=localDrafts().length, r=pendingResolveSet.size, show=canGhCommand&&(d>0||r>0);
+      bar.hidden=!show;
+      barText.textContent=plural(d,'draft')+', '+plural(r,'resolve')+', only on this machine until you submit';
+      barSubmit.textContent='Submit review ('+plural(d,'draft')+', '+plural(r,'resolve')+')';
+      const ths=document.getElementById('cw-threads-submit');
+      if(ths){ ths.hidden=!show; ths.textContent=barSubmit.textContent; }
+      document.documentElement.style.setProperty('--cw-bar-h',show?bar.offsetHeight+'px':'0px');
+    }
+    refreshDraftsBar=updateBar;
+    window.addEventListener('resize',updateBar);
+
+    barJump.addEventListener('click',()=>{
+      const n=localDrafts().sort((a,b)=>(a.order||0)-(b.order||0))[0]
+        ||state.notes.find(x=>pendingResolveSet.has(x.id));
+      if(!n) return;
+      const rec=rowById.get(n.id);
+      const target=rec?rec.el:(spanByLineKey.get(n.path+'\t'+n.side+'\t'+n.line)||{}).span;
+      if(target){ openAncestorDetails(target); target.scrollIntoView({block:'center'}); target.focus(); }
+    });
+
+    let nonce=null, lastResolves=[], full=[], excluded=new Set(), review={pending:false,comments:0},
+      loading=false, posting=false, starting=false, done=false, seq=0, opener=postBtn, progress=new Map(), failedNoteIds=[];
+
+    const selectedIds=()=>full.filter(n=>!excluded.has(n.id)).map(n=>n.id);
+
+    function syncSend(){
+      const rc=selEvent()==='REQUEST_CHANGES'&&!summary.value.trim();
+      const idle=!selectedIds().length&&!lastResolves.length&&!review.pending;
+      sendBtn.disabled=nonce==null||loading||posting||done||rc||idle;
+    }
+
+    function renderRows(){
       notesList.innerHTML='';
-      for(const n of data.notes){
+      for(const n of full){
         const li=document.createElement('li');
-        const where=document.createElement('div'); where.className='hr-comments-where';
-        where.textContent=n.path+':'+n.line;
-        const pre=document.createElement('pre'); pre.textContent=n.body;
-        li.append(where,pre);
+        const label=document.createElement('label');
+        const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=!excluded.has(n.id);
+        cb.addEventListener('change',()=>{
+          if(cb.checked) excluded.delete(n.id); else excluded.add(n.id);
+          preview(true);
+        });
+        const w=document.createElement('span'); w.className='hr-comments-where';
+        const parent=n.reply_to&&state.notes.find(x=>x.id===n.reply_to);
+        w.textContent=(n.reply_to?(parent&&parent.author?'reply to '+parent.author:'reply')+' at ':'')+where(n);
+        label.append(cb,w);
+        const pre=document.createElement('pre'); pre.textContent=firstLine(n.body);
+        li.append(label,pre);
         notesList.appendChild(li);
       }
+    }
+
+    function renderRest(data){
       resolvesList.innerHTML='';
-      for(const r of data.resolves){
+      for(const r of data.resolves||[]){
         const li=document.createElement('li');
-        const where=document.createElement('div'); where.className='hr-comments-where';
-        where.textContent='Resolve '+r.path+':'+r.line;
-        const pre=document.createElement('pre'); pre.textContent=r.body;
-        li.append(where,pre);
+        const w=document.createElement('div'); w.className='hr-comments-where';
+        w.textContent='resolve thread at '+where(r);
+        const pre=document.createElement('pre'); pre.textContent=firstLine(r.body);
+        li.append(w,pre);
         resolvesList.appendChild(li);
       }
+      inReviewList.innerHTML='';
+      for(const n of data.in_review||[]){
+        const li=document.createElement('li');
+        li.textContent='already in your pending review: '+where(n)+' '+firstLine(n.body);
+        inReviewList.appendChild(li);
+      }
+      review=data.review||{pending:false,comments:0};
+      pendingNote.hidden=!review.pending;
+      pendingNote.textContent='You already have a pending review on GitHub with '+review.comments
+        +' comments. They will be submitted with this review.';
+      const own=data.own_pr===true;
+      const approve=evRadios.find(r=>r.value==='APPROVE');
+      approve.disabled=own;
+      approveNote.hidden=!own;
+      approveNote.textContent=own?"You can't approve your own pull request.":'';
+      if(own&&approve.checked) evRadios[0].checked=true;
     }
 
-    function preview(){
+    function resetLocal(ids){
+      let changed=false;
+      for(const id of ids||[]){
+        const m=state.notes.find(x=>x.id===id);
+        if(m&&m.state!=='draft'){ m.state='draft'; changed=true; }
+      }
+      if(changed){ persistLocal(); renderNotes(); updateBar(); }
+    }
+
+    function preview(narrow){
+      const mine=++seq;
+      loading=true; syncSend();
       status.textContent='Loading…';
-      sendBtn.disabled=true;
+      const req={resolve:[...pendingResolveSet]};
+      if(narrow) req.ids=selectedIds();
       return fetch(window.CW_LIVE.api+'/post/preview',{
-        method:'POST',
-        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
-        body:JSON.stringify({resolve:[...pendingResolveSet]}),
+        method:'POST',headers:headers(),body:JSON.stringify(req),
       }).then(r=>r.json().then(body=>({ok:r.ok,body})))
         .then(({ok,body})=>{
-          sendBtn.disabled=false;
-          if(!ok){
-            status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
-            return;
-          }
+          if(mine!==seq) return;
+          loading=false;
+          if(!ok){ nonce=null; status.textContent=errText(body); syncSend(); return; }
           status.textContent='';
-          renderBody(body);
+          actionsEl.hidden=false;
+          resetLocal(body.reset);
+          nonce=body.nonce; lastResolves=body.resolves||[];
+          if(!narrow){ full=body.notes||[]; excluded.clear(); renderRows(); }
+          renderRest(body);
+          syncSend();
         })
         .catch(()=>{
-          sendBtn.disabled=false;
+          if(mine!==seq) return;
+          loading=false; nonce=null;
           status.textContent='Request failed -- check the daemon is still running.';
+          syncSend();
         });
     }
 
-    postBtn.addEventListener('click',()=>{
-      postBtn.disabled=true;
+    function resetDialog(){
+      excluded=new Set(); full=[]; nonce=null; done=false; posting=false;
+      progress=new Map(); itemsList.innerHTML=''; partial.hidden=true; actionsEl.hidden=false; status.textContent='';
+      notesList.innerHTML=''; resolvesList.innerHTML=''; inReviewList.innerHTML='';
+      pendingNote.hidden=true; approveNote.hidden=true;
+      evRadios.forEach(r=>{ r.checked=r.value==='COMMENT'; r.disabled=false; });
+      summary.value=''; options.open=false; cancelBtn.textContent='Cancel';
+      const pr=state.meta&&state.meta.pr;
+      titleEl.textContent=pr!=null?'Submit review on #'+pr:'Submit review';
+      syncSend();
+    }
+
+    function start(from){
+      if(starting||posting||dlg.open) return;
+      starting=true;
+      opener=from;
+      from.disabled=true;
       putNotesNow(false).then(()=>{
-        postBtn.disabled=false;
-        submitCb.checked=false;
-        itemsList.innerHTML='';
-        status.textContent='';
+        from.disabled=false; starting=false;
+        if(dlg.open) return;
+        resetDialog();
         dlg.showModal();
-        preview();
-      });
+        preview(false);
+      },()=>{ from.disabled=false; starting=false; });
+    }
+    postBtn.addEventListener('click',()=>start(postBtn));
+    barSubmit.addEventListener('click',()=>start(barSubmit));
+    openSubmitReview=()=>start(barSubmit);
+
+    evRadios.forEach(r=>r.addEventListener('change',syncSend));
+    summary.addEventListener('input',syncSend);
+    const closeIdle=()=>{ if(!posting) dlg.close(); };
+    close.addEventListener('click',closeIdle);
+    cancelBtn.addEventListener('click',closeIdle);
+    leaveBtn.addEventListener('click',closeIdle);
+    dlg.addEventListener('cancel',e=>{ if(posting) e.preventDefault(); });
+    dlg.addEventListener('close',()=>{
+      const o=opener&&opener.isConnected&&!opener.hidden&&!opener.disabled&&opener.offsetParent!==null?opener
+        :document.getElementById('hr-comments-btn')||document.body;
+      o.focus();
     });
 
-    close.addEventListener('click',()=>dlg.close());
-    dlg.addEventListener('close',()=>{ postBtn.focus(); });
+    function setRow(key,text){
+      let li=progress.get(key);
+      if(!li){ li=document.createElement('li'); progress.set(key,li); itemsList.appendChild(li); }
+      li.textContent=text;
+    }
+    const rowText=(label,item,okText)=>(item.ok?'✓ ':'✗ ')+label+(item.ok?' '+okText:': '+(item.error||'failed'));
 
     window.__cwOnPosted=item=>{
-      const li=document.createElement('li');
-      li.textContent=(item.ok?'Posted ':'Failed ')+item.kind+' '+item.id+(item.error?': '+item.error:'');
-      itemsList.appendChild(li);
+      if(!item) return;
+      if(item.kind==='note'){
+        const n=full.find(x=>x.id===item.id);
+        setRow('note:'+item.id,rowText(n?where(n):item.id,item,'in your pending review'));
+        const mine=state.notes.find(x=>x.id===item.id);
+        if(item.ok&&mine&&mine.state==='draft'){ mine.state='in_review'; persistLocal(); renderNotes(); }
+      } else if(item.kind==='submit'){
+        setRow('submit',rowText('submit review'+(item.event?' ('+item.event+')':''),item,'done'));
+      } else if(item.kind==='resolve'){
+        const r=lastResolves.find(x=>x.thread_id===item.id);
+        setRow('resolve:'+item.id,rowText(r?'resolve '+where(r):'resolve '+item.id,item,'resolved'));
+      }
     };
 
-    sendBtn.addEventListener('click',()=>{
-      if(nonce==null) return;
-      sendBtn.disabled=true;
+    function prefillRows(){
+      progress=new Map(); itemsList.innerHTML='';
+      for(const n of full) if(!excluded.has(n.id)) setRow('note:'+n.id,'… '+where(n));
+      for(const r of lastResolves) setRow('resolve:'+r.thread_id,'… resolve '+where(r));
+    }
+
+    function clearResolved(body){
+      const ok=new Set((body.results||[]).filter(r=>r.kind==='resolve'&&r.ok).map(r=>r.id));
+      lastResolves.filter(r=>ok.has(r.thread_id)).forEach(r=>clearPendingResolve(r.root_id));
+    }
+
+    function finish(body){
+      if(body.ok){
+        clearResolved(body);
+        done=true; status.textContent='Review submitted.'; cancelBtn.textContent='Close';
+      } else if(body.partial){
+        clearResolved(body);
+        const kindOf=id=>((body.results||[]).find(r=>r.id===id)||{}).kind;
+        const failed=body.failed||[];
+        const failedNotes=failed.filter(f=>kindOf(f.id)==='note');
+        const failedResolves=failed.filter(f=>kindOf(f.id)==='resolve');
+        const submitFailed=failed.some(f=>f.id==='submit');
+        const n=body.in_review||0, k=failedNotes.length;
+        let text=k
+          ?n+' of '+(n+k)+(n+k===1?' comment is':' comments are')+' in your pending review, which only you can see. '
+            +k+' failed and '+(k===1?'is still a local draft.':'are still local drafts.')
+          :plural(n,'comment')+(n===1?' is':' are')+' in your pending review, which only you can see.';
+        if(failedResolves.length) text+=' '+plural(failedResolves.length,'thread')+' could not be resolved: '+(failedResolves[0].error||'unknown error')+'.';
+        if(submitFailed) text+=' Submitting it failed: '+((failed.find(f=>f.id==='submit')||{}).error||'unknown error')+'.';
+        partialText.textContent=text;
+        failedNoteIds=failedNotes.map(f=>f.id);
+        nowBtn.textContent='Submit the '+n+' now';
+        retryBtn.onclick=k?retry:submitNow;
+        partial.hidden=false; actionsEl.hidden=true; status.textContent='';
+        syncSend();
+        return;
+      } else {
+        clearResolved(body);
+        done=true; status.textContent=body.render_error||body.error||'Posted with errors.';
+      }
+      partial.hidden=true; syncSend();
+    }
+
+    function postJson(payload){
+      posting=true; syncSend();
       status.textContent='Posting…';
-      itemsList.innerHTML='';
-      fetch(window.CW_LIVE.api+'/post',{
-        method:'POST',
-        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
-        body:JSON.stringify({nonce,resolve:[...pendingResolveSet],submit:submitCb.checked}),
-      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
-        .then(({ok,body})=>{
-          sendBtn.disabled=false;
+      return fetch(window.CW_LIVE.api+'/post',{
+        method:'POST',headers:headers(),body:JSON.stringify(payload),
+      }).then(r=>r.json().then(body=>({ok:r.ok,status:r.status,body})))
+        .then(({ok,status:code,body})=>{
+          posting=false;
           if(!ok){
-            status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
-            if(body.error==='changed since preview') preview();
+            progress=new Map(); itemsList.innerHTML='';
+            status.textContent=errText(body);
+            if(code===409&&body.error==='changed since preview'){
+              partial.hidden=true;
+              preview(false).then(()=>{ if(nonce!=null) status.textContent='The list changed since you opened this; review it again.'; });
+            }
+            syncSend();
             return;
           }
-          const resolvedOk=new Set(body.results.filter(r=>r.kind==='resolve'&&r.ok).map(r=>r.id));
-          lastResolves.filter(r=>resolvedOk.has(r.thread_id)).forEach(r=>clearPendingResolve(r.root_id));
-          status.textContent=body.ok?'Posted.':body.render_error;
+          finish(body);
         })
         .catch(()=>{
-          sendBtn.disabled=false;
+          posting=false;
+          progress=new Map(); itemsList.innerHTML='';
           status.textContent='Request failed -- check the daemon is still running.';
+          syncSend();
         });
-    });
+    }
+
+    function send(){
+      if(nonce==null) return;
+      partial.hidden=true; prefillRows();
+      return postJson({nonce,resolve:[...pendingResolveSet],ids:selectedIds(),
+        event:selEvent(),body:summary.value});
+    }
+    function retry(){
+      partial.hidden=true;
+      const only=new Set(failedNoteIds);
+      preview(false).then(()=>{
+        if(nonce==null) return;
+        excluded=new Set(full.filter(n=>!only.has(n.id)).map(n=>n.id));
+        renderRows();
+        return preview(true).then(()=>{ if(nonce!=null) send(); });
+      });
+    }
+    function submitNow(){
+      partial.hidden=true;
+      return postJson({submit_only:true,event:selEvent(),body:summary.value,resolve:[...pendingResolveSet]});
+    }
+    sendBtn.addEventListener('click',send);
+    nowBtn.addEventListener('click',submitNow);
+    updateBar();
   }
 
   function wireCommentsPanel(){
@@ -3311,194 +3606,398 @@
     return el&&el.closest('.dline');
   }
 
-  function headingTextOf(el){
-    const heading=/^H[1-6]$/.test(el.tagName)?el:el.querySelector('h1,h2,h3,h4,h5,h6');
-    return (heading||el).textContent.trim();
-  }
-
-  function closestSectionHeading(node){
-    const el=node&&(node.nodeType===1?node:node.parentElement);
-    const withId=el&&el.closest('[id]');
-    return withId?headingTextOf(withId):(document.title||'');
-  }
-
-  function buildAskAnchor(sel){
-    const quote=sel.toString();
-    const range=sel.getRangeAt(0);
-    const sm=lineMetaBySpan.get(closestDline(range.startContainer));
-    const em=lineMetaBySpan.get(closestDline(range.endContainer));
-    if(sm&&em){
-      return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
-        end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
-    }
-    return {kind:'section',section:closestSectionHeading(range.startContainer),quote};
+  function blockKeyFrom(sectionSlug,text){
+    const t=String(text).replace(/\s+/g,' ').trim();
+    let h=0x811c9dc5;
+    for(let i=0;i<t.length;i++){ h^=t.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; }
+    const slug=String(sectionSlug||'').replace(/[^A-Za-z0-9:_.-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,150);
+    return (slug+'|'+h.toString(16).padStart(8,'0')).slice(0,200);
   }
 
   function wireAsk(){
     const planEl=$('plan-content');
     if(!planEl) return;
 
-    const askBtn=document.createElement('button');
-    askBtn.type='button'; askBtn.id='cw-ask-btn'; askBtn.hidden=true; askBtn.textContent='Ask';
-    askBtn.addEventListener('mousedown',e=>e.preventDefault());
-    document.body.appendChild(askBtn);
+    const BLOCK_SEL='p,li,pre,table,blockquote,h2,h3,h4,.fact,.panel';
+    const norm=s=>String(s).replace(/\s+/g,' ').trim();
+    const mk=(tag,cls,text)=>{
+      const e=document.createElement(tag);
+      if(cls) e.className=cls;
+      if(text!=null) e.textContent=text;
+      return e;
+    };
+    const mkBtn=(text,cls)=>{ const b=mk('button',cls,text); b.type='button'; return b; };
+    const firstLine=s=>String(s||'').split('\n')[0].slice(0,100);
+    const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
+    const asEl=node=>node&&(node.nodeType===1?node:node.parentElement);
+    const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose')); };
+
+    function textOf(el){
+      if(!el.querySelector('.cw-thread,.cw-compose')) return el.textContent;
+      const c=el.cloneNode(true);
+      c.querySelectorAll('.cw-thread,.cw-compose').forEach(n=>n.remove());
+      return c.textContent;
+    }
+
+    function blockOf(node){
+      const el=asEl(node);
+      if(!el) return null;
+      const b=el.closest(BLOCK_SEL);
+      if(b&&b!==planEl&&planEl.contains(b)) return b;
+      const w=el.closest('[id]');
+      return w&&w!==planEl&&planEl.contains(w)?w:null;
+    }
+
+    function sectionIdOf(el){
+      for(let n=el;n&&n!==planEl;n=n.parentElement) if(n.id) return n.id;
+      return '';
+    }
+
+    function sectionHeadingOf(el){
+      let found=null;
+      for(const h of planEl.querySelectorAll('h2,h3')){
+        if(h===el||(h.compareDocumentPosition(el)&Node.DOCUMENT_POSITION_FOLLOWING)) found=h;
+        else break;
+      }
+      return found?found.textContent.trim():(document.title||'');
+    }
+
+    function blockKey(el){
+      return blockKeyFrom(sectionIdOf(el)||sectionHeadingOf(el),textOf(el));
+    }
+
+    let blockIdx=null;
+    function blockIndex(){
+      if(blockIdx) return blockIdx;
+      blockIdx={list:[],byKey:new Map()};
+      planEl.querySelectorAll(BLOCK_SEL).forEach(el=>{
+        if(el.closest('.cw-thread,.cw-compose')) return;
+        const k=blockKey(el);
+        blockIdx.list.push({el,text:norm(textOf(el))});
+        if(!blockIdx.byKey.has(k)) blockIdx.byKey.set(k,el);
+      });
+      return blockIdx;
+    }
+
+    function buildAskAnchor(sel){
+      const quote=sel.toString();
+      const range=sel.getRangeAt(0);
+      const sm=lineMetaBySpan.get(closestDline(range.startContainer));
+      const em=lineMetaBySpan.get(closestDline(range.endContainer));
+      if(sm&&em){
+        return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
+          end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
+      }
+      const b=blockOf(range.startContainer);
+      if(!b) return null;
+      return {kind:'block',block:blockKey(b),section:sectionHeadingOf(b),quote};
+    }
+
+    function placementFor(anchor){
+      if(anchor.kind==='line'){
+        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+(anchor.end_line||anchor.line));
+        return rec&&rec.span;
+      }
+      const idx=blockIndex();
+      if(anchor.block&&idx.byKey.has(anchor.block)) return idx.byKey.get(anchor.block);
+      const q=norm(anchor.quote||'').slice(0,60);
+      if(q){
+        const hit=idx.list.find(b=>b.text.includes(q));
+        if(hit) return hit.el;
+      }
+      if(anchor.section){
+        return [...planEl.querySelectorAll('h1,h2,h3,h4')].find(h=>h.textContent.trim()===anchor.section)||null;
+      }
+      return null;
+    }
+
+    function insertAfterThreads(ref,el){
+      while(ref.nextElementSibling&&ref.nextElementSibling.classList.contains('cw-thread')) ref=ref.nextElementSibling;
+      ref.insertAdjacentElement('afterend',el);
+    }
+
+    function directDraftFor(anchor){
+      if(!anchor||anchor.kind!=='line'||!anchor.path||!anchor.side||!anchor.line) return null;
+      return text=>{
+        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
+        const m=rec?rec.meta:{};
+        const note=newDraft({
+          path:anchor.path,line:anchor.line,side:anchor.side,end_line:anchor.end_line||null,
+          hunk_id:anchor.hunk_id||m.hunkId||null,anchor_text:m.text||anchor.quote,anchor_line:anchor.line,
+          order:m.order!=null?m.order:Math.max(0,...state.notes.map(x=>x.order||0))+1,
+        });
+        note.body=text;
+        saveNote(note);
+        renderNotes();
+      };
+    }
+
+    function makeComposer(label,payload,onSent,onCancel,onDraft){
+      const box=mk('div','cw-compose');
+      const ta=mk('textarea','cw-compose-text');
+      ta.setAttribute('aria-label',label); ta.placeholder=label;
+      const send=mkBtn('Send','cw-send fb-primary');
+      const row=mk('div','fb-actions'); row.append(send);
+      const draftBtn=onDraft?mkBtn('Save as GitHub draft','cw-draft fb-ghost'):null;
+      if(draftBtn) row.append(draftBtn);
+      const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
+      box.append(ta,row,status);
+      function submit(){
+        const text=ta.value.trim();
+        if(!text){ status.textContent='Type a comment first.'; return; }
+        send.disabled=true; status.textContent='Sending…';
+        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(payload(text))})
+          .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
+          .then(({ok,body})=>{
+            send.disabled=false;
+            if(!ok){ status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
+            ta.value=''; status.textContent='';
+            onSent(body);
+          })
+          .catch(()=>{ send.disabled=false; status.textContent='Request failed -- check the daemon is still running.'; });
+      }
+      function saveDraft(){
+        if(!ta.value.trim()){ status.textContent='Type a comment first.'; return; }
+        onDraft(ta.value);
+        if(onCancel) onCancel();
+      }
+      send.addEventListener('click',submit);
+      if(draftBtn) draftBtn.addEventListener('click',saveDraft);
+      ta.addEventListener('keydown',e=>{
+        if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){
+          e.preventDefault();
+          if(e.shiftKey&&onDraft) saveDraft(); else submit();
+        }
+        else if(e.key==='Escape'&&onCancel){ e.preventDefault(); onCancel(); }
+      });
+      return {box,ta};
+    }
+
+    const threads=new Map();
+    const foldKey=t=>lsKey('cw-thread-fold',t.id);
+    function isCollapsed(t){
+      let v=null;
+      try{ v=localStorage.getItem(foldKey(t)); }catch(e){}
+      return v==null?t.resolved:v==='1';
+    }
+    function setFold(t,collapsed){
+      try{
+        if(collapsed===null) localStorage.removeItem(foldKey(t));
+        else localStorage.setItem(foldKey(t),collapsed?'1':'0');
+      }catch(e){}
+      renderThread(t);
+    }
+    function stateOf(t){
+      if(t.resolved) return 'resolved';
+      if(t.turns.some(r=>r.status==='pending')) return 'working';
+      const last=t.turns[t.turns.length-1];
+      return last&&last.status==='error'?'error':'answered';
+    }
+
+    function turnEl(r){
+      const d=mk('div','cw-turn');
+      d.append(mk('p','cw-turn-q',r.comment||r.question||''));
+      if(r.status==='pending'){
+        const p=mk('p','cw-turn-a cw-working');
+        const dots=mk('span','cw-dots'); dots.setAttribute('aria-hidden','true');
+        for(let i=0;i<3;i++) dots.appendChild(document.createElement('i'));
+        p.append(dots,mk('span',null,'(working)'));
+        d.append(p);
+      } else if(r.status==='error'){
+        d.append(mk('p','cw-turn-a cw-turn-err','Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':'')));
+      } else {
+        d.append(mk('p','cw-turn-a',r.answer||''));
+      }
+      return d;
+    }
+
+    function buildThread(t){
+      t.el=mk('div','cw-thread'); t.el.dataset.thread=t.id;
+      const head=mk('div','cw-thread-head');
+      t.foldBtn=mkBtn('Fold','cw-th-fold');
+      t.badge=mk('span','cw-th-badge','Resolved');
+      t.summary=mk('span','cw-th-summary');
+      t.resolveBtn=mkBtn('Resolve','cw-th-resolve');
+      head.append(t.foldBtn,t.badge,t.summary,t.resolveBtn);
+      t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
+      t.body=mk('div','cw-thread-body');
+      t.turnsEl=mk('div','cw-turns');
+      const anchor=(t.turns[0]||{}).anchor||{};
+      const follow=makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null);
+      t.body.append(t.turnsEl,follow.box);
+      t.el.append(head,t.msg,t.body);
+      t.foldBtn.addEventListener('click',()=>setFold(t,!isCollapsed(t)));
+      t.resolveBtn.addEventListener('click',()=>{
+        t.msg.textContent='';
+        const want=!t.resolved;
+        fetch(window.CW_LIVE.api+'/threads/'+encodeURIComponent(t.id)+'/resolve',
+          {method:'POST',headers:headers(),body:JSON.stringify({resolved:want})})
+          .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
+          .then(({ok,body})=>{
+            if(!ok){ t.msg.textContent=body.error||'Request failed'; return; }
+            try{ localStorage.removeItem(foldKey(t)); }catch(e){}
+            applyResolve(t.id,want);
+          })
+          .catch(()=>{ t.msg.textContent='Request failed -- check the daemon is still running.'; });
+      });
+    }
+
+    function renderThread(t){
+      if(!t.el) buildThread(t);
+      const collapsed=isCollapsed(t), state=stateOf(t);
+      const first=t.turns[0]||{};
+      t.el.dataset.state=state;
+      t.foldBtn.textContent=collapsed?'Unfold':'Fold';
+      t.foldBtn.setAttribute('aria-expanded',String(!collapsed));
+      t.resolveBtn.textContent=t.resolved?'Reopen':'Resolve';
+      t.badge.hidden=!t.resolved;
+      t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
+      t.summary.hidden=!collapsed;
+      t.body.hidden=collapsed;
+      t.turnsEl.replaceChildren(...t.turns.map(turnEl));
+    }
+
+    const earlyResolve=new Map();
+    function upsertTurn(r,fromSnapshot){
+      if(!r||!r.thread_id) return;
+      let t=threads.get(r.thread_id);
+      const isNew=!t;
+      if(isNew){ t={id:r.thread_id,turns:[],resolved:earlyResolve.get(r.thread_id)===true,el:null,placed:false}; threads.set(t.id,t); earlyResolve.delete(t.id); }
+      const i=t.turns.findIndex(x=>x.qid===r.qid);
+      if(fromSnapshot&&i>=0&&r.status==='pending'&&t.turns[i].status!=='pending') return;
+      if(i<0) t.turns.push(r); else t.turns[i]=r;
+      renderThread(t);
+      if(isNew){
+        const ref=placementFor(t.turns[0].anchor||{});
+        if(ref){ insertAfterThreads(ref,t.el); t.placed=true; }
+      }
+      renderList();
+    }
+
+    function applyResolve(tid,resolved){
+      const t=threads.get(tid);
+      if(!t){ earlyResolve.set(tid,!!resolved); return; }
+      t.resolved=!!resolved;
+      renderThread(t);
+      renderList();
+    }
+
+    window.__cwOnThread=ev=>{
+      if(!ev) return;
+      if(ev.kind==='turn') upsertTurn(ev.record);
+      else if(ev.kind==='resolve') applyResolve(ev.thread_id,ev.resolved);
+    };
+
+    const commentBtn=mkBtn('Comment');
+    commentBtn.id='cw-comment-btn'; commentBtn.hidden=true;
+    commentBtn.addEventListener('mousedown',e=>e.preventDefault());
+    document.body.appendChild(commentBtn);
+
+    const threadsBtn=mkBtn('Threads (0)');
+    threadsBtn.id='cw-threads-btn'; threadsBtn.setAttribute('aria-haspopup','dialog');
+    document.body.appendChild(threadsBtn);
 
     const dlg=document.createElement('dialog');
-    dlg.id='cw-ask'; dlg.setAttribute('aria-labelledby','cw-ask-title');
-    dlg.innerHTML='<div id="cw-ask-head"><span id="cw-ask-title">Ask about this</span>'
-      +'<button type="button" id="cw-ask-close" aria-label="Close">✕</button></div>'
-      +'<div id="cw-ask-body"><pre id="cw-ask-quote"></pre>'
-      +'<textarea id="cw-ask-question" aria-label="Your question" '
-      +'placeholder="What do you want to know?"></textarea>'
-      +'<div class="fb-actions"><button type="button" id="cw-ask-send" class="fb-primary">Send</button></div>'
-      +'<p id="cw-ask-status" role="status"></p></div>';
+    dlg.id='cw-threads'; dlg.setAttribute('aria-label','Threads');
+    const dlgHead=mk('div'); dlgHead.id='cw-threads-head';
+    const dlgClose=mkBtn('✕'); dlgClose.id='cw-threads-close'; dlgClose.setAttribute('aria-label','Close');
+    dlgHead.append(mk('span',null,'Threads'),dlgClose);
+    const dlgBody=mk('div'); dlgBody.id='cw-threads-body';
+    const listEl=mk('ul'); listEl.id='cw-threads-list';
+    const unplacedWrap=mk('section'); unplacedWrap.id='cw-threads-unplaced';
+    const unplacedBox=mk('div');
+    unplacedWrap.append(mk('h3',null,'Unplaced'),unplacedBox);
+    const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-threads-submit'; thSubmit.hidden=true;
+    thSubmit.addEventListener('click',()=>{ dlg.close(); openSubmitReview(); });
+    dlgBody.append(thSubmit,listEl,unplacedWrap);
+    refreshDraftsBar();
+    dlg.append(dlgHead,dlgBody);
     document.body.appendChild(dlg);
-    const quoteEl=$('cw-ask-quote'), questionEl=$('cw-ask-question'),
-      sendBtn=$('cw-ask-send'), statusEl=$('cw-ask-status'), askClose=$('cw-ask-close');
 
-    const qaBtn=document.createElement('button');
-    qaBtn.type='button'; qaBtn.id='cw-qa-btn'; qaBtn.setAttribute('aria-haspopup','dialog');
-    qaBtn.textContent='Q&A (0)';
-    document.body.appendChild(qaBtn);
-
-    const qaDlg=document.createElement('dialog');
-    qaDlg.id='cw-qa'; qaDlg.setAttribute('aria-label','Questions and answers');
-    qaDlg.innerHTML='<div id="cw-qa-head"><span>Questions and answers</span>'
-      +'<button type="button" id="cw-qa-close" aria-label="Close">✕</button></div>'
-      +'<ul id="cw-qa-list"></ul>';
-    document.body.appendChild(qaDlg);
-    const qaList=$('cw-qa-list');
-
-    const qaRecords=[];
-
-    function renderQaList(){
-      qaBtn.textContent='Q&A ('+qaRecords.length+')';
-      qaList.innerHTML='';
-      if(!qaRecords.length){
-        const li=document.createElement('li'); li.className='hr-comments-empty';
-        li.textContent='No questions yet -- select text on the page and click Ask.';
-        qaList.appendChild(li);
-        return;
-      }
-      for(const r of qaRecords){
+    function renderList(){
+      const all=[...threads.values()];
+      threadsBtn.textContent='Threads ('+all.filter(t=>!t.resolved).length+')';
+      const rows=[];
+      for(const t of all.filter(t=>t.placed)){
         const li=document.createElement('li');
-        const q=document.createElement('p'); q.className='cw-qa-q'; q.textContent=r.question;
-        const a=document.createElement('p'); a.className='cw-qa-a'; a.textContent=answerText(r);
-        li.append(q,a);
-        qaList.appendChild(li);
+        const go=mkBtn(null,'cw-th-go');
+        go.append(mk('span','cw-th-go-text',firstLine((t.turns[0]||{}).comment||(t.turns[0]||{}).question)),
+          mk('span','cw-th-go-state',stateOf(t)));
+        go.addEventListener('click',()=>{
+          setFold(t,false);
+          dlg.close();
+          t.el.scrollIntoView({block:'center'});
+          t.foldBtn.focus();
+        });
+        li.append(go); rows.push(li);
       }
-    }
-
-    function answerText(r){
-      return r.status==='error'
-        ?('Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':''))
-        :(r.answer||'');
-    }
-
-    function upsertQa(record){
-      const i=qaRecords.findIndex(r=>r.qid===record.qid);
-      if(i<0) qaRecords.push(record); else qaRecords[i]=record;
-      renderQaList();
-    }
-
-    const lastAnswerElByKey=new Map();
-    function insertAnswer(record){
-      const div=document.createElement('div');
-      div.className='cw-answer';
-      const q=document.createElement('p'); q.className='cw-answer-q'; q.textContent=record.question;
-      const a=document.createElement('p'); a.className='cw-answer-a'; a.textContent=answerText(record);
-      div.append(q,a);
-      const anchor=record.anchor||{};
-      let key=null, afterEl=null;
-      if(anchor.kind==='line'){
-        key='line\t'+anchor.path+'\t'+anchor.side+'\t'+anchor.line;
-        const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
-        afterEl=rec&&rec.span;
-      } else if(anchor.kind==='section'){
-        key='section\t'+anchor.section;
-        afterEl=[...planEl.querySelectorAll('[id]')].find(withId=>headingTextOf(withId)===anchor.section);
+      if(!rows.length&&!all.some(t=>!t.placed)){
+        const li=mk('li','hr-comments-empty','No threads yet -- select text on the page and click Comment.');
+        rows.push(li);
       }
-      const insertAfter=(key&&lastAnswerElByKey.get(key))||afterEl;
-      if(insertAfter){
-        insertAfter.insertAdjacentElement('afterend',div);
-        if(key) lastAnswerElByKey.set(key,div);
-        return;
-      }
-      planEl.appendChild(div);
+      listEl.replaceChildren(...rows);
+      const unplaced=all.filter(t=>!t.placed);
+      unplacedWrap.hidden=!unplaced.length;
+      for(const t of unplaced) if(t.el.parentElement!==unplacedBox) unplacedBox.appendChild(t.el);
     }
 
-    window.__cwOnAnswer=record=>{ upsertQa(record); insertAnswer(record); };
+    threadsBtn.addEventListener('click',()=>{ renderList(); dlg.showModal(); });
+    dlgClose.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('close',()=>{ threadsBtn.focus(); });
+    renderList();
 
-    function updateAskButton(){
+    function updateCommentButton(){
       const sel=window.getSelection();
-      if(!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)){
-        askBtn.hidden=true;
+      if(!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)||inLiveUi(sel.anchorNode)){
+        commentBtn.hidden=true;
         return;
       }
       const rect=sel.getRangeAt(0).getBoundingClientRect();
-      askBtn.style.left=Math.max(4,rect.left)+'px';
-      askBtn.style.top=Math.max(4,rect.top-32)+'px';
-      askBtn.hidden=false;
+      commentBtn.style.left=Math.max(4,rect.left)+'px';
+      commentBtn.style.top=Math.max(4,rect.top-32)+'px';
+      commentBtn.hidden=false;
     }
     let selTimer=null;
     document.addEventListener('selectionchange',()=>{
       if(selTimer) clearTimeout(selTimer);
-      selTimer=setTimeout(updateAskButton,150);
+      selTimer=setTimeout(updateCommentButton,150);
     });
 
-    askBtn.addEventListener('click',()=>{
+    let openBox=null;
+    function closeBox(){ if(openBox){ openBox.remove(); openBox=null; } }
+
+    commentBtn.addEventListener('click',()=>{
       const sel=window.getSelection();
       if(!sel||sel.isCollapsed||!sel.toString().trim()) return;
-      dlg.dataset.anchor=JSON.stringify(buildAskAnchor(sel));
-      quoteEl.textContent=sel.toString();
-      questionEl.value='';
-      statusEl.textContent='';
-      askBtn.hidden=true;
-      dlg.showModal();
-      questionEl.focus();
-    });
-    askClose.addEventListener('click',()=>dlg.close());
-    dlg.addEventListener('close',()=>{
-      updateAskButton();
-      if(!askBtn.hidden) askBtn.focus();
+      const anchor=buildAskAnchor(sel);
+      const ref=anchor&&placementFor(anchor);
+      if(!ref) return;
+      closeBox();
+      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeBox,closeBox,directDraftFor(anchor));
+      openBox=c.box;
+      insertAfterThreads(ref,c.box);
+      commentBtn.hidden=true;
+      c.ta.focus();
     });
 
-    sendBtn.addEventListener('click',()=>{
-      const anchor=JSON.parse(dlg.dataset.anchor||'{}');
-      const question=questionEl.value.trim();
-      if(!question){ statusEl.textContent='Type a question first.'; return; }
-      sendBtn.disabled=true;
-      statusEl.textContent='Sending…';
-      fetch(window.CW_LIVE.api+'/ask',{
-        method:'POST',
-        headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
-        body:JSON.stringify({anchor,question}),
-      }).then(r=>r.json().then(body=>({ok:r.ok,body})))
-        .then(({ok,body})=>{
-          sendBtn.disabled=false;
-          if(!ok){
-            statusEl.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'');
-            return;
-          }
-          statusEl.textContent='Sent -- the answer will appear on the page shortly.';
-          dlg.close();
-        })
-        .catch(()=>{
-          sendBtn.disabled=false;
-          statusEl.textContent='Request failed -- check the daemon is still running.';
-        });
-    });
-
-    qaBtn.addEventListener('click',()=>{ qaDlg.showModal(); });
-    $('cw-qa-close').addEventListener('click',()=>qaDlg.close());
-    qaDlg.addEventListener('close',()=>{ qaBtn.focus(); });
+    openLineComposer=meta=>{
+      const anchor={kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,
+        hunk_id:meta.hunkId||null,quote:meta.text};
+      const ref=placementFor(anchor);
+      if(!ref||lineDraft(meta)){ openOrFocusDraft(meta); return; }
+      closeBox();
+      const c=makeComposer('Comment on this line',text=>({anchor,text}),closeBox,closeBox,directDraftFor(anchor));
+      openBox=c.box;
+      insertAfterThreads(ref,c.box);
+      c.ta.focus();
+    };
 
     fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
       .then(r=>r.ok?r.json():null)
       .then(data=>{
-        if(!data||!Array.isArray(data.qa)) return;
-        data.qa.forEach(r=>{ qaRecords.push(r); insertAnswer(r); });
-        renderQaList();
+        if(!data||!Array.isArray(data.turns)) return;
+        data.turns.forEach(x=>upsertTurn(x,true));
+        (data.resolved||[]).forEach(tid=>applyResolve(tid,true));
       })
       .catch(()=>{});
   }
@@ -4162,8 +4661,8 @@ document.querySelectorAll('summary a').forEach(a => {
       renderBanner();
     });
     es.addEventListener('rebuilt',()=>{ onPageUpdated(); });
-    es.addEventListener('answer',e=>{
-      if(window.__cwOnAnswer) window.__cwOnAnswer(JSON.parse(e.data));
+    es.addEventListener('thread',e=>{
+      if(window.__cwOnThread) window.__cwOnThread(JSON.parse(e.data));
     });
     es.addEventListener('posted',e=>{
       if(window.__cwOnPosted) window.__cwOnPosted(JSON.parse(e.data));

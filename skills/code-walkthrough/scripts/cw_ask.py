@@ -3,13 +3,14 @@
 
 `validate_anchor` and `build_prompt` are synchronous and raise `cw_store.CWError` on bad input,
 so the server can reject a request before it ever reaches a model. `answer` is the background
-half the daemon runs under its per-walkthrough ask lock: it never raises, win or lose it writes
-one `qa.jsonl` record and reports it through `on_event`.
+half the daemon runs under its per-thread ask lock: it never raises, win or lose it writes
+a final turn record to `qa.jsonl` and reports it through `on_event` as a "thread" event.
 
 Stdlib only except for talking to a model backend through cw_llm.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ PROMPT_CAP = 16000
 HUNK_WINDOW = 40
 QA_PAIRS = 5
 QUESTION_MAX = 2000
+BLOCK_RE = re.compile(r"[A-Za-z0-9:_.|-]{1,200}")
+THREAD_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def validate_anchor(anchor):
@@ -64,7 +67,16 @@ def validate_anchor(anchor):
             raise cw_store.CWError("bad anchor: section required")
         return {"kind": "section", "section": section, "quote": quote}
 
-    raise cw_store.CWError("bad anchor: kind must be line or section")
+    if kind == "block":
+        block = anchor.get("block")
+        section = anchor.get("section")
+        if not isinstance(block, str) or not BLOCK_RE.fullmatch(block):
+            raise cw_store.CWError("bad anchor: block key invalid")
+        if section is not None and not isinstance(section, str):
+            raise cw_store.CWError("bad anchor: section must be a string")
+        return {"kind": "block", "block": block, "section": section, "quote": quote}
+
+    raise cw_store.CWError("bad anchor: kind must be line, section or block")
 
 
 def _find_hunk(entry, anchor):
@@ -141,15 +153,17 @@ def _overview_verdict(d):
     return "\n\n".join(parts)
 
 
-def _qa_pairs_text(d):
-    records = [r for r in read_qa(d) if r.get("status") == "ok"][-QA_PAIRS:]
+def _qa_pairs_text(d, thread_id=None):
+    if thread_id is None:
+        return ""
+    records = [r for r in read_qa(d) if r["thread_id"] == thread_id and r.get("status") == "ok"][-QA_PAIRS:]
     if not records:
         return ""
-    pairs = [f"Q: {r.get('question', '')}\nA: {r.get('answer', '')}" for r in records]
+    pairs = [f"Q: {r['comment']}\nA: {r.get('answer', '')}" for r in records]
     return "Previous Q&A:\n" + "\n\n".join(pairs)
 
 
-def read_qa(d, limit=None):
+def _read_records(d):
     path = Path(d) / "qa.jsonl"
     if not path.exists():
         return []
@@ -159,16 +173,49 @@ def read_qa(d, limit=None):
         if not line:
             continue
         try:
-            records.append(json.loads(line))
+            record = json.loads(line)
         except ValueError:
             continue
-    return records[-limit:] if limit is not None else records
+        if isinstance(record, dict):
+            records.append(record)
+    return records
 
 
-def build_prompt(d, anchor, question):
+def read_qa(d, limit=None):
+    """Turn records only, one per qid (the last written wins, so a pending record is replaced
+    by its final one), in order of first appearance. Pre-thread records get thread_id=qid and
+    comment=question."""
+    folded = {}
+    for r in _read_records(d):
+        if "type" in r or "qid" not in r:
+            continue
+        folded[r["qid"]] = r
+    turns = []
+    for r in folded.values():
+        r = dict(r)
+        r.setdefault("thread_id", r["qid"])
+        r.setdefault("comment", r.get("question"))
+        r.setdefault("question", r["comment"])
+        turns.append(r)
+    return turns[-limit:] if limit is not None else turns
+
+
+def read_threads(d):
+    """{thread_id: {"turns": [folded turns in order], "resolved": bool}}; resolved is the
+    latest resolve event for the thread, False when there is none."""
+    threads = {}
+    for r in read_qa(d):
+        threads.setdefault(r["thread_id"], {"turns": [], "resolved": False})["turns"].append(r)
+    for r in _read_records(d):
+        if r.get("type") == "resolve" and r.get("thread_id") in threads:
+            threads[r["thread_id"]]["resolved"] = bool(r.get("resolved"))
+    return threads
+
+
+def build_prompt(d, anchor, question, thread_id=None):
     d = Path(d)
     quote = anchor["quote"]
-    if anchor["kind"] == "section":
+    if anchor["kind"] in ("section", "block") and anchor.get("section"):
         part1 = f"Question:\n{question}\n\nSection: {anchor['section']}\n\nSelected text:\n{quote}"
     else:
         part1 = f"Question:\n{question}\n\nSelected text:\n{quote}"
@@ -201,21 +248,52 @@ def build_prompt(d, anchor, question):
     overview_verdict = _overview_verdict(d)
     if overview_verdict:
         parts.append(overview_verdict)
-    qa_text = _qa_pairs_text(d)
+    qa_text = _qa_pairs_text(d, thread_id)
     if qa_text:
         parts.append(qa_text)
 
     return "\n\n".join(parts)[:PROMPT_CAP]
 
 
-def answer(d, qid, anchor, question, on_event=None):
+def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None):
+    """Persist the comment as a pending record before any model work, so it survives a crash
+    and shows up in GET /qa while the turn is queued."""
+    record = {"qid": qid, "thread_id": thread_id or qid, "anchor": anchor, "comment": comment,
+              "question": comment, "started_at": cw_store.now_iso(), "status": "pending"}
+    _append_qa(d, record)
+    if on_event:
+        on_event("thread", {"kind": "turn", "record": record})
+    return record
+
+
+def append_resolve(d, thread_id, resolved, on_event=None):
+    _append_qa(d, {"type": "resolve", "thread_id": thread_id, "resolved": resolved,
+                   "at": cw_store.now_iso()})
+    if on_event:
+        on_event("thread", {"kind": "resolve", "thread_id": thread_id, "resolved": resolved})
+
+
+def finalise_stale(d, in_flight):
+    """Close every pending turn whose qid is not in flight (the daemon died or restarted
+    mid-turn) with an error record, so the page stops showing it as working."""
+    for r in read_qa(d):
+        if r.get("status") == "pending" and r["qid"] not in in_flight:
+            _append_qa(d, {
+                "qid": r["qid"], "thread_id": r["thread_id"], "anchor": r.get("anchor"),
+                "comment": r["comment"], "question": r["question"],
+                "started_at": r.get("started_at"), "finished_at": cw_store.now_iso(),
+                "status": "error", "error": "turn was interrupted",
+                "remedy": "send the comment again"})
+
+
+def answer(d, qid, anchor, question, on_event=None, thread_id=None):
     """Never raises: everything that can fail, including loading config and resolving the
     ask profile, runs inside the try below so a misconfigured role lands as an ordinary
     status: "error" record instead of killing the daemon's background thread silently."""
     d = Path(d)
     record = {
-        "qid": qid, "started_at": cw_store.now_iso(), "finished_at": None,
-        "anchor": anchor, "question": question, "status": "ok", "answer": None,
+        "qid": qid, "thread_id": thread_id or qid, "started_at": cw_store.now_iso(),
+        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "status": "ok", "answer": None,
         "error": None, "remedy": None, "profile": None, "model": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None},
     }
@@ -239,7 +317,7 @@ def answer(d, qid, anchor, question, on_event=None):
                     usage_totals["cost_usd"] = (usage_totals["cost_usd"] or 0.0) + cost
                 usage_hook(usage)
 
-            prompt = build_prompt(d, anchor, question)
+            prompt = build_prompt(d, anchor, question, record["thread_id"])
             messages = [
                 {"role": "system", "content": (SKILL_DIR / "prompts" / "ask.md").read_text()},
                 {"role": "user", "content": prompt},
@@ -261,7 +339,7 @@ def answer(d, qid, anchor, question, on_event=None):
     record["usage"] = usage_totals
     _append_qa(d, record)
     if on_event:
-        on_event("answer", record)
+        on_event("thread", {"kind": "turn", "record": record})
     return record
 
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Self-check for render.py. Assert-based, no framework."""
 
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -446,22 +448,58 @@ def test_the_real_template_gates_live_code_behind_window_cw_live():
     assert "if(window.CW_LIVE)" in real_template
 
 
-def test_the_real_template_carries_the_ask_dialog_behind_window_cw_live():
-    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+def _real_template():
+    return (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+
+
+def test_the_real_template_carries_the_threads_ui_behind_window_cw_live():
+    real_template = _real_template()
 
     assert "if(window.CW_LIVE) wireAsk();" in real_template
     wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    assert "cw-ask-btn" in wire_ask
-    assert "cw-qa-btn" in wire_ask
-    assert "window.CW_LIVE.api+'/ask'" in wire_ask
+    assert "cw-comment-btn" in wire_ask
+    assert "Threads (" in wire_ask
+    assert "window.CW_LIVE.api+'/comment'" in wire_ask
     assert "window.CW_LIVE.api+'/qa'" in wire_ask
+    assert "/resolve" in wire_ask
+    assert "window.__cwOnThread" in wire_ask
+    assert "addEventListener('thread'" in real_template
+    assert "__cwOnAnswer" not in real_template
 
 
-def test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off():
-    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
+def test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips():
+    real_template = _real_template()
 
-    # wireCommentsPanel's canGhCommand block is the only caller of wirePost -- the post UI
-    # never activates on a page that isn't live.
+    assert "planEl.appendChild(div)" not in real_template
+    assert "cw-ask" not in real_template
+    assert "cw-qa" not in real_template
+    assert "cw-chip" not in real_template
+    assert "data-intent" not in real_template
+    assert "dataset.intent" not in real_template
+
+
+def test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function blockKeyFrom(" + _real_template().split("function blockKeyFrom(")[1].split("function wireAsk(){")[0]
+    script = src + """
+const re = /^[A-Za-z0-9:_.|-]{1,200}$/;
+const a = blockKeyFrom('s1', 'Hello   world\\n again');
+if (a !== blockKeyFrom('s1', ' Hello world again ')) throw new Error('whitespace changed key');
+if (a === blockKeyFrom('s2', 'Hello world again')) throw new Error('section ignored');
+if (a === blockKeyFrom('s1', 'Hello world')) throw new Error('text ignored');
+for (const k of [a, blockKeyFrom('Why it works? / \u00e9', 'x'), blockKeyFrom('', ''), blockKeyFrom('a'.repeat(500), 'x')])
+  if (!re.test(k)) throw new Error('bad key ' + k);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_the_real_template_submits_a_review_only_behind_window_cw_live():
+    real_template = _real_template()
+
     assert "if(window.CW_LIVE){" in real_template
     assert "wirePost(canGhCommand);" in real_template
     wire_post = real_template.split("function wirePost(canGhCommand){")[1].split(
@@ -469,13 +507,99 @@ def test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_default
     assert "window.CW_LIVE.api+'/post/preview'" in wire_post
     assert "window.CW_LIVE.api+'/post'" in wire_post
     assert "window.__cwOnPosted" in wire_post
+    send = wire_post.split("function send(){")[1].split("function retry(){")[0]
+    assert "ids:selectedIds()" in send and "event:selEvent()" in send and "body:summary.value" in send
+    assert "submit_only:true" in wire_post
 
-    # The checkbox ships unchecked -- no `checked` attribute anywhere in its tag, checked by
-    # capturing the whole <input ...> rather than just the text after id=, so a `checked`
-    # placed before id= would still be caught.
-    before, _, after = real_template.partition('id="cw-post-submit"')
-    tag = before.rsplit("<input", 1)[1] + after.split(">", 1)[0]
-    assert "checked" not in tag
+    assert "cw-post-submit" not in real_template
+    assert "Submit review as COMMENT" not in real_template
+    dialog = real_template.split('<dialog id="cw-post-confirm"')[1].split("</dialog>")[0]
+    assert '<details id="cw-post-options">' in dialog and "Review options" in dialog
+    for ev in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
+        assert 'name="cw-post-event" value="%s"' % ev in dialog
+    assert dialog.count("checked>") == 1 and 'value="COMMENT" checked>' in dialog
+    for text in ("Retry the failed one", "Submit the", "Leave pending"):
+        assert text in dialog or text in wire_post
+    assert "which only you can see" in wire_post
+    assert "already in your pending review" in wire_post
+    assert "pendingResolveSet" in wire_post
+    retry = wire_post.split("function retry(){")[1].split("function submitNow(){")[0]
+    assert "failedNoteIds" in retry and "preview(true)" in retry
+    assert "if(starting||posting||dlg.open) return;" in wire_post
+    assert "if(posting) e.preventDefault()" in wire_post
+    assert "resetLocal(body.reset)" in wire_post
+
+
+def test_the_real_template_has_a_drafts_bar_that_stays_hidden_off_a_live_pr_page():
+    real_template = _real_template()
+
+    bar = real_template.split('<div id="cw-drafts-bar"')[1].split("</div>")[0]
+    assert " hidden" in bar.split(">")[0]
+    assert "Jump to drafts" in bar and "Submit review" in bar
+    wire_post = real_template.split("function wirePost(canGhCommand){")[1].split(
+        "\n  function wireCommentsPanel()")[0]
+    assert "canGhCommand&&(d>0||r>0)" in wire_post
+    assert "--cw-bar-h" in wire_post and "--cw-bar-h" in real_template.split("<body")[0]
+    assert "cw-threads-submit" in real_template.split("function wireAsk()")[1]
+    assert "in your pending review" in real_template.split("function buildItem(n){")[1]
+
+
+def test_the_real_template_inline_script_parses():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    import re
+    import tempfile
+    scripts = re.findall(r"<script>(.*?)</script>", _real_template(), re.S)
+    with tempfile.TemporaryDirectory() as d:
+        for i, src in enumerate(scripts):
+            f = Path(d) / ("s%d.js" % i)
+            f.write_text(src)
+            proc = subprocess.run([node, "--check", str(f)], capture_output=True, text=True, timeout=30)
+            assert proc.returncode == 0, proc.stderr
+
+
+def test_the_real_template_offers_a_direct_github_draft_only_on_a_line_anchor():
+    real_template = _real_template()
+    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+
+    direct = wire_ask.split("function directDraftFor(anchor){")[1].split("function makeComposer(")[0]
+    assert "anchor.kind!=='line'||!anchor.path" in direct and "!anchor.line) return null" in direct
+    assert "newDraft(" in direct and "saveNote(note)" in direct
+    assert "note.body=text;" in direct and "trim" not in direct
+    assert "/comment" not in direct
+
+    composer = wire_ask.split("function makeComposer(")[1].split("const threads=new Map()")[0]
+    assert "Save as GitHub draft" in composer and "onDraft?" in composer
+    save_draft = composer.split("function saveDraft(){")[1].split("send.addEventListener")[0]
+    assert "onDraft(ta.value)" in save_draft
+    assert "fetch(" not in save_draft and "/comment" not in save_draft and "Sending" not in save_draft
+    assert "e.shiftKey" in composer and "saveDraft()" in composer
+    # prose/block composers never receive a draft handler
+    assert "makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null)" in wire_ask
+
+
+def test_the_real_template_opens_the_inline_box_from_a_diff_line_and_marks_local_drafts_amber():
+    real_template = _real_template()
+
+    wire_line = real_template.split("function wireLine(span,meta){")[1].split("// Extension (no dot)")[0]
+    assert "openLineComposer(meta)" in wire_line
+    assert "const open=()=>openOrFocusDraft(meta)" not in real_template
+    assert "openLineComposer=meta=>" in real_template
+    assert "fb-own-draft{border-left:3px dashed var(--yellow)}" in real_template
+    assert "draft, not published" in real_template
+
+
+def test_the_real_template_reply_box_is_a_textarea_with_a_reply_on_github_button():
+    real_template = _real_template()
+
+    reply = real_template.split("function buildReplyRow(root){")[1].split("function buildResolveButton(")[0]
+    assert "createElement('textarea')" in reply
+    assert "Reply on GitHub" in reply
+    assert "reply_to:root.id,in_reply_to:root.id" in reply
+    assert "const body=input.value;" in reply
+    assert "#cw-post-confirm-actions[hidden]{display:none}" in real_template
 
 
 if __name__ == "__main__":
@@ -519,8 +643,15 @@ if __name__ == "__main__":
         test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
         test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
         test_the_real_template_gates_live_code_behind_window_cw_live,
-        test_the_real_template_carries_the_ask_dialog_behind_window_cw_live,
-        test_the_real_template_posts_only_behind_window_cw_live_and_checkbox_defaults_off,
+        test_the_real_template_carries_the_threads_ui_behind_window_cw_live,
+        test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips,
+        test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe,
+        test_the_real_template_submits_a_review_only_behind_window_cw_live,
+        test_the_real_template_has_a_drafts_bar_that_stays_hidden_off_a_live_pr_page,
+        test_the_real_template_inline_script_parses,
+        test_the_real_template_offers_a_direct_github_draft_only_on_a_line_anchor,
+        test_the_real_template_opens_the_inline_box_from_a_diff_line_and_marks_local_drafts_amber,
+        test_the_real_template_reply_box_is_a_textarea_with_a_reply_on_github_button,
     ]
     for test in tests:
         test()
