@@ -78,7 +78,7 @@ holding the link's target text instead.
 
 Thread turns differ: they run `claude` without `--safe-mode`, since safe mode disables MCP servers,
 but still with `--restricted`, the read-only `Read`, `Grep` and `Glob` tools, `--strict-mcp-config`
-and a per-turn stdio outcome server exposing one tool, `propose_resolve`. `CLAUDE.md` and user
+and a per-turn stdio outcome server exposing two tools, `propose_resolve` and `propose_page_edit`. `CLAUDE.md` and user
 settings are verified not to load under `--restricted`. Each thread is one Claude Code session (first
 turn `--session-id`, later turns `--resume`), stored in `~/.claude/projects` for the head checkout;
 a lost session is reseeded from the thread's Q&A. Stop sends SIGTERM to the turn's process group
@@ -139,6 +139,11 @@ catches up from the server's in-flight buffers.
 On a PR the agent may suggest resolving the GitHub review thread on the commented line. Keep adds it
 to the pending resolves exactly like the Resolve conversation button, and Submit review still
 previews and posts it. Dismiss tells the agent not to propose it again.
+
+When a comment asks to change what the page shows, the agent may also add or replace a prose, list
+or mermaid block next to the commented block. The edit applies at once, is local only (it never
+reaches the PR), and is persisted in `qa.jsonl`. Undo reverts it and Redo reapplies it; the agent is
+told about either on the next turn. Page edits are not offered on diff-line comments.
 
 ## Posting
 

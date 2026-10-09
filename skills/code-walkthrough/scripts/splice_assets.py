@@ -35,6 +35,11 @@ def _escape_script_tag(match):
     return "<" + hex_escape + match.group(0)[2:]
 
 
+def mermaid_payload(skill_dir):
+    js = (pathlib.Path(skill_dir) / "assets" / "mermaid.min.js").read_text()
+    return SCRIPT_TAG_RE.sub(_escape_script_tag, js)
+
+
 def splice(page_path, skill_dir):
     page = pathlib.Path(page_path)
     text = page.read_text()

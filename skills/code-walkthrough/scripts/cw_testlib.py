@@ -662,7 +662,7 @@ def claude_stream_entry(chunks, *, session_id="s-1", result=None, usage=None, mc
     _sleep items count)."""
     stream = [{"type": "system", "subtype": "init", "session_id": session_id,
                "mcp_servers": [{"name": "cw", "status": "connected"}] if init_cw else [],
-               "tools": ["mcp__cw__propose_resolve"] if init_cw else []}]
+               "tools": ["mcp__cw__propose_resolve", "mcp__cw__propose_page_edit"] if init_cw else []}]
     for i, chunk in enumerate(chunks):
         if i == 0:
             stream.append({"type": "stream_event", "event": {

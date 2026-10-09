@@ -697,3 +697,59 @@ def test_the_caret_blinks_only_when_motion_is_allowed():
     assert "animation:cw-caret" in "".join(m.split("\n  }")[0] for m in motion[1:])
     assert "animation:cw-caret" not in motion[0]
     assert ".cw-outcome{display:flex;flex-wrap:wrap" in template
+
+
+def test_page_edit_code_never_uses_html_injection_and_is_excluded_from_block_logic():
+    template = _real_template()
+    wire_ask = template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    edit = wire_ask.split("const pageEdits=new Map()")[1].split("function outcomeEl(")[0]
+    split = "function splitBackticks(" + template.split("function splitBackticks(")[1].split("function wireAsk(){")[0]
+
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
+        assert banned not in edit
+        assert banned not in split
+    assert "insertAdjacentElement" in edit
+
+    in_live_ui = wire_ask.split("const inLiveUi=")[1].split("\n")[0]
+    text_of = wire_ask.split("function textOf(el){")[1].split("function blockOf(")[0]
+    block_index = wire_ask.split("function blockIndex(){")[1].split("function buildAskAnchor(")[0]
+    for part in (in_live_ui, text_of, block_index):
+        assert ".cw-thread,.cw-compose,.cw-pageedit" in part
+    assert text_of.count(".cw-pageedit") == 2
+
+    assert "'/outcomes/'+encodeURIComponent(oid)+'/'+verb" in edit
+    assert "'revert'" in edit and "'reapply'" in edit
+    assert "propose_page_edit" in wire_ask
+
+
+def test_split_backticks_turns_code_spans_into_nodes_and_never_parses_markup():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function splitBackticks(" + _real_template().split("function splitBackticks(")[1].split("function wireAsk(){")[0]
+    script = src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(splitBackticks('plain text'), [{code:false,text:'plain text'}]);
+eq(splitBackticks('use `foo()` now'), [{code:false,text:'use '},{code:true,text:'foo()'},{code:false,text:' now'}]);
+const un = splitBackticks('open ` never closed');
+if (un.some(p => p.code) || un.map(p => p.text).join('') !== 'open ` never closed') throw new Error('unbalanced backtick changed');
+const evil = '<img src=x onerror=alert(1)>';
+eq(splitBackticks(evil), [{code:false,text:evil}]);
+eq(splitBackticks('`' + evil + '`'), [{code:true,text:evil}]);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_page_edit_review_fixes_are_wired():
+    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    edit = wire_ask.split("const pageEdits=new Map()")[1].split("function outcomeEl(")[0]
+
+    assert "a.kind==='section'&&target===a.section" in edit
+    assert "hiddenBy" in edit and "if(!s.size)" in edit
+    assert "loadQa();" in edit.split("function pageEditAct(")[1].split("function openThreadOf(")[0]
+    assert "document.getElementById('d'+id)" in edit and edit.count("cleanup();") >= 2
+    card = edit.split("function pageEditCard(")[1]
+    assert "o.state==='applied'" in card.split("Show it")[0].rsplit("\n", 3)[-3] + card.split("Show it")[0]
+    assert "pageEdits.get(o.oid)" in card.split("Show it")[1]

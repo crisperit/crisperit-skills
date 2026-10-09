@@ -32,12 +32,24 @@ import cw_llm  # noqa: E402
 import cw_run  # noqa: E402  direct, not the runner seam: /post's gh-facing calls (notes.py
 import cw_store  # noqa: E402
 import notes  # noqa: E402
+import splice_assets  # noqa: E402
 from notes import VALID_ID_RE  # noqa: E402  same id check a page write is subject to
 
 HOST = "127.0.0.1"
 MAX_BODY = 1_000_000
 
 START_LOCK = threading.Lock()
+
+_MERMAID_PLACEHOLDER = "<!-- MERMAID_JS -->"
+_mermaid_js = None
+
+
+def _mermaid_payload():
+    global _mermaid_js
+    if _mermaid_js is None:
+        _mermaid_js = splice_assets.mermaid_payload(Path(__file__).resolve().parent.parent)
+    return _mermaid_js
+
 
 runner = None  # test seam: inject a fake with prepare_walkthrough/run; defaults to cw_run
 
@@ -259,7 +271,7 @@ _ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
 _COMMENT_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment$")
 _RESOLVE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/threads/([^/]+)/resolve$")
 _CANCEL_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment/(q-[0-9a-f]{8})/cancel$")
-_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit)$")
+_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit|revert|reapply)$")
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
@@ -455,6 +467,8 @@ class _Handler(BaseHTTPRequestHandler):
         live = _live_payload(key, wid, meta, d, daemon.token, daemon.port)
         blob = json.dumps(live, ensure_ascii=True).replace("<", "\\u003c")
         html = page_path.read_text()
+        if _MERMAID_PLACEHOLDER in html:
+            html = html.replace(_MERMAID_PLACEHOLDER, _mermaid_payload())
         injected = html.replace("</head>", f"<script>window.CW_LIVE={blob};</script></head>", 1)
         self._send_html(200, injected)
 

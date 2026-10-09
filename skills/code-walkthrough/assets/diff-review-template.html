@@ -1007,6 +1007,22 @@
   }
   @keyframes cw-dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
   .cw-caret{display:inline-block;width:2px;height:1em;margin-left:1px;vertical-align:text-bottom;background:var(--purple)}
+  .cw-pageedit{display:block;box-sizing:border-box;max-width:100%;margin:8px 0;padding:8px 10px;
+    border-left:3px solid var(--purple);background:color-mix(in srgb,var(--purple) 6%,transparent);
+    white-space:normal;overflow-wrap:anywhere}
+  .cw-pageedit-label{margin:0 0 4px;color:var(--muted);font:var(--fs-xs)/1.4 system-ui,sans-serif}
+  .cw-pageedit-chip{margin-left:8px;padding:0 6px;border:1px solid var(--border);border-radius:10px}
+  .cw-pageedit-body>:first-child{margin-top:0}
+  .cw-pageedit pre{max-width:100%;overflow-x:auto}
+  .cw-pageedit-err{color:var(--red);font-size:var(--fs-xs)}
+  .cw-pageedit details{margin:6px 0;color:var(--muted);font-size:var(--fs-sm)}
+  .cw-pageedit-orig{white-space:pre-wrap}
+  .cw-pageedit-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+  .cw-pageedit-actions button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);
+    color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:var(--fs-xs)}
+  .cw-pageedit button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-pageedit-msg{font-size:var(--fs-xs);color:var(--muted)}
+  .cw-pageedit-hidden{display:none!important}
   .cw-working button{margin-left:8px}
   .cw-progress{display:block;margin-top:2px;font-size:var(--fs-xs);color:var(--muted)}
   .cw-stopped{margin-left:6px;color:var(--muted)}
@@ -3627,6 +3643,20 @@
     return (slug+'|'+h.toString(16).padStart(8,'0')).slice(0,200);
   }
 
+  function splitBackticks(text){
+    const s=String(text), out=[];
+    let i=0;
+    while(i<s.length){
+      const a=s.indexOf('`',i);
+      const b=a<0?-1:s.indexOf('`',a+1);
+      if(b<0){ out.push({code:false,text:s.slice(i)}); break; }
+      if(a>i) out.push({code:false,text:s.slice(i,a)});
+      out.push({code:true,text:s.slice(a+1,b)});
+      i=b+1;
+    }
+    return out;
+  }
+
   function wireAsk(){
     const planEl=$('plan-content');
     if(!planEl) return;
@@ -3643,12 +3673,12 @@
     const firstLine=s=>String(s||'').split('\n')[0].slice(0,100);
     const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
     const asEl=node=>node&&(node.nodeType===1?node:node.parentElement);
-    const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose')); };
+    const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose,.cw-pageedit')); };
 
     function textOf(el){
-      if(!el.querySelector('.cw-thread,.cw-compose')) return el.textContent;
+      if(!el.querySelector('.cw-thread,.cw-compose,.cw-pageedit')) return el.textContent;
       const c=el.cloneNode(true);
-      c.querySelectorAll('.cw-thread,.cw-compose').forEach(n=>n.remove());
+      c.querySelectorAll('.cw-thread,.cw-compose,.cw-pageedit').forEach(n=>n.remove());
       return c.textContent;
     }
 
@@ -3684,7 +3714,7 @@
       if(blockIdx) return blockIdx;
       blockIdx={list:[],byKey:new Map()};
       planEl.querySelectorAll(BLOCK_SEL).forEach(el=>{
-        if(el.closest('.cw-thread,.cw-compose')) return;
+        if(el.closest('.cw-thread,.cw-compose,.cw-pageedit')) return;
         const k=blockKey(el);
         blockIdx.list.push({el,text:norm(textOf(el))});
         if(!blockIdx.byKey.has(k)) blockIdx.byKey.set(k,el);
@@ -3819,6 +3849,7 @@
       if(p.tool==='Grep') return 'Searching for '+d;
       if(p.tool==='Glob') return 'Listing files';
       if(p.tool==='propose_resolve') return 'Suggesting a resolve';
+      if(p.tool==='propose_page_edit') return 'Editing the page';
       return p.tool||'';
     }
     const noteById=id=>state.notes.find(n=>n.id===id);
@@ -3850,7 +3881,157 @@
       return b;
     }
 
+    const pageEdits=new Map();   // oid -> {node, orig, sig}
+    const hiddenBy=new WeakMap();   // original element -> Set of applied replace oids hiding it
+    let peSeq=0;
+    const richEl=(tag,text)=>{
+      const e=document.createElement(tag);
+      for(const p of splitBackticks(text)) e.append(p.code?mk('code',null,p.text):document.createTextNode(p.text));
+      return e;
+    };
+
+    function renderMermaidEdit(pre,src){
+      const id='cw-pe-'+(peSeq++);
+      const cleanup=()=>{ const d=document.getElementById('d'+id); if(d) d.remove(); };
+      const fail=()=>{
+        cleanup();
+        pre.classList.remove('mermaid');
+        pre.after(mk('p','cw-pageedit-err','The diagram failed to render; showing its source.'));
+      };
+      if(!window.mermaid){ fail(); return; }
+      window.mermaid.render(id,src).then(({svg})=>{
+        cleanup();
+        const doc=new DOMParser().parseFromString(svg,'image/svg+xml');
+        if(doc.querySelector('parsererror')) throw new Error('bad svg');
+        pre.replaceChildren(document.importNode(doc.documentElement,true));
+      }).catch(fail);
+    }
+
+    function pageEditContent(b){
+      const text=String((b&&b.text)||'');
+      const box=mk('div','cw-pageedit-body');
+      if(b&&b.type==='list'){
+        const ul=document.createElement('ul');
+        for(const l of text.split('\n')){
+          const s=l.trim().replace(/^[-*]\s+/,'');
+          if(s) ul.append(richEl('li',s));
+        }
+        box.append(ul);
+      } else if(b&&b.type==='mermaid'){
+        box.append(mk('pre','mermaid',text));
+      } else {
+        for(const para of text.split(/\n\s*\n/)) if(para.trim()) box.append(richEl('p',para.trim()));
+      }
+      return box;
+    }
+
+    function pageEditTarget(o){
+      const t=threads.get(o.thread_id);
+      const a=(t&&t.turns[0]&&t.turns[0].anchor)||{};
+      const target=o.payload&&o.payload.target;
+      const heading=a.section&&[...planEl.querySelectorAll('h1,h2,h3,h4')].find(x=>x.textContent.trim()===a.section);
+      if(a.kind==='section'&&target===a.section) return {el:heading||null,outdated:!heading};
+      const el=target&&blockIndex().byKey.get(target);
+      if(el) return {el,outdated:false};
+      return {el:heading||null,outdated:true};
+    }
+
+    function pageEditAct(oid,verb,btn,msg){
+      btn.disabled=true; msg.textContent='';
+      postJson('/outcomes/'+encodeURIComponent(oid)+'/'+verb,{})
+        .then(({ok,body})=>{
+          if(!ok||!body.outcome){ btn.disabled=false; msg.textContent=(body&&body.error)||'Request failed'; loadQa(); return; }
+          upsertOutcome(body.outcome);
+        })
+        .catch(()=>{ btn.disabled=false; msg.textContent='Request failed -- check the daemon is still running.'; });
+    }
+
+    function openThreadOf(t){
+      setFold(t,false);
+      if(!t.placed){ renderList(); dlg.showModal(); return; }
+      t.el.scrollIntoView({block:'center'});
+      t.foldBtn.focus();
+    }
+
+    function removePageEdit(oid){
+      const cur=pageEdits.get(oid);
+      if(!cur) return;
+      cur.node.remove();
+      if(cur.orig){
+        const s=hiddenBy.get(cur.orig);
+        if(s){ s.delete(oid); if(!s.size){ hiddenBy.delete(cur.orig); cur.orig.classList.remove('cw-pageedit-hidden'); } }
+      }
+      pageEdits.delete(oid);
+    }
+
+    function syncPageEdit(o){
+      const p=o.payload||{};
+      const sig=JSON.stringify(p);
+      const cur=pageEdits.get(o.oid);
+      if(cur&&cur.sig===sig&&o.state==='applied') return;
+      removePageEdit(o.oid);
+      const t=threads.get(o.thread_id);
+      if(o.state!=='applied'||!t) return;
+      const dest=pageEditTarget(o);
+      const n=mk('div','cw-pageedit'); n.dataset.oid=o.oid;
+      const label=mk('p','cw-pageedit-label','added by agent from your comment');
+      if(dest.outdated) label.append(mk('span','cw-pageedit-chip','outdated'));
+      const msg=mk('span','cw-pageedit-msg'); msg.setAttribute('role','status');
+      const undo=mkBtn('Undo','fb-ghost');
+      undo.addEventListener('click',()=>pageEditAct(o.oid,'revert',undo,msg));
+      const open=mkBtn('Open thread','fb-ghost');
+      open.addEventListener('click',()=>openThreadOf(t));
+      const acts=mk('div','cw-pageedit-actions'); acts.append(undo,open,msg);
+      n.append(label,pageEditContent(p.block));
+      let orig=null;
+      if(p.op==='replace'&&dest.el&&!dest.outdated){
+        orig=dest.el;
+        const det=document.createElement('details');
+        det.append(mk('summary',null,'original'),mk('p','cw-pageedit-orig',textOf(orig)));
+        n.append(det);
+        if(!hiddenBy.has(orig)) hiddenBy.set(orig,new Set());
+        hiddenBy.get(orig).add(o.oid);
+        orig.classList.add('cw-pageedit-hidden');
+      }
+      n.append(acts);
+      if(dest.el) dest.el.insertAdjacentElement('afterend',n);
+      else { unplacedBox.appendChild(n); unplacedWrap.hidden=false; }
+      pageEdits.set(o.oid,{node:n,orig,sig});
+      n.querySelectorAll('pre.mermaid').forEach(pre=>renderMermaidEdit(pre,pre.textContent));
+    }
+
+    function syncThreadEdits(tid){
+      for(const m of outcomesByQid.values())
+        for(const o of m.values()) if(o.thread_id===tid&&o.outcome==='page_edit') syncPageEdit(o);
+    }
+
+    function pageEditCard(t,o){
+      const p=o.payload||{}, b=p.block||{};
+      const type=['prose','list','mermaid'].includes(b.type)?b.type:'block';
+      const what=p.op==='replace'?'replaced this block with a '+type:'inserted a '+type+' after this block';
+      const d=mk('div','cw-outcome'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      d.append(mk('span','cw-outcome-text','Page edit: '+what+' ('+o.state+')'));
+      const acts=mk('div','cw-outcome-actions');
+      const verb=o.state==='applied'?'revert':'reapply';
+      if(o.state==='applied'||o.state==='reverted'){
+        const b1=mkBtn(o.state==='applied'?'Undo':'Redo','fb-ghost');
+        b1.addEventListener('click',()=>pageEditAct(o.oid,verb,b1,t.msg));
+        acts.append(b1);
+      }
+      if(o.state==='applied'){
+        const show=mkBtn('Show it','fb-ghost');
+        show.addEventListener('click',()=>{
+          const cur=pageEdits.get(o.oid);
+          if(cur) cur.node.scrollIntoView({block:'center'});
+        });
+        acts.append(show);
+      }
+      d.append(acts);
+      return d;
+    }
+
     function outcomeEl(t,o){
+      if(o.outcome==='page_edit') return pageEditCard(t,o);
       const id=o.payload&&o.payload.thread;
       const note=noteById(id);
       const where=note?(note.path+':'+(note.line!=null?note.line:'')+(note.author?' by '+note.author:'')):id;
@@ -3916,6 +4097,7 @@
       let m=outcomesByQid.get(o.qid);
       if(!m){ m=new Map(); outcomesByQid.set(o.qid,m); }
       m.set(o.oid,o);
+      if(o.outcome==='page_edit') syncPageEdit(o);
       const t=threads.get(o.thread_id);
       if(t) renderThread(t);
     }
@@ -3980,6 +4162,8 @@
       if(isNew){
         const ref=placementFor(t.turns[0].anchor||{});
         if(ref){ insertAfterThreads(ref,t.el); t.placed=true; }
+        syncThreadEdits(t.id);
+        renderThread(t);
       }
       renderList();
     }
@@ -4073,7 +4257,7 @@
       }
       listEl.replaceChildren(...rows);
       const unplaced=all.filter(t=>!t.placed);
-      unplacedWrap.hidden=!unplaced.length;
+      unplacedWrap.hidden=!unplaced.length&&!unplacedBox.querySelector('.cw-pageedit');
       for(const t of unplaced) if(t.el.parentElement!==unplacedBox) unplacedBox.appendChild(t.el);
     }
 

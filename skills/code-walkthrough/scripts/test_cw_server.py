@@ -180,6 +180,31 @@ def test_injection_round_trip():
             assert stripped == on_disk
 
 
+def test_page_route_splices_mermaid_placeholder_at_serve_time():
+    with cw_testlib.temp_home() as home:
+        d, meta = _make_walkthrough(home, status="done", page="final")
+        raw = "<html><head></head><body><script><!-- MERMAID_JS --></script></body></html>"
+        (d / "my-slug.html").write_text(raw)
+        with running_daemon() as daemon:
+            status, body = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            assert status == 200, status
+            html = body.decode()
+            assert "<!-- MERMAID_JS -->" not in html
+            assert "mermaid" in html and len(html) > 1_000_000
+        assert (d / "my-slug.html").read_text() == raw
+
+
+def test_page_route_leaves_already_spliced_mermaid_alone():
+    with cw_testlib.temp_home() as home:
+        d, meta = _make_walkthrough(home, status="done", page="final")
+        (d / "my-slug.html").write_text("<html><head></head><body><script>var m=1;</script></body></html>")
+        with running_daemon() as daemon:
+            status, body = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            assert status == 200, status
+            assert len(body) < 10_000
+            assert b"<script>var m=1;</script>" in body
+
+
 def test_hostile_draft_shows_up_only_as_lt():
     with cw_testlib.temp_home() as home:
         d, meta = _make_walkthrough(home)
@@ -864,6 +889,36 @@ def test_outcome_edit_ok_and_bad_edit_gives_validator_text():
             assert body["outcome"]["state"] == "proposed"
 
 
+def test_page_edit_revert_reapply_routes():
+    with cw_testlib.temp_home() as home:
+        d = _outcome_fixture(home)
+        _append_qa(d, {"type": "outcome", "oid": "o-0000feed", "qid": OQID, "thread_id": OQID,
+                       "outcome": "page_edit", "state": "applied", "at": "t",
+                       "payload": {"op": "replace", "target": "b:p1", "block": {"type": "prose", "text": "x"}}})
+        pe = "o-0000feed"
+        with running_daemon() as daemon:
+            base = f"/api/walkthrough/{KEY}/{WID}/outcomes"
+            _guard_checks(daemon, f"{base}/{pe}/revert", {})
+            _guard_checks(daemon, f"{base}/{pe}/reapply", {})
+            assert _post(daemon, f"{base}/o-ffffffff/revert")[0] == 404
+            assert _post(daemon, f"{base}/{pe}/reapply")[0] == 409
+            assert _post(daemon, f"{base}/{pe}/dismiss")[0] == 400
+            assert _post(daemon, f"{base}/{pe}/edit", {"payload": {"thread": "gh-1", "why": "x"}})[0] == 400
+            assert _post(daemon, f"{base}/{OID}/revert")[0] == 400
+            sock = _sse_connect(daemon, KEY, WID)
+            try:
+                status, body = _post(daemon, f"{base}/{pe}/revert")
+                assert status == 200 and body["outcome"]["state"] == "reverted", (status, body)
+                buf = _sse_read_until(sock, b"event: outcome")
+            finally:
+                sock.close()
+            ev = next(data for name, data in _sse_events(buf) if name == "outcome")
+            assert ev["oid"] == pe and ev["state"] == "reverted" and ev["outcome"] == "page_edit"
+            assert _post(daemon, f"{base}/{pe}/revert")[0] == 409
+            status, body = _post(daemon, f"{base}/{pe}/reapply")
+            assert status == 200 and body["outcome"]["state"] == "applied"
+
+
 def _get_qa(daemon):
     status, raw = _request(daemon, "GET", f"/api/walkthrough/{KEY}/{WID}/qa", token=daemon.token)
     assert status == 200, raw
@@ -979,6 +1034,7 @@ if __name__ == "__main__":
         test_cancel_queued_turn_never_spawns,
         test_outcome_routes_guards_404_dismiss_and_conflict,
         test_outcome_edit_ok_and_bad_edit_gives_validator_text,
+        test_page_edit_revert_reapply_routes,
         test_thread_turn_cap_gives_409_on_the_21st_turn,
     ]
     for test in tests:

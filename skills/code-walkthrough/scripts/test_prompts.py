@@ -21,6 +21,7 @@ DISTINCTIVE_SENTENCES = {
 def test_comment_prompt_has_outcome_rules():
     text = " ".join((PROMPTS_DIR / "comment.md").read_text().split())
     assert "A suggestion is not an action: the user decides." in text
+    assert "`propose_page_edit` once" in text and "at most one per turn" in text.lower()
 
 
 def _other_doc_files():

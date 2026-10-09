@@ -281,9 +281,40 @@ def test_check_outcome_cases():
     assert "500" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "x" * 501})
     assert cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "x" * 500}) is None
     assert "not a review thread" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "9", "why": "w"})
-    assert "already suggested" in cw_mcp.check_outcome(doc, "propose_resolve", ok, already={"7"})
+    assert "already suggested" in cw_mcp.check_outcome(doc, "propose_resolve", ok, already={"resolve:7"})
     for bad in (["7"], {"a": 1}, 7):
         assert "thread must be a string" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": bad, "why": "w"})
+
+
+def _page_doc(kind="block"):
+    anchor = {"kind": "line", "path": "a.py", "line": 1} if kind == "line" else {
+        "kind": kind, kind: "overview:p1", "section": "Overview"}
+    return {"qid": "q1", "thread_id": "t1", "anchor": anchor, "resolvable": []}
+
+
+def _edit(**over):
+    args = {"op": "insert_after", "target": "overview:p1", "block": {"type": "mermaid", "text": "flowchart TD\nA-->B"}}
+    return {**args, **over}
+
+
+def test_check_page_edit_cases():
+    doc = _page_doc()
+    check = lambda args, d=doc, **kw: cw_mcp.check_outcome(d, "propose_page_edit", args, **kw)
+    assert check(_edit()) is None
+    assert check(_edit(op="replace", block={"type": "list", "text": "- a"})) is None
+    assert check(_edit(target="Overview"), _page_doc("section")) is None
+    assert "op must be" in check(_edit(op="delete"))
+    assert "block.type" in check(_edit(block={"type": "html", "text": "<b>x</b>"}))
+    assert "block.text is required" in check(_edit(block={"type": "prose", "text": "  "}))
+    assert "block must be an object" in check(_edit(block="x"))
+    assert "4000" in check(_edit(block={"type": "prose", "text": "x" * 4001}))
+    assert check(_edit(block={"type": "prose", "text": "x" * 4000})) is None
+    assert check(_edit(block={"type": "mermaid", "text": "x" * 6000})) is None
+    assert "6000" in check(_edit(block={"type": "mermaid", "text": "x" * 6001}))
+    assert "target must be overview:p1" in check(_edit(target="other:p9"))
+    assert "reply instead" in check(_edit(), _page_doc("line"))
+    assert "already proposed a page edit" in check(_edit(), already={"page_edit"})
+    assert cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "w"}, already={"page_edit"}) is not None
 
 
 class _Rpc:
@@ -330,7 +361,8 @@ def test_outcomes_server_accepts_and_rejects():
         (d / "turns" / "q1.anchor.json").write_text(json.dumps(_anchor_doc("7")))
         rpc = _Rpc("outcomes", "--dir", str(d), "--qid", "q1")
         try:
-            assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == ["propose_resolve"]
+            assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == [
+                "propose_resolve", "propose_page_edit"]
             rpc.proc.stdin.write("garbage{\n")
             rpc.proc.stdin.flush()
             assert rpc.call("ping")["result"] == {}
@@ -345,6 +377,33 @@ def test_outcomes_server_accepts_and_rejects():
             assert _propose(rpc, ["x"], why="y")["isError"] is True
             assert rpc.call("ping")["result"] == {}
             assert _propose(rpc, "7", why="")["isError"] is True
+            assert len((d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()) == 1
+        finally:
+            assert rpc.close() == 0
+
+
+def test_outcomes_server_page_edit_is_stored_stripped_and_once_per_turn():
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        (d / "turns" / "q1.anchor.json").write_text(json.dumps(_page_doc()))
+        rpc = _Rpc("outcomes", "--dir", str(d), "--qid", "q1")
+        try:
+            def call(args):
+                return rpc.call("tools/call", {"name": "propose_page_edit", "arguments": args})["result"]
+
+            for bad in (_edit(target="x:p1"), _edit(op="nope"), _edit(block={"type": "svg", "text": "t"}),
+                        _edit(block={"type": "prose", "text": "x" * 4001})):
+                assert call(bad)["isError"] is True
+            assert not (d / "turns" / "q1.outcomes.jsonl").exists()
+            good = call(_edit(block={"type": "prose", "text": "  hello \n"}))
+            assert good["isError"] is False
+            rec = json.loads((d / "turns" / "q1.outcomes.jsonl").read_text())
+            assert rec["name"] == "propose_page_edit"
+            assert rec["arguments"] == {"op": "insert_after", "target": "overview:p1",
+                                        "block": {"type": "prose", "text": "hello"}}
+            again = call(_edit())
+            assert again["isError"] is True and "already proposed" in again["content"][0]["text"]
             assert len((d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()) == 1
         finally:
             assert rpc.close() == 0

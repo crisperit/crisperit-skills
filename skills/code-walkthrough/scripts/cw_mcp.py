@@ -176,10 +176,29 @@ OUTCOME_TOOLS = [
 ]
 
 
-def check_outcome(anchor_doc, name, args, already=()):
-    if name != "propose_resolve":
-        return f"unknown tool {name}"
-    args = args if isinstance(args, dict) else {}
+PAGE_EDIT_OPS = ("insert_after", "replace")
+PAGE_EDIT_CAPS = {"prose": 4000, "list": 4000, "mermaid": 6000}
+
+OUTCOME_TOOLS.append({
+    "name": "propose_page_edit",
+    "description": ("Change what the page shows next to the commented block: insert a new block after it or "
+                    "replace it. The edit applies at once and the user can undo it. Prose and list blocks are "
+                    "markdown-ish text, mermaid blocks are flowchart or sequence diagram source; never HTML."),
+    "inputSchema": {
+        "type": "object", "required": ["op", "target", "block"],
+        "properties": {
+            "op": {"enum": list(PAGE_EDIT_OPS)},
+            "target": {"type": "string", "description": "the Block key from the message"},
+            "block": {
+                "type": "object", "required": ["type", "text"],
+                "properties": {"type": {"enum": list(PAGE_EDIT_CAPS)}, "text": {"type": "string"}},
+            },
+        },
+    },
+})
+
+
+def _check_resolve(anchor_doc, args, already):
     why = args.get("why")
     if not isinstance(why, str) or not why.strip():
         return "why is required"
@@ -190,9 +209,64 @@ def check_outcome(anchor_doc, name, args, already=()):
         return "thread must be a string"
     if thread not in {t["id"] for t in anchor_doc.get("resolvable") or []}:
         return f"thread {thread} is not a review thread on this comment's lines; reply instead"
-    if thread in already:
+    if f"resolve:{thread}" in already:
         return "already suggested in this turn"
     return None
+
+
+def _check_page_edit(anchor_doc, args, already):
+    anchor = anchor_doc.get("anchor") or {}
+    kind = anchor.get("kind")
+    if kind not in ("block", "section"):
+        return "page edits attach to prose blocks, not diff lines; reply instead"
+    expected = anchor.get(kind)
+    if args.get("op") not in PAGE_EDIT_OPS:
+        return "op must be insert_after or replace"
+    block = args.get("block")
+    if not isinstance(block, dict):
+        return "block must be an object with type and text"
+    cap = PAGE_EDIT_CAPS.get(block.get("type"))
+    if cap is None:
+        return "block.type must be prose, list or mermaid"
+    text = block.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return "block.text is required"
+    if len(text.strip()) > cap:
+        return f"block.text must be at most {cap} characters for {block['type']}"
+    if args.get("target") != expected:
+        return f"target must be {expected}, this comment's block key"
+    if "page_edit" in already:
+        return "already proposed a page edit in this turn"
+    return None
+
+
+def _resolve_payload(args):
+    return {"thread": args["thread"], "why": args["why"].strip()}
+
+
+def _page_edit_payload(args):
+    block = args["block"]
+    return {"op": args["op"], "target": args["target"],
+            "block": {"type": block["type"], "text": block["text"].strip()}}
+
+
+OUTCOME_KINDS = {
+    "propose_resolve": {
+        "outcome": "resolve", "state": "proposed", "check": _check_resolve, "payload": _resolve_payload,
+        "key": lambda payload: f"resolve:{payload['thread']}", "accepted": "recorded as a suggestion; the user decides",
+    },
+    "propose_page_edit": {
+        "outcome": "page_edit", "state": "applied", "check": _check_page_edit, "payload": _page_edit_payload,
+        "key": lambda payload: "page_edit", "accepted": "applied to the page; the user can undo it",
+    },
+}
+
+
+def check_outcome(anchor_doc, name, args, already=()):
+    kind = OUTCOME_KINDS.get(name)
+    if kind is None:
+        return f"unknown tool {name}"
+    return kind["check"](anchor_doc, args if isinstance(args, dict) else {}, already)
 
 
 def accept_outcome(d, qid, name, args):
@@ -205,7 +279,8 @@ def accept_outcome(d, qid, name, args):
     try:
         for line in path.read_text().splitlines():
             try:
-                already.add(json.loads(line)["arguments"]["thread"])
+                rec = json.loads(line)
+                already.add(OUTCOME_KINDS[rec["name"]]["key"](rec["arguments"]))
             except (ValueError, KeyError, TypeError):
                 pass
     except OSError:
@@ -213,14 +288,15 @@ def accept_outcome(d, qid, name, args):
     error = check_outcome(anchor_doc, name, args, already)
     if error:
         return False, error
+    kind = OUTCOME_KINDS[name]
     record = {"oid": "o-" + uuid.uuid4().hex[:8], "name": name,
-              "arguments": {"thread": args["thread"], "why": args["why"].strip()}, "at": cw_store.now_iso()}
+              "arguments": kind["payload"](args), "at": cw_store.now_iso()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(record) + "\n")
         f.flush()
         os.fsync(f.fileno())
-    return True, "recorded as a suggestion; the user decides"
+    return True, kind["accepted"]
 
 
 def outcome_mcp_config(d, qid):

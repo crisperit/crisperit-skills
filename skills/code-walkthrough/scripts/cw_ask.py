@@ -294,15 +294,15 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
     for line in lines:
         try:
             rec = json.loads(line)
-            oid, args = rec["oid"], rec["arguments"]
-            payload = {"thread": args["thread"], "why": args["why"]}
+            oid, kind = rec["oid"], cw_mcp.OUTCOME_KINDS[rec["name"]]
+            payload = kind["payload"](rec["arguments"])
         except (ValueError, KeyError, TypeError):
             continue
         if oid in known:
             continue
         known.add(oid)
         record = {"type": "outcome", "oid": oid, "qid": qid, "thread_id": thread_id,
-                  "outcome": "resolve", "payload": payload, "state": "proposed",
+                  "outcome": kind["outcome"], "payload": payload, "state": kind["state"],
                   "at": cw_store.now_iso()}
         _append_qa(d, record)
         if on_event:
@@ -317,27 +317,36 @@ def outcome_action(d, oid, action, payload=None, on_event=None):
         return _outcome_action(d, oid, action, payload, on_event)
 
 
+_TRANSITIONS = {
+    ("resolve", "dismiss"): ("proposed", "dismissed"),
+    ("resolve", "edit"): ("proposed", "proposed"),
+    ("page_edit", "revert"): ("applied", "reverted"),
+    ("page_edit", "reapply"): ("reverted", "applied"),
+}
+
+
 def _outcome_action(d, oid, action, payload, on_event):
     d = Path(d)
     outcomes = read_outcomes(d)
     current = next((o for o in outcomes if o["oid"] == oid), None)
     if current is None:
         raise OutcomeError("outcome not found", "not_found")
-    if current["state"] != "proposed":
-        raise OutcomeError("outcome is not open", "conflict")
-    event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso()}
-    if action == "dismiss":
-        event["state"] = "dismissed"
-    elif action == "edit":
+    transition = _TRANSITIONS.get((current["outcome"], action))
+    if transition is None:
+        raise OutcomeError(f"unknown action {action!r}", "invalid")
+    from_state, to_state = transition
+    if current["state"] != from_state:
+        raise OutcomeError("outcome is not open" if from_state == "proposed" else
+                           f"outcome is {current['state']}, not {from_state}", "conflict")
+    event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": to_state}
+    if action == "edit":
         anchor_doc = cw_store.read_json(d / "turns" / f"{current['qid']}.anchor.json") or {}
-        already = {o["payload"]["thread"] for o in outcomes
-                   if o["qid"] == current["qid"] and o["oid"] != oid}
+        already = {f"resolve:{o['payload']['thread']}" for o in outcomes
+                   if o["outcome"] == "resolve" and o["qid"] == current["qid"] and o["oid"] != oid}
         error = cw_mcp.check_outcome(anchor_doc, "propose_resolve", payload, already)
         if error:
             raise OutcomeError(error, "invalid", remedy="fix the suggestion and try again")
-        event.update(state="proposed", payload={"thread": payload["thread"], "why": payload["why"].strip()})
-    else:
-        raise OutcomeError(f"unknown action {action!r}", "invalid")
+        event["payload"] = {"thread": payload["thread"], "why": payload["why"].strip()}
     _append_qa(d, event)
     folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
     if on_event:
@@ -364,8 +373,13 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
         o = by_oid.get(r.get("oid"))
         if r["type"] != "state" or o is None:
             continue
-        verb = "dismissed" if r.get("state") == "dismissed" else "edited"
         payload = r.get("payload") or o["payload"]
+        if o["outcome"] == "page_edit":
+            verb = "undid" if r.get("state") == "reverted" else "redid"
+            where = "after block" if payload["op"] == "insert_after" else "of block"
+            lines.append(f"The user {verb} your page edit ({payload['op']} {where} {payload['target']})")
+            continue
+        verb = "dismissed" if r.get("state") == "dismissed" else "edited"
         lines.append(f"The user {verb} your suggestion to resolve "
                      f"{_note_loc(d, payload['thread'])}: {payload['why']}")
     return "\n".join(lines)
@@ -414,14 +428,17 @@ def _thread_session(d, thread_id):
 
 def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     d = Path(d)
+    block_key = f"Block key: {anchor[anchor['kind']]}" if anchor["kind"] in ("section", "block") else ""
     if resumed:
-        extras = [_candidates_text(d, anchor), _outcome_updates_text(d, thread_id)]
+        extras = [block_key, _candidates_text(d, anchor), _outcome_updates_text(d, thread_id)]
         return "\n\n".join([f"Question:\n{question}", *filter(None, extras)])
     quote = anchor["quote"]
+    part1 = f"Question:\n{question}"
     if anchor["kind"] in ("section", "block") and anchor.get("section"):
-        part1 = f"Question:\n{question}\n\nSection: {anchor['section']}\n\nSelected text:\n{quote}"
-    else:
-        part1 = f"Question:\n{question}\n\nSelected text:\n{quote}"
+        part1 += f"\n\nSection: {anchor['section']}"
+    if block_key:
+        part1 += f"\n\n{block_key}"
+    part1 += f"\n\nSelected text:\n{quote}"
 
     hunk = None
     part2 = ""
@@ -679,17 +696,19 @@ def _openai_tools(d, qid, thread_id, on_event, live):
 
     handlers = {name: wrap(_READ_TOOL_NAMES.get(name, name), fn) for name, fn in handlers.items()}
 
-    def propose_resolve(args):
-        _check_cancelled(live)
-        _emit_progress(live, on_event, qid, thread_id, "propose_resolve", "")
-        _ok, text = cw_mcp.accept_outcome(d, qid, "propose_resolve", args)
-        sweep_outcomes(d, qid, thread_id, on_event)
-        return text
+    def outcome_handler(name):
+        def run(args):
+            _check_cancelled(live)
+            _emit_progress(live, on_event, qid, thread_id, name, "")
+            _ok, text = cw_mcp.accept_outcome(d, qid, name, args)
+            sweep_outcomes(d, qid, thread_id, on_event)
+            return text
+        return run
 
-    spec = cw_mcp.OUTCOME_TOOLS[0]
-    tools.append({"type": "function", "function": {
-        "name": spec["name"], "description": spec["description"], "parameters": spec["inputSchema"]}})
-    handlers["propose_resolve"] = propose_resolve
+    for spec in cw_mcp.OUTCOME_TOOLS:
+        tools.append({"type": "function", "function": {
+            "name": spec["name"], "description": spec["description"], "parameters": spec["inputSchema"]}})
+        handlers[spec["name"]] = outcome_handler(spec["name"])
     return tools, handlers
 
 

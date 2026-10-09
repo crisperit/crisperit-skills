@@ -1104,6 +1104,83 @@ def test_outcome_action_states_and_done_folding():
         assert [o["state"] for o in cw_ask.read_outcomes(d)] == ["dismissed", "done"]
 
 
+def _page_edit_call(at=1, **over):
+    args = {"op": "insert_after", "target": "overview:p1", "block": {"type": "prose", "text": " A note. "}, **over}
+    return [{"at": at, "name": "propose_page_edit", "arguments": args}]
+
+
+def test_page_edit_applies_at_creation_and_revert_reapply_fold():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        entry = cw_testlib.claude_stream_entry(["added a note"], mcp_calls=_page_edit_call())
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc:
+            record, events = _cturn(d, "q1", "add a note", anchor=ANCHOR_BLOCK)
+        assert "Block key: overview:p1" in fc.log()[-1]["stdin"]
+        kinds = [k for k, _ in events]
+        assert kinds.index("outcome") < kinds.index("thread")
+        outcome = dict(events)["outcome"]
+        assert outcome["outcome"] == "page_edit" and outcome["state"] == "applied"
+        assert outcome["payload"] == {"op": "insert_after", "target": "overview:p1",
+                                      "block": {"type": "prose", "text": "A note."}}
+        oid = outcome["oid"]
+        seen = []
+        on_event = lambda kind, data: seen.append(data["state"])
+
+        def refused(action):
+            try:
+                cw_ask.outcome_action(d, oid, action)
+            except cw_ask.OutcomeError as e:
+                return e.kind
+            raise AssertionError("not refused")
+
+        assert refused("reapply") == "conflict"
+        assert refused("dismiss") == "invalid" and refused("edit") == "invalid"
+        assert cw_ask.outcome_action(d, oid, "revert", on_event=on_event)["state"] == "reverted"
+        assert refused("revert") == "conflict"
+        assert cw_ask.outcome_action(d, oid, "reapply", on_event=on_event)["state"] == "applied"
+        assert seen == ["reverted", "applied"]
+        assert cw_ask.read_threads(d)["q1"]["outcomes"][0]["state"] == "applied"
+
+
+def test_page_edit_undo_and_redo_reach_the_next_prompt():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_page_edit_call()),
+                             cw_testlib.claude_stream_entry(["two"]),
+                             cw_testlib.claude_stream_entry(["three"])]}
+        with cw_testlib.fake_claude(tmp, script) as fc:
+            _cturn(d, "q1", "add", anchor=ANCHOR_BLOCK)
+            oid = cw_ask.read_outcomes(d)[0]["oid"]
+            cw_ask.outcome_action(d, oid, "revert")
+            _cturn(d, "q2", "again?", thread_id="q1", anchor=ANCHOR_BLOCK)
+            cw_ask.outcome_action(d, oid, "reapply")
+            _cturn(d, "q3", "ok", thread_id="q1", anchor=ANCHOR_BLOCK)
+        second, third = fc.log()[1]["stdin"], fc.log()[2]["stdin"]
+        assert "The user undid your page edit (insert_after after block overview:p1)" in second
+        assert "Block key: overview:p1" in second
+        assert "The user redid your page edit" in third and "undid" not in third
+
+
+def test_page_edit_on_a_line_anchor_is_refused_and_openai_path_registers_the_tool():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        def ask_handler(body, n):
+            if n == 0:
+                return cw_testlib.tool_call("propose_page_edit", {
+                    "op": "replace", "target": "overview:p1", "block": {"type": "list", "text": "- x"}})
+            return cw_testlib.text("done")
+
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            record, events = _cturn(d, "q1", "list it", anchor=ANCHOR_BLOCK)
+            names = [t["function"]["name"] for t in
+                     [r for r in stub.requests if r.get("model") == "ask-m"][-1]["tools"]]
+            line_record, line_events = _cturn(d, "q2", "x", anchor=ANCHOR_LINE)
+        assert "propose_resolve" in names and "propose_page_edit" in names
+        assert record["status"] == "ok" and [o["state"] for o in cw_ask.read_outcomes(d)] == ["applied"]
+        assert "outcome" in [k for k, _ in events]
+        assert "outcome" not in [k for k, _ in line_events]
+
+
 if __name__ == "__main__":
     tests = [
         test_ask_gives_qa_record_and_sse_answer,
@@ -1142,6 +1219,9 @@ if __name__ == "__main__":
         test_reseeded_prompt_lists_earlier_dismissed_suggestion,
         test_finalise_stale_keeps_outcomes_accepted_before_the_kill,
         test_outcome_action_states_and_done_folding,
+        test_page_edit_applies_at_creation_and_revert_reapply_fold,
+        test_page_edit_undo_and_redo_reach_the_next_prompt,
+        test_page_edit_on_a_line_anchor_is_refused_and_openai_path_registers_the_tool,
     ]
     for test in tests:
         test()

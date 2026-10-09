@@ -543,7 +543,7 @@ def test_thread_argv_first_turn_and_follow_up():
     assert argv[argv.index("--session-id") + 1] == "uuid-1"
     assert "--resume" not in argv
     for flag in ("--restricted", "--strict-mcp-config", "--verbose", "--include-partial-messages",
-                 "--allowedTools=mcp__cw__propose_resolve", "--add-dir=/d/ctx", "--model=sonnet"):
+                 "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit", "--add-dir=/d/ctx", "--model=sonnet"):
         assert flag in argv
     assert "stream-json" in argv
     assert "--safe-mode" not in argv and "--no-session-persistence" not in argv
