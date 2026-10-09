@@ -323,12 +323,26 @@ def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume
     # --safe-mode disables MCP servers; CLAUDE.md verified not loaded under --restricted.
     argv = [
         "claude", "-p", "--restricted", "--tools=Read,Grep,Glob", "--strict-mcp-config",
-        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft",
+        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft,mcp__cw__propose_task",
         "--permission-prompts", "none", f"--model={profile['model']}",
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         f"--system-prompt={system}", f"--add-dir={add_dir}",
     ]
     return argv + (["--resume", resume] if resume else ["--session-id", session_id])
+
+
+def task_argv(profile, system):
+    # Fresh session, no MCP: sessions are keyed by cwd, and a task runs in its own worktree.
+    # --safe-mode with --strict-mcp-config keeps a PR's .mcp.json, .claude settings and the
+    # user's own MCP servers out of the turn.
+    return [
+        "claude", "-p", "--safe-mode", "--strict-mcp-config", "--restricted",
+        "--tools=Read,Grep,Glob,Edit,Write",
+        "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+        f"--model={profile['model']}", "--output-format", "stream-json", "--verbose",
+        "--include-partial-messages", "--no-session-persistence",
+        f"--system-prompt={system}",
+    ]
 
 
 def claude_stream(argv, prompt, *, cwd, timeout, on_line, on_spawn=None):

@@ -154,6 +154,19 @@ change its text, Dismiss drops it, and nothing reaches GitHub from the draft its
 this kind never enter the Post preview. The agent is told about a dismissal or an edit on the next
 turn.
 
+On a diff line or a review thread the agent may propose a code task (`propose_task`: a title, up to 12
+steps, up to 20 files). A task is only a plan until the user presses Run, which needs a claude-code
+`thread` profile (otherwise 400 with the remedy "point roles.thread at a claude-code profile").
+Run makes a fresh worktree at `tasks/<t>/` from the head sha (hooks off, LFS smudge off,
+`core.symlinks=false`) and starts a claude turn there with only Read, Grep, Glob, Edit and Write,
+confined to that worktree by `--restricted` and `acceptEdits`. It is a fresh session with no MCP
+and no resume, because sessions are keyed by cwd. Its prompt is the plan, the comment and anchor,
+and the base branch's `CLAUDE.md` (never the head's). A change is committed to the local branch
+`cw/<walkthrough id>/<t>` and never pushed: the daemon runs no `git push` anywhere. Stop is the
+turn's cancel route (`POST .../comment/<qid>/cancel` with the task's `tq-` qid); a task that
+changed nothing, errored or was interrupted by a restart is `failed`. Discard removes the worktree
+and the branch, and pruning a walkthrough removes all of its task worktrees and branches.
+
 `POST /api/walkthrough/<key>/<id>/publish-one` publishes one local draft by itself, with
 `{id, body_sha, oid?}` (the sha256 of the draft text, so a draft edited since the user looked is
 refused), or resolves one thread with `{resolve, oid?}`. It carries the same guards as `/post`, 409s

@@ -362,7 +362,7 @@ def test_outcomes_server_accepts_and_rejects():
         rpc = _Rpc("outcomes", "--dir", str(d), "--qid", "q1")
         try:
             assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == [
-                "propose_resolve", "propose_page_edit", "propose_github_draft"]
+                "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task"]
             rpc.proc.stdin.write("garbage{\n")
             rpc.proc.stdin.flush()
             assert rpc.call("ping")["result"] == {}

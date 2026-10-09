@@ -31,6 +31,7 @@ import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_run  # noqa: E402  direct, not the runner seam: /post's gh-facing calls (notes.py
 import cw_store  # noqa: E402
+import cw_task  # noqa: E402
 import notes  # noqa: E402
 import splice_assets  # noqa: E402
 from notes import VALID_ID_RE  # noqa: E402  same id check a page write is subject to
@@ -107,6 +108,15 @@ def _steps_public(meta):
 def _live_payload(key, wid, meta, d, token, port):
     drafts_doc = cw_store.read_json(d / "page-notes.json", default=None)
     drafts = drafts_doc.get("notes") if isinstance(drafts_doc, dict) else None
+    sib = meta.get("sibling_of")
+    sibling = None
+    if sib:
+        sibling = {
+            "parent_url": f"http://{HOST}:{port}/walkthrough/{sib['key']}/{sib['id']}/?k={token}",
+            "title": sib.get("title"), "branch": sib.get("branch"), "sha": meta.get("head"),
+            "task_id": sib.get("task_id"), "changed_files": sib.get("changed_files") or [],
+            "prose_carried": bool(sib.get("prose_carried")),
+        }
     return {
         "v": 1, "key": key, "id": wid, "token": token,
         "api": f"/api/walkthrough/{key}/{wid}",
@@ -115,7 +125,7 @@ def _live_payload(key, wid, meta, d, token, port):
         "steps": _steps_public(meta),
         "batches": {"done": len(meta.get("batches_done") or []), "total": meta.get("batches", 0)},
         "usage": meta.get("usage", {}), "total": cw_store.usage_total(meta),
-        "drafts": drafts,
+        "drafts": drafts, "sibling": sibling,
     }
 
 
@@ -270,8 +280,8 @@ _NOTES_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/notes$")
 _ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
 _COMMENT_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment$")
 _RESOLVE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/threads/([^/]+)/resolve$")
-_CANCEL_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment/(q-[0-9a-f]{8})/cancel$")
-_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit|keep|verbatim|revert|reapply)$")
+_CANCEL_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment/(t?q-[0-9a-f]{8})/cancel$")
+_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit|keep|verbatim|revert|reapply|show|run|stop|discard)$")
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
@@ -290,6 +300,7 @@ TRIAGE_COMMENT = (
 
 NO_PR_MSG = "No PR for this comparison -- use Copy for agent instead."
 HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet -- use Copy for agent instead."
+SIBLING_NO_PUBLISH = {"error": "publishing is off in this view", "remedy": "go back to the PR head"}
 STILL_BUILDING_MSG = "walkthrough still building"
 FAILED_MSG = "walkthrough did not finish"
 
@@ -590,7 +601,51 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True})
 
+    def _route_show(self, key, wid, oid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        o = next((o for o in cw_ask.read_outcomes(d) if o["oid"] == oid), None)
+        if o is None:
+            self._send_json(404, {"error": "outcome not found"})
+            return
+        task = (o.get("payload") or {}).get("task")
+        task = task if isinstance(task, dict) else {}
+        sha = task.get("sha")
+        if o["outcome"] != "task" or o["state"] != "done" or not isinstance(sha, str) or not sha:
+            self._send_json(409, {"error": "the task is not finished", "remedy": "wait for the task to finish"})
+            return
+        meta = cw_store.read_meta(d) or {}
+        if meta.get("status") != "done" or meta.get("sibling_of"):
+            self._send_json(409, {"error": "this walkthrough is not a finished PR view",
+                                   "remedy": "open the PR walkthrough once it is done"})
+            return
+        task_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(task.get("id") or oid))[:40]
+        args = {
+            "repo": meta["repo"], "base": meta["base"], "head": sha, "explain": meta.get("explain", False),
+            "paths": meta.get("paths") or [], "title": meta.get("title"), "pr": None,
+            "target": f"{meta['target']}+{task_id}", "slug": f"{meta['slug'][:39]}-{task_id}",
+            "sibling_of": {"key": key, "id": wid, "oid": oid, "task_id": task_id,
+                           "branch": task.get("branch"),
+                           "title": (o.get("payload") or {}).get("title") or task.get("title"),
+                           "parent_head": meta["head"]},
+        }
+        try:
+            result = _tool_walkthrough_start(self.server.cw_daemon, args)
+        except cw_store.CWError as e:
+            self._send_json(409, {"error": str(e), "remedy": e.remedy})
+            return
+        self._send_json(200, {"ok": True, "id": result["id"], "key": result["key"],
+                               "url": result["url"], "reused": result["reused"]})
+
     def _route_outcome(self, key, wid, oid, action):
+        if action == "show":
+            return self._route_show(key, wid, oid)
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
             return
         raw, too_big = self._read_body()
@@ -612,8 +667,11 @@ class _Handler(BaseHTTPRequestHandler):
             payload = {"note_id": body.get("note_id") if isinstance(body, dict) else None}
         daemon = self.server.cw_daemon
         try:
-            folded = cw_ask.outcome_action(d, oid, action, payload,
-                                           on_event=lambda ev, data: daemon.hub.emit(key, wid, ev, data))
+            if action in ("run", "stop", "discard"):
+                folded = daemon.task_action(key, wid, d, oid, action)
+            else:
+                folded = cw_ask.outcome_action(d, oid, action, payload,
+                                               on_event=lambda ev, data: daemon.hub.emit(key, wid, ev, data))
         except cw_ask.OutcomeError as e:
             status = {"not_found": 404, "conflict": 409}.get(e.kind, 400)
             body = {"error": str(e)}
@@ -767,6 +825,8 @@ class _Handler(BaseHTTPRequestHandler):
             return None, {"error": FAILED_MSG, "remedy": "re-run /code-walkthrough"}
         if meta.get("status") != "done" or meta.get("page") != "final":
             return None, {"error": STILL_BUILDING_MSG}
+        if meta.get("sibling_of"):
+            return None, SIBLING_NO_PUBLISH
         return meta, None
 
     def _post_check_state(self, d):
@@ -1165,10 +1225,6 @@ class _Handler(BaseHTTPRequestHandler):
             if err:
                 self._send_json(409, err)
                 return
-            if meta.get("sibling_of"):
-                self._send_json(409, {"error": "publishing is off in this view",
-                                       "remedy": "go back to the PR head"})
-                return
             st, err = self._post_check_state(d)
             if err:
                 self._send_json(409, err)
@@ -1549,6 +1605,54 @@ class Daemon:
 
         threading.Thread(target=_target, daemon=True).start()
 
+    def task_action(self, key, wid, d, oid, action):
+        emit = lambda ev, data: self.hub.emit(key, wid, ev, data)  # noqa: E731
+        meta = cw_store.read_meta(d) or {}
+        if action == "discard":
+            return cw_task.discard(d, meta, oid, emit)
+        if action == "stop":
+            current = cw_task._task_outcome(d, oid, "stop")
+            qid = ((current["payload"] or {}).get("task") or {}).get("qid")
+            if current["state"] != "running" or not self.cancel(key, wid, qid):
+                raise cw_ask.OutcomeError("task is not running", "conflict")
+            return current
+        return self.start_task(key, wid, d, meta, oid, emit)
+
+    def start_task(self, key, wid, d, meta, oid, emit):
+        current, profile = cw_task.check_runnable(d, oid)
+        config = cw_store.load_config()
+        qid, t = "tq-" + secrets.token_hex(4), "t-" + secrets.token_hex(3)
+        live = {"text": "", "seq": 0, "progress": None, "proc": None, "cancelled": False,
+                "lock": threading.Lock()}
+        with self._inflight_lock:
+            self._asks += 1
+        with self._qids_lock:
+            self._qids.add(qid)
+            self._turns[qid] = {"live": live, "key": key, "wid": wid, "thread_id": current["thread_id"]}
+        self._idle_since = None
+
+        def release():
+            with self._inflight_lock:
+                self._asks -= 1
+            with self._qids_lock:
+                self._qids.discard(qid)
+                self._turns.pop(qid, None)
+
+        try:
+            folded = cw_task.begin(d, meta, current, t, qid, emit)
+        except BaseException:
+            release()
+            raise
+
+        def _target():
+            try:
+                cw_task.run_turn(d, meta, current, folded["payload"]["task"], live, emit, config, profile)
+            finally:
+                release()
+
+        threading.Thread(target=_target, daemon=True).start()
+        return folded
+
     def _is_idle_now(self):
         with self._inflight_lock:
             inflight = self._inflight
@@ -1587,6 +1691,8 @@ def _mark_interrupted():
         meta = cw_store.read_meta(d)
         if meta and meta.get("status") == "building":
             cw_store.update_meta(d, lambda m: m.update(status="interrupted"))
+        if meta:
+            cw_ask.fail_interrupted_tasks(d, set())
 
 
 def _has_local_drafts(d):
@@ -1609,7 +1715,13 @@ def _remove_walkthrough(meta, d):
         if result.returncode != 0:
             shutil.rmtree(head, ignore_errors=True)
             subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True)
+    cw_task.remove_all(d, meta)
     shutil.rmtree(d, ignore_errors=True)
+    for sd in list(_iter_walkthrough_dirs()):
+        smeta = cw_store.read_meta(sd)
+        sib = (smeta or {}).get("sibling_of") or {}
+        if sib.get("key") == meta.get("key") and sib.get("id") == meta.get("id") and sd != d:
+            _remove_walkthrough(smeta, sd)
 
 
 def _prune():

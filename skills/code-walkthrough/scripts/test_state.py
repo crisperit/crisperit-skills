@@ -293,7 +293,9 @@ def test_own_draft_renders_an_editable_textarea_with_no_edit_button():
 
     assert "wireDraftAutosave" in text
     assert "fb-draft-body" in text
-    assert "'Edit'" not in text
+    row = text.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
+    assert "fb-draft-body" in row
+    assert not re.search(r"""['"]Edit['"]""", row)
 
 
 def test_template_has_the_execcommand_copy_fallback():

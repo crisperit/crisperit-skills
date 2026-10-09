@@ -29,6 +29,7 @@ import fanout  # noqa: E402
 import fanout_threads  # noqa: E402
 import links  # noqa: E402
 import notes  # noqa: E402
+import regen  # noqa: E402
 import state  # noqa: E402
 from symdelta import add_worktree, remove_worktree  # noqa: E402
 from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, parse_hunks, validate  # noqa: E402
@@ -550,7 +551,7 @@ def _submit_fragment_handler(d, n, batch_diff, seed, state):
     return handler
 
 
-def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=None):
+def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=None, hint=None):
     profile = cw_store.role_profile(config, role)
     if profile is None:
         return False, None, [f"no profile for role {role}"], None
@@ -566,6 +567,10 @@ def _run_fragment_conversation(d, n, entry, config, on_event, role, extra_lines=
     if extra_lines:
         user_text += ("\n\nThe central gate reported these problems with your files:\n"
                        + "\n".join(extra_lines))
+
+    if hint:
+        user_text += ("\n\nThe seed already carries notes (and roles) from the previous walkthrough for "
+                      "unchanged hunks; keep them. Write notes only for these entries:\n" + "\n".join(hint))
 
     state = {"attempt": 0, "ok": False, "fragment": None, "problems": []}
     local_handlers = dict(handlers)
@@ -600,6 +605,17 @@ def _run_batch(d, n, entry, config, on_event):
             _request_render(d, [n])
             return True
 
+    carry = ((cw_store.read_meta(d) or {}).get("sibling_of") or {}).get("carry", {}).get(str(n)) or {}
+    if carry.get("all"):
+        frag = _copy_into_seed(json.loads(Path(entry["seed"]).read_text()), {})
+        if not validate(batch_diff, frag, fragment=True):
+            fragment_path.write_text(json.dumps(frag, indent=2))
+            cw_store.update_meta(
+                d, lambda m: (m.setdefault("batches_done", []).append(n) if n not in m.get("batches_done", []) else None))
+            _emit_step(d, on_event, name, "ok", reused=True, carried=True)
+            _request_render(d, [n])
+            return True
+
     attempts = 0
     model_used = None
     passed = False
@@ -612,7 +628,8 @@ def _run_batch(d, n, entry, config, on_event):
             continue
         attempts += 1
         model_used = profile.get("model")
-        ok, frag, probs, err = _run_fragment_conversation(d, n, entry, config, on_event, role)
+        ok, frag, probs, err = _run_fragment_conversation(d, n, entry, config, on_event, role,
+                                                          hint=carry.get("pending"))
         if ok:
             passed, fragment = True, frag
             break
@@ -643,6 +660,76 @@ def _run_batch_guarded(d, n, entry, config, on_event, results, lock):
         ok = False
     with lock:
         results[n] = ok
+
+
+def _sibling_carry_forward(d, meta, manifest):
+    """Pre-fill every batch seed from the parent's finished analysis (regen's per-hunk body
+    hashes) and record, in meta.sibling_of, which batches carried whole, which entries still
+    need a worker, and the files whose diff differs from the parent's."""
+    sib = meta["sibling_of"]
+    parent_d = cw_store.walkthrough_dir(sib["key"], sib["id"])
+    parent_analysis = cw_store.read_json(parent_d / "analysis.json", default=None)
+    parent_diff = parent_d / "raw.diff"
+    if not isinstance(parent_analysis, dict) or not parent_diff.exists():
+        raise cw_store.CWError("the parent walkthrough has no analysis to carry forward",
+                               remedy="re-run the parent walkthrough first")
+    cur = regen.hunk_records((d / "raw.diff").read_text(errors="replace"))
+    par = regen.hunk_records(parent_diff.read_text(errors="replace"))
+    note_by = state._note_lookup(parent_analysis)
+    prior_hunks = [{"path": r["path"], "hash": r["hash"], "note": note_by.get((r["path"], r["prefix"]), "")}
+                   for r in par]
+    prior_roles = {f["path"]: f.get("role") or "" for f in parent_analysis.get("files", [])
+                   if isinstance(f, dict)}
+    plan = regen.plan_hunks(cur, prior_hunks)
+    carry = {}
+    for n, entry in enumerate(manifest, 1):
+        whole = regen.fill_seeds(entry["seed"], plan, prior_roles)
+        pending = []
+        for f in json.loads(Path(entry["seed"]).read_text())["files"]:
+            if not f.get("role"):
+                pending.append(f"{f['path']}: role")
+            pending += [f"{f['path']}: {h['header']}" for h in f["hunks"] if _blank(h.get("note"))]
+        carry[str(n)] = {"all": whole, "pending": pending}
+    cur_paths = {r["path"] for r in cur}
+    changed = {r["path"] for r in cur if not plan[r["id"]]["carry"]} | {
+        r["path"] for r in par if r["path"] not in cur_paths}
+
+    def fn(m):
+        m["sibling_of"].update({"carry": carry, "changed_files": sorted(changed)})
+    return cw_store.update_meta(d, fn)
+
+
+def _carry_prose(d, meta, on_event, batch_count):
+    """Same return contract as _run_prose, without a model: the parent's prose is the page's
+    prose. Parent groups are dropped when they no longer fit the sibling's file set."""
+    sib = meta["sibling_of"]
+    parent_d = cw_store.walkthrough_dir(sib["key"], sib["id"])
+    prose = cw_store.read_json(parent_d / "prose.json", default=None)
+    if not isinstance(prose, dict):
+        _emit_step(d, on_event, "prose", "failed", error="the parent walkthrough has no prose")
+        return "failed", ["the parent walkthrough has no prose"]
+    prose = {**prose, "target": meta["target"]}
+    fragment_paths = _fragment_paths(d, batch_count)
+    raw_diff = (d / "raw.diff").read_text(errors="replace")
+    diff_paths = set(parse_hunks(raw_diff)[1])
+    merged, problems = _merge_and_validate(d, fragment_paths, prose)
+    if any(_classify(p, diff_paths)[0] == "prose" for p in problems):
+        prose.pop("groups", None)
+        merged, problems = _merge_and_validate(d, fragment_paths, prose)
+    if any(_classify(p, diff_paths)[0] == "prose" for p in problems):
+        _emit_step(d, on_event, "prose", "failed", lines=problems)
+        return "failed", problems
+    (d / "prose.json").write_text(json.dumps(prose, indent=2))
+    cw_store.update_meta(d, lambda m: m["sibling_of"].update({"prose_carried": True}))
+    if not problems:
+        (d / "analysis.json").write_text(json.dumps(merged, indent=2))
+        _emit_step(d, on_event, "prose", "ok", carried=True)
+        return "ok", []
+    if any(_classify(p, diff_paths)[0] == "fatal" for p in problems):
+        _emit_step(d, on_event, "prose", "failed", lines=problems)
+        return "failed", problems
+    _emit_step(d, on_event, "prose", "ok", carried=True, lines=problems)
+    return "route", problems
 
 
 def _run_prose(d, meta, config, on_event, batch_count):
@@ -1343,6 +1430,13 @@ def prepare_walkthrough(params, is_running=None):
     paths = params.get("paths") or []
     title = params.get("title")
     diff_file = params.get("diff_file")
+    sibling_of = params.get("sibling_of")
+    if sibling_of is not None:
+        need = ("key", "id", "oid", "task_id", "parent_head")
+        if (not isinstance(sibling_of, dict) or not all(isinstance(sibling_of.get(k), str) for k in need)
+                or pr is not None):
+            raise cw_store.CWError("bad sibling_of", remedy="sibling_of is {key, id, oid, task_id, parent_head} and has no pr")
+        sibling_of = {k: sibling_of.get(k) for k in (*need, "branch", "title")}
 
     toplevel = _repo_toplevel(repo)
     if toplevel is None:
@@ -1417,7 +1511,7 @@ def prepare_walkthrough(params, is_running=None):
         "v": 1, "id": wid, "key": key, "repo": str(toplevel), "base": base_sha, "head": head_sha,
         "base_ref": base_ref, "head_ref": head_ref, "pr": pr, "gh_repo": gh_repo, "target": target,
         "slug": slug, "title": title, "explain": explain, "paths": paths, "diff_file": diff_file,
-        "sig": sig, "status": "building", "error": None, "remedy": None, "gate": [], "page": "partial",
+        "sig": sig, "sibling_of": sibling_of, "status": "building", "error": None, "remedy": None, "gate": [], "page": "partial",
     })
     meta["updated_at"] = now
     cw_store.write_json(d / "meta.json", meta)
@@ -1495,6 +1589,8 @@ def run(d, on_event=None):
         meta = cw_store.read_meta(d) or meta
         manifest = _ensure_split(d, meta, config)
         meta = cw_store.read_meta(d) or meta
+        if meta.get("sibling_of"):
+            meta = _sibling_carry_forward(d, meta, manifest)
         if not (d / "partial.html").exists():
             try:
                 render_partial(d, meta)
@@ -1518,7 +1614,7 @@ def run(d, on_event=None):
         route = meta.get("route")
         batch_count = meta.get("batches", 0)
 
-        if route == "small":
+        if route == "small" and not meta.get("sibling_of"):
             small_ok = _run_small(d, meta, config, on_event)
             for t in bg_threads:
                 t.join()
@@ -1548,7 +1644,10 @@ def run(d, on_event=None):
                                      f"batch {failed_n} failed the fragment gate")
                 return "failed"
 
-            prose_status, prose_lines = _run_prose(d, meta, config, on_event, batch_count)
+            if meta.get("sibling_of"):
+                prose_status, prose_lines = _carry_prose(d, meta, on_event, batch_count)
+            else:
+                prose_status, prose_lines = _run_prose(d, meta, config, on_event, batch_count)
             for t in bg_threads:
                 t.join()
 

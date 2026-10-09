@@ -350,6 +350,8 @@ _TRANSITIONS = {
     ("github_draft", "verbatim"): ("proposed", "proposed"),
     ("page_edit", "revert"): ("applied", "reverted"),
     ("page_edit", "reapply"): ("reverted", "applied"),
+    ("task", "dismiss"): ("proposed", "dismissed"),
+    ("task", "edit"): ("proposed", "proposed"),
 }
 
 
@@ -369,6 +371,11 @@ def _outcome_action(d, oid, action, payload, on_event):
     event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": to_state}
     if current["outcome"] == "github_draft" and action in ("edit", "keep", "verbatim"):
         event["payload"] = _github_draft_payload(current["payload"], action, payload)
+    elif current["outcome"] == "task" and action == "edit":
+        error = cw_mcp.task_plan_error(payload)
+        if error:
+            raise OutcomeError(error, "invalid", remedy="fix the plan and try again")
+        event["payload"] = {**cw_mcp._task_payload(payload), "edited": True}
     elif action == "edit":
         anchor_doc = cw_store.read_json(d / "turns" / f"{current['qid']}.anchor.json") or {}
         already = {f"resolve:{o['payload']['thread']}" for o in outcomes
@@ -399,10 +406,21 @@ def _github_draft_payload(current, action, payload):
     return {**current, "body": current.get("original") or current["body"], "verbatim": True, "edited": False}
 
 
-def mark_outcome(d, oid, state, on_event=None):
-    """Writes a state event that no /outcomes action owns (publish-one's published and done)."""
+def mark_outcome(d, oid, state, on_event=None, payload=None, expect=None):
+    """Writes a state event that no /outcomes action owns (publish-one's published and done,
+    a code task's running and after). `expect` is the states the outcome must be in, checked
+    under the same lock so two clicks cannot both win."""
     with _OUTCOME_LOCK:
-        _append_qa(d, {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": state})
+        if expect is not None:
+            current = next((o for o in read_outcomes(d) if o["oid"] == oid), None)
+            if current is None:
+                raise OutcomeError("outcome not found", "not_found")
+            if current["state"] not in expect:
+                raise OutcomeError(f"outcome is {current['state']}", "conflict")
+        event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": state}
+        if payload is not None:
+            event["payload"] = payload
+        _append_qa(d, event)
         folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
     if on_event:
         on_event("outcome", folded)
@@ -433,6 +451,12 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
             verb = "undid" if r.get("state") == "reverted" else "redid"
             where = "after block" if payload["op"] == "insert_after" else "of block"
             lines.append(f"The user {verb} your page edit ({payload['op']} {where} {payload['target']})")
+            continue
+        if o["outcome"] == "task":
+            if r.get("state") == "dismissed":
+                lines.append(f"The user dismissed your proposed code task: {payload['title']}")
+            elif r.get("state") == "proposed":
+                lines.append(f"The user edited your proposed code task to: {payload['title']}")
             continue
         if o["outcome"] == "github_draft":
             where = f"{payload['target'].get('path')}:{payload['target'].get('line')}"
@@ -628,6 +652,16 @@ def finalise_stale(d, in_flight):
                 "status": "error", "error": "turn was interrupted",
                 "remedy": "send the comment again"})
             sweep_outcomes(d, r["qid"], r["thread_id"])
+    fail_interrupted_tasks(d, in_flight)
+
+
+def fail_interrupted_tasks(d, in_flight):
+    """A running code task whose turn is gone (daemon restart): failed, worktree kept for Discard."""
+    for o in read_outcomes(d):
+        task = (o["payload"] or {}).get("task") if o["outcome"] == "task" else None
+        if o["state"] == "running" and task and task.get("qid") not in in_flight:
+            mark_outcome(d, o["oid"], "failed", expect=("running",),
+                         payload={**o["payload"], "task": {**task, "error": "interrupted"}})
 
 
 def _server_log(message):
@@ -660,7 +694,8 @@ def _emit_progress(live, on_event, qid, thread_id, tool, detail):
         on_event("progress", progress)
 
 
-def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None):
+def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None, plain=False):
+    """plain: a turn with no outcome server (code task): no cw connection check, no text deltas."""
     st = {"init": False, "session_id": None, "texts": [], "result": None, "bad_mcp": False,
           "buf": "", "last": 0.0, "sep": False, "mcp_ids": set()}
 
@@ -687,12 +722,12 @@ def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, 
         if kind == "system" and obj.get("subtype") == "init":
             st["init"] = True
             st["session_id"] = obj.get("session_id")
-            if not any(s.get("name") == "cw" and s.get("status") == "connected"
+            if not plain and not any(s.get("name") == "cw" and s.get("status") == "connected"
                        for s in obj.get("mcp_servers") or [] if isinstance(s, dict)):
                 st["bad_mcp"] = True
                 if live.get("proc"):
                     _kill(live["proc"])
-        elif kind == "stream_event":
+        elif kind == "stream_event" and not plain:
             event = obj.get("event") or {}
             etype = event.get("type")
             if etype == "content_block_start" and (event.get("content_block") or {}).get("type") == "text":

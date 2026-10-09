@@ -1063,6 +1063,44 @@
   .cw-threads-top #cw-threads-submit{margin:0}
   .cw-threads-top .cw-th-copy-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
   .cw-reply-ask{margin:6px 0 0}
+  .cw-task{display:block;border-color:var(--purple);border-left:3px solid var(--purple);
+    background:color-mix(in srgb,var(--purple) 7%,transparent);white-space:normal;overflow-wrap:anywhere}
+  .cw-task[data-state="done"]{border-color:var(--green);background:color-mix(in srgb,var(--green) 7%,transparent)}
+  .cw-task[data-state="failed"]{border-color:var(--red);background:color-mix(in srgb,var(--red) 7%,transparent)}
+  .cw-task[data-state="dismissed"],.cw-task[data-state="discarded"],.cw-task[data-state="stopped"]{
+    border-color:var(--border);background:var(--panel2);color:var(--muted)}
+  .cw-task-badge{margin:0;color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
+  .cw-task[data-state="done"] .cw-task-badge{color:var(--green)}
+  .cw-task[data-state="failed"] .cw-task-badge{color:var(--red)}
+  .cw-task[data-state="stopped"] .cw-task-badge{color:var(--muted)}
+  .cw-task-title{margin:2px 0 4px;font-weight:600}
+  .cw-task ol,.cw-task ul{margin:0 0 6px;padding-left:1.4em}
+  .cw-task-files,.cw-task-note,.cw-task-sum,.cw-task-stat{margin:0 0 6px;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-task-sum{color:var(--text);font-size:var(--fs-sm);white-space:pre-wrap}
+  .cw-task .cw-task-add{color:var(--green)} .cw-task .cw-task-del{color:var(--red)}
+  .cw-task code{overflow-wrap:anywhere}
+  .cw-task label{display:block;margin:0 0 2px;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-task input[type=text],.cw-task textarea{display:block;width:100%;box-sizing:border-box;margin:0 0 6px;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:6px 8px;font:inherit;font-size:var(--fs-sm)}
+  .cw-task textarea{min-height:64px}
+  .cw-task-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px}
+  .cw-task-actions button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);
+    color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:var(--fs-xs)}
+  .cw-task-actions .cw-task-run{border-color:var(--purple);color:var(--purple)}
+  .cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
+  #cw-sibling a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-task-msg{margin:0;font-size:var(--fs-xs);color:var(--red)}
+  .cw-task-msg:empty{display:none}
+  #cw-sibling{margin:0 0 12px;padding:10px 12px;border:1px solid var(--purple);border-left-width:3px;
+    border-radius:6px;background:color-mix(in srgb,var(--purple) 8%,transparent);overflow-wrap:anywhere}
+  #cw-sibling p{margin:0 0 4px}
+  #cw-sibling .cw-sibling-note{color:var(--muted);font-size:var(--fs-xs)}
+  .cw-sibling-chip{margin-left:6px;padding:0 6px;border:1px solid var(--purple);border-radius:999px;
+    color:var(--purple);font-size:var(--fs-xs);white-space:nowrap}
+  .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-drafts-bar,
+  .cw-sibling #cw-threads-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
+  .cw-sibling .fb-reply{display:none!important}
   @media (max-width:728px){.cw-ghdraft-cols{grid-template-columns:minmax(0,1fr)}}
   @media (prefers-reduced-motion:no-preference){
     .cw-caret{animation:cw-caret 1s steps(1) infinite}
@@ -3984,6 +4022,15 @@
       return last&&last.status==='error'?'error':'answered';
     }
 
+    function cherryPickCommand(sha){
+      const s=String(sha||'');
+      return /^[0-9a-f]{7,40}$/i.test(s)?'git cherry-pick '+s:null;
+    }
+    function taskPlanFromForm(title,steps,files){
+      const lines=(s,n)=>String(s||'').split('\n').map(x=>x.trim()).filter(Boolean).slice(0,n);
+      return {title:String(title||'').trim(),steps:lines(steps,12),files:lines(files,20)};
+    }
+
     const streams=new Map();         // qid -> {seq,text,progress}
     const outcomesByQid=new Map();   // qid -> Map(oid -> folded outcome record)
     const streamElsOf=qid=>[...document.querySelectorAll('.cw-streaming')].filter(e=>e.dataset.qid===qid);
@@ -3993,6 +4040,8 @@
       if(typeof p==='string') return p;
       const d=p.detail||'';
       if(p.tool==='Read') return 'Reading '+d;
+      if(/^(Edit|Write)$/.test(p.tool)) return 'Editing '+d;
+      if(p.tool==='propose_task') return 'Planning a code task';
       if(p.tool==='Grep') return 'Searching for '+d;
       if(p.tool==='Glob') return 'Listing files';
       if(p.tool==='propose_resolve') return 'Suggesting a resolve';
@@ -4335,7 +4384,147 @@
       return d;
     }
 
+    const taskEdit=new Map();
+    const taskMsg=new Map();
+    function setTaskMsg(oid,text){
+      taskMsg.set(oid,text);
+      document.querySelectorAll('.cw-task-msg').forEach(e=>{ if(e.dataset.oid===oid) e.textContent=text; });
+    }
+
+    function taskAct(o,path,body,btns,beforeUpsert){
+      btns.forEach(b=>{ b.disabled=true; });
+      setTaskMsg(o.oid,'');
+      return postJson(path,body)
+        .then(({ok,body:b})=>{
+          if(!ok||(b&&b.error)){ btns.forEach(x=>{ x.disabled=false; }); setTaskMsg(o.oid,errText(b)); return null; }
+          if(beforeUpsert) beforeUpsert();
+          if(b.outcome) upsertOutcome(b.outcome);
+          return b;
+        })
+        .catch(()=>{ btns.forEach(x=>{ x.disabled=false; }); setTaskMsg(o.oid,NET_ERR); return null; });
+    }
+
+    function copyTask(text,msgOid){
+      const ok=()=>setTaskMsg(msgOid,'Copied.');
+      const fb=()=>{ if(legacyCopy(text)) ok(); else setTaskMsg(msgOid,'Copy failed in this browser.'); };
+      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok).catch(fb);
+      else fb();
+    }
+
+    function taskEditForm(t,o,d,msg){
+      const draft=taskEdit.get(o.oid);
+      const f=el=>{ el.dataset.oid=o.oid; return el; };
+      const field=(label,el)=>{ const l=mk('label',null,label); l.append(el); return l; };
+      const title=f(mk('input')); title.type='text'; title.value=draft.title; title.className='cw-task-in-title';
+      const steps=f(mk('textarea')); steps.value=draft.steps; steps.rows=5; steps.className='cw-task-in-steps';
+      const files=f(mk('textarea')); files.value=draft.files; files.rows=3; files.className='cw-task-in-files';
+      const sync=()=>taskEdit.set(o.oid,{title:title.value,steps:steps.value,files:files.value});
+      [title,steps,files].forEach(el=>el.addEventListener('input',sync));
+      const save=mkBtn('Save','fb-ghost'), cancel=mkBtn('Cancel','fb-ghost');
+      const cancelEdit=()=>{ taskEdit.delete(o.oid); renderThread(t); };
+      const doSave=()=>{
+        const plan=taskPlanFromForm(title.value,steps.value,files.value);
+        if(!plan.title||!plan.steps.length){ setTaskMsg(o.oid,'Add a title and at least one step.'); return; }
+        taskAct(o,'/outcomes/'+encodeURIComponent(o.oid)+'/edit',{payload:plan},[save,cancel],()=>taskEdit.delete(o.oid));
+      };
+      save.addEventListener('click',doSave);
+      cancel.addEventListener('click',cancelEdit);
+      d.addEventListener('keydown',e=>{
+        if(e.key==='Escape'){ e.preventDefault(); cancelEdit(); }
+        else if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); doSave(); }
+      });
+      const acts=mk('div','cw-task-actions'); acts.append(save,cancel);
+      d.append(field('Title',title),field('Steps, one per line (up to 12)',steps),
+        field('Files, one per line (up to 20)',files),acts,msg);
+    }
+
+    function taskCard(t,o){
+      const p=o.payload||{}, task=p.task||{};
+      const d=mk('div','cw-outcome cw-task'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      const msg=mk('p','cw-task-msg',taskMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+      const title=String(p.title||'');
+      if(o.state==='dismissed'||o.state==='discarded'){
+        d.append(mk('p','cw-task-badge','Code task '+o.state+': '+title));
+        return d;
+      }
+      const badge={proposed:'Code task, waits for you',running:'Code task, running',done:'Done',
+        failed:'Code task failed',stopped:'Stopped'}[o.state]||'Code task';
+      const bd=mk('p','cw-task-badge',badge);
+      if(o.state==='proposed'&&p.edited) bd.append(mk('span',null,' (edited by you)'));
+      d.append(bd);
+      if(o.state==='proposed'&&taskEdit.has(o.oid)){ taskEditForm(t,o,d,msg); return d; }
+      d.append(mk('p','cw-task-title',title));
+      const acts=mk('div','cw-task-actions');
+      const btns=[];
+      const add=(text,cls,fn)=>{ const b=mkBtn(text,cls||'fb-ghost'); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); return b; };
+      const oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
+      if(o.state==='proposed'){
+        const ol=document.createElement('ol');
+        for(const s of (p.steps||[])) ol.append(mk('li',null,s));
+        d.append(ol);
+        if((p.files||[]).length) d.append(mk('p','cw-task-files','Files: '+p.files.join(', ')));
+        add('Run in scratch worktree','cw-task-run',()=>taskAct(o,oidPath('run'),{},btns));
+        add('Edit plan',null,()=>{
+          taskEdit.set(o.oid,{title,steps:(p.steps||[]).join('\n'),files:(p.files||[]).join('\n')});
+          renderThread(t);
+          const first=[...document.querySelectorAll('.cw-task-in-title')].find(e=>e.dataset.oid===o.oid);
+          if(first) first.focus();
+        });
+        add('Dismiss',null,()=>taskAct(o,oidPath('dismiss'),{},btns));
+        d.append(acts,mk('p','cw-task-note','Writes to a separate worktree and a local branch. Never pushed.'),msg);
+        return d;
+      }
+      if(o.state==='running'){
+        const dots=mk('span','cw-dots'); dots.setAttribute('aria-hidden','true');
+        for(let i=0;i<3;i++) dots.appendChild(document.createElement('i'));
+        const prog=mk('span','cw-progress',progressText((streams.get(task.qid)||{}).progress));
+        prog.dataset.qid=task.qid||'';
+        const w=mk('p','cw-working'); w.append(dots,mk('span',null,'Working in a scratch worktree'),prog);
+        d.append(w);
+        if(task.qid) add('Stop',null,()=>taskAct(o,'/comment/'+encodeURIComponent(task.qid)+'/cancel',{},btns));
+        d.append(acts,msg);
+        return d;
+      }
+      if(o.state==='done'){
+        if(task.stat) d.append(mk('p','cw-task-stat',task.stat));
+        const fl=Array.isArray(task.files)?task.files:[];
+        if(fl.length){
+          const ul=document.createElement('ul');
+          for(const f of fl){
+            const li=mk('li',null,String(f.path||'')+' ');
+            li.append(mk('span','cw-task-add','+'+(f.add||0)),document.createTextNode(' '),mk('span','cw-task-del','-'+(f.del||0)));
+            ul.append(li);
+          }
+          d.append(ul);
+        }
+        if(task.branch){ const bp=mk('p','cw-task-files','Branch: '); bp.append(mk('code',null,task.branch)); d.append(bp); }
+        if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
+        add('Show with this change',null,b=>{
+          const label=b.textContent;
+          b.textContent='Opening...';
+          taskAct(o,oidPath('show'),{},btns).then(r=>{
+            b.textContent=label;
+            if(!r) return;
+            if(typeof r.url==='string'&&/^(https?:\/\/|\/[^\/])/.test(r.url)){
+              if(!window.open(r.url,'_blank','noopener')) setTaskMsg(o.oid,'The browser blocked the new tab. Allow pop-ups, then press the button again.');
+            } else setTaskMsg(o.oid,'No page to open.');
+            btns.forEach(x=>{ x.disabled=false; });
+          });
+        });
+        const cp=cherryPickCommand(task.sha);
+        if(cp) add('Copy cherry-pick command',null,()=>copyTask(cp,o.oid));
+        add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
+        d.append(acts,msg);
+        return d;
+      }
+      d.append(mk('p','cw-task-sum',o.state==='failed'?(task.error||'The task failed.'):'The task was stopped before it finished.'));
+      add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
+      d.append(acts,msg);
+      return d;
+    }
+
     function outcomeEl(t,o){
+      if(o.outcome==='task') return taskCard(t,o);
       if(o.outcome==='page_edit') return pageEditCard(t,o);
       if(o.outcome==='github_draft') return ghDraftCard(t,o);
       const id=o.payload&&o.payload.thread;
@@ -4703,6 +4892,34 @@
   wireCommentsPanel();
   wireResolutionDialog();
   if(window.CW_LIVE) wireAsk();
+
+  function wireSibling(){
+    const sb=window.CW_LIVE&&window.CW_LIVE.sibling;
+    const root=$('plan-content');
+    if(!sb||!root) return;
+    document.documentElement.classList.add('cw-sibling');
+    const box=document.createElement('aside'); box.id='cw-sibling'; box.setAttribute('aria-label','Task revision');
+    const line=document.createElement('p');
+    line.textContent='Showing PR head with task '+(sb.title||'')+' (branch '+(sb.branch||'')+') ';
+    box.append(line);
+    if(typeof sb.parent_url==='string'&&/^(https?:\/\/|\/[^\/])/.test(sb.parent_url)){
+      const a=document.createElement('a'); a.href=sb.parent_url; a.textContent='Back to PR head';
+      line.append(a);
+    }
+    if(sb.prose_carried){
+      const n=document.createElement('p'); n.className='cw-sibling-note';
+      n.textContent='Overview and story are from the PR head and may be outdated.';
+      box.append(n);
+    }
+    root.parentNode.insertBefore(box,root);
+    const changed=new Set(Array.isArray(sb.changed_files)?sb.changed_files:[]);
+    document.querySelectorAll('.hunk-path').forEach(el=>{
+      if(!changed.has(el.textContent.trim())) return;
+      const chip=document.createElement('span'); chip.className='cw-sibling-chip'; chip.textContent='changed by task';
+      el.insertAdjacentElement('afterend',chip);
+    });
+  }
+  wireSibling();
   wireViewedCheckboxes();
   render();
 })();

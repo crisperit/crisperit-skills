@@ -898,3 +898,72 @@ def test_publish_buttons_share_one_in_flight_set_and_a_posted_409_counts_as_succ
     assert "status===409" in publish and "no longer a local draft" in publish and "cur.state!=='draft'" in publish
     ack = _wire_ask().split("function ghAct(")[1].split("function ghKeep(")[0]
     assert "loadQa();" in ack
+
+
+def _task_section():
+    return _wire_ask().split("const taskEdit=new Map()")[1].split("function outcomeEl(")[0]
+
+
+def test_outcome_el_dispatches_task_and_routes_are_wired_without_inner_html():
+    dispatch = _wire_ask().split("function outcomeEl(")[1].split("function turnEl(")[0]
+    assert "o.outcome==='task') return taskCard(t,o)" in dispatch
+    assert "o.outcome==='github_draft') return ghDraftCard(t,o)" in dispatch
+    section = _task_section()
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "<img"):
+        assert banned not in section
+    for verb in ("oidPath('run')", "oidPath('dismiss')", "oidPath('discard')", "oidPath('show')", "/edit'"):
+        assert verb in section
+    assert "'/comment/'+encodeURIComponent(task.qid)+'/cancel'" in section
+    assert "window.open(r.url,'_blank','noopener')" in section and "Opening..." in section
+    assert "Run in scratch worktree" in section and "Never pushed." in section
+    assert "if(b.outcome) upsertOutcome(b.outcome)" in section and "errText(b)" in section
+
+
+def test_task_text_only_reaches_the_dom_through_text_content():
+    section = _task_section()
+    assert "mk('li',null,s)" in section and "mk('code',null,task.branch)" in section
+    assert "mk('p','cw-task-sum',task.summary)" in section
+    mk = _wire_ask().split("const mk=(tag,cls,text)=>{")[1].split("};")[0]
+    assert "e.textContent=text" in mk and "innerHTML" not in mk
+
+
+def test_task_progress_and_waiting_count_use_the_shared_paths():
+    wire_ask = _wire_ask()
+    text = wire_ask.split("function progressText(p){")[1].split("const noteById")[0]
+    assert "'Planning a code task'" in text and "/^(Edit|Write)$/.test(p.tool)" in text
+    assert "prog.dataset.qid=task.qid" in _task_section().replace("prog.dataset.qid=task.qid||''", "prog.dataset.qid=task.qid")
+    assert "progressElsOf(d.qid)" in wire_ask
+
+
+def test_sibling_banner_is_gated_and_hides_publishing():
+    template = _real_template()
+    sib = "function wireSibling(){" + template.split("function wireSibling(){")[1].split("wireSibling();")[0]
+    assert "window.CW_LIVE&&window.CW_LIVE.sibling" in sib and "if(!sb||!root) return" in sib
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML"):
+        assert banned not in sib
+    assert "Back to PR head" in sib and "changed by task" in sib and "may be outdated" in sib
+    assert "'.hunk-path'" in sib and "target" not in sib
+    assert ".cw-sibling #cw-drafts-bar" in template and ".cw-sibling .fb-reply" in template
+
+
+def test_cherry_pick_and_task_form_helpers_are_pure_and_correct():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function cherryPickCommand(" + _wire_ask().split("function cherryPickCommand(")[1].split("const streams=new Map()")[0]
+    script = src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(cherryPickCommand('abc1234'), 'git cherry-pick abc1234');
+eq(cherryPickCommand('abc1234; rm -rf /'), null);
+eq(cherryPickCommand('xyz'), null);
+eq(cherryPickCommand(undefined), null);
+const many = Array.from({length: 30}, (_, i) => 'f' + i).join('\\n');
+const r = taskPlanFromForm('  T  ', ' a \\n\\n  \\n b', many);
+eq([r.title, r.steps, r.files.length], ['T', ['a', 'b'], 20]);
+eq(taskPlanFromForm('x', Array(20).fill('s').join('\\n'), '').steps.length, 12);
+const h = taskPlanFromForm('t', '<img src=x onerror=alert(1)>', '');
+eq(h.steps, ['<img src=x onerror=alert(1)>']);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr

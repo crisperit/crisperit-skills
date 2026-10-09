@@ -222,6 +222,62 @@ OUTCOME_TOOLS.append({
 })
 
 
+TASK_LIMITS = {"title": 120, "steps": 12, "step": 300, "files": 20}
+
+OUTCOME_TOOLS.append({
+    "name": "propose_task",
+    "description": ("Record a plan for a code change the comment asks for. Nothing runs from this call: the "
+                    "user reviews the plan and presses Run, and only then a separate agent makes the change "
+                    "on a local branch that is never pushed. Do not paste code or patches."),
+    "inputSchema": {
+        "type": "object", "required": ["title", "steps"],
+        "properties": {
+            "title": {"type": "string", "maxLength": TASK_LIMITS["title"]},
+            "steps": {"type": "array", "minItems": 1, "maxItems": TASK_LIMITS["steps"],
+                      "items": {"type": "string", "maxLength": TASK_LIMITS["step"]}},
+            "files": {"type": "array", "maxItems": TASK_LIMITS["files"],
+                      "items": {"type": "string"}, "description": "repo-relative paths the change touches"},
+        },
+    },
+})
+
+
+def task_plan_error(args):
+    """Validates a code-task plan; shared by propose_task and the user's edit of a proposal."""
+    title = args.get("title")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= TASK_LIMITS["title"]:
+        return f"title must be 1 to {TASK_LIMITS['title']} characters"
+    steps = args.get("steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= TASK_LIMITS["steps"]:
+        return f"steps must be a list of 1 to {TASK_LIMITS['steps']} strings"
+    if any(not isinstance(s, str) or not 1 <= len(s.strip()) <= TASK_LIMITS["step"] for s in steps):
+        return f"each step must be 1 to {TASK_LIMITS['step']} characters"
+    files = args.get("files", [])
+    if not isinstance(files, list) or len(files) > TASK_LIMITS["files"]:
+        return f"files must be a list of at most {TASK_LIMITS['files']} paths"
+    for f in files:
+        if (not isinstance(f, str) or not f or "\x00" in f or f.startswith("/")
+                or ".." in f.split("/")):
+            return f"file {f!r} must be a repo-relative path without .."
+    return None
+
+
+def _check_task(anchor_doc, args, already):
+    if (anchor_doc.get("anchor") or {}).get("kind") not in ("line", "thread"):
+        return "code tasks attach to diff lines or review threads; reply in prose instead"
+    error = task_plan_error(args)
+    if error:
+        return error
+    if "task" in already:
+        return "already proposed a code task in this turn"
+    return None
+
+
+def _task_payload(args, anchor_doc=None):
+    return {"title": args["title"].strip(), "steps": [s.strip() for s in args["steps"]],
+            "files": list(args.get("files") or [])}
+
+
 def _check_resolve(anchor_doc, args, already):
     why = args.get("why")
     if not isinstance(why, str) or not why.strip():
@@ -318,6 +374,11 @@ def _page_edit_payload(args, anchor_doc=None):
 
 
 OUTCOME_KINDS = {
+    "propose_task": {
+        "outcome": "task", "state": "proposed", "check": _check_task, "payload": _task_payload,
+        "key": lambda payload: "task",
+        "accepted": "recorded as a plan; nothing runs until the user presses Run",
+    },
     "propose_resolve": {
         "outcome": "resolve", "state": "proposed", "check": _check_resolve, "payload": _resolve_payload,
         "key": lambda payload: f"resolve:{payload['thread']}", "accepted": "recorded as a suggestion; the user decides",
