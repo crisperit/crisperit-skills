@@ -1074,6 +1074,9 @@
   .cw-task[data-state="failed"] .cw-task-badge{color:var(--red)}
   .cw-task[data-state="stopped"] .cw-task-badge{color:var(--muted)}
   .cw-task-title{margin:2px 0 4px;font-weight:600}
+  .cw-task-handover{margin:0 0 6px;padding:6px 8px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:6px;font-size:var(--fs-xs);white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-task-handover code{background:none;padding:0}
   .cw-task ol,.cw-task ul{margin:0 0 6px;padding-left:1.4em}
   .cw-task-files,.cw-task-note,.cw-task-sum,.cw-task-stat{margin:0 0 6px;font-size:var(--fs-xs);color:var(--muted)}
   .cw-task-sum{color:var(--text);font-size:var(--fs-sm);white-space:pre-wrap}
@@ -4026,6 +4029,11 @@
       const s=String(sha||'');
       return /^[0-9a-f]{7,40}$/i.test(s)?'git cherry-pick '+s:null;
     }
+    function handoverInstruction(id,oid){
+      const idPart=id?' with id '+JSON.stringify(String(id))+' and':' with';
+      return 'In the code-walkthrough MCP server, call walkthrough_get'+idPart+' parts ["threads"], then do the handed task with oid '+
+        JSON.stringify(String(oid))+' in my checkout and call walkthrough_reply with that oid and a short summary.';
+    }
     function taskPlanFromForm(title,steps,files){
       const lines=(s,n)=>String(s||'').split('\n').map(x=>x.trim()).filter(Boolean).slice(0,n);
       return {title:String(title||'').trim(),steps:lines(steps,12),files:lines(files,20)};
@@ -4447,8 +4455,9 @@
         d.append(mk('p','cw-task-badge','Code task '+o.state+': '+title));
         return d;
       }
-      const badge={proposed:'Code task, waits for you',running:'Code task, running',done:'Done',
-        failed:'Code task failed',stopped:'Stopped'}[o.state]||'Code task';
+      const handedDone=o.state==='done'&&task.handed===true;
+      const badge={proposed:'Code task, waits for you',handed:'Handed to your session',running:'Code task, running',
+        done:handedDone?'Done by your session':'Done',failed:'Code task failed',stopped:'Stopped'}[o.state]||'Code task';
       const bd=mk('p','cw-task-badge',badge);
       if(o.state==='proposed'&&p.edited) bd.append(mk('span',null,' (edited by you)'));
       d.append(bd);
@@ -4458,12 +4467,25 @@
       const btns=[];
       const add=(text,cls,fn)=>{ const b=mkBtn(text,cls||'fb-ghost'); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); return b; };
       const oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
-      if(o.state==='proposed'){
+      if(o.state==='proposed'||o.state==='handed'){
         const ol=document.createElement('ol');
         for(const s of (p.steps||[])) ol.append(mk('li',null,s));
         d.append(ol);
         if((p.files||[]).length) d.append(mk('p','cw-task-files','Files: '+p.files.join(', ')));
+      }
+      if(o.state==='handed'){
+        const wid=(window.CW_LIVE||{}).id;
+        const inst=handoverInstruction(wid,o.oid);
+        const pre=mk('pre','cw-task-handover'); pre.append(mk('code',null,inst)); pre.tabIndex=0;
+        d.append(pre);
+        if(wid) add('Copy instruction',null,()=>copyTask(inst,o.oid));
+        add('Dismiss',null,()=>taskAct(o,oidPath('dismiss'),{},btns));
+        d.append(acts,mk('p','cw-task-note','Waiting for your session to reply. Nothing runs here.'),msg);
+        return d;
+      }
+      if(o.state==='proposed'){
         add('Run in scratch worktree','cw-task-run',()=>taskAct(o,oidPath('run'),{},btns));
+        add('Hand to my session','cw-task-hand',()=>taskAct(o,oidPath('handover'),{},btns));
         add('Edit plan',null,()=>{
           taskEdit.set(o.oid,{title,steps:(p.steps||[]).join('\n'),files:(p.files||[]).join('\n')});
           renderThread(t);
@@ -4471,7 +4493,7 @@
           if(first) first.focus();
         });
         add('Dismiss',null,()=>taskAct(o,oidPath('dismiss'),{},btns));
-        d.append(acts,mk('p','cw-task-note','Writes to a separate worktree and a local branch. Never pushed.'),msg);
+        d.append(acts,mk('p','cw-task-note','Writes to a separate worktree and a local branch. Never pushed. Or hand it to your own Claude Code session, which edits your real checkout with your permission prompts.'),msg);
         return d;
       }
       if(o.state==='running'){
@@ -4483,6 +4505,11 @@
         d.append(w);
         if(task.qid) add('Stop',null,()=>taskAct(o,'/comment/'+encodeURIComponent(task.qid)+'/cancel',{},btns));
         d.append(acts,msg);
+        return d;
+      }
+      if(handedDone){
+        if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
+        d.append(msg);
         return d;
       }
       if(o.state==='done'){

@@ -882,6 +882,7 @@ eq(triageCandidates(notes, turns).map(n => n.id), ['a']);
 eq(triageCandidates(notes, new Map()).map(n => n.id), ['a', 'e', 'g']);
 eq(waitingCount([]), 0);
 eq(waitingCount([{state:'proposed'}, {state:'kept'}, {state:'dismissed'}, {state:'proposed'}, {state:'done'}]), 2);
+eq(waitingCount([{state:'handed'}, {state:'proposed'}, {state:'handed'}]), 1);
 """
     proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
@@ -944,6 +945,36 @@ def test_sibling_banner_is_gated_and_hides_publishing():
     assert "Back to PR head" in sib and "changed by task" in sib and "may be outdated" in sib
     assert "'.hunk-path'" in sib and "target" not in sib
     assert ".cw-sibling #cw-drafts-bar" in template and ".cw-sibling .fb-reply" in template
+
+
+def test_handover_card_wiring_and_instruction_escaping():
+    section = _task_section()
+    assert "oidPath('handover')" in section and "o.state==='handed'" in section
+    assert "Hand to my session" in section and "Copy instruction" in section and "copyTask(inst,o.oid)" in section
+    assert "Handed to your session" in section and "Done by your session" in section
+    assert "Waiting for your session to reply. Nothing runs here." in section
+    assert "mk('code',null,inst)" in section and "Never pushed." in section
+    assert "window.CW_LIVE||{}).id" in section
+    done = section.split("if(handedDone){")[1].split("if(o.state==='done'){")[0]
+    assert "oidPath" not in done and "add(" not in done
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    assert "handoverInstruction((window.CW_LIVE||{}).id,title" not in section and "if(wid) add('Copy instruction'" in section
+    src = "function handoverInstruction(" + _wire_ask().split("function handoverInstruction(")[1].split("function taskPlanFromForm(")[0]
+    script = src + r"""
+const eq = (a, b) => { if (a !== b) throw new Error(a + ' != ' + b); };
+eq(handoverInstruction('w1', 'o7'),
+  'In the code-walkthrough MCP server, call walkthrough_get with id "w1" and parts ["threads"], then do the handed task with oid "o7" in my checkout and call walkthrough_reply with that oid and a short summary.');
+const q = handoverInstruction('w"1\n`x`', 'o"7');
+if (q.includes('\n')) throw new Error('raw newline');
+if (!q.includes(JSON.stringify('w"1\n`x`')) || !q.includes(JSON.stringify('o"7'))) throw new Error('not escaped');
+const none = handoverInstruction(undefined, 'o7');
+if (none.includes('undefined') || none.includes(' id ')) throw new Error(none);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_cherry_pick_and_task_form_helpers_are_pure_and_correct():

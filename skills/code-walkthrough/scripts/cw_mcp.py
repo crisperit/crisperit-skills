@@ -56,7 +56,7 @@ TOOLS = [
             "type": "object", "required": ["id"],
             "properties": {
                 "id": {"type": "string"}, "key": {"type": "string"},
-                "parts": {"type": "array", "items": {"enum": ["meta", "summary", "qa", "files", "notes"]}},
+                "parts": {"type": "array", "items": {"enum": ["meta", "summary", "qa", "files", "notes", "threads"]}},
                 "wait_s": {"type": "integer", "minimum": 0, "maximum": 600},
             },
         },
@@ -67,6 +67,22 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {"repo": {"type": "string"}, "limit": {"type": "integer", "default": 20}},
+        },
+    },
+    {
+        "name": "walkthrough_reply",
+        "description": ("Post the result of work you did in your own session into a walkthrough thread, "
+                        "optionally completing a task the user handed to you. It only adds a reply; "
+                        "nothing is published. The text is stored in the thread, shown on the page and "
+                        "included in later thread prompts sent to the configured model backend, so it "
+                        "must not contain secrets."),
+        "inputSchema": {
+            "type": "object", "required": ["id", "thread_id", "text"],
+            "properties": {
+                "id": {"type": "string"}, "key": {"type": "string"}, "thread_id": {"type": "string"},
+                "oid": {"type": "string", "description": "a handed task's oid, to mark it done"},
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+            },
         },
     },
 ]

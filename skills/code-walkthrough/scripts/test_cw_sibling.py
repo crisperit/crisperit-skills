@@ -164,6 +164,12 @@ def test_show_route_guards_reuse_and_publishing_is_off():
             assert out["key"] == key and out["id"] != wid
             assert out["url"] == f"http://127.0.0.1:{daemon.port}/walkthrough/{key}/{out['id']}/?k={daemon.token}"
             sd = cw_store.walkthrough_dir(key, out["id"])
+            # the refusal must not depend on whether the run has finished
+            daemon.is_running = lambda _d: True
+            for suffix, body in (("post/preview", {}), ("post", {}), ("publish-one", {"id": "n1", "body_sha": "x"})):
+                status, err = srv._post(daemon, f"/api/walkthrough/{key}/{out['id']}/{suffix}", body)
+                assert (status, err) == (409, cw_server.SIBLING_NO_PUBLISH), (suffix, status, err)
+            del daemon.is_running
             smeta = _wait_done(sd)
             assert smeta["status"] == "done", smeta
             assert smeta["sibling_of"]["oid"] == OID and smeta["pr"] is None

@@ -350,8 +350,9 @@ _TRANSITIONS = {
     ("github_draft", "verbatim"): ("proposed", "proposed"),
     ("page_edit", "revert"): ("applied", "reverted"),
     ("page_edit", "reapply"): ("reverted", "applied"),
-    ("task", "dismiss"): ("proposed", "dismissed"),
+    ("task", "dismiss"): (("proposed", "handed"), "dismissed"),
     ("task", "edit"): ("proposed", "proposed"),
+    ("task", "handover"): ("proposed", "handed"),
 }
 
 
@@ -364,10 +365,12 @@ def _outcome_action(d, oid, action, payload, on_event):
     transition = _TRANSITIONS.get((current["outcome"], action))
     if transition is None:
         raise OutcomeError(f"unknown action {action!r}", "invalid")
-    from_state, to_state = transition
-    if current["state"] != from_state:
-        raise OutcomeError("outcome is not open" if from_state == "proposed" else
-                           f"outcome is {current['state']}, not {from_state}", "conflict")
+    from_states, to_state = transition
+    if isinstance(from_states, str):
+        from_states = (from_states,)
+    if current["state"] not in from_states:
+        raise OutcomeError("outcome is not open" if from_states == ("proposed",) else
+                           f"outcome is {current['state']}, not {' or '.join(from_states)}", "conflict")
     event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": to_state}
     if current["outcome"] == "github_draft" and action in ("edit", "keep", "verbatim"):
         event["payload"] = _github_draft_payload(current["payload"], action, payload)
@@ -423,6 +426,27 @@ def mark_outcome(d, oid, state, on_event=None, payload=None, expect=None):
         _append_qa(d, event)
         folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
     if on_event:
+        on_event("outcome", folded)
+    return folded
+
+
+def complete_handed(d, oid, thread_id, record, summary, on_event=None):
+    """Appends the session's reply turn and flips the handed task to done under one lock, so a
+    concurrent dismiss or a second reply leaves neither a stray turn nor two."""
+    with _OUTCOME_LOCK:
+        current = next((o for o in read_outcomes(d) if o["oid"] == oid and o["thread_id"] == thread_id), None)
+        if current is None or current["outcome"] != "task":
+            raise OutcomeError("oid is not a task on this thread", "invalid",
+                               remedy='walkthrough_get with parts ["threads"] lists the handed tasks')
+        if current["state"] != "handed":
+            raise OutcomeError(f"task is {current['state']}; reply without oid to post your result", "conflict")
+        _append_qa(d, record)
+        payload = {**(current["payload"] or {}), "task": {"handed": True, "summary": summary}}
+        _append_qa(d, {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(),
+                       "state": "done", "payload": payload})
+        folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
+    if on_event:
+        on_event("thread", {"kind": "turn", "record": record})
         on_event("outcome", folded)
     return folded
 

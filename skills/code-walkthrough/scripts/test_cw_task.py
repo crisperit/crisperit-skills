@@ -125,7 +125,8 @@ def test_openai_backend_offers_propose_task():
 def test_mcp_tool_lists_are_pinned():
     assert [t["name"] for t in cw_mcp.OUTCOME_TOOLS] == [
         "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task"]
-    assert [t["name"] for t in cw_mcp.TOOLS] == ["walkthrough_start", "walkthrough_get", "walkthrough_list"]
+    assert [t["name"] for t in cw_mcp.TOOLS] == [
+        "walkthrough_start", "walkthrough_get", "walkthrough_list", "walkthrough_reply"]
 
 
 def test_argv_shapes():

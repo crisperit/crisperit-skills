@@ -98,7 +98,7 @@ def test_handshake_does_not_start_the_daemon():
             proc.stdin.flush()
             reply = json.loads(proc.stdout.readline())
             names = [t["name"] for t in reply["result"]["tools"]]
-            assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list"]
+            assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list", "walkthrough_reply"]
 
             request = {"jsonrpc": "2.0", "id": 3, "method": "nope"}
             proc.stdin.write(json.dumps(request) + "\n")
@@ -351,7 +351,7 @@ def test_mcp_tools_list_is_pinned():
             names = [t["name"] for t in rpc.call("tools/list")["result"]["tools"]]
         finally:
             rpc.close()
-        assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list"]
+        assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list", "walkthrough_reply"]
 
 
 def test_outcomes_server_accepts_and_rejects():
