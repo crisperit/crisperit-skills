@@ -163,6 +163,60 @@ def test_dedupe_promotes_a_matching_draft_without_reposting():
     assert by_id["n-1"]["gh_url"] == "url555"
 
 
+def test_dedupe_also_flips_an_in_review_note_to_posted():
+    waiting = _note(id="n-1", origin="local", state="in_review", path="a.py", line=5, side="RIGHT",
+                    body="nice catch")
+    state = {"notes": [waiting]}
+    sync_comments(state, [_comment(id=555, line=5, original_line=5, side="RIGHT", path="a.py",
+                                    body="nice catch", html_url="url555")])
+    by_id = {n["id"]: n for n in state["notes"]}
+    assert (by_id["n-1"]["state"], by_id["n-1"]["gh_id"]) == ("posted", 555)
+
+
+def test_payloads_for_skips_a_reply_whose_parent_lacks_a_node_id_and_in_review_notes():
+    parent = _note(id="n-parent", state="posted", gh_id=999)
+    reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="r")
+    waiting = _note(id="n-wait", state="in_review", body="w")
+    assert payloads_for({"notes": [parent, reply, waiting]}, "sha") == []
+
+
+def test_do_submit_promotes_in_review_notes_to_posted():
+    real_gh_graphql = notes._gh_graphql
+
+    def fake_gh_graphql(query, _variables):
+        if "PendingReview" in query:
+            return _pending_review_response()
+        if "SubmitReview" in query:
+            return {"data": {"submitPullRequestReview": {"pullRequestReview": {"id": "R", "state": "COMMENTED"}}}}
+        raise AssertionError(query)
+
+    notes._gh_graphql = fake_gh_graphql
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = _write_state(tmp, {"meta": {"repo": "o/r", "pr": 1}, "notes": [
+                _note(id="n-1", state="in_review"), _note(id="n-2", state="draft")]})
+            body_path = Path(tmp) / "body.txt"
+            body_path.write_text("")
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert do_submit(_Args(state=state_path, event="COMMENT", body_file=str(body_path))) == 0
+            states = {n["id"]: n["state"] for n in json.loads(Path(state_path).read_text())["notes"]}
+    finally:
+        notes._gh_graphql = real_gh_graphql
+    assert states == {"n-1": "posted", "n-2": "draft"}
+
+
+def test_review_info_reports_the_pending_review_and_its_comment_count():
+    def gh_run(query, _variables):
+        assert "totalCount" in query
+        return {"data": {"repository": {"pullRequest": {"id": "PR", "reviews": {"nodes": [
+            {"id": "R_1", "comments": {"totalCount": 3}}]}}}}}
+
+    state = {"meta": {"repo": "o/r", "pr": 1}}
+    assert notes.pending_review_info(state, gh_run) == {"review_id": "R_1", "comments": 3}
+    empty = lambda *_: {"data": {"repository": {"pullRequest": {"id": "PR", "reviews": {"nodes": []}}}}}
+    assert notes.pending_review_info(state, empty) == {"review_id": None, "comments": 0}
+
+
 def test_dedupe_matches_a_local_draft_despite_its_empty_author():
     # Page-authored notes are always written with author:'' -- the match must not rely on it.
     draft = _note(id="n-1", origin="local", state="draft", path="a.py", line=5, side="RIGHT",
@@ -554,7 +608,7 @@ def test_payloads_still_emits_a_non_stale_draft_alongside_a_stale_one():
 
 
 def test_payloads_still_emits_a_stale_reply_since_it_posts_by_in_reply_to_not_line():
-    parent = _note(id="n-parent", state="posted", gh_id=999, path="a.py", line=5, side="RIGHT")
+    parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=5, side="RIGHT")
     stale_reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed",
                         path="a.py", line=5, side="RIGHT", stale=True)
     state = {"notes": [parent, stale_reply]}
@@ -595,7 +649,7 @@ def test_payloads_emits_side_verbatim_for_left_and_right():
 
 
 def test_payloads_emits_body_and_in_reply_to_only_for_a_reply():
-    parent = _note(id="n-parent", state="posted", gh_id=999, path="a.py", line=5, side="RIGHT")
+    parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=5, side="RIGHT")
     reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed",
                   path="a.py", line=5, side="RIGHT")
     state = {"notes": [parent, reply]}
@@ -611,7 +665,7 @@ def test_pending_publish_ids_agrees_with_payloads_for_over_a_mixed_state():
     posted = _note(id="n-posted", state="posted", gh_id=1)
     stale_top = _note(id="n-stale-top", state="draft", path="a.py", line=7, side="RIGHT",
                       body="stale top", stale=True)
-    parent = _note(id="n-parent", state="posted", gh_id=999, path="a.py", line=8, side="RIGHT")
+    parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=8, side="RIGHT")
     stale_reply = _note(id="n-stale-reply", state="draft", reply_to="n-parent", body="agreed",
                         path="a.py", line=8, side="RIGHT", stale=True)
     state = {"notes": [plain_draft, posted, stale_top, parent, stale_reply]}
@@ -903,7 +957,7 @@ def test_deliver_opens_one_pending_review_across_three_calls_and_a_reply_uses_th
                                 "body": "a reply"}
 
     by_id = {n["id"]: n for n in result["notes"]}
-    assert by_id["n-1"]["state"] == by_id["n-2"]["state"] == by_id["n-3"]["state"] == "posted"
+    assert by_id["n-1"]["state"] == by_id["n-2"]["state"] == by_id["n-3"]["state"] == "in_review"
     assert by_id["n-3"]["gh_node_id"] == "REPLY_1"
 
 
@@ -947,7 +1001,7 @@ def test_deliver_reply_falls_back_to_a_new_thread_when_the_comment_field_is_outr
         raise AssertionError(query)
 
     deliver_note(state, reply, diff, gh_run)
-    assert reply["state"] == "posted"
+    assert reply["state"] == "in_review"
     assert reply["gh_thread_id"] == "THREAD_1"
 
 
@@ -1108,7 +1162,7 @@ def test_do_deliver_skips_a_note_already_posted_and_does_not_double_post():
             calls_after_second = log_path.read_text()
 
     assert calls_after_first == calls_after_second  # no gh call at all on the retry
-    assert "already posted" in out.getvalue()
+    assert "already in_review" in out.getvalue()
 
 
 def test_resolve_marks_every_note_in_the_thread_resolved():
@@ -1353,7 +1407,7 @@ def test_page_created_reply_survives_import_with_threading_intact():
     # merge strips it from a pasted page payload; only in_reply_to (the field the page's
     # wireReplyBox sets alongside it) used to survive, and payloads_for read only reply_to --
     # so the reply came out as a brand-new top-level comment instead of a reply.
-    parent = _note(id="n-parent", state="posted", gh_id=999, path="a.py", line=5, side="RIGHT")
+    parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=5, side="RIGHT")
     reply = _note(id="n-reply", state="draft", path="a.py", line=5, side="RIGHT", body="agreed")
     reply["reply_to"] = "n-parent"
     reply["in_reply_to"] = "n-parent"
@@ -1535,6 +1589,10 @@ if __name__ == "__main__":
         test_sync_via_stdin_handles_paginated_concatenated_arrays,
         test_dedupe_promotes_a_matching_draft_without_reposting,
         test_dedupe_matches_a_local_draft_despite_its_empty_author,
+        test_dedupe_also_flips_an_in_review_note_to_posted,
+        test_payloads_for_skips_a_reply_whose_parent_lacks_a_node_id_and_in_review_notes,
+        test_do_submit_promotes_in_review_notes_to_posted,
+        test_review_info_reports_the_pending_review_and_its_comment_count,
         test_sync_stores_diff_hunk_verbatim_on_a_new_note,
         test_second_sync_of_same_comment_leaves_diff_hunk_unchanged,
         test_sync_stores_original_commit_id_on_a_new_note,

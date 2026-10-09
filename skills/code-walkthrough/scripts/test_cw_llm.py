@@ -3,6 +3,7 @@
 loopback StubLLM from cw_testlib, never a real network. BACKOFF_S is zeroed so the retry tests
 stay fast."""
 
+import json
 import os
 import socket
 import subprocess
@@ -530,3 +531,89 @@ if __name__ == "__main__":
         test()
         print(f"ok  {test.__name__}")
     print(f"\n{len(tests)} passed")
+
+
+# --- thread turns -----------------------------------------------------------
+
+
+def test_thread_argv_first_turn_and_follow_up():
+    mcp = {"mcpServers": {"cw": {"args": ["cw_mcp.py", "outcomes", "--dir", "/d", "--qid", "q1"]}}}
+    argv = cw_llm.thread_argv({"model": "sonnet"}, "sys", mcp_config=mcp, add_dir="/d/ctx",
+                              session_id="uuid-1")
+    assert argv[argv.index("--session-id") + 1] == "uuid-1"
+    assert "--resume" not in argv
+    for flag in ("--restricted", "--strict-mcp-config", "--verbose", "--include-partial-messages",
+                 "--allowedTools=mcp__cw__propose_resolve", "--add-dir=/d/ctx", "--model=sonnet"):
+        assert flag in argv
+    assert "stream-json" in argv
+    assert "--safe-mode" not in argv and "--no-session-persistence" not in argv
+    config = next(a for a in argv if a.startswith("--mcp-config="))
+    assert json.loads(config.split("=", 1)[1]) == mcp
+    follow = cw_llm.thread_argv({"model": "sonnet"}, "sys", mcp_config=mcp, add_dir="/d/ctx", resume="sid-9")
+    assert follow[follow.index("--resume") + 1] == "sid-9"
+    assert "--session-id" not in follow
+
+
+def test_claude_call_argv_is_pinned():
+    base = ["-p", "--safe-mode", "--restricted", "--tools=Read", "--strict-mcp-config",
+            "--no-session-persistence", "--permission-prompts", "none", "--model=sonnet",
+            "--output-format", "json", "--system-prompt=sys"]
+    schema = {"type": "object"}
+    with cw_testlib.temp_home() as tmp:
+        script = {"sonnet": [cw_testlib.claude_result(result="a")] * 2}
+        with cw_testlib.fake_claude(tmp, script) as fc:
+            cw_llm.claude_call({"model": "sonnet"}, "sys", "p", cwd=Path(tmp), tools="Read")
+            cw_llm.claude_call({"model": "sonnet"}, "sys", "p", cwd=Path(tmp), tools="Read", schema=schema)
+            log = fc.log()
+            assert log[-2]["argv"] == base
+            assert log[-1]["argv"] == base + [f"--json-schema={json.dumps(schema)}"]
+
+
+def _script(tmp_path, body):
+    path = tmp_path / "fake"
+    path.write_text("#!" + sys.executable + "\nimport sys, time, os, json, subprocess\n" + body)
+    path.chmod(0o755)
+    return [str(path)]
+
+
+def test_claude_stream_incremental_ordered_skips_non_json_and_calls_on_spawn(tmp_path):
+    argv = _script(tmp_path, """
+sys.stdin.read()
+for i in range(3):
+    print(json.dumps({"i": i}), flush=True)
+    print("not json", flush=True)
+    print("5", flush=True)
+    print('"str"', flush=True)
+    time.sleep(0.3)
+""")
+    got, spawned = [], []
+    rc, _err = cw_llm.claude_stream(
+        argv, "hi", cwd=tmp_path, timeout=10,
+        on_line=lambda o: got.append((o["i"], time.monotonic())), on_spawn=spawned.append,
+    )
+    assert rc == 0
+    assert [i for i, _ in got] == [0, 1, 2]
+    assert got[1][1] - got[0][1] > 0.15 and got[2][1] - got[1][1] > 0.15
+    assert len(spawned) == 1 and spawned[0].pid > 0
+
+
+def test_claude_stream_timeout_kills_whole_group(tmp_path):
+    pidfile = tmp_path / "child.pid"
+    argv = _script(tmp_path, f"""
+child = subprocess.Popen(["sleep", "60"])
+open({str(pidfile)!r}, "w").write(str(child.pid))
+print(json.dumps({{"up": 1}}), flush=True)
+time.sleep(60)
+""")
+    error = _expect_llm_error(lambda: cw_llm.claude_stream(
+        argv, "", cwd=tmp_path, timeout=1.5, on_line=lambda o: None))
+    assert error.kind == "timeout"
+    pid = int(pidfile.read_text())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("child survived the group kill")

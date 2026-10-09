@@ -5,6 +5,7 @@ cw_server.py (spawning it lazily on the first tool call). Also the CLI for setup
 Usage:
   cw_mcp.py mcp                       run the stdio MCP server (default when no args)
   cw_mcp.py setup [--agent claude|print]
+  cw_mcp.py outcomes --dir D --qid Q  per-turn outcome server (spawned by the daemon)
   cw_mcp.py check
   cw_mcp.py stop
 
@@ -22,6 +23,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -161,6 +163,71 @@ def rpc(tool, args, *, timeout=300):
         return _post(info, "/api/rpc", {"tool": tool, "args": args}, timeout=timeout)
 
 
+OUTCOME_TOOLS = [
+    {
+        "name": "propose_resolve",
+        "description": ("Suggest that an existing review thread on this comment's lines looks settled and "
+                        "could be resolved. This only records a suggestion; the user decides."),
+        "inputSchema": {
+            "type": "object", "required": ["thread", "why"],
+            "properties": {"thread": {"type": "string"}, "why": {"type": "string", "maxLength": 500}},
+        },
+    },
+]
+
+
+def check_outcome(anchor_doc, name, args, already=()):
+    if name != "propose_resolve":
+        return f"unknown tool {name}"
+    args = args if isinstance(args, dict) else {}
+    why = args.get("why")
+    if not isinstance(why, str) or not why.strip():
+        return "why is required"
+    if len(why.strip()) > 500:
+        return "why must be at most 500 characters"
+    thread = args.get("thread")
+    if not isinstance(thread, str):
+        return "thread must be a string"
+    if thread not in {t["id"] for t in anchor_doc.get("resolvable") or []}:
+        return f"thread {thread} is not a review thread on this comment's lines; reply instead"
+    if thread in already:
+        return "already suggested in this turn"
+    return None
+
+
+def accept_outcome(d, qid, name, args):
+    d = Path(d)
+    anchor_doc = cw_store.read_json(d / "turns" / f"{qid}.anchor.json")
+    if not isinstance(anchor_doc, dict):
+        return False, "outcome channel unavailable"
+    path = d / "turns" / f"{qid}.outcomes.jsonl"
+    already = set()
+    try:
+        for line in path.read_text().splitlines():
+            try:
+                already.add(json.loads(line)["arguments"]["thread"])
+            except (ValueError, KeyError, TypeError):
+                pass
+    except OSError:
+        pass
+    error = check_outcome(anchor_doc, name, args, already)
+    if error:
+        return False, error
+    record = {"oid": "o-" + uuid.uuid4().hex[:8], "name": name,
+              "arguments": {"thread": args["thread"], "why": args["why"].strip()}, "at": cw_store.now_iso()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(record) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    return True, "recorded as a suggestion; the user decides"
+
+
+def outcome_mcp_config(d, qid):
+    return {"mcpServers": {"cw": {"type": "stdio", "command": sys.executable, "args": [
+        str(Path(__file__).resolve()), "outcomes", "--dir", str(d), "--qid", qid]}}}
+
+
 def _write_response(obj):
     with _STDOUT_LOCK:
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -231,6 +298,68 @@ def cmd_mcp():
             _log(f"bad json-rpc line: {line!r}")
             continue
         _dispatch(req)
+    return 0
+
+
+def _log_file(message):
+    try:
+        with open(cw_store.log_path(), "a") as f:
+            f.write(f"outcomes: {message}\n")
+    except OSError:
+        _log(message)
+
+
+def _outcomes_dispatch(d, qid, req):
+    req_id = req.get("id")
+    if req_id is None:
+        return None
+    method = req.get("method")
+    if method == "initialize":
+        result = _handle_initialize(req)
+    elif method == "tools/list":
+        result = {"tools": OUTCOME_TOOLS}
+    elif method == "ping":
+        result = {}
+    elif method == "tools/call":
+        params = req.get("params") or {}
+        ok, text = accept_outcome(d, qid, params.get("name"), params.get("arguments") or {})
+        result = {"content": [{"type": "text", "text": text}], "isError": not ok}
+    else:
+        return {"jsonrpc": "2.0", "id": req_id,
+                "error": {"code": -32601, "message": f"unknown method {method}"}}
+    return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+
+def _answer_failure(req):
+    req_id = req.get("id") if isinstance(req, dict) else None
+    if req_id is None:
+        return None
+    if req.get("method") == "tools/call":
+        resp = {"result": {"content": [{"type": "text", "text": "outcome server error"}], "isError": True}}
+    else:
+        resp = {"error": {"code": -32603, "message": "internal error"}}
+    return {"jsonrpc": "2.0", "id": req_id, **resp}
+
+
+def cmd_outcomes(d, qid):
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = None
+        try:
+            req = json.loads(line)
+            if not isinstance(req, dict):
+                raise ValueError("not an object")
+            resp = _outcomes_dispatch(d, qid, req)
+        except Exception as e:
+            _log_file(f"{type(e).__name__}: {e}")
+            resp = _answer_failure(req)
+        if resp is not None:
+            try:
+                _write_response(resp)
+            except Exception as e:
+                _log_file(f"write failed: {type(e).__name__}: {e}")
     return 0
 
 
@@ -332,12 +461,17 @@ def main(argv=None):
     sub.add_parser("mcp")
     setup_parser = sub.add_parser("setup")
     setup_parser.add_argument("--agent", choices=["claude", "print"], default="print")
+    outcomes_parser = sub.add_parser("outcomes")
+    outcomes_parser.add_argument("--dir", required=True)
+    outcomes_parser.add_argument("--qid", required=True)
     sub.add_parser("check")
     sub.add_parser("stop")
     args = parser.parse_args(argv)
 
     if args.cmd in (None, "mcp"):
         return cmd_mcp()
+    if args.cmd == "outcomes":
+        return cmd_outcomes(args.dir, args.qid)
     if args.cmd == "setup":
         return cmd_setup(args.agent)
     if args.cmd == "check":

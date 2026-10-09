@@ -264,3 +264,113 @@ if __name__ == "__main__":
         test()
         print(f"ok  {test.__name__}")
     print(f"\n{len(tests)} passed")
+
+
+def _anchor_doc(*ids):
+    return {"qid": "q1", "thread_id": "t1", "anchor": {},
+            "resolvable": [{"id": i, "path": "a.py", "line": 1, "author": "x", "body": "b"} for i in ids]}
+
+
+def test_check_outcome_cases():
+    doc = _anchor_doc("7")
+    ok = {"thread": "7", "why": " settled "}
+    assert cw_mcp.check_outcome(doc, "propose_resolve", ok) is None
+    assert "unknown tool" in cw_mcp.check_outcome(doc, "nope", ok)
+    for why in (None, "", "   ", 5):
+        assert "why is required" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": why})
+    assert "500" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "x" * 501})
+    assert cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "x" * 500}) is None
+    assert "not a review thread" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "9", "why": "w"})
+    assert "already suggested" in cw_mcp.check_outcome(doc, "propose_resolve", ok, already={"7"})
+    for bad in (["7"], {"a": 1}, 7):
+        assert "thread must be a string" in cw_mcp.check_outcome(doc, "propose_resolve", {"thread": bad, "why": "w"})
+
+
+class _Rpc:
+    def __init__(self, *argv):
+        self.proc = subprocess.Popen(
+            [sys.executable, str(Path(SCRIPTS_DIR) / "cw_mcp.py"), *argv],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.n = 0
+
+    def call(self, method, params=None):
+        self.n += 1
+        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": self.n, "method": method,
+                                          "params": params or {}}) + "\n")
+        self.proc.stdin.flush()
+        return json.loads(self.proc.stdout.readline())
+
+    def close(self):
+        self.proc.stdin.close()
+        try:
+            return self.proc.wait(timeout=5)
+        finally:
+            if self.proc.poll() is None:
+                self.proc.kill()
+
+
+def _propose(rpc, thread, why="settled"):
+    return rpc.call("tools/call", {"name": "propose_resolve", "arguments": {"thread": thread, "why": why}})["result"]
+
+
+def test_mcp_tools_list_is_pinned():
+    with cw_testlib.temp_home():
+        rpc = _Rpc("mcp")
+        try:
+            names = [t["name"] for t in rpc.call("tools/list")["result"]["tools"]]
+        finally:
+            rpc.close()
+        assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list"]
+
+
+def test_outcomes_server_accepts_and_rejects():
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        (d / "turns" / "q1.anchor.json").write_text(json.dumps(_anchor_doc("7")))
+        rpc = _Rpc("outcomes", "--dir", str(d), "--qid", "q1")
+        try:
+            assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == ["propose_resolve"]
+            rpc.proc.stdin.write("garbage{\n")
+            rpc.proc.stdin.flush()
+            assert rpc.call("ping")["result"] == {}
+            good = _propose(rpc, "7")
+            assert good["isError"] is False
+            lines = (d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()
+            assert len(lines) == 1
+            rec = json.loads(lines[0])
+            assert rec["oid"].startswith("o-") and rec["arguments"] == {"thread": "7", "why": "settled"}
+            assert _propose(rpc, "7")["isError"] is True
+            assert _propose(rpc, "9")["isError"] is True
+            assert _propose(rpc, ["x"], why="y")["isError"] is True
+            assert rpc.call("ping")["result"] == {}
+            assert _propose(rpc, "7", why="")["isError"] is True
+            assert len((d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()) == 1
+        finally:
+            assert rpc.close() == 0
+
+
+def test_outcomes_answers_each_request_id_once(monkeypatch, tmp_path):
+    import io
+    written = []
+
+    def write_then_raise(obj):
+        written.append(obj)
+        raise BrokenPipeError("gone")
+
+    monkeypatch.setattr(cw_mcp, "_write_response", write_then_raise)
+    monkeypatch.setattr(cw_mcp, "_log_file", lambda m: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"jsonrpc": "2.0", "id": 5, "method": "ping"}) + "\n"))
+    assert cw_mcp.cmd_outcomes(tmp_path, "q1") == 0
+    assert [w["id"] for w in written] == [5]
+
+
+def test_outcomes_missing_anchor_is_an_error():
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        rpc = _Rpc("outcomes", "--dir", tmp, "--qid", "q1")
+        try:
+            res = _propose(rpc, "7")
+        finally:
+            rpc.close()
+        assert res["isError"] is True
+        assert "unavailable" in res["content"][0]["text"]
