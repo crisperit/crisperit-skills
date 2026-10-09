@@ -7,7 +7,9 @@ those two external boundaries, same convention as test_cw_pr.py.
 """
 
 import contextlib
+import hashlib
 import http.client
+import inspect
 import json
 import os
 import sys
@@ -15,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_run  # noqa: E402
 import cw_server  # noqa: E402
@@ -826,6 +829,300 @@ def test_partial_result_rerenders_and_cleans_page_notes():
             assert gh.count("SubmitReview") == 0
 
 
+# ---------------------------------------------------------------------------
+# publish-one: one draft straight to GitHub as its own review, or one resolve
+# ---------------------------------------------------------------------------
+
+BODY = "  keep the spaces\n```py\nx = 1\n```\n<b>now</b> \U0001F680\n"
+
+
+def _sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _publish(daemon, d, **body):
+    return _request(daemon, "POST", f"/api/walkthrough/{d.parent.name}/{d.name}/publish-one",
+                     token=daemon.token, body=json.dumps(body))
+
+
+def _rest_calls(gh):
+    return [e for e in gh.log() if e["op"] in ("rest-post-comment", "rest-post-reply")]
+
+
+def _qa(d, *records):
+    with open(d / "qa.jsonl", "a") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+
+def _thread_notes():
+    root = _note(id="gh-501", origin="github", state="posted", gh_id=501, gh_node_id="N501",
+                 gh_thread_id="T1", resolved=False, body="root", author="rev")
+    reply = _note(id="gh-502", origin="github", state="posted", gh_id=502, gh_node_id="N502",
+                  gh_thread_id="T1", resolved=False, body="reply", reply_to="gh-501", author="rev")
+    return [root, reply]
+
+
+def _outcome(oid, kind, state, payload):
+    return {"type": "outcome", "oid": oid, "qid": "q-00000001", "thread_id": "q-00000001",
+            "outcome": kind, "state": state, "payload": payload, "at": "t"}
+
+
+def test_publish_one_sends_a_single_rest_call_with_the_exact_body_and_posts_the_note():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body=BODY, end_line=None), _note(id="n-2", body="other", line=3)])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+                assert {n["id"] for n in pre["notes"]} == {"n-1", "n-2"}
+                q = daemon.hub.register(key, wid)
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha(BODY))
+                assert status == 200, (status, raw)
+                reply = json.loads(raw)
+                assert reply["ok"] is True and reply["id"] == "n-1"
+                assert reply["gh_url"].endswith("discussion_r2001")
+                events = []
+                while not q.empty():
+                    events.append(q.get_nowait())
+                daemon.hub.unregister(key, wid, q)
+                assert ("posted", {"kind": "note", "id": "n-1", "ok": True, "state": "posted"}) in events
+                assert "rebuilt" in [e for e, _ in events]
+
+                calls = _rest_calls(gh)
+                assert len(calls) == 1 and calls[0]["op"] == "rest-post-comment"
+                assert calls[0]["argv"][:2] == ["api", "repos/o/r/pulls/7/comments"]
+                assert not any("keep the spaces" in a for a in calls[0]["argv"])
+                assert calls[0]["variables"]["body"] == {
+                    "body": BODY, "commit_id": head, "path": "foo.py", "line": 2, "side": "RIGHT"}
+                assert gh.count("OpenReview") == 0 and gh.count("NewThread") == 0
+
+                state = json.loads((d / "state.json").read_text())
+                posted = next(n for n in state["notes"] if n["id"] == "n-1")
+                assert posted["state"] == "posted" and posted["gh_id"] == 2001
+                assert posted["gh_url"] == reply["gh_url"]
+                assert notes.pending_publish_ids(state) == ["n-2"]
+
+                status, raw = _post(daemon, key, wid, pre["nonce"], [])
+                assert status == 409 and json.loads(raw)["error"] == "changed since preview", (status, raw)
+                assert gh.count("NewThread") == 0
+
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha(BODY))
+                assert status == 409, (status, raw)
+                assert len(_rest_calls(gh)) == 1
+
+
+def test_publish_one_reply_is_addressed_to_the_top_level_root_and_needs_a_posted_parent():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [*_thread_notes(),
+                           _note(id="n-r", body="reply body", reply_to="gh-502"),
+                           _note(id="n-p", body="parent draft", line=3),
+                           _note(id="n-c", body="child of a draft", line=3, reply_to="n-p")])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                status, raw = _publish(daemon, d, id="n-c", body_sha=_sha("child of a draft"))
+                assert status == 409, (status, raw)
+                assert json.loads(raw)["remedy"] == "publish the parent first"
+                assert _rest_calls(gh) == []
+
+                status, raw = _publish(daemon, d, id="n-r", body_sha=_sha("reply body"))
+                assert status == 200, (status, raw)
+                (call,) = _rest_calls(gh)
+                assert call["op"] == "rest-post-reply"
+                assert call["argv"][1] == "repos/o/r/pulls/7/comments/501/replies"
+                assert call["variables"]["body"] == {"body": "reply body"}
+                posted = next(n for n in json.loads((d / "state.json").read_text())["notes"] if n["id"] == "n-r")
+                assert posted["state"] == "posted" and posted["gh_thread_id"] == "T1"
+
+                assert _publish(daemon, d, id="n-p", body_sha=_sha("parent draft"))[0] == 200
+                status, raw = _publish(daemon, d, id="n-c", body_sha=_sha("child of a draft"))
+                assert status == 200, (status, raw)
+                paths = [c["argv"][1] for c in _rest_calls(gh)]
+                assert paths[-1].endswith("/comments/2002/replies"), paths
+
+
+def test_publish_one_refusals_make_no_write_call():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], pending=1) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [*_thread_notes(), _note(id="n-1", body="hello"), _note(id="n-s", body="s", stale=True)])
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                good = {"id": "n-1", "body_sha": _sha("hello")}
+                assert _publish(daemon, d, id="n-1", body_sha=_sha("hello "))[0] == 409
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("old text"))
+                assert status == 409
+                assert json.loads(raw) == {"error": "changed since you looked",
+                                           "remedy": "check the text and publish again"}
+                assert _publish(daemon, d, id="nope", body_sha="x")[0] == 404
+                assert _publish(daemon, d, id="gh-501", body_sha=_sha("root"))[0] == 409
+                assert _publish(daemon, d, id="n-s", body_sha=_sha("s"))[0] == 409
+                assert _publish(daemon, d, **good, oid="o-ffffffff")[0] == 404
+                for bad in ({}, {"id": "n-1"}, {"id": "n-1", "resolve": "gh-501", "body_sha": "x"},
+                            {**good, "oid": "bad"}, {"id": 5, "body_sha": "x"}):
+                    assert _publish(daemon, d, **bad)[0] == 400, bad
+                assert _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/publish-one",
+                                body=json.dumps(good))[0] == 403
+
+                status, raw = _publish(daemon, d, **good)
+                assert status == 409, (status, raw)
+                assert json.loads(raw) == {"error": "you have a pending review on this PR",
+                                           "remedy": "Submit review, or finish it on GitHub"}
+                assert _rest_calls(gh) == []
+
+                cw_store.update_meta(d, lambda m: m.update(sibling_of="deadbeef"))
+                before = len(gh.log())
+                status, raw = _publish(daemon, d, **good)
+                assert status == 409 and json.loads(raw) == {
+                    "error": "publishing is off in this view", "remedy": "go back to the PR head"}
+                assert len(gh.log()) == before
+        assert next(n for n in json.loads((d / "state.json").read_text())["notes"]
+                    if n["id"] == "n-1")["state"] == "draft"
+
+
+def test_publish_one_gh_failure_is_502_and_leaves_the_draft_and_outcome_alone():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_ops=["rest-post-comment"]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="hello")])
+            _qa(d, _outcome("o-0000aaaa", "github_draft", "kept", {"body": "hello", "note_id": "n-1"}))
+            with running_daemon() as daemon:
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("hello"), oid="o-0000aaaa")
+                assert status == 502, (status, raw)
+                reply = json.loads(raw)
+                assert reply["error"] and reply["remedy"]
+                assert len(_rest_calls(gh)) == 1
+        note = next(n for n in json.loads((d / "state.json").read_text())["notes"] if n["id"] == "n-1")
+        assert note["state"] == "draft" and note["gh_id"] is None
+        assert [o["state"] for o in cw_ask.read_outcomes(d)] == ["kept"]
+
+
+def test_publish_one_marks_the_draft_outcome_published_and_needs_it_open():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="hello")])
+            _qa(d, _outcome("o-0000aaaa", "github_draft", "kept", {"body": "hello", "note_id": "n-1"}),
+                _outcome("o-0000bbbb", "github_draft", "dismissed", {"body": "hello", "note_id": "n-1"}),
+                _outcome("o-0000cccc", "resolve", "proposed", {"thread": "gh-501", "why": "w"}),
+                _outcome("o-0000dddd", "github_draft", "kept", {"body": "hello", "note_id": "n-other"}),
+                _outcome("o-0000eeee", "github_draft", "proposed", {"body": "hello", "note_id": "n-1"}))
+            _add_notes(d, [*_thread_notes(), _note(id="n-other", body="x", line=3)])
+            with running_daemon() as daemon:
+                for oid in ("o-0000bbbb", "o-0000cccc", "o-0000dddd", "o-0000eeee"):
+                    assert _publish(daemon, d, id="n-1", body_sha=_sha("hello"), oid=oid)[0] == 409
+                assert _publish(daemon, d, resolve="gh-501", oid="o-0000aaaa")[0] == 409
+                assert gh.count("ResolveThread") == 0
+                assert _rest_calls(gh) == []
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("hello"), oid="o-0000aaaa")
+                assert status == 200, (status, raw)
+        states = {o["oid"]: o["state"] for o in cw_ask.read_outcomes(d)}
+        assert states["o-0000aaaa"] == "published" and states["o-0000bbbb"] == "dismissed"
+
+
+def test_publish_one_resolve_resolves_the_thread_and_marks_the_outcome_done():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, _thread_notes())
+            _qa(d, _outcome("o-0000cccc", "resolve", "proposed", {"thread": "gh-501", "why": "w"}))
+            with running_daemon() as daemon:
+                assert _publish(daemon, d, resolve="gh-502")[0] == 409
+                assert _publish(daemon, d, resolve="nope")[0] == 404
+                assert gh.count("ResolveThread") == 0
+                status, raw = _publish(daemon, d, resolve="gh-501", oid="o-0000cccc")
+                assert status == 200 and json.loads(raw) == {"ok": True}, (status, raw)
+                assert gh.count("ResolveThread") == 1
+                assert [o["state"] for o in cw_ask.read_outcomes(d)] == ["done"]
+                assert gh.count("OpenReview") == 0 and _rest_calls(gh) == []
+        notes_by_id = {n["id"]: n for n in json.loads((d / "state.json").read_text())["notes"]}
+        assert notes_by_id["gh-501"]["resolved"] is True
+
+
+def test_post_items_never_reads_qa_and_unpublished_draft_outcomes_stay_out_of_the_preview():
+    src = inspect.getsource(cw_server._Handler._post_items) + inspect.getsource(cw_server._Handler._fold_page_notes)
+    assert "qa" not in src and "outcome" not in src
+    assert "qa" not in inspect.getsource(notes.pending_publish_ids) + inspect.getsource(notes.payloads_for)
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]):
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-real", body="real draft")])
+            _qa(d, _outcome("o-0000aaaa", "github_draft", "proposed", {
+                    "body": "proposal", "original": "o", "verbatim": False,
+                    "target": {"kind": "new", "path": "foo.py", "line": 2, "side": "RIGHT"}}),
+                _outcome("o-0000bbbb", "github_draft", "kept", {
+                    "body": "kept one", "note_id": "n-kept", "target": {"kind": "new"}}))
+            key, wid = d.parent.name, d.name
+            with running_daemon() as daemon:
+                pre = _preview_ok(daemon, key, wid)
+        assert [n["id"] for n in pre["notes"]] == ["n-real"]
+        assert "proposal" not in json.dumps(pre) and "kept one" not in json.dumps(pre)
+        assert notes.pending_publish_ids(json.loads((d / "state.json").read_text())) == ["n-real"]
+
+def test_publish_one_fails_closed_when_the_pending_review_lookup_fails():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_ops=["PendingReview"]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="hello")])
+            with running_daemon() as daemon:
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("hello"))
+                assert status == 502, (status, raw)
+                assert json.loads(raw) == {"error": "could not check for a pending review", "remedy": "try again"}
+                assert _rest_calls(gh) == []
+
+
+def test_publish_one_lost_response_resyncs_and_reports_ok_without_a_second_post():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], lose_response_ops=["rest-post-comment"]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="hello")])
+            with running_daemon() as daemon:
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("hello"))
+                assert status == 200 and json.loads(raw)["ok"] is True, (status, raw)
+                assert len(_rest_calls(gh)) == 1
+        note = next(n for n in json.loads((d / "state.json").read_text())["notes"] if n["id"] == "n-1")
+        assert note["state"] == "posted" and note["gh_id"] == 2001
+
+
+def test_publish_one_unclear_failure_that_did_not_land_says_it_may_have():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[], fail_ops=["rest-post-comment"]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="hello")])
+            with running_daemon() as daemon:
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("hello"))
+                assert status == 502, (status, raw)
+                assert json.loads(raw)["error"] == "the comment may already be on GitHub; check the PR before retrying"
+        note = next(n for n in json.loads((d / "state.json").read_text())["notes"] if n["id"] == "n-1")
+        assert note["state"] == "draft"
+
+
+def test_publish_one_without_raw_diff_refuses_a_top_level_draft_before_the_post():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, \
+                cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+            repo, base, head, d = _build_done_pr(home, tmp, stub)
+            _add_notes(d, [_note(id="n-1", body="hello")])
+            (d / "raw.diff").unlink()
+            with running_daemon() as daemon:
+                status, raw = _publish(daemon, d, id="n-1", body_sha=_sha("hello"))
+                assert status == 502 and "raw.diff" in json.loads(raw)["error"], (status, raw)
+                assert _rest_calls(gh) == []
+
+
 if __name__ == "__main__":
     tests = [
         test_preview_lists_exactly_what_notes_py_considers_ready,
@@ -853,6 +1150,17 @@ if __name__ == "__main__":
         test_in_review_note_already_submitted_elsewhere_becomes_posted_not_reset,
         test_ids_without_a_draft_parent_and_bad_resolve_payloads_are_400,
         test_partial_result_rerenders_and_cleans_page_notes,
+        test_publish_one_sends_a_single_rest_call_with_the_exact_body_and_posts_the_note,
+        test_publish_one_reply_is_addressed_to_the_top_level_root_and_needs_a_posted_parent,
+        test_publish_one_refusals_make_no_write_call,
+        test_publish_one_gh_failure_is_502_and_leaves_the_draft_and_outcome_alone,
+        test_publish_one_marks_the_draft_outcome_published_and_needs_it_open,
+        test_publish_one_fails_closed_when_the_pending_review_lookup_fails,
+        test_publish_one_lost_response_resyncs_and_reports_ok_without_a_second_post,
+        test_publish_one_unclear_failure_that_did_not_land_says_it_may_have,
+        test_publish_one_without_raw_diff_refuses_a_top_level_draft_before_the_post,
+        test_publish_one_resolve_resolves_the_thread_and_marks_the_outcome_done,
+        test_post_items_never_reads_qa_and_unpublished_draft_outcomes_stay_out_of_the_preview,
     ]
     for test in tests:
         test()

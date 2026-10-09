@@ -753,3 +753,113 @@ def test_page_edit_review_fixes_are_wired():
     card = edit.split("function pageEditCard(")[1]
     assert "o.state==='applied'" in card.split("Show it")[0].rsplit("\n", 3)[-3] + card.split("Show it")[0]
     assert "pageEdits.get(o.oid)" in card.split("Show it")[1]
+
+
+def _wire_ask():
+    return _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+
+
+def test_outcome_el_dispatches_github_draft_and_cards_never_use_inner_html():
+    wire_ask = _wire_ask()
+    dispatch = wire_ask.split("function outcomeEl(")[1].split("function turnEl(")[0]
+    assert "o.outcome==='github_draft') return ghDraftCard(t,o)" in dispatch
+    assert "o.outcome==='page_edit') return pageEditCard(t,o)" in dispatch
+
+    section = wire_ask.split("const ghKept=new Map()")[1].split("function turnEl(")[0]
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
+        assert banned not in section
+    # model-authored text only ever reaches the DOM through mk(..., text) / textContent
+    assert "mk('p','cw-ghdraft-body',txt)" in section and "mk('p','cw-ghdraft-body',body)" in section
+    assert "cols.append(col('Original (your words)',orig),col('Drafted',body))" in section
+    assert "GitHub draft, not published" in section and "Kept as a draft" in section
+    assert "ta.value=ghEdit.get(o.oid)" in section
+    assert "/^https:\\/\\//.test(url)" in section
+
+
+def test_github_draft_card_routes_and_publish_one_are_wired():
+    wire_ask = _wire_ask()
+    section = wire_ask.split("const ghKept=new Map()")[1].split("function turnEl(")[0]
+    for verb in ("'keep',{note_id:note.id}", "'verbatim',{}", "'edit',{payload:{body:ta.value}}", "'dismiss',{}"):
+        assert "ghAct(o," + verb in section
+    assert "'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb" in section
+    assert "upsertOutcome(b.outcome)" in section
+    assert "Keep as draft" in section and "Use my words" in section and "orig!==body" in section
+    assert "publishNote(note,o.oid" in section
+    assert "postJson('/publish-one',{resolve:id,oid:o.oid})" in section and "Resolve now" in section
+    assert "state:'done'" in section
+
+    template = _real_template()
+    publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]
+    assert "/publish-one" in publish and "body_sha" in publish and "putNotesNow(false)" in publish
+    assert "__cwOnPosted" in publish and "remedy" in publish
+    assert "Publish now" in template.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
+    assert "if(oid) req.oid=oid" in publish
+    assert "Drafting a GitHub comment" in wire_ask
+
+
+def test_threads_pill_folds_in_the_comments_panel_only_when_live():
+    template = _real_template()
+    wire_ask = _wire_ask()
+    assert "commentsBtn.hidden=true" in wire_ask
+    assert "Copy for agent" in wire_ask and "notesForAgent()" in wire_ask and "agentFeedbackText(notes)" in wire_ask
+    # wireAsk itself only runs behind window.CW_LIVE, so a static page keeps the Comments panel
+    assert "if(window.CW_LIVE) wireAsk();" in template
+    panel = template.split("function wireCommentsPanel(){")[1].split("function wireResolutionDialog(")[0]
+    assert "hr-comments-btn" not in panel.replace("$('hr-comments-btn')", "") and "btn.hidden" not in panel
+    assert "'Comments ('+notes.length+')'" in panel
+
+
+def test_thread_anchor_shape_and_follow_up_keep_the_stored_anchor():
+    wire_ask = _wire_ask()
+    assert "{kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)}" in wire_ask
+    assert "Ask the agent" in _real_template().split("function buildReplyRow(root){")[1].split("function wireReplyBox(")[0]
+    place = wire_ask.split("function placementFor(anchor){")[1].split("function insertAfterThreads(")[0]
+    assert "anchor.kind==='thread'" in place and "rowById.get(n.id)" in place
+    assert "makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null)" in wire_ask
+
+
+def test_bodysha_and_draft_target_mapper_are_pure_and_correct():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    template = _real_template()
+    src = "function bodySha(" + template.split("function bodySha(")[1].split("function publishNote(")[0]
+    script = src + """
+if (typeof crypto === 'undefined' || !crypto.subtle) { console.log('skip'); process.exit(0); }
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(ghDraftFields({kind:'new',path:'a.py',line:3,side:'RIGHT',end_line:5,hunk_id:'h1'}, null),
+   {path:'a.py',line:3,side:'RIGHT',end_line:5,hunk_id:'h1'});
+eq(ghDraftFields({kind:'new',path:'a.py',line:3,side:'RIGHT'}, null).end_line, null);
+const root = {id:'n-1',path:'a.py',line:3,side:'RIGHT',hunk_id:'h1',anchor_text:'x',anchor_line:3};
+const r = ghDraftFields({kind:'reply',note_id:'n-1'}, root);
+eq([r.reply_to, r.in_reply_to, r.path, r.line], ['n-1','n-1','a.py',3]);
+eq(ghDraftFields({kind:'reply',note_id:'gone'}, undefined), null);
+eq(ghDraftFields({kind:'other'}, root), null);
+bodySha('hello').then(h => {
+  eq(h, '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+  return bodySha('h\\u00e9');
+}).then(h => { eq(h.length, 64); });
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_hostile_draft_body_is_only_assigned_through_text_content():
+    section = _wire_ask().split("function ghDraftCard(")[1].split("function outcomeEl(")[0]
+    mk = _wire_ask().split("const mk=(tag,cls,text)=>{")[1].split("};")[0]
+    assert "e.textContent=text" in mk and "innerHTML" not in mk
+    assert "innerHTML" not in section and "<img" not in section
+
+
+def test_publish_buttons_share_one_in_flight_set_and_a_posted_409_counts_as_success():
+    template = _real_template()
+    publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]
+    assert "const publishing=new Set()" in template
+    assert "if(publishing.has(note.id)) return Promise.resolve(false)" in publish
+    assert "setPublishBusy(note.id,true)" in publish and "setPublishBusy(note.id,false)" in publish
+    assert "dataset.publishFor=n.id" in template.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
+    assert "pb.dataset.publishFor=nid" in _wire_ask()
+    assert "status===409" in publish and "no longer a local draft" in publish and "cur.state!=='draft'" in publish
+    ack = _wire_ask().split("function ghAct(")[1].split("function ghKeep(")[0]
+    assert "loadQa();" in ack

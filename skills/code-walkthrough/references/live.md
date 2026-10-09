@@ -145,6 +145,22 @@ or mermaid block next to the commented block. The edit applies at once, is local
 reaches the PR), and is persisted in `qa.jsonl`. Undo reverts it and Redo reapplies it; the agent is
 told about either on the next turn. Page edits are not offered on diff-line comments.
 
+The agent may also draft a GitHub comment (`propose_github_draft`): a new review comment on the
+commented diff line, or a reply in a review thread on those lines. A comment can be anchored to a
+review thread directly (anchor `kind: "thread"` with the thread root's `note_id`); the prompt then
+carries the thread's comments and diff hunk. A draft is a proposal stored in `qa.jsonl`, never in
+`notes[]`: Keep makes it a local draft through the page's normal draft path, Edit and Use my words
+change its text, Dismiss drops it, and nothing reaches GitHub from the draft itself. Outcomes of
+this kind never enter the Post preview. The agent is told about a dismissal or an edit on the next
+turn.
+
+`POST /api/walkthrough/<key>/<id>/publish-one` publishes one local draft by itself, with
+`{id, body_sha, oid?}` (the sha256 of the draft text, so a draft edited since the user looked is
+refused), or resolves one thread with `{resolve, oid?}`. It carries the same guards as `/post`, 409s
+while the walkthrough builds, in a sibling-revision view, when the parent of a reply is not yet on
+GitHub, or when the viewer has a pending review, and makes exactly one REST call otherwise. A
+preview taken before a publish 409s on `/post`, because the nonce covers the ready list.
+
 ## Posting
 
 The comments panel on a live page replaces Copy gh command with a Post to GitHub button

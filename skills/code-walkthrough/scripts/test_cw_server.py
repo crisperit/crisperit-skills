@@ -999,6 +999,76 @@ def test_inflight_text_and_seq_are_consistent_under_the_live_lock():
         th.join()
 
 
+GD_OID = "o-0000d0d0"
+
+
+def _github_draft_fixture(home):
+    d = _outcome_fixture(home)
+    _append_qa(d, {"type": "outcome", "oid": GD_OID, "qid": OQID, "thread_id": OQID, "outcome": "github_draft",
+                   "state": "proposed", "at": "t",
+                   "payload": {"body": "b", "original": " orig\n", "verbatim": False,
+                               "target": {"kind": "new", "path": "a.py", "line": 3}}})
+    return d
+
+
+def test_github_draft_routes_edit_verbatim_keep_dismiss_and_wrong_action():
+    with cw_testlib.temp_home() as home:
+        _github_draft_fixture(home)
+        with running_daemon() as daemon:
+            base = f"/api/walkthrough/{KEY}/{WID}/outcomes"
+            for action, body in (("keep", {"note_id": "n-1"}), ("verbatim", {}), ("edit", {"payload": {"body": "x"}})):
+                _guard_checks(daemon, f"{base}/{GD_OID}/{action}", body)
+            assert _post(daemon, f"{base}/{GD_OID}/revert")[0] == 400
+            assert _post(daemon, f"{base}/{OID}/keep", {"note_id": "n-1"})[0] == 400
+            assert _post(daemon, f"{base}/{OID}/verbatim")[0] == 400
+            assert _post(daemon, f"{base}/o-ffffffff/keep", {"note_id": "n-1"})[0] == 404
+            assert _post(daemon, f"{base}/{GD_OID}/edit", {"payload": {"body": " "}})[0] == 400
+            assert _post(daemon, f"{base}/{GD_OID}/keep", {})[0] == 400
+            status, body = _post(daemon, f"{base}/{GD_OID}/edit", {"payload": {"body": " mine "}})
+            assert status == 200 and body["outcome"]["payload"]["body"] == " mine "
+            status, body = _post(daemon, f"{base}/{GD_OID}/verbatim")
+            assert status == 200 and body["outcome"]["payload"]["body"] == " orig\n"
+            status, body = _post(daemon, f"{base}/{GD_OID}/keep", {"note_id": "n-1"})
+            assert status == 200 and body["outcome"]["state"] == "kept"
+            assert body["outcome"]["payload"]["note_id"] == "n-1"
+            for action, payload in (("dismiss", {}), ("keep", {"note_id": "n-2"}), ("verbatim", {}),
+                                    ("edit", {"payload": {"body": "x"}})):
+                assert _post(daemon, f"{base}/{GD_OID}/{action}", payload)[0] == 409
+
+
+def test_comment_with_a_thread_anchor_needs_a_github_root_thread_note():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        root = {"id": "gh-1", "origin": "github", "gh_thread_id": "T1", "path": "a.py", "line": 3}
+        cw_store.write_json(d / "state.json", {"notes": [
+            root, {**root, "id": "gh-2", "reply_to": "gh-1"}, {**root, "id": "n-3", "origin": "local"},
+            {**root, "id": "gh-4", "gh_thread_id": None}]})
+        with running_daemon() as daemon:
+            for note_id in ("gh-2", "n-3", "gh-4", "gh-9"):
+                status, body = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/comment", {
+                    "anchor": {"kind": "thread", "note_id": note_id, "quote": "q"}, "text": "hi"})
+                assert status == 400 and "not a GitHub review thread" in body["error"], (note_id, status, body)
+            assert cw_ask.read_qa(d) == []
+
+
+def test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        note = {"id": "n-1", "origin": "local", "state": "draft", "path": "a.py", "line": 1, "side": "RIGHT"}
+        with running_daemon() as daemon:
+            put = lambda: _request(daemon, "PUT", f"/api/walkthrough/{KEY}/{WID}/notes",
+                                    token=daemon.token, body=json.dumps({"notes": [note]}))
+            assert put()[0] == 200
+            result = []
+            with cw_store.dir_lock(d):
+                t = threading.Thread(target=lambda: result.append(put()[0]))
+                t.start()
+                t.join(0.3)
+                assert t.is_alive() and result == []
+            t.join(5)
+            assert result == [200]
+
+
 if __name__ == "__main__":
     tests = [
         test_host_guard_rejects_wrong_host,
@@ -1036,6 +1106,9 @@ if __name__ == "__main__":
         test_outcome_edit_ok_and_bad_edit_gives_validator_text,
         test_page_edit_revert_reapply_routes,
         test_thread_turn_cap_gives_409_on_the_21st_turn,
+        test_github_draft_routes_edit_verbatim_keep_dismiss_and_wrong_action,
+        test_comment_with_a_thread_anchor_needs_a_github_root_thread_note,
+        test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock,
     ]
     for test in tests:
         test()

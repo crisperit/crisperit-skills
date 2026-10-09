@@ -1031,6 +1031,37 @@
   .cw-outcome-text{min-width:0;flex:1 1 14em;overflow-wrap:anywhere}
   .cw-outcome-why{display:block;color:var(--muted)}
   .cw-outcome-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .cw-ghdraft{display:block;border-color:var(--yellow);border-left:3px dashed var(--yellow);
+    background:color-mix(in srgb,var(--yellow) 8%,transparent);white-space:normal;overflow-wrap:anywhere}
+  .cw-ghdraft[data-state="published"]{border-color:var(--green);border-left:3px solid var(--green);
+    background:color-mix(in srgb,var(--green) 8%,transparent)}
+  .cw-ghdraft[data-state="dismissed"]{border-color:var(--border);border-left:3px solid var(--border);
+    background:var(--panel2);color:var(--muted)}
+  .cw-ghdraft-badge{margin:0;color:var(--yellow);font-weight:600;font-size:var(--fs-xs)}
+  .cw-ghdraft[data-state="published"] .cw-ghdraft-badge{color:var(--green)}
+  .cw-ghdraft[data-state="dismissed"] .cw-ghdraft-badge{color:var(--muted)}
+  .cw-ghdraft-target{margin:2px 0 6px;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-ghdraft-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:0 0 6px}
+  .cw-ghdraft-col{min-width:0}
+  .cw-ghdraft-col h4{margin:0 0 2px;color:var(--muted);font:600 var(--fs-xs) system-ui}
+  .cw-ghdraft-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-ghdraft textarea{display:block;width:100%;min-height:64px;box-sizing:border-box;margin:0 0 6px;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:8px;font:inherit;font-size:var(--fs-sm)}
+  .cw-ghdraft-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .cw-ghdraft-actions button,.fb-publish-one{cursor:pointer;border:1px solid var(--border);
+    background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;
+    font-size:var(--fs-xs)}
+  .cw-ghdraft-actions .cw-gh-publish,.fb-item .fb-publish-one{border-color:var(--yellow);color:var(--yellow)}
+  .cw-ghdraft button:focus-visible,.fb-publish-one:focus-visible,.cw-ghdraft textarea:focus-visible,
+  .cw-threads-top button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-ghdraft-msg,.fb-publish-msg{margin:4px 0 0;font-size:var(--fs-xs);color:var(--red)}
+  .cw-ghdraft-msg:empty,.fb-publish-msg:empty{display:none}
+  .cw-threads-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 10px}
+  .cw-threads-top #cw-threads-submit{margin:0}
+  .cw-threads-top .cw-th-copy-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-reply-ask{margin:6px 0 0}
+  @media (max-width:728px){.cw-ghdraft-cols{grid-template-columns:minmax(0,1fr)}}
   @media (prefers-reduced-motion:no-preference){
     .cw-caret{animation:cw-caret 1s steps(1) infinite}
   }
@@ -1095,7 +1126,7 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button{min-height:44px}
+    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button,.fb-publish-one,.cw-threads-top button{min-height:44px}
     #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     #cw-drafts-bar button,#cw-threads-submit,#cw-post-confirm button{min-height:44px}
@@ -2307,6 +2338,8 @@
 
   // set by wireAsk on a live page; a static page has no daemon, so wireLine falls back to the plain draft row
   let openLineComposer=null;
+  let openThreadAsk=null;
+  const outcomeHooks={oidFor:()=>null,published:()=>{}};
 
   function wireLine(span,meta){
     meta.text=span.textContent; // capture verbatim (incl. leading +/-/space) before the badge/button change it -- this is anchor_text
@@ -2525,6 +2558,23 @@
       ta.setAttribute('aria-label','Comment body');
       wireDraftAutosave(ta,n.id);
       d.appendChild(ta);
+      if(window.CW_LIVE){
+        const pub=document.createElement('button'); pub.type='button'; pub.className='fb-publish-one fb-ghost';
+        pub.textContent='Publish now'; pub.dataset.publishFor=n.id; pub.disabled=publishing.has(n.id);
+        pub.setAttribute('aria-label','Publish this comment to GitHub now');
+        const msg=document.createElement('p'); msg.className='fb-publish-msg'; msg.setAttribute('role','status');
+        if(!(window.crypto&&window.crypto.subtle)){
+          pub.hidden=true; pub.title='Publishing needs a secure (https or localhost) page';
+        }
+        pub.addEventListener('click',()=>{
+          const cur=state.notes.find(x=>x.id===n.id);
+          if(!cur) return;
+          if(!ta.value.trim()){ msg.textContent='Type a comment first.'; return; }
+          cur.body=ta.value; saveNote(cur);
+          publishNote(cur,outcomeHooks.oidFor(cur.id),t=>{ msg.textContent=t; });
+        });
+        d.append(pub,msg);
+      }
     } else {
       d.appendChild(document.createTextNode(n.body));
     }
@@ -2555,6 +2605,71 @@
   }
 
   const rowById=new Map(); // noteId -> {el,sig}
+
+  const publishing=new Set();
+  function setPublishBusy(noteId,busy){
+    if(busy) publishing.add(noteId); else publishing.delete(noteId);
+    document.querySelectorAll('[data-publish-for]').forEach(b=>{ if(b.dataset.publishFor===noteId) b.disabled=busy; });
+  }
+
+  function bodySha(text){
+    return crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))
+      .then(buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join(''));
+  }
+
+  function ghDraftFields(target,root){
+    if(!target) return null;
+    if(target.kind==='reply'){
+      if(!root) return null;
+      return {path:root.path,line:root.line,side:root.side,hunk_id:root.hunk_id,
+        anchor_text:root.anchor_text,anchor_line:root.anchor_line,reply_to:root.id,in_reply_to:root.id};
+    }
+    if(target.kind==='new'){
+      return {path:target.path,line:target.line,side:target.side,
+        end_line:target.end_line||null,hunk_id:target.hunk_id||null};
+    }
+    return null;
+  }
+
+  function publishNote(note,oid,setMsg){
+    if(!(window.crypto&&window.crypto.subtle)){
+      setMsg('Publishing needs a secure (https or localhost) page.');
+      return Promise.resolve(false);
+    }
+    setMsg('Publishing…');
+    if(publishing.has(note.id)) return Promise.resolve(false);
+    setPublishBusy(note.id,true);
+    const req={id:note.id};
+    return putNotesNow(false)
+      .then(()=>bodySha(note.body))
+      .then(sha=>{
+        req.body_sha=sha;
+        if(oid) req.oid=oid;
+        return fetch(window.CW_LIVE.api+'/publish-one',{method:'POST',
+          headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
+          body:JSON.stringify(req)});
+      })
+      .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,status:r.status,body})))
+      .then(({ok,status,body})=>{
+        const cur=state.notes.find(x=>x.id===note.id);
+        const already=status===409&&/no longer a local draft/i.test(body.error||'')&&cur&&cur.state!=='draft';
+        if(already){
+          setMsg('');
+          if(oid) outcomeHooks.published(oid,cur.gh_url||null);
+          renderNotes();
+          return true;
+        }
+        if(!ok){ setMsg((body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'')); return false; }
+        setMsg('');
+        if(typeof window.__cwOnPosted==='function') window.__cwOnPosted({kind:'note',ok:true,id:note.id});
+        const mine=state.notes.find(x=>x.id===note.id);
+        if(mine&&body.gh_url){ mine.gh_url=body.gh_url; renderNotes(); }
+        if(oid) outcomeHooks.published(oid,body.gh_url||null);
+        return true;
+      })
+      .catch(()=>{ setMsg('Request failed -- check the daemon is still running.'); return false; })
+      .then(ok=>{ setPublishBusy(note.id,false); return ok; });
+  }
 
   // JSON.stringify, not join(' '): a plain-space join collides when a field's own value
   // contains a space or matches an adjacent field's text, so two genuinely different notes
@@ -2615,6 +2730,13 @@
     btn.textContent='Reply on GitHub';
     const col=document.createElement('div'); col.className='fb-reply-col';
     col.append(input,btn);
+    if(window.CW_LIVE){
+      const ask=document.createElement('button'); ask.type='button'; ask.className='fb-ghost cw-reply-ask';
+      ask.textContent='Ask the agent';
+      ask.addEventListener('mousedown',e=>e.preventDefault());
+      ask.addEventListener('click',()=>{ if(openThreadAsk) openThreadAsk(root,col,input); });
+      col.append(ask);
+    }
     d.append(av,col);
     wireReplyBox(input,root,btn);
     return d;
@@ -3737,6 +3859,17 @@
     }
 
     function placementFor(anchor){
+      if(anchor.kind==='thread'){
+        const root=noteById(anchor.note_id);
+        if(!root) return null;
+        let last=null, lastOrder=-1;
+        for(const n of state.notes){
+          if(n.id!==root.id&&n.reply_to!==root.id) continue;
+          const rec=rowById.get(n.id);
+          if(rec&&rec.el.isConnected&&(n.order||0)>=lastOrder){ last=rec.el; lastOrder=n.order||0; }
+        }
+        return last&&!last.closest('.hr-lo,.hr-thread-resolved')?last:null;
+      }
       if(anchor.kind==='line'){
         const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+(anchor.end_line||anchor.line));
         return rec&&rec.span;
@@ -3850,6 +3983,7 @@
       if(p.tool==='Glob') return 'Listing files';
       if(p.tool==='propose_resolve') return 'Suggesting a resolve';
       if(p.tool==='propose_page_edit') return 'Editing the page';
+      if(p.tool==='propose_github_draft') return 'Drafting a GitHub comment';
       return p.tool||'';
     }
     const noteById=id=>state.notes.find(n=>n.id===id);
@@ -4030,8 +4164,166 @@
       return d;
     }
 
+    const ghKept=new Map();
+    const ghEdit=new Map();
+    const ghMsg=new Map();
+    const errText=b=>((b&&b.error)||'Request failed')+(b&&b.remedy?' ('+b.remedy+')':'');
+    const NET_ERR='Request failed -- check the daemon is still running.';
+
+    function findOutcome(oid){
+      for(const m of outcomesByQid.values()) if(m.has(oid)) return m.get(oid);
+      return null;
+    }
+
+    function setGhMsg(oid,text){
+      ghMsg.set(oid,text);
+      document.querySelectorAll('.cw-ghdraft-msg').forEach(e=>{ if(e.dataset.oid===oid) e.textContent=text; });
+    }
+
+    outcomeHooks.oidFor=noteId=>{
+      for(const [oid,nid] of ghKept) if(nid===noteId) return oid;
+      for(const m of outcomesByQid.values())
+        for(const o of m.values())
+          if(o.outcome==='github_draft'&&o.payload&&o.payload.note_id===noteId
+            &&o.state!=='published'&&o.state!=='dismissed') return o.oid;
+      return null;
+    };
+    outcomeHooks.published=(oid,url)=>{
+      const rec=findOutcome(oid);
+      if(!rec) return;
+      upsertOutcome(Object.assign({},rec,{state:'published',
+        payload:Object.assign({},rec.payload,url?{gh_url:url}:{})}));
+    };
+
+    function createGhDraft(p){
+      const tg=p.target||{};
+      const f=ghDraftFields(tg,tg.kind==='reply'?noteById(tg.note_id):null);
+      if(!f) return null;
+      const order=Math.max(0,...state.notes.map(x=>x.order||0))+1;
+      let extra={order};
+      if(tg.kind==='new'){
+        const rec=spanByLineKey.get(f.path+'\t'+f.side+'\t'+f.line);
+        const m=rec?rec.meta:{};
+        extra={hunk_id:f.hunk_id||m.hunkId||null,anchor_text:m.text||'',anchor_line:f.line,
+          order:m.order!=null?m.order:order};
+      }
+      const note=newDraft(Object.assign({},f,extra));
+      note.body=p.body;
+      saveNote(note);
+      renderNotes();
+      return note;
+    }
+
+    function ghAct(o,verb,body,btns,beforeUpsert){
+      btns.forEach(b=>{ b.disabled=true; });
+      setGhMsg(o.oid,'');
+      return postJson('/outcomes/'+encodeURIComponent(o.oid)+'/'+verb,body)
+        .then(({ok,body:b})=>{
+          if(!ok||!b.outcome){ btns.forEach(x=>{ x.disabled=false; }); setGhMsg(o.oid,errText(b)); loadQa(); return false; }
+          if(beforeUpsert) beforeUpsert();
+          upsertOutcome(b.outcome);
+          return true;
+        })
+        .catch(()=>{ btns.forEach(x=>{ x.disabled=false; }); setGhMsg(o.oid,NET_ERR); return false; });
+    }
+
+    function ghKeep(o,btns){
+      const p=o.payload||{};
+      const have=p.note_id||ghKept.get(o.oid);
+      const existing=have&&noteById(have);
+      if(existing) return Promise.resolve(existing);
+      const note=createGhDraft(p);
+      if(!note){ setGhMsg(o.oid,'This comment points at a thread that is no longer on the page.'); return Promise.resolve(null); }
+      ghKept.set(o.oid,note.id);
+      return ghAct(o,'keep',{note_id:note.id},btns).then(ok=>ok?note:null);
+    }
+
+    function ghPublish(o,btns){
+      btns.forEach(b=>{ b.disabled=true; });
+      ghKeep(o,btns).then(note=>{
+        if(!note){ btns.forEach(b=>{ b.disabled=false; }); return; }
+        btns.forEach(b=>{ b.disabled=true; });
+        return publishNote(note,o.oid,txt=>setGhMsg(o.oid,txt)).then(ok=>{
+          if(!ok) btns.forEach(b=>{ b.disabled=false; });
+        });
+      });
+    }
+
+    function ghTargetText(tg){
+      const loc=(tg.path||'')+(tg.line!=null?':'+tg.line:'');
+      if(tg.kind==='reply'){
+        const root=noteById(tg.note_id);
+        return 'reply to '+((root&&root.author)||'the reviewer')+' at '+loc;
+      }
+      return 'new review comment, '+loc+(tg.side?' '+tg.side:'');
+    }
+
+    function ghDraftCard(t,o){
+      const p=o.payload||{}, tg=p.target||{};
+      const body=String(p.body||''), orig=typeof p.original==='string'?p.original:body;
+      const d=mk('div','cw-outcome cw-ghdraft'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      const badge={proposed:'GitHub draft, not published',kept:'Kept as a draft',
+        published:'Published',dismissed:'Dismissed'}[o.state]||'GitHub draft, not published';
+      d.append(mk('p','cw-ghdraft-badge',badge),mk('p','cw-ghdraft-target',ghTargetText(tg)));
+      const msg=mk('p','cw-ghdraft-msg',ghMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+      const acts=mk('div','cw-ghdraft-actions');
+      if(o.state==='proposed'&&ghEdit.has(o.oid)){
+        const ta=mk('textarea'); ta.value=ghEdit.get(o.oid); ta.setAttribute('aria-label','Edit the drafted comment');
+        const save=mkBtn('Save','fb-ghost'), cancel=mkBtn('Cancel','fb-ghost');
+        const cancelEdit=()=>{ ghEdit.delete(o.oid); renderThread(t); };
+        ta.addEventListener('input',()=>ghEdit.set(o.oid,ta.value));
+        const doSave=()=>{
+          if(!ta.value.trim()){ setGhMsg(o.oid,'Type a comment first.'); return; }
+          ghAct(o,'edit',{payload:{body:ta.value}},[save,cancel],()=>ghEdit.delete(o.oid));
+        };
+        save.addEventListener('click',doSave);
+        cancel.addEventListener('click',cancelEdit);
+        ta.addEventListener('keydown',e=>{
+          if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); doSave(); }
+          else if(e.key==='Escape'){ e.preventDefault(); cancelEdit(); }
+        });
+        acts.append(save,cancel);
+        d.append(ta,acts,msg);
+        return d;
+      }
+      if(orig!==body){
+        const cols=mk('div','cw-ghdraft-cols');
+        const col=(h,txt)=>{ const c=mk('div','cw-ghdraft-col'); c.append(mk('h4',null,h),mk('p','cw-ghdraft-body',txt)); return c; };
+        cols.append(col('Original (your words)',orig),col('Drafted',body));
+        d.append(cols);
+      } else d.append(mk('p','cw-ghdraft-body',body));
+      if(o.state==='proposed'||o.state==='kept'){
+        const btns=[];
+        const add=(text,cls,fn)=>{ const b=mkBtn(text,cls); b.addEventListener('click',fn); btns.push(b); acts.append(b); return b; };
+        if(o.state==='proposed') add('Keep as draft','cw-gh-keep fb-ghost',()=>{ ghKeep(o,btns); });
+        else add('Jump','cw-gh-jump fb-ghost',()=>{
+          const rec=rowById.get(p.note_id||ghKept.get(o.oid));
+          if(rec){ openAncestorDetails(rec.el); rec.el.scrollIntoView({block:'center'}); rec.el.focus(); }
+        });
+        if(window.crypto&&window.crypto.subtle){
+          const pb=add('Publish now','cw-gh-publish fb-ghost',()=>ghPublish(o,btns));
+          const nid=p.note_id||ghKept.get(o.oid);
+          if(nid){ pb.dataset.publishFor=nid; pb.disabled=publishing.has(nid); }
+        }
+        if(o.state==='proposed'){
+          if(orig!==body) add('Use my words','cw-gh-verbatim fb-ghost',()=>{ ghAct(o,'verbatim',{},btns); });
+          add('Edit','cw-gh-edit fb-ghost',()=>{ ghEdit.set(o.oid,body); renderThread(t); });
+          add('Dismiss','cw-gh-dismiss fb-ghost',()=>{ ghAct(o,'dismiss',{},btns); });
+        }
+      } else if(o.state==='published'){
+        const url=p.gh_url||o.gh_url;
+        if(typeof url==='string'&&/^https:\/\//.test(url)){
+          const a=mk('a','cw-gh-link','View on GitHub'); a.href=url; a.target='_blank'; a.rel='noopener noreferrer';
+          acts.append(a);
+        }
+      }
+      d.append(acts,msg);
+      return d;
+    }
+
     function outcomeEl(t,o){
       if(o.outcome==='page_edit') return pageEditCard(t,o);
+      if(o.outcome==='github_draft') return ghDraftCard(t,o);
       const id=o.payload&&o.payload.thread;
       const note=noteById(id);
       const where=note?(note.path+':'+(note.line!=null?note.line:'')+(note.author?' by '+note.author:'')):id;
@@ -4047,6 +4339,19 @@
           keep.addEventListener('click',()=>{ markPendingResolve(id); renderNotes(); renderThread(t); });
           acts.append(keep);
         }
+        const now=mkBtn('Resolve now','cw-resolve-now fb-ghost');
+        now.addEventListener('click',()=>{
+          now.disabled=true; t.msg.textContent='';
+          postJson('/publish-one',{resolve:id,oid:o.oid})
+            .then(({ok,body})=>{
+              if(!ok){ now.disabled=false; t.msg.textContent=errText(body); return; }
+              clearPendingResolve(id);
+              upsertOutcome(Object.assign({},o,{state:'done'}));
+              renderNotes();
+            })
+            .catch(()=>{ now.disabled=false; t.msg.textContent=NET_ERR; });
+        });
+        acts.append(now);
         const dis=mkBtn('Dismiss','cw-dismiss fb-ghost');
         dis.addEventListener('click',()=>{
           dis.disabled=true; t.msg.textContent='';
@@ -4229,7 +4534,22 @@
     unplacedWrap.append(mk('h3',null,'Unplaced'),unplacedBox);
     const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-threads-submit'; thSubmit.hidden=true;
     thSubmit.addEventListener('click',()=>{ dlg.close(); openSubmitReview(); });
-    dlgBody.append(thSubmit,listEl,unplacedWrap);
+    const thCopy=mkBtn('Copy for agent','fb-ghost'); thCopy.id='cw-threads-copy';
+    const thCopyMsg=mk('p','cw-th-copy-msg'); thCopyMsg.setAttribute('role','status');
+    thCopy.addEventListener('click',()=>{
+      const notes=notesForAgent();
+      if(!notes.length){ thCopyMsg.textContent='No comments ready to copy yet.'; return; }
+      const text=agentFeedbackText(notes);
+      const done=()=>{ thCopyMsg.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.'; };
+      const fallback=()=>{ if(legacyCopy(text)) done(); else thCopyMsg.textContent='Copy failed in this browser.'; };
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      } else fallback();
+    });
+    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,thSubmit,thCopyMsg);
+    const commentsBtn=$('hr-comments-btn');
+    if(commentsBtn) commentsBtn.hidden=true;
+    dlgBody.append(thTop,listEl,unplacedWrap);
     refreshDraftsBar();
     dlg.append(dlgHead,dlgBody);
     document.body.appendChild(dlg);
@@ -4299,6 +4619,17 @@
       commentBtn.hidden=true;
       c.ta.focus();
     });
+
+    openThreadAsk=(root,host,input)=>{
+      closeBox();
+      const anchor={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
+      const c=makeComposer('Ask the agent about this thread',text=>({anchor,text}),closeBox,closeBox,
+        text=>createGhDraft({body:text,target:{kind:'reply',note_id:root.id}}));
+      if(input&&input.value){ c.ta.value=input.value; input.value=''; }
+      openBox=c.box;
+      host.append(c.box);
+      c.ta.focus();
+    };
 
     openLineComposer=meta=>{
       const anchor={kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,

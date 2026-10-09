@@ -198,6 +198,30 @@ OUTCOME_TOOLS.append({
 })
 
 
+GITHUB_DRAFT_CAP = 4000
+
+OUTCOME_TOOLS.append({
+    "name": "propose_github_draft",
+    "description": ("Draft a GitHub review comment for the user: a new comment on the diff line they commented "
+                    "on, or a reply in a review thread listed in the message. A draft is only a proposal; the "
+                    "user keeps it as a local draft, edits it, or dismisses it, and nothing reaches GitHub "
+                    "from this call. Set verbatim when the user asked to post their own words as they wrote "
+                    "them."),
+    "inputSchema": {
+        "type": "object", "required": ["body", "target"],
+        "properties": {
+            "body": {"type": "string", "maxLength": GITHUB_DRAFT_CAP},
+            "target": {
+                "type": "object", "required": ["kind"],
+                "properties": {"kind": {"enum": ["new", "reply"]},
+                               "note_id": {"type": "string", "description": "the thread id, for kind reply"}},
+            },
+            "verbatim": {"type": "boolean"},
+        },
+    },
+})
+
+
 def _check_resolve(anchor_doc, args, already):
     why = args.get("why")
     if not isinstance(why, str) or not why.strip():
@@ -240,11 +264,54 @@ def _check_page_edit(anchor_doc, args, already):
     return None
 
 
-def _resolve_payload(args):
+def _check_github_draft(anchor_doc, args, already):
+    anchor = anchor_doc.get("anchor") or {}
+    anchor_kind = anchor.get("kind")
+    if anchor_kind not in ("line", "thread"):
+        return ("this comment is on the page text, not on a diff line or a review thread, so no GitHub "
+                "comment can be drafted; reply instead")
+    body = args.get("body")
+    if not isinstance(body, str) or not body.strip():
+        return "body is required"
+    if len(body.strip()) > GITHUB_DRAFT_CAP:
+        return f"body must be at most {GITHUB_DRAFT_CAP} characters"
+    if "verbatim" in args and not isinstance(args["verbatim"], bool):
+        return "verbatim must be a boolean"
+    target = args.get("target")
+    target_kind = target.get("kind") if isinstance(target, dict) else None
+    if target_kind == "new":
+        if anchor_kind != "line":
+            return ("this comment is not on a diff line, so a new review comment cannot be drafted; "
+                    "reply in the thread or reply to an existing review thread")
+    elif target_kind == "reply":
+        note_id = target.get("note_id")
+        if not isinstance(note_id, str) or note_id not in {r["id"] for r in anchor_doc.get("replyable") or []}:
+            return f"note_id {note_id!r} is not a review thread this comment may reply to; reply in prose instead"
+    else:
+        return "target.kind must be new or reply"
+    if "github_draft" in already:
+        return "already drafted a GitHub comment in this turn"
+    return None
+
+
+def _resolve_payload(args, anchor_doc=None):
     return {"thread": args["thread"], "why": args["why"].strip()}
 
 
-def _page_edit_payload(args):
+def _github_draft_payload(args, anchor_doc):
+    original = anchor_doc.get("comment") or ""
+    verbatim = args.get("verbatim") is True and bool(original)
+    anchor = anchor_doc.get("anchor") or {}
+    if args["target"]["kind"] == "new":
+        target = {"kind": "new", **{k: anchor.get(k) for k in ("path", "line", "side", "end_line", "hunk_id")}}
+    else:
+        row = next(r for r in anchor_doc["replyable"] if r["id"] == args["target"]["note_id"])
+        target = {"kind": "reply", "note_id": row["id"], "path": row["path"], "line": row["line"]}
+    return {"body": original if verbatim else args["body"].strip(), "original": original,
+            "verbatim": verbatim, "target": target}
+
+
+def _page_edit_payload(args, anchor_doc=None):
     block = args["block"]
     return {"op": args["op"], "target": args["target"],
             "block": {"type": block["type"], "text": block["text"].strip()}}
@@ -254,6 +321,11 @@ OUTCOME_KINDS = {
     "propose_resolve": {
         "outcome": "resolve", "state": "proposed", "check": _check_resolve, "payload": _resolve_payload,
         "key": lambda payload: f"resolve:{payload['thread']}", "accepted": "recorded as a suggestion; the user decides",
+    },
+    "propose_github_draft": {
+        "outcome": "github_draft", "state": "proposed", "check": _check_github_draft,
+        "payload": _github_draft_payload, "key": lambda payload: "github_draft",
+        "accepted": "drafted for the user, who keeps or dismisses it; nothing was posted to GitHub",
     },
     "propose_page_edit": {
         "outcome": "page_edit", "state": "applied", "check": _check_page_edit, "payload": _page_edit_payload,
@@ -290,7 +362,7 @@ def accept_outcome(d, qid, name, args):
         return False, error
     kind = OUTCOME_KINDS[name]
     record = {"oid": "o-" + uuid.uuid4().hex[:8], "name": name,
-              "arguments": kind["payload"](args), "at": cw_store.now_iso()}
+              "arguments": kind["payload"](args, anchor_doc), "at": cw_store.now_iso()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(record) + "\n")

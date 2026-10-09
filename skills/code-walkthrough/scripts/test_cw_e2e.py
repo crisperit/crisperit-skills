@@ -200,6 +200,10 @@ def test_two_batch_run_through_the_real_daemon():
                 # served page minus the injection equals the on-disk partial.html
                 stripped = page_html[:live_blob_start] + page_html[live_blob_end:]
                 on_disk = (d / "partial.html").read_text()
+                if cw_server._MERMAID_PLACEHOLDER in on_disk:
+                    payload = cw_server._mermaid_payload()
+                    assert payload in stripped and cw_server._MERMAID_PLACEHOLDER not in stripped
+                    stripped = stripped.replace(payload, cw_server._MERMAID_PLACEHOLDER)
                 assert stripped == on_disk
 
                 # the CSP meta tag precedes the injected script, i.e. still the first

@@ -271,10 +271,12 @@ _ASK_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ask$")
 _COMMENT_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment$")
 _RESOLVE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/threads/([^/]+)/resolve$")
 _CANCEL_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/comment/(q-[0-9a-f]{8})/cancel$")
-_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit|revert|reapply)$")
+_OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f]{8})/(dismiss|edit|keep|verbatim|revert|reapply)$")
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
+_PUBLISH_ONE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/publish-one$")
+_OID_RE = re.compile(r"^o-[0-9a-f]{8}$")
 
 THREAD_TURN_CAP = 20
 
@@ -442,6 +444,9 @@ class _Handler(BaseHTTPRequestHandler):
         m = _POST_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_post(m.group(1), m.group(2)))
+        m = _PUBLISH_ONE_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_publish_one(m.group(1), m.group(2)))
         self._tracked(lambda: self._send_text(404, "not found"))
 
     def _route_health(self):
@@ -528,6 +533,10 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "bad json"})
             return
+        with cw_store.dir_lock(d):
+            self._write_page_notes(d, payload)
+
+    def _write_page_notes(self, d, payload):
         incoming = payload.get("notes")
         if not isinstance(incoming, list):
             self._send_json(400, {"error": "notes must be a list"})
@@ -588,6 +597,8 @@ class _Handler(BaseHTTPRequestHandler):
         if action == "edit" and not isinstance(payload, dict):
             self._send_json(400, {"error": "payload must be an object", "remedy": "send {thread, why}"})
             return
+        if action == "keep":
+            payload = {"note_id": body.get("note_id") if isinstance(body, dict) else None}
         daemon = self.server.cw_daemon
         try:
             folded = cw_ask.outcome_action(d, oid, action, payload,
@@ -647,6 +658,11 @@ class _Handler(BaseHTTPRequestHandler):
             anchor = cw_ask.validate_anchor(payload.get("anchor"))
         except cw_store.CWError as e:
             self._send_json(400, {"error": str(e), "remedy": e.remedy})
+            return
+        if anchor["kind"] == "thread" and not any(
+                n.get("id") == anchor["note_id"] and cw_ask.is_root_thread(n) for n in cw_ask._state_notes(d)):
+            self._send_json(400, {"error": "bad anchor: not a GitHub review thread on this PR",
+                                   "remedy": "reload the page and comment on a thread again"})
             return
         text = payload.get(text_key)
         if not isinstance(text, str) or not (1 <= len(text) <= cw_ask.QUESTION_MAX):
@@ -708,22 +724,26 @@ class _Handler(BaseHTTPRequestHandler):
             return None, {"error": HEAD_NOT_PUSHED_MSG}
         return st, None
 
+    @staticmethod
+    def _fold_page_notes(d, st):
+        page_notes_path = d / "page-notes.json"
+        if not page_notes_path.exists():
+            return st
+        result = cw_run._notes(cw_store.read_meta(d), [
+            "import", "--state", str(d / "state.json"), "--file", str(page_notes_path),
+            "--replace-local-drafts",
+        ])
+        if result.returncode != 0:
+            raise cw_store.CWError("notes.py import failed: " + result.stderr.strip()[-500:])
+        return cw_store.read_json(d / "state.json")
+
     def _post_items(self, d, st, resolve_ids, ids=None):
         """Steps 3-4 shared by preview and post: fold page-notes.json into state.json first
         (an edit made just before clicking Post must count), then list exactly what
         notes.pending_publish_ids calls ready -- the same in-process predicate /post
         recomputes and compares against the nonce -- and which requested root ids still
         point at an unresolved thread."""
-        page_notes_path = d / "page-notes.json"
-        if page_notes_path.exists():
-            result = cw_run._notes(cw_store.read_meta(d), [
-                "import", "--state", str(d / "state.json"), "--file", str(page_notes_path),
-                "--replace-local-drafts",
-            ])
-            if result.returncode != 0:
-                raise cw_store.CWError(
-                    "notes.py import failed: " + result.stderr.strip()[-500:])
-            st = cw_store.read_json(d / "state.json")
+        st = self._fold_page_notes(d, st)
         by_id = {n["id"]: n for n in st.get("notes", [])}
         notes_items = []
         for note_id in notes.pending_publish_ids(st):
@@ -1047,6 +1067,158 @@ class _Handler(BaseHTTPRequestHandler):
 
         daemon.hub.emit(key, wid, "rebuilt", {"rev": meta2["rev"], "page": "final", "fragments": []})
         self._send_json(200, {"ok": True, "results": results, "submitted": submitted, "reset": reset})
+
+    def _route_publish_one(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+        note_id, resolve_id, oid = payload.get("id"), payload.get("resolve"), payload.get("oid")
+        body_sha = payload.get("body_sha")
+        if (note_id is None) == (resolve_id is None) or not isinstance(note_id or resolve_id, str):
+            self._send_json(400, {"error": "send exactly one of id or resolve, as a string"})
+            return
+        if note_id is not None and not isinstance(body_sha, str):
+            self._send_json(400, {"error": "body_sha is required"})
+            return
+        if oid is not None and not (isinstance(oid, str) and _OID_RE.fullmatch(oid)):
+            self._send_json(400, {"error": "bad oid"})
+            return
+        daemon = self.server.cw_daemon
+        if daemon.is_running(d):
+            self._send_json(409, {"error": STILL_BUILDING_MSG})
+            return
+        emit = lambda ev, data: daemon.hub.emit(key, wid, ev, data)  # noqa: E731
+        with cw_store.dir_lock(d):
+            meta, err = self._post_check_meta(d)
+            if err:
+                self._send_json(409, err)
+                return
+            if meta.get("sibling_of"):
+                self._send_json(409, {"error": "publishing is off in this view",
+                                       "remedy": "go back to the PR head"})
+                return
+            st, err = self._post_check_state(d)
+            if err:
+                self._send_json(409, err)
+                return
+            st = self._post_sync(d, meta, st)
+            st, _reset = self._reset_stuck(d, meta, st)
+            try:
+                st = self._fold_page_notes(d, st)
+            except cw_store.CWError as e:
+                self._send_json(500, {"error": str(e)})
+                return
+            by_id = {n["id"]: n for n in st.get("notes", [])}
+            target_id = note_id if note_id is not None else resolve_id
+            note = by_id.get(target_id)
+            if note is None:
+                self._send_json(404, {"error": "note not found"})
+                return
+            outcome = None
+            if oid is not None:
+                outcome = next((o for o in cw_ask.read_outcomes(d) if o["oid"] == oid), None)
+                if outcome is None:
+                    self._send_json(404, {"error": "outcome not found"})
+                    return
+                if note_id is not None:
+                    tied = (outcome["outcome"] == "github_draft" and outcome["state"] == "kept"
+                            and (outcome["payload"] or {}).get("note_id") == note_id)
+                else:
+                    tied = (outcome["outcome"] == "resolve" and outcome["state"] == "proposed"
+                            and (outcome["payload"] or {}).get("thread") == resolve_id)
+                if not tied:
+                    self._send_json(409, {"error": "that suggestion is no longer open",
+                                           "remedy": "reload the page"})
+                    return
+            if note_id is None:
+                done = self._publish_resolve(d, meta, note, resolve_id)
+            else:
+                done = self._publish_note(d, meta, by_id, note, body_sha)
+            if done.get("status"):
+                self._send_json(done.pop("status"), done)
+                return
+            if outcome is not None:
+                cw_ask.mark_outcome(d, oid, "done" if note_id is None else "published", on_event=emit)
+            if note_id is not None:
+                self._drop_from_page_notes(d, {note_id})
+                emit("posted", {"kind": "note", "id": note_id, "ok": True, "state": "posted"})
+            else:
+                emit("posted", {"kind": "resolve", "id": note.get("gh_thread_id"), "ok": True})
+            meta2, render_error = self._render_page(d, meta, key, wid)
+        if render_error:
+            done["render_error"] = render_error
+        else:
+            emit("rebuilt", {"rev": meta2["rev"], "page": "final", "fragments": []})
+        self._send_json(200, {"ok": True, **done})
+
+    def _publish_resolve(self, d, meta, note, resolve_id):
+        if not cw_ask.is_root_thread(note):
+            return {"status": 409, "error": "that is not a GitHub review thread"}
+        if note.get("resolved"):
+            return {}
+        result = cw_run._notes(meta, ["resolve", "--state", str(d / "state.json"),
+                                      "--thread-id", note["gh_thread_id"]])
+        if result.returncode != 0:
+            return {"status": 502, "error": result.stderr.strip()[-500:] or "gh failed",
+                    "remedy": "check gh auth status, then try again"}
+        return {}
+
+    def _publish_note(self, d, meta, by_id, note, body_sha):
+        if note.get("state") != "draft" or note.get("origin") != "local":
+            return {"status": 409, "error": "only a local draft can be published",
+                    "remedy": "reload the page"}
+        body = note.get("body") or ""
+        if hashlib.sha256(body.encode()).hexdigest() != body_sha:
+            return {"status": 409, "error": "changed since you looked",
+                    "remedy": "check the text and publish again"}
+        if not body.strip():
+            return {"status": 400, "error": "the draft is empty"}
+        if note.get("reply_to") or note.get("in_reply_to"):
+            root = notes.thread_root(by_id, note)
+            if root is None or root.get("gh_id") is None or root.get("state") != "posted":
+                return {"status": 409, "error": "the comment this replies to is not on GitHub yet",
+                        "remedy": "publish the parent first"}
+        elif note.get("stale"):
+            return {"status": 409, "error": "this draft's line no longer matches the diff",
+                    "remedy": "reply in a thread, or comment on a current line"}
+        info = self._review_info(meta, d)
+        if info is None:
+            return {"status": 502, "error": "could not check for a pending review", "remedy": "try again"}
+        if info.get("review_id"):
+            return {"status": 409, "error": "you have a pending review on this PR",
+                    "remedy": "Submit review, or finish it on GitHub"}
+        result = cw_run._notes(meta, ["publish", "--state", str(d / "state.json"), "--id", note["id"]])
+        if result.returncode != 0:
+            error = result.stderr.strip()[-500:] or "gh failed"
+            # A lost response can leave the comment on GitHub with the draft still local: sync's
+            # dedupe turns such a draft into a posted note.
+            self._post_sync(d, meta, cw_store.read_json(d / "state.json"))
+            synced = next((n for n in (cw_store.read_json(d / "state.json") or {}).get("notes", [])
+                           if n["id"] == note["id"]), {})
+            if synced.get("state") == "posted":
+                return {"id": note["id"], "gh_url": synced.get("gh_url")}
+            unclear = "timed out" in error or ("gh api failed" in error and not re.search(r"\b4\d\d\b", error))
+            if unclear:
+                error = "the comment may already be on GitHub; check the PR before retrying"
+            return {"status": 502, "error": error, "remedy": "check gh auth status, then try again"}
+        try:
+            info = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            info = {}
+        return {"id": note["id"], "gh_url": info.get("gh_url")}
 
     def _render_page(self, d, meta, key, wid):
         """Re-render the final page and bump rev. (meta2, None) on success; (None, stderr tail)

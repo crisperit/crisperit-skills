@@ -300,6 +300,31 @@ if argv[:2] == ["api", "user"]:
 if argv[:2] == ["pr", "view"]:
     _reply("pr-author", argv, None, {"author": {"login": cfg.get("pr_author", "me")}})
 
+REST_POST_RE = re.compile(r"^repos/[^/]+/[^/]+/pulls/\\d+/comments(/(\\d+)/replies)?$")
+if len(argv) >= 2 and argv[0] == "api" and "POST" in argv and REST_POST_RE.match(argv[1]):
+    body = json.loads(sys.stdin.read())
+    reply_to = REST_POST_RE.match(argv[1]).group(2)
+    op = "rest-post-reply" if reply_to else "rest-post-comment"
+    state = _load("state.json", {})
+    if state.get("review_opened") and not reply_to:
+        _log(op, argv, {"path": argv[1], "body": body})
+        sys.stderr.write("fake gh: 422 User can only have one pending review per pull request\\n")
+        sys.exit(1)
+    state["rest_n"] = state.get("rest_n", 0) + 1
+    _save("state.json", state)
+    n = 2000 + state["rest_n"]
+    comments = _load("comments.json", [])
+    parent = next((c for c in comments if c["id"] == int(reply_to)), {}) if reply_to else {}
+    if op in cfg.get("fail_ops", []):
+        _reply(op, argv, {"path": argv[1], "body": body}, {})
+    comments.append({"id": n, "node_id": "RC_%d" % n, "path": parent.get("path", body.get("path")),
+                      "line": parent.get("line", body.get("line")), "side": parent.get("side", body.get("side")),
+                      "body": body.get("body"), "user": {"login": "fake"}, "created_at": "2000-01-01T00:00:00Z",
+                      "html_url": "https://github.com/o/r/pull/7#discussion_r%d" % n,
+                      "in_reply_to_id": int(reply_to) if reply_to else None})
+    _save("comments.json", comments)
+    _reply(op, argv, {"path": argv[1], "body": body}, comments[-1])
+
 if len(argv) >= 2 and argv[0] == "api" and re.match(r"^repos/[^/]+/[^/]+/pulls/\\d+/comments$", argv[1]):
     _reply("rest-comments", argv, None, _load("comments.json", []))
 

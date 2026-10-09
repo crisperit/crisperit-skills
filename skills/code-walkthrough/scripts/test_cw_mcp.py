@@ -362,7 +362,7 @@ def test_outcomes_server_accepts_and_rejects():
         rpc = _Rpc("outcomes", "--dir", str(d), "--qid", "q1")
         try:
             assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == [
-                "propose_resolve", "propose_page_edit"]
+                "propose_resolve", "propose_page_edit", "propose_github_draft"]
             rpc.proc.stdin.write("garbage{\n")
             rpc.proc.stdin.flush()
             assert rpc.call("ping")["result"] == {}
@@ -433,3 +433,67 @@ def test_outcomes_missing_anchor_is_an_error():
             rpc.close()
         assert res["isError"] is True
         assert "unavailable" in res["content"][0]["text"]
+
+
+COMMENT = "  needs a guard\n```py\nx = 1\n```\n<b>now</b> \U0001F680\n"
+REPLYABLE = [{"id": "gh-9", "path": "a.py", "line": 3, "author": "r", "body": "b"}]
+ANCHORS = {
+    "line": {"kind": "line", "path": "a.py", "line": 3, "side": "RIGHT", "end_line": None, "hunk_id": "h"},
+    "thread": {"kind": "thread", "note_id": "gh-9"},
+    "block": {"kind": "block", "block": "overview:p1", "section": "Overview"},
+    "section": {"kind": "section", "section": "Overview"},
+}
+
+
+def _draft_doc(kind="line", replyable=REPLYABLE):
+    return {"qid": "q1", "thread_id": "t1", "anchor": ANCHORS[kind], "comment": COMMENT,
+            "resolvable": [], "replyable": replyable}
+
+
+NEW = {"kind": "new"}
+REPLY = {"kind": "reply", "note_id": "gh-9"}
+
+
+def test_check_github_draft_cases():
+    check = lambda args, kind="line", **kw: cw_mcp.check_outcome(_draft_doc(kind), "propose_github_draft", args, **kw)
+    assert check({"body": "b", "target": NEW}) is None
+    assert check({"body": "b", "target": REPLY}) is None
+    assert check({"body": "b", "target": REPLY}, "thread") is None
+    for kind in ("block", "section"):
+        for target in (NEW, REPLY):
+            assert "reply instead" in check({"body": "b", "target": target}, kind)
+    assert "not on a diff line, so a new review comment cannot be drafted" in check({"body": "b", "target": NEW}, "thread")
+    assert "not a review thread" in check({"body": "b", "target": {"kind": "reply", "note_id": "gh-1"}})
+    assert "not a review thread" in check({"body": "b", "target": {"kind": "reply", "note_id": ["gh-9"]}})
+    assert "target.kind" in check({"body": "b", "target": {"kind": "edit"}})
+    assert "target.kind" in check({"body": "b", "target": "new"})
+    for body in (None, "", "  \n", 5):
+        assert "body is required" in check({"body": body, "target": NEW})
+    assert "4000" in check({"body": "x" * 4001, "target": NEW})
+    assert check({"body": "x" * 4000, "target": NEW}) is None
+    assert "boolean" in check({"body": "b", "target": NEW, "verbatim": "yes"})
+    assert "already drafted" in check({"body": "b", "target": NEW}, already={"github_draft"})
+    assert check({"body": "b", "target": NEW}, already={"page_edit", "resolve:7"}) is None
+
+
+def test_github_draft_payload_copies_target_and_verbatim_is_byte_for_byte():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+
+        def accept(qid, doc, args):
+            cw_store.write_json(d / "turns" / f"{qid}.anchor.json", doc)
+            assert cw_mcp.accept_outcome(d, qid, "propose_github_draft", args)[0]
+            return json.loads((d / "turns" / f"{qid}.outcomes.jsonl").read_text().splitlines()[-1])["arguments"]
+
+        (d / "turns").mkdir()
+        new = accept("q1", _draft_doc(), {"body": "  reworded  ", "target": NEW})
+        assert new == {"body": "reworded", "original": COMMENT, "verbatim": False,
+                       "target": {"kind": "new", "path": "a.py", "line": 3, "side": "RIGHT",
+                                  "end_line": None, "hunk_id": "h"}}
+        verbatim = accept("q2", _draft_doc(), {"body": "something else entirely", "target": NEW, "verbatim": True})
+        assert verbatim["body"] == COMMENT == verbatim["original"] and verbatim["verbatim"] is True
+        reply = accept("q3", _draft_doc("thread"), {"body": "b", "target": REPLY, "verbatim": True})
+        assert reply["body"] == COMMENT
+        assert reply["target"] == {"kind": "reply", "note_id": "gh-9", "path": "a.py", "line": 3}
+        ok, text = cw_mcp.accept_outcome(d, "q3", "propose_github_draft", {"body": "b", "target": REPLY})
+        assert not ok and "already drafted" in text

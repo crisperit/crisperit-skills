@@ -323,7 +323,7 @@ def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume
     # --safe-mode disables MCP servers; CLAUDE.md verified not loaded under --restricted.
     argv = [
         "claude", "-p", "--restricted", "--tools=Read,Grep,Glob", "--strict-mcp-config",
-        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit",
+        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft",
         "--permission-prompts", "none", f"--model={profile['model']}",
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         f"--system-prompt={system}", f"--add-dir={add_dir}",
