@@ -1006,6 +1006,19 @@
     .cw-dots i:nth-child(3){animation-delay:.4s}
   }
   @keyframes cw-dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+  .cw-caret{display:inline-block;width:2px;height:1em;margin-left:1px;vertical-align:text-bottom;background:var(--purple)}
+  .cw-working button{margin-left:8px}
+  .cw-progress{display:block;margin-top:2px;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-stopped{margin-left:6px;color:var(--muted)}
+  .cw-outcome{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:6px 0 0;padding:6px 8px;
+    border:1px solid var(--border);border-radius:6px;background:var(--panel2)}
+  .cw-outcome-text{min-width:0;flex:1 1 14em;overflow-wrap:anywhere}
+  .cw-outcome-why{display:block;color:var(--muted)}
+  .cw-outcome-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  @media (prefers-reduced-motion:no-preference){
+    .cw-caret{animation:cw-caret 1s steps(1) infinite}
+  }
+  @keyframes cw-caret{50%{opacity:0}}
   .cw-compose textarea{display:block;width:100%;min-height:64px;background:var(--panel2);
     border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
     font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
@@ -3794,21 +3807,117 @@
       return last&&last.status==='error'?'error':'answered';
     }
 
-    function turnEl(r){
-      const d=mk('div','cw-turn');
+    const streams=new Map();         // qid -> {seq,text,progress}
+    const outcomesByQid=new Map();   // qid -> Map(oid -> folded outcome record)
+    const streamElsOf=qid=>[...document.querySelectorAll('.cw-streaming')].filter(e=>e.dataset.qid===qid);
+    const progressElsOf=qid=>[...document.querySelectorAll('.cw-progress')].filter(e=>e.dataset.qid===qid);
+    function progressText(p){
+      if(!p) return '';
+      if(typeof p==='string') return p;
+      const d=p.detail||'';
+      if(p.tool==='Read') return 'Reading '+d;
+      if(p.tool==='Grep') return 'Searching for '+d;
+      if(p.tool==='Glob') return 'Listing files';
+      if(p.tool==='propose_resolve') return 'Suggesting a resolve';
+      return p.tool||'';
+    }
+    const noteById=id=>state.notes.find(n=>n.id===id);
+
+    function postJson(path,body){
+      return fetch(window.CW_LIVE.api+path,{method:'POST',headers:headers(),body:JSON.stringify(body||{})})
+        .then(r=>r.json().catch(()=>({})).then(b=>({ok:r.ok,status:r.status,body:b})));
+    }
+
+    function stopBtn(t,r){
+      const b=mkBtn('Stop','cw-stop fb-ghost');
+      b.addEventListener('click',()=>{
+        b.disabled=true;
+        postJson('/comment/'+encodeURIComponent(r.qid)+'/cancel',{})
+          .then(({ok,status,body})=>{ if(!ok&&status!==404){ b.disabled=false; t.msg.textContent=body.error||'Request failed'; } })
+          .catch(()=>{ b.disabled=false; t.msg.textContent='Request failed -- check the daemon is still running.'; });
+      });
+      return b;
+    }
+
+    function retryBtn(t,r){
+      const b=mkBtn('Retry','cw-retry fb-ghost');
+      b.addEventListener('click',()=>{
+        b.disabled=true; t.msg.textContent='';
+        postJson('/comment',{anchor:r.anchor||(t.turns[0]||{}).anchor||{},text:r.comment||r.question||'',thread_id:t.id})
+          .then(({ok,body})=>{ if(!ok){ b.disabled=false; t.msg.textContent=body.error||'Request failed'; } })
+          .catch(()=>{ b.disabled=false; t.msg.textContent='Request failed -- check the daemon is still running.'; });
+      });
+      return b;
+    }
+
+    function outcomeEl(t,o){
+      const id=o.payload&&o.payload.thread;
+      const note=noteById(id);
+      const where=note?(note.path+':'+(note.line!=null?note.line:'')+(note.author?' by '+note.author:'')):id;
+      const d=mk('div','cw-outcome'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      const text=mk('span','cw-outcome-text','Suggests resolving the review thread at '+where);
+      text.append(mk('span','cw-outcome-why',(o.payload&&o.payload.why)||''));
+      d.append(text);
+      const acts=mk('div','cw-outcome-actions');
+      if(o.state==='proposed'){
+        if(pendingResolveSet.has(id)) acts.append(mk('span',null,'Kept: resolves on Submit review'));
+        else {
+          const keep=mkBtn('Keep','cw-keep fb-ghost');
+          keep.addEventListener('click',()=>{ markPendingResolve(id); renderNotes(); renderThread(t); });
+          acts.append(keep);
+        }
+        const dis=mkBtn('Dismiss','cw-dismiss fb-ghost');
+        dis.addEventListener('click',()=>{
+          dis.disabled=true; t.msg.textContent='';
+          postJson('/outcomes/'+encodeURIComponent(o.oid)+'/dismiss',{})
+            .then(({ok,body})=>{
+              if(!ok){ dis.disabled=false; t.msg.textContent=body.error||'Request failed'; return; }
+              clearPendingResolve(id);
+              upsertOutcome(Object.assign({},o,body.outcome||{},{state:'dismissed'}));
+              renderNotes();
+            })
+            .catch(()=>{ dis.disabled=false; t.msg.textContent='Request failed -- check the daemon is still running.'; });
+        });
+        acts.append(dis);
+      } else acts.append(mk('span',null,o.state==='done'?'Done':'Dismissed'));
+      d.append(acts);
+      return d;
+    }
+
+    function turnEl(r,t,isLast){
+      const d=mk('div','cw-turn'); d.dataset.qid=r.qid;
       d.append(mk('p','cw-turn-q',r.comment||r.question||''));
       if(r.status==='pending'){
+        const st=streams.get(r.qid)||{};
+        const live=mk('p','cw-turn-a cw-streaming');
+        live.dataset.qid=r.qid; live.setAttribute('aria-live','off');
+        live.append(mk('span','cw-stream-text',st.text||''),mk('span','cw-caret'));
+        live.lastChild.setAttribute('aria-hidden','true');
         const p=mk('p','cw-turn-a cw-working');
         const dots=mk('span','cw-dots'); dots.setAttribute('aria-hidden','true');
         for(let i=0;i<3;i++) dots.appendChild(document.createElement('i'));
-        p.append(dots,mk('span',null,'(working)'));
-        d.append(p);
+        const prog=mk('span','cw-progress',progressText(st.progress)); prog.dataset.qid=r.qid;
+        p.append(dots,mk('span',null,'(working)'),stopBtn(t,r),prog);
+        d.append(live,p);
       } else if(r.status==='error'){
         d.append(mk('p','cw-turn-a cw-turn-err','Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':'')));
       } else {
-        d.append(mk('p','cw-turn-a',r.answer||''));
+        const a=mk('p','cw-turn-a',r.answer||'');
+        if(r.status==='cancelled') a.append(mk('span','cw-stopped','(stopped)'));
+        d.append(a);
       }
+      if((r.status==='error'||r.status==='cancelled')&&isLast) d.append(retryBtn(t,r));
+      for(const o of (outcomesByQid.get(r.qid)||new Map()).values()) d.append(outcomeEl(t,o));
       return d;
+    }
+
+    function upsertOutcome(o){
+      if(!o||!o.oid||!o.qid) return;
+      let m=outcomesByQid.get(o.qid);
+      if(!m){ m=new Map(); outcomesByQid.set(o.qid,m); }
+      m.set(o.oid,o);
+      const t=threads.get(o.thread_id);
+      if(t) renderThread(t);
     }
 
     function buildThread(t){
@@ -3854,7 +3963,7 @@
       t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
       t.summary.hidden=!collapsed;
       t.body.hidden=collapsed;
-      t.turnsEl.replaceChildren(...t.turns.map(turnEl));
+      t.turnsEl.replaceChildren(...t.turns.map((r,i)=>turnEl(r,t,i===t.turns.length-1)));
     }
 
     const earlyResolve=new Map();
@@ -3865,6 +3974,7 @@
       if(isNew){ t={id:r.thread_id,turns:[],resolved:earlyResolve.get(r.thread_id)===true,el:null,placed:false}; threads.set(t.id,t); earlyResolve.delete(t.id); }
       const i=t.turns.findIndex(x=>x.qid===r.qid);
       if(fromSnapshot&&i>=0&&r.status==='pending'&&t.turns[i].status!=='pending') return;
+      if(r.status!=='pending') streams.delete(r.qid);
       if(i<0) t.turns.push(r); else t.turns[i]=r;
       renderThread(t);
       if(isNew){
@@ -3886,6 +3996,32 @@
       if(!ev) return;
       if(ev.kind==='turn') upsertTurn(ev.record);
       else if(ev.kind==='resolve') applyResolve(ev.thread_id,ev.resolved);
+    };
+
+    window.__cwOnDelta=d=>{
+      if(!d||!d.qid) return;
+      let st=streams.get(d.qid);
+      if(!st){ st={seq:0,text:'',progress:null}; streams.set(d.qid,st); }
+      if(typeof d.seq==='number'&&d.seq<=st.seq) return;
+      st.seq=d.seq; st.text+=d.text||'';
+      const els=streamElsOf(d.qid);
+      if(els.length) els.forEach(e=>{ e.firstChild.textContent=st.text; });
+      else { const t=threads.get(d.thread_id); if(t) renderThread(t); }
+    };
+    window.__cwOnProgress=d=>{
+      if(!d||!d.qid) return;
+      let st=streams.get(d.qid);
+      if(!st){ st={seq:0,text:'',progress:null}; streams.set(d.qid,st); }
+      st.progress={tool:d.tool,detail:d.detail};
+      progressElsOf(d.qid).forEach(e=>{ e.textContent=progressText(st.progress); });
+    };
+    window.__cwOnOutcome=upsertOutcome;
+    let snapshots=0;
+    window.__cwOnSnapshot=d=>{
+      streams.clear();
+      ((d&&d.turns)||[]).forEach(x=>streams.set(x.qid,{seq:x.seq||0,text:x.text||'',progress:x.progress||null}));
+      for(const t of threads.values()) if(t.turns.some(r=>r.status==='pending')) renderThread(t);
+      if(snapshots++>0) loadQa();
     };
 
     const commentBtn=mkBtn('Comment');
@@ -3992,14 +4128,18 @@
       c.ta.focus();
     };
 
-    fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
-      .then(r=>r.ok?r.json():null)
-      .then(data=>{
-        if(!data||!Array.isArray(data.turns)) return;
-        data.turns.forEach(x=>upsertTurn(x,true));
-        (data.resolved||[]).forEach(tid=>applyResolve(tid,true));
-      })
-      .catch(()=>{});
+    function loadQa(){
+      fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
+        .then(r=>r.ok?r.json():null)
+        .then(data=>{
+          if(!data||!Array.isArray(data.turns)) return;
+          data.turns.forEach(x=>upsertTurn(x,true));
+          (data.resolved||[]).forEach(tid=>applyResolve(tid,true));
+          (data.outcomes||[]).forEach(upsertOutcome);
+        })
+        .catch(()=>{});
+    }
+    loadQa();
   }
 
   document.querySelectorAll('pre.diff').forEach(wireHunk);
@@ -4645,6 +4785,7 @@ document.querySelectorAll('summary a').forEach(a => {
       liveSteps=data.steps||{}; liveBatches=data.batches||liveBatches; liveTotal=data.total||liveTotal;
       renderBanner();
       if(typeof data.rev==='number'&&data.rev>LIVE.rev) onPageUpdated();
+      if(window.__cwOnSnapshot) window.__cwOnSnapshot(data);
     });
     es.addEventListener('step',e=>{
       const data=JSON.parse(e.data);
@@ -4663,6 +4804,12 @@ document.querySelectorAll('summary a').forEach(a => {
     es.addEventListener('rebuilt',()=>{ onPageUpdated(); });
     es.addEventListener('thread',e=>{
       if(window.__cwOnThread) window.__cwOnThread(JSON.parse(e.data));
+    });
+    ['delta','progress','outcome'].forEach(name=>{
+      es.addEventListener(name,e=>{
+        const hook=window['__cwOn'+name[0].toUpperCase()+name.slice(1)];
+        if(hook) hook(JSON.parse(e.data));
+      });
     });
     es.addEventListener('posted',e=>{
       if(window.__cwOnPosted) window.__cwOnPosted(JSON.parse(e.data));

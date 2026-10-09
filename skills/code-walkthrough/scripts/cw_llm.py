@@ -248,6 +248,16 @@ def _classify_claude_error(parsed, stderr, profile):
     return "error", None
 
 
+def claude_usage(parsed):
+    usage_raw = parsed.get("usage") or {}
+    return {
+        "prompt_tokens": (usage_raw.get("input_tokens", 0) + usage_raw.get("cache_creation_input_tokens", 0)
+                           + usage_raw.get("cache_read_input_tokens", 0)),
+        "completion_tokens": usage_raw.get("output_tokens", 0),
+        "estimated": False,
+    }
+
+
 def claude_call(profile, system, prompt, *, cwd, tools, schema=None, timeout=300):
     if not cwd or not Path(cwd).is_dir():
         raise LLMError(
@@ -297,13 +307,7 @@ def claude_call(profile, system, prompt, *, cwd, tools, schema=None, timeout=300
         error.usage = None
         raise error from e
 
-    usage_raw = parsed.get("usage") or {}
-    usage = {
-        "prompt_tokens": (usage_raw.get("input_tokens", 0) + usage_raw.get("cache_creation_input_tokens", 0)
-                           + usage_raw.get("cache_read_input_tokens", 0)),
-        "completion_tokens": usage_raw.get("output_tokens", 0),
-        "estimated": False,
-    }
+    usage = claude_usage(parsed)
 
     if parsed.get("is_error") or proc.returncode != 0:
         kind, remedy = _classify_claude_error(parsed, err, profile)
@@ -313,6 +317,96 @@ def claude_call(profile, system, prompt, *, cwd, tools, schema=None, timeout=300
         raise error
 
     return parsed, usage
+
+
+def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume=None):
+    # --safe-mode disables MCP servers; CLAUDE.md verified not loaded under --restricted.
+    argv = [
+        "claude", "-p", "--restricted", "--tools=Read,Grep,Glob", "--strict-mcp-config",
+        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve",
+        "--permission-prompts", "none", f"--model={profile['model']}",
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        f"--system-prompt={system}", f"--add-dir={add_dir}",
+    ]
+    return argv + (["--resume", resume] if resume else ["--session-id", session_id])
+
+
+def claude_stream(argv, prompt, *, cwd, timeout, on_line, on_spawn=None):
+    """Run argv, feeding each parsed stdout JSON line to on_line. Returns (returncode,
+    stderr_tail); a timeout raises LLMError(kind="timeout") like claude_call."""
+    sem = _current_semaphore()
+    sem.acquire()
+    try:
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=cwd, env=claude_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, start_new_session=True,
+            )
+        except FileNotFoundError as e:
+            raise LLMError(
+                "claude not on PATH", kind="config", remedy=_CLAUDE_NOT_ON_PATH_REMEDY,
+            ) from e
+
+        def kill():
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        err_buf = []
+
+        def drain():
+            size = 0
+            for chunk in iter(lambda: proc.stderr.read(4096), ""):
+                err_buf.append(chunk)
+                size += len(chunk)
+                while size > 65536 and len(err_buf) > 1:
+                    size -= len(err_buf.pop(0))
+
+        def feed():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        timed_out = threading.Event()
+
+        def expire():
+            timed_out.set()
+            kill()
+
+        timer = threading.Timer(timeout, expire)
+        threads = [threading.Thread(target=drain, daemon=True), threading.Thread(target=feed, daemon=True)]
+        try:
+            if on_spawn:
+                on_spawn(proc)
+            timer.start()
+            for t in threads:
+                t.start()
+            for line in iter(proc.stdout.readline, ""):
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    on_line(obj)
+        except BaseException:
+            kill()
+            raise
+        finally:
+            timer.cancel()
+            proc.wait()
+            for t in threads:
+                t.join(timeout=5)
+    finally:
+        sem.release()
+
+    if timed_out.is_set():
+        raise LLMError(
+            "claude process timed out", kind="timeout", remedy="raise timeout_s in config.json",
+        )
+    return proc.returncode, "".join(err_buf)[-65536:]
 
 
 def _render_claude_prompt(messages):

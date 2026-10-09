@@ -13,8 +13,14 @@ DISTINCTIVE_SENTENCES = {
     "batch.md": "it does not narrate the diff",
     "prose.md": "Rate limiting now reads its thresholds from live config instead of "
                 "compile-time constants",
+    "comment.md": "Never propose an edit, a patch, or a replacement for the selected code",
     "thread.md": "The path is a signal, not a requirement",
 }
+
+
+def test_comment_prompt_has_outcome_rules():
+    text = " ".join((PROMPTS_DIR / "comment.md").read_text().split())
+    assert "A suggestion is not an action: the user decides." in text
 
 
 def _other_doc_files():

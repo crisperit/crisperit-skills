@@ -87,6 +87,17 @@ def test_role_profile_escalate_falls_back_to_prose():
     assert cw_store.role_profile(config, "analysis") is None
 
 
+def test_role_profile_thread_falls_back_to_ask():
+    config = {
+        "profiles": {"p": {"base_url": "http://x", "model": "m"}},
+        "roles": {"ask": "p"},
+    }
+    assert cw_store.role_profile(config, "thread")["name"] == "p"
+    config["roles"]["thread"] = "q"
+    config["profiles"]["q"] = {"base_url": "http://y", "model": "n"}
+    assert cw_store.role_profile(config, "thread")["name"] == "q"
+
+
 def test_load_config_defaults():
     with cw_testlib.temp_home():
         config = cw_store.load_config()

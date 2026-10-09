@@ -9,13 +9,21 @@ a final turn record to `qa.jsonl` and reports it through `on_event` as a "thread
 Stdlib only except for talking to a model backend through cw_llm.
 """
 
+import contextlib
 import json
+import os
 import re
+import shutil
+import signal
 import sys
+import threading
+import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_llm  # noqa: E402
+import cw_mcp  # noqa: E402
 import cw_run  # noqa: E402
 import cw_store  # noqa: E402
 import notes  # noqa: E402
@@ -29,6 +37,9 @@ HUNK_WINDOW = 40
 QA_PAIRS = 5
 QUESTION_MAX = 2000
 BLOCK_RE = re.compile(r"[A-Za-z0-9:_.|-]{1,200}")
+DELTA_INTERVAL_S = 0.1
+DETAIL_MAX = 200
+MCP_PREFIX = "mcp__cw__"
 THREAD_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
@@ -201,19 +212,211 @@ def read_qa(d, limit=None):
 
 
 def read_threads(d):
-    """{thread_id: {"turns": [folded turns in order], "resolved": bool}}; resolved is the
-    latest resolve event for the thread, False when there is none."""
+    """{thread_id: {"turns": [folded turns in order], "resolved": bool, "outcomes": [folded]}};
+    resolved is the latest resolve event for the thread, False when there is none."""
     threads = {}
     for r in read_qa(d):
-        threads.setdefault(r["thread_id"], {"turns": [], "resolved": False})["turns"].append(r)
+        threads.setdefault(r["thread_id"], {"turns": [], "resolved": False, "outcomes": []})["turns"].append(r)
     for r in _read_records(d):
         if r.get("type") == "resolve" and r.get("thread_id") in threads:
             threads[r["thread_id"]]["resolved"] = bool(r.get("resolved"))
+    for o in read_outcomes(d):
+        if o["thread_id"] in threads:
+            threads[o["thread_id"]]["outcomes"].append(o)
     return threads
 
 
-def build_prompt(d, anchor, question, thread_id=None):
+class OutcomeError(cw_store.CWError):
+    """kind is not_found, conflict or invalid, for the server to map to a status."""
+
+    def __init__(self, message, kind, remedy=None):
+        super().__init__(message, remedy=remedy)
+        self.kind = kind
+
+
+def _state_notes(d):
+    st = cw_store.read_json(Path(d) / "state.json") or {}
+    return [n for n in st.get("notes", []) if isinstance(n, dict)]
+
+
+def _resolvable(d, anchor):
+    if anchor.get("kind") != "line":
+        return []
+    first = anchor["line"]
+    last = anchor.get("end_line") or first
+    found = []
+    for n in _state_notes(d):
+        line = n.get("line")
+        if (n.get("reply_to") or n.get("in_reply_to") or n.get("origin") != "github"
+                or not n.get("gh_thread_id") or n.get("resolved") or n.get("path") != anchor["path"]
+                or not isinstance(line, int) or not first <= line <= last):
+            continue
+        found.append({"id": n["id"], "path": n["path"], "line": line,
+                      "author": n.get("author"), "body": (n.get("body") or "")[:500]})
+    return found
+
+
+def write_turn_anchor(d, qid, thread_id, anchor):
+    path = Path(d) / "turns" / f"{qid}.anchor.json"
+    path.parent.mkdir(exist_ok=True)
+    cw_store.write_json(path, {"qid": qid, "thread_id": thread_id, "anchor": anchor,
+                               "resolvable": _resolvable(d, anchor)})
+
+
+def _folded_outcome(r):
+    return {"oid": r["oid"], "qid": r.get("qid"), "thread_id": r.get("thread_id"),
+            "outcome": r.get("outcome"), "payload": r.get("payload"), "state": r.get("state")}
+
+
+def read_outcomes(d):
+    folded = {}
+    for r in _read_records(d):
+        if r.get("type") == "outcome" and "oid" in r:
+            folded[r["oid"]] = _folded_outcome(r)
+        elif r.get("type") == "state" and r.get("oid") in folded:
+            o = folded[r["oid"]]
+            o["state"] = r.get("state")
+            if "payload" in r:
+                o["payload"] = r["payload"]
+    resolved = {n.get("id") for n in _state_notes(d) if n.get("resolved")}
+    for o in folded.values():
+        if o["state"] == "proposed" and o["outcome"] == "resolve" and o["payload"]["thread"] in resolved:
+            o["state"] = "done"
+    return list(folded.values())
+
+
+def sweep_outcomes(d, qid, thread_id, on_event=None):
+    try:
+        lines = (Path(d) / "turns" / f"{qid}.outcomes.jsonl").read_text().splitlines()
+    except OSError:
+        return
+    known = {r.get("oid") for r in _read_records(d) if r.get("type") == "outcome"}
+    for line in lines:
+        try:
+            rec = json.loads(line)
+            oid, args = rec["oid"], rec["arguments"]
+            payload = {"thread": args["thread"], "why": args["why"]}
+        except (ValueError, KeyError, TypeError):
+            continue
+        if oid in known:
+            continue
+        known.add(oid)
+        record = {"type": "outcome", "oid": oid, "qid": qid, "thread_id": thread_id,
+                  "outcome": "resolve", "payload": payload, "state": "proposed",
+                  "at": cw_store.now_iso()}
+        _append_qa(d, record)
+        if on_event:
+            on_event("outcome", _folded_outcome(record))
+
+
+_OUTCOME_LOCK = threading.Lock()
+
+
+def outcome_action(d, oid, action, payload=None, on_event=None):
+    with _OUTCOME_LOCK:
+        return _outcome_action(d, oid, action, payload, on_event)
+
+
+def _outcome_action(d, oid, action, payload, on_event):
     d = Path(d)
+    outcomes = read_outcomes(d)
+    current = next((o for o in outcomes if o["oid"] == oid), None)
+    if current is None:
+        raise OutcomeError("outcome not found", "not_found")
+    if current["state"] != "proposed":
+        raise OutcomeError("outcome is not open", "conflict")
+    event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso()}
+    if action == "dismiss":
+        event["state"] = "dismissed"
+    elif action == "edit":
+        anchor_doc = cw_store.read_json(d / "turns" / f"{current['qid']}.anchor.json") or {}
+        already = {o["payload"]["thread"] for o in outcomes
+                   if o["qid"] == current["qid"] and o["oid"] != oid}
+        error = cw_mcp.check_outcome(anchor_doc, "propose_resolve", payload, already)
+        if error:
+            raise OutcomeError(error, "invalid", remedy="fix the suggestion and try again")
+        event.update(state="proposed", payload={"thread": payload["thread"], "why": payload["why"].strip()})
+    else:
+        raise OutcomeError(f"unknown action {action!r}", "invalid")
+    _append_qa(d, event)
+    folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
+    if on_event:
+        on_event("outcome", folded)
+    return folded
+
+
+def _note_loc(d, note_id):
+    for n in _state_notes(d):
+        if n.get("id") == note_id:
+            return f"{n.get('path')}:{n.get('line')}"
+    return note_id
+
+
+def _outcome_updates_text(d, thread_id, since_last_turn=True):
+    by_oid = {o["oid"]: o for o in read_outcomes(d) if o["thread_id"] == thread_id}
+    lines = []
+    for r in _read_records(d):
+        if "type" not in r:
+            if (since_last_turn and r.get("thread_id", r.get("qid")) == thread_id
+                    and r.get("finished_at")):
+                lines = []
+            continue
+        o = by_oid.get(r.get("oid"))
+        if r["type"] != "state" or o is None:
+            continue
+        verb = "dismissed" if r.get("state") == "dismissed" else "edited"
+        payload = r.get("payload") or o["payload"]
+        lines.append(f"The user {verb} your suggestion to resolve "
+                     f"{_note_loc(d, payload['thread'])}: {payload['why']}")
+    return "\n".join(lines)
+
+
+def _candidates_text(d, anchor):
+    found = _resolvable(d, anchor)
+    if not found:
+        return ""
+    rows = [f"- {c['id']}, {c['path']}:{c['line']}, {c['author']}: {c['body'][:300]}" for c in found]
+    return "Review threads on these lines you may propose to resolve:\n" + "\n".join(rows)
+
+
+def _ensure_ctx(d):
+    """Copies, not symlinks: the model reads them through --add-dir and the analysis can be
+    replaced under it. A copy is refreshed only when its source is newer."""
+    ctx = d / "ctx"
+    ctx.mkdir(exist_ok=True)
+    analysis = d / "analysis.json"
+    if not analysis.exists():
+        analysis = d / "analysis.partial.json"
+    for source, name in ((analysis, "analysis.json"), (d / "raw.diff", "raw.diff")):
+        dest = ctx / name
+        if source.exists() and (not dest.exists() or source.stat().st_mtime > dest.stat().st_mtime):
+            shutil.copyfile(source, dest)
+    return ctx
+
+
+_CTX_NOTE = ("The walkthrough's own files sit in `{ctx_dir}`: `analysis.json` (the notes shown on the page) "
+             "and `raw.diff` (the full diff). Read them with the Read, Grep and Glob tools by absolute path "
+             "when the diff and notes in the message do not answer the comment.")
+
+
+def _system_prompt(ctx_dir=None):
+    text = (SKILL_DIR / "prompts" / "comment.md").read_text()
+    note = _CTX_NOTE.replace("{ctx_dir}", str(ctx_dir)) if ctx_dir else ""
+    return text.replace("{ctx_note}\n", note + "\n" if note else "")
+
+
+def _thread_session(d, thread_id):
+    for r in reversed(read_qa(d)):
+        if r["thread_id"] == thread_id and r.get("session_id"):
+            return r["session_id"]
+    return None
+
+
+def build_prompt(d, anchor, question, thread_id=None, resumed=False):
+    d = Path(d)
+    if resumed:
+        extras = [_candidates_text(d, anchor), _outcome_updates_text(d, thread_id)]
+        return "\n\n".join([f"Question:\n{question}", *filter(None, extras)])
     quote = anchor["quote"]
     if anchor["kind"] in ("section", "block") and anchor.get("section"):
         part1 = f"Question:\n{question}\n\nSection: {anchor['section']}\n\nSelected text:\n{quote}"
@@ -248,9 +451,16 @@ def build_prompt(d, anchor, question, thread_id=None):
     overview_verdict = _overview_verdict(d)
     if overview_verdict:
         parts.append(overview_verdict)
+    candidates = _candidates_text(d, anchor)
+    if candidates:
+        parts.append(candidates)
     qa_text = _qa_pairs_text(d, thread_id)
     if qa_text:
         parts.append(qa_text)
+    if thread_id is not None:
+        updates = _outcome_updates_text(d, thread_id, since_last_turn=False)
+        if updates:
+            parts.append(updates)
 
     return "\n\n".join(parts)[:PROMPT_CAP]
 
@@ -284,30 +494,230 @@ def finalise_stale(d, in_flight):
                 "started_at": r.get("started_at"), "finished_at": cw_store.now_iso(),
                 "status": "error", "error": "turn was interrupted",
                 "remedy": "send the comment again"})
+            sweep_outcomes(d, r["qid"], r["thread_id"])
 
 
-def answer(d, qid, anchor, question, on_event=None, thread_id=None):
+def _server_log(message):
+    try:
+        with open(cw_store.log_path(), "a") as f:
+            f.write(f"{cw_store.now_iso()} {message}\n")
+    except OSError:
+        pass
+
+
+def _kill(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _tool_detail(tool_input):
+    for key in ("file_path", "pattern", "path"):
+        value = (tool_input or {}).get(key)
+        if isinstance(value, str) and value:
+            return value[:DETAIL_MAX]
+    return ""
+
+
+def _emit_progress(live, on_event, qid, thread_id, tool, detail):
+    progress = {"qid": qid, "thread_id": thread_id, "tool": tool, "detail": detail}
+    live["progress"] = progress
+    if on_event:
+        on_event("progress", progress)
+
+
+def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None):
+    st = {"init": False, "session_id": None, "texts": [], "result": None, "bad_mcp": False,
+          "buf": "", "last": 0.0, "sep": False, "mcp_ids": set()}
+
+    def flush():
+        if not st["buf"]:
+            return
+        text, st["buf"] = st["buf"], ""
+        with live.get("lock") or contextlib.nullcontext():
+            live["text"] = live.get("text", "") + text
+            live["seq"] = seq = live.get("seq", 0) + 1
+        st["last"] = time.monotonic()
+        if on_event:
+            on_event("delta", {"qid": qid, "thread_id": thread_id, "seq": seq, "text": text})
+
+    def on_spawn(proc):
+        live["proc"] = proc
+        if live.get("cancelled"):
+            _kill(proc)
+
+    def on_line(obj):
+        kind = obj.get("type")
+        if kind != "stream_event":
+            flush()
+        if kind == "system" and obj.get("subtype") == "init":
+            st["init"] = True
+            st["session_id"] = obj.get("session_id")
+            if not any(s.get("name") == "cw" and s.get("status") == "connected"
+                       for s in obj.get("mcp_servers") or [] if isinstance(s, dict)):
+                st["bad_mcp"] = True
+                if live.get("proc"):
+                    _kill(live["proc"])
+        elif kind == "stream_event":
+            event = obj.get("event") or {}
+            etype = event.get("type")
+            if etype == "content_block_start" and (event.get("content_block") or {}).get("type") == "text":
+                st["sep"] = bool(live.get("text") or st["buf"])
+            elif etype == "content_block_delta" and (event.get("delta") or {}).get("type") == "text_delta":
+                chunk = event["delta"].get("text") or ""
+                if st["sep"]:
+                    chunk, st["sep"] = "\n\n" + chunk, False
+                st["buf"] += chunk
+                if time.monotonic() - st["last"] >= DELTA_INTERVAL_S:
+                    flush()
+        elif kind == "assistant":
+            for block in (obj.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    st["texts"].append(block.get("text") or "")
+                elif block.get("type") == "tool_use":
+                    name = block.get("name") or ""
+                    if name.startswith(MCP_PREFIX):
+                        st["mcp_ids"].add(block.get("id"))
+                    _emit_progress(live, on_event, qid, thread_id, name.removeprefix(MCP_PREFIX),
+                                   _tool_detail(block.get("input")))
+        elif kind == "user" and sweep:
+            content = (obj.get("message") or {}).get("content")
+            blocks = content if isinstance(content, list) else []
+            if any(isinstance(b, dict) and b.get("type") == "tool_result"
+                   and b.get("tool_use_id") in st["mcp_ids"] for b in blocks):
+                sweep()
+        elif kind == "result":
+            st["result"] = obj
+
+    try:
+        st["returncode"], st["stderr"] = cw_llm.claude_stream(
+            argv, prompt, cwd=cwd, timeout=timeout, on_line=on_line, on_spawn=on_spawn)
+    finally:
+        flush()
+        live["proc"] = None
+    return st
+
+
+def _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage):
+    qid, thread_id = record["qid"], record["thread_id"]
+    ctx = _ensure_ctx(d).resolve()
+    system = _system_prompt(ctx)
+    mcp_config = cw_mcp.outcome_mcp_config(d, qid)
+    prior = _thread_session(d, thread_id)
+    write_turn_anchor(d, qid, thread_id, anchor)
+
+    def run(session_id=None, resume=None):
+        argv = cw_llm.thread_argv(
+            profile, system, mcp_config=mcp_config, add_dir=ctx, session_id=session_id, resume=resume)
+        prompt = build_prompt(d, anchor, question, thread_id, resumed=bool(resume))
+        return _stream_once(
+            argv, prompt, cwd=d / "head", timeout=config["timeout_s"], qid=qid,
+            thread_id=thread_id, on_event=on_event, live=live,
+            sweep=lambda: sweep_outcomes(d, qid, thread_id, on_event))
+
+    st = run(resume=prior) if prior else run(session_id=str(uuid.uuid4()))
+    if prior and st["returncode"] != 0 and not st["init"] and not live.get("cancelled"):
+        _server_log(f"reseeded thread {thread_id} (resume of {prior} failed)")
+        if st["result"]:
+            on_usage(cw_llm.claude_usage(st["result"]))
+        with live.get("lock") or contextlib.nullcontext():
+            live["text"] = ""
+            live["seq"] = live.get("seq", 0) + 1
+        st = run(session_id=str(uuid.uuid4()))
+
+    if st["init"]:
+        record["session_id"] = st["session_id"]
+    result = st["result"]
+    if result:
+        on_usage(cw_llm.claude_usage(result))
+    completed = bool(result) and not result.get("is_error")
+    if live.get("cancelled") and not completed:
+        record.update(status="cancelled", answer=live.get("text") or "")
+        return
+    if st["bad_mcp"]:
+        raise cw_llm.LLMError(
+            "the outcome server did not start", kind="config", remedy="see server.log")
+
+    if result is None or result.get("is_error") or (st["returncode"] != 0 and not live.get("cancelled")):
+        parsed = result or {}
+        kind, remedy = cw_llm._classify_claude_error(parsed, st["stderr"], profile)
+        message = (parsed.get("result") or st["stderr"] or "claude produced no result")[:300]
+        raise cw_llm.LLMError(message, kind=kind, remedy=remedy)
+
+    answer_text = "\n\n".join(t for t in st["texts"] if t) or result.get("result") or ""
+    with live.get("lock") or contextlib.nullcontext():
+        live["text"] = answer_text
+        live["seq"] = live.get("seq", 0) + 1
+    record["answer"] = answer_text
+
+
+class _Cancelled(Exception):
+    pass
+
+
+_READ_TOOL_NAMES = {"read_file": "Read", "grep": "Grep", "list_dir": "Glob"}
+
+
+def _check_cancelled(live):
+    # Stop only takes effect at the next tool boundary: the HTTP chat call is not interruptible.
+    if live.get("cancelled"):
+        raise _Cancelled()
+
+
+def _openai_tools(d, qid, thread_id, on_event, live):
+    tools, handlers = cw_run.read_tools(d)
+
+    def wrap(name, handler):
+        def run(args):
+            _check_cancelled(live)
+            _emit_progress(live, on_event, qid, thread_id, name, _tool_detail(args))
+            return handler(args)
+        return run
+
+    handlers = {name: wrap(_READ_TOOL_NAMES.get(name, name), fn) for name, fn in handlers.items()}
+
+    def propose_resolve(args):
+        _check_cancelled(live)
+        _emit_progress(live, on_event, qid, thread_id, "propose_resolve", "")
+        _ok, text = cw_mcp.accept_outcome(d, qid, "propose_resolve", args)
+        sweep_outcomes(d, qid, thread_id, on_event)
+        return text
+
+    spec = cw_mcp.OUTCOME_TOOLS[0]
+    tools.append({"type": "function", "function": {
+        "name": spec["name"], "description": spec["description"], "parameters": spec["inputSchema"]}})
+    handlers["propose_resolve"] = propose_resolve
+    return tools, handlers
+
+
+def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None):
     """Never raises: everything that can fail, including loading config and resolving the
-    ask profile, runs inside the try below so a misconfigured role lands as an ordinary
-    status: "error" record instead of killing the daemon's background thread silently."""
+    thread profile, runs inside the try below so a misconfigured role lands as an ordinary
+    status: "error" record instead of killing the daemon's background thread silently.
+    `live` is the daemon's per-turn dict (text, seq, progress, proc, cancelled)."""
     d = Path(d)
+    live = live if live is not None else {}
     record = {
         "qid": qid, "thread_id": thread_id or qid, "started_at": cw_store.now_iso(),
         "finished_at": None, "anchor": anchor, "comment": question, "question": question, "status": "ok", "answer": None,
-        "error": None, "remedy": None, "profile": None, "model": None,
+        "error": None, "remedy": None, "profile": None, "model": None, "session_id": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None},
     }
     usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}
 
     try:
         config = cw_store.load_config()
-        profile = cw_store.role_profile(config, "ask")
+        profile = cw_store.role_profile(config, "thread")
         if profile is None:
-            record.update(status="error", error="no ask role", remedy="set roles.ask in config.json")
+            record.update(status="error", error="no thread role",
+                          remedy="set roles.thread or roles.ask in config.json")
         else:
             record["profile"] = profile.get("name")
             record["model"] = profile.get("model")
-            usage_hook = cw_run._make_on_usage(d, "ask", on_event, config)
+            usage_hook = cw_run._make_on_usage(d, "thread", on_event, config)
 
             def on_usage(usage):
                 usage_totals["prompt_tokens"] += usage.get("prompt_tokens", 0)
@@ -317,24 +727,31 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None):
                     usage_totals["cost_usd"] = (usage_totals["cost_usd"] or 0.0) + cost
                 usage_hook(usage)
 
-            prompt = build_prompt(d, anchor, question, record["thread_id"])
-            messages = [
-                {"role": "system", "content": (SKILL_DIR / "prompts" / "ask.md").read_text()},
-                {"role": "user", "content": prompt},
-            ]
-            tools, handlers = cw_run.read_tools(d)
-            answer_text = cw_llm.run_tools(
-                profile, messages, tools, handlers, nudge=None, max_rounds=10,
-                max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-                on_usage=on_usage, cwd=d / "head",
-            )
-            record["status"] = "ok"
-            record["answer"] = answer_text
+            if profile.get("kind") == "claude-code":
+                _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage)
+            else:
+                write_turn_anchor(d, qid, record["thread_id"], anchor)
+                prompt = build_prompt(d, anchor, question, record["thread_id"])
+                messages = [
+                    {"role": "system", "content": _system_prompt()},
+                    {"role": "user", "content": prompt},
+                ]
+                tools, handlers = _openai_tools(d, qid, record["thread_id"], on_event, live)
+                answer_text = cw_llm.run_tools(
+                    profile, messages, tools, handlers, nudge=None, max_rounds=10,
+                    max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
+                    on_usage=on_usage, cwd=d / "head",
+                )
+                record["status"] = "ok"
+                record["answer"] = answer_text
+    except _Cancelled:
+        record.update(status="cancelled", answer="")
     except (cw_llm.LLMError, cw_store.CWError) as e:
         record.update(status="error", error=str(e), remedy=e.remedy)
     except Exception as e:
         record.update(status="error", error=str(e), remedy=None)
 
+    sweep_outcomes(d, qid, record["thread_id"], on_event)
     record["finished_at"] = cw_store.now_iso()
     record["usage"] = usage_totals
     _append_qa(d, record)

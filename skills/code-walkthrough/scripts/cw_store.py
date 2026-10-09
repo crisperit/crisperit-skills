@@ -230,6 +230,8 @@ def role_profile(config, role):
     name = roles.get(role)
     if name is None and role == "escalate":
         name = roles.get("prose")
+    if name is None and role == "thread":
+        name = roles.get("ask")
     if name is None:
         return None
     profile = config.get("profiles", {}).get(name)

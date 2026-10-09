@@ -51,7 +51,8 @@ A profile's `kind` is `openai` (the default; needs `base_url` and `model`) or `c
 bounds each profile's call either way, HTTP request or claude process; `max_conversation_tokens`
 and `price_per_mtok` apply to the openai kind only. `roles.escalate` is optional and falls back to
 `roles.prose`; it is the fresh retry a batch gets after failing its fragment gate twice.
-`small_diff_lines` and `batch_max_lines` mirror the fan-out thresholds in `static.md` step 2 and
+`roles.thread` is the optional role for thread turns and falls back to `roles.ask` when unset; its
+usage is booked under the "thread" role. `small_diff_lines` and `batch_max_lines` mirror the fan-out thresholds in `static.md` step 2 and
 step 2a. An openai profile may also carry `price_per_mtok: {"input": x, "output": y}`, which is what
 turns a usage total into `cost_usd`; no price table ships, since one would go stale.
 
@@ -74,6 +75,15 @@ A claude-code worker runs `claude -p --safe-mode --restricted` with only the `Re
 and `CLAUDE.md` are not loaded. Reads outside that worktree are denied. The live `head` worktree
 is checked out with `core.symlinks=false`, so a worker reading a symlink sees a regular file
 holding the link's target text instead.
+
+Thread turns differ: they run `claude` without `--safe-mode`, since safe mode disables MCP servers,
+but still with `--restricted`, the read-only `Read`, `Grep` and `Glob` tools, `--strict-mcp-config`
+and a per-turn stdio outcome server exposing one tool, `propose_resolve`. `CLAUDE.md` and user
+settings are verified not to load under `--restricted`. Each thread is one Claude Code session (first
+turn `--session-id`, later turns `--resume`), stored in `~/.claude/projects` for the head checkout;
+a lost session is reseeded from the thread's Q&A. Stop sends SIGTERM to the turn's process group
+(SIGKILL after 3 s) and the session stays resumable. A `ctx/` folder in the walkthrough directory
+holds copies of `analysis.json` and `raw.diff` the agent may read.
 
 ## Environment variables and `stop`
 
@@ -113,14 +123,22 @@ walkthrough's repo as cwd and with `GH_TOKEN`/`GITHUB_TOKEN` stripped from its e
 (`cw_run.gh_env`), so a shared daemon serving several repos or users never posts under whichever
 identity its own process environment or working directory happens to carry.
 
-## Ask
+## Ask and threads
 
-Selecting text on a live page and clicking Ask sends it to the `ask` role (`roles.ask` in
-`config.json`, falling back to no role configured if unset -- see the remedy table). The prompt
+Selecting text on a live page and clicking Ask starts a thread on the `thread` role (`roles.thread`,
+falling back to `roles.ask`; see the remedy table if neither is set). The prompt
 built from the selection, its surrounding hunk lines, the file's notes and the last few prior
 answers is capped at 16000 characters; the selected quote itself is never truncated to make room.
 Every question and answer is appended to that walkthrough's `qa.jsonl`, which is what repopulates
 the page's Q&A list on reload and what the last-few-answers window above reads back from.
+
+Replies stream into the thread as they are written. Stop interrupts a turn, and Retry reruns a turn
+that ended in error or was stopped. A thread has a soft cap of 20 turns. A tab that reconnects
+catches up from the server's in-flight buffers.
+
+On a PR the agent may suggest resolving the GitHub review thread on the commented line. Keep adds it
+to the pending resolves exactly like the Resolve conversation button, and Submit review still
+previews and posts it. Dismiss tells the agent not to propose it again.
 
 ## Posting
 
@@ -150,7 +168,10 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | `pr` set, origin isn't a GitHub remote | follow references/static.md of the code-walkthrough skill |
 | `comments`/`threads` step failed | `gh auth login` (`GH_TOKEN`/`GITHUB_TOKEN` are not passed to `gh` here) |
 | Ask selection too large | select a smaller range |
-| No `ask` role configured | set `roles.ask` in `config.json` |
+| No thread role | set `roles.thread` or `roles.ask` in `config.json` |
+| The outcome server did not start | see `server.log`; check `python3` is on PATH and `cw_mcp.py` runs |
+| Thread has 20 turns | start a new thread |
+| Turn was interrupted | Retry the turn |
 | Daemon didn't start | see the `server.log` path the error names |
 | 401 / 403 from the model backend | set `<api_key_env>` in the shell that starts your agent, then `cw_mcp.py stop` |
 | 404 from the model backend | check `model` for the named profile |
