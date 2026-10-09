@@ -852,6 +852,41 @@ def test_hostile_draft_body_is_only_assigned_through_text_content():
     assert "innerHTML" not in section and "<img" not in section
 
 
+def test_triage_button_and_wait_count_are_wired_live_only_without_inner_html():
+    template = _real_template()
+    wire_ask = _wire_ask()
+    assert "postJson('/triage',{})" in wire_ask and "/triage" not in template.split("function wireAsk()")[0]
+    assert "if(window.CW_LIVE) wireAsk();" in template
+    assert "cw-threads-triage" in wire_ask and "wait for you" in wire_ask
+    assert "t.triageTag.hidden=first.source!=='triage'" in wire_ask
+    assert "state.meta&&state.meta.pr" in wire_ask.split("function renderList(){")[1]
+    new = wire_ask.split("function triageCandidates(")[1].split("function stateOf(")[0]
+    new += wire_ask.split("const triageBtn=")[1].split("const commentsBtn=")[0]
+    assert "innerHTML" not in new
+
+
+def test_triage_candidates_and_waiting_count_are_pure_and_correct():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function triageCandidates(" + _wire_ask().split("function triageCandidates(")[1].split("function stateOf(")[0]
+    script = src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+const gh = (id, x) => Object.assign({id, origin:'github', gh_thread_id:'T'+id}, x || {});
+const notes = [gh('a'), gh('b', {resolved:true}), gh('c', {reply_to:'a'}), gh('d', {in_reply_to:'a'}),
+  gh('e'), {id:'f', origin:'local'}, gh('g'), gh('h', {gh_thread_id:null})];
+const turns = new Map([['e', [{source:'triage', status:'done'}]], ['g', [{source:'user', status:'pending'}]],
+  ['a', [{source:'user', status:'done'}]]]);
+eq(triageCandidates(notes, turns).map(n => n.id), ['a']);
+eq(triageCandidates(notes, new Map()).map(n => n.id), ['a', 'e', 'g']);
+eq(waitingCount([]), 0);
+eq(waitingCount([{state:'proposed'}, {state:'kept'}, {state:'dismissed'}, {state:'proposed'}, {state:'done'}]), 2);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_publish_buttons_share_one_in_flight_set_and_a_posted_409_counts_as_success():
     template = _real_template()
     publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]

@@ -161,6 +161,13 @@ while the walkthrough builds, in a sibling-revision view, when the parent of a r
 GitHub, or when the viewer has a pending review, and makes exactly one REST call otherwise. A
 preview taken before a publish 409s on `/post`, because the nonce covers the ready list.
 
+`POST /api/walkthrough/<key>/<id>/triage` (body `{}`) starts one thread turn per unresolved synced
+GitHub review thread that has none yet, at most 30 per call, each with the fixed triage comment and
+`source: "triage"` on its records. It answers `{started, skipped, remaining, threads}`: `skipped`
+counts threads already triaged or pending, `remaining` those beyond the cap (call again). It 409s
+while the walkthrough builds and when there is no PR. Nothing is published and no note changes;
+results arrive as ordinary outcome proposals the user keeps or dismisses.
+
 ## Posting
 
 The comments panel on a live page replaces Copy gh command with a Post to GitHub button

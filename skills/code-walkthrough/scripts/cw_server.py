@@ -275,10 +275,18 @@ _OUTCOME_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/outcomes/(o-[0-9a-f
 _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
+_TRIAGE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/triage$")
 _PUBLISH_ONE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/publish-one$")
 _OID_RE = re.compile(r"^o-[0-9a-f]{8}$")
 
 THREAD_TURN_CAP = 20
+TRIAGE_CAP = 30
+TRIAGE_COMMENT = (
+    "Triage this review thread. Judge whether it needs a code change, a reply, or can be resolved, "
+    "and propose the matching outcome. Needs a code change: explain the change in your reply, do not "
+    "write code. Needs a reply: propose a GitHub draft reply, written fresh and never verbatim. Safe "
+    "to resolve: call propose_resolve, with an optional short reply draft. Nothing is published."
+)
 
 NO_PR_MSG = "No PR for this comparison -- use Copy for agent instead."
 HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet -- use Copy for agent instead."
@@ -447,6 +455,9 @@ class _Handler(BaseHTTPRequestHandler):
         m = _PUBLISH_ONE_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_publish_one(m.group(1), m.group(2)))
+        m = _TRIAGE_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_triage(m.group(1), m.group(2)))
         self._tracked(lambda: self._send_text(404, "not found"))
 
     def _route_health(self):
@@ -696,6 +707,54 @@ class _Handler(BaseHTTPRequestHandler):
         thread_id = thread_id or qid
         self.server.cw_daemon.start_ask(key, wid, d, qid, thread_id, anchor, text)
         self._send_json(202, {"qid": qid, "thread_id": thread_id})
+
+    def _route_triage(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+        daemon = self.server.cw_daemon
+        if daemon.is_running(d):
+            self._send_json(409, {"error": STILL_BUILDING_MSG})
+            return
+        with cw_store.dir_lock(d):
+            st = cw_store.read_json(d / "state.json")
+            if not isinstance(st, dict):
+                self._send_json(409, {"error": STILL_BUILDING_MSG})
+                return
+            if (st.get("meta") or {}).get("pr") is None:
+                self._send_json(409, {"error": NO_PR_MSG})
+                return
+            triaged = set()
+            for t in cw_ask.read_threads(d).values():
+                a = t["turns"][0].get("anchor") or {}
+                if a.get("kind") == "thread" and (
+                        t["turns"][0].get("source") == "triage"
+                        or any(x.get("status") == "pending" for x in t["turns"])):
+                    triaged.add(a.get("note_id"))
+            roots = [n for n in cw_ask._state_notes(d) if cw_ask.is_root_thread(n) and not n.get("resolved")]
+            skipped = sum(1 for n in roots if n["id"] in triaged)
+            todo = [n for n in roots if n["id"] not in triaged]
+            started = []
+            for n in todo[:TRIAGE_CAP]:
+                qid = "q-" + secrets.token_hex(4)
+                anchor = {"kind": "thread", "note_id": n["id"], "quote": (n.get("body") or "")[:200]}
+                daemon.start_ask(key, wid, d, qid, qid, anchor, TRIAGE_COMMENT, source="triage")
+                started.append({"note_id": n["id"], "qid": qid, "thread_id": qid})
+        self._send_json(200, {"started": len(started), "skipped": skipped,
+                               "remaining": len(todo) - len(started), "threads": started})
 
     def _post_check_meta(self, d):
         """Guard 1, shared by /post/preview and /post: posting only ever makes sense from a
@@ -1447,7 +1506,7 @@ class Daemon:
             timer.start()
         return True
 
-    def start_ask(self, key, wid, d, qid, thread_id, anchor, question):
+    def start_ask(self, key, wid, d, qid, thread_id, anchor, question, source="user"):
         with self._inflight_lock:
             self._asks += 1
         live = {"text": "", "seq": 0, "progress": None, "proc": None, "cancelled": False,
@@ -1458,7 +1517,7 @@ class Daemon:
         self._idle_since = None
         emit = lambda ev, data: self.hub.emit(key, wid, ev, data)  # noqa: E731
         try:
-            cw_ask.begin_turn(d, qid, anchor, question, thread_id, on_event=emit)
+            cw_ask.begin_turn(d, qid, anchor, question, thread_id, on_event=emit, source=source)
         except BaseException:
             with self._inflight_lock:
                 self._asks -= 1
@@ -1474,13 +1533,13 @@ class Daemon:
                         now = cw_store.now_iso()
                         record = {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
                                   "anchor": anchor, "comment": question, "question": question,
-                                  "status": "cancelled", "answer": "", "error": None, "remedy": None,
+                                  "source": source, "status": "cancelled", "answer": "", "error": None, "remedy": None,
                                   "profile": None, "model": None, "session_id": None,
                                   "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}
                         cw_ask._append_qa(d, record)
                         emit("thread", {"kind": "turn", "record": record})
                         return
-                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live)
+                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live, source=source)
             finally:
                 with self._inflight_lock:
                     self._asks -= 1

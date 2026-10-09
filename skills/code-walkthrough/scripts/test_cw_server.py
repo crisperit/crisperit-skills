@@ -1051,6 +1051,96 @@ def test_comment_with_a_thread_anchor_needs_a_github_root_thread_note():
             assert cw_ask.read_qa(d) == []
 
 
+def _triage_setup(home, extra_notes=(), pr=7):
+    d, _ = _make_walkthrough(home)
+    root = {"origin": "github", "path": "a.py", "line": 3, "body": "please fix"}
+    notes = [{**root, "id": f"gh-{i}", "gh_thread_id": f"T{i}"} for i in (1, 2, 3)]
+    notes += [{**root, "id": "gh-4", "gh_thread_id": "T4", "resolved": True},
+              {**root, "id": "gh-5", "gh_thread_id": "T1", "reply_to": "gh-1"}, *extra_notes]
+    cw_store.write_json(d / "state.json", {"meta": {"pr": pr}, "notes": notes})
+    return d
+
+
+def _wait_turns_done(d):
+    for _ in range(100):
+        if not any(r.get("status") == "pending" for r in cw_ask.read_qa(d)):
+            return
+        time.sleep(0.05)
+    raise AssertionError("turns still pending")
+
+
+def test_triage_starts_one_source_triage_turn_per_open_root_thread_and_publishes_nothing():
+    import tempfile
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp, \
+            cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+        d = _triage_setup(home)
+        before = (d / "state.json").read_text()
+        path = f"/api/walkthrough/{KEY}/{WID}/triage"
+        with running_daemon() as daemon:
+            status, body = _post(daemon, path)
+            assert status == 200 and (body["started"], body["skipped"], body["remaining"]) == (3, 0, 0), body
+            assert sorted(t["note_id"] for t in body["threads"]) == ["gh-1", "gh-2", "gh-3"]
+            _wait_turns_done(d)
+            turns = cw_ask.read_qa(d)
+            assert len(turns) == 3 and all(t["source"] == "triage" for t in turns), turns
+            assert all(t["comment"] == cw_server.TRIAGE_COMMENT and len(t["comment"]) < 500 for t in turns)
+            by_thread = {t["thread_id"]: t["anchor"] for t in turns}
+            for info in body["threads"]:
+                a = by_thread[info["thread_id"]]
+                assert a["kind"] == "thread" and a["note_id"] == info["note_id"] and a["quote"] == "please fix"
+            assert (d / "state.json").read_text() == before
+            assert gh.log() == []
+            status, body = _post(daemon, path)
+            assert status == 200 and (body["started"], body["skipped"]) == (0, 3), body
+            assert len(cw_ask.read_qa(d)) == 3
+
+
+def test_triage_cap_leaves_the_rest_remaining():
+    with cw_testlib.temp_home() as home:
+        d = _triage_setup(home)
+        old = cw_server.TRIAGE_CAP
+        cw_server.TRIAGE_CAP = 2
+        try:
+            with running_daemon() as daemon:
+                path = f"/api/walkthrough/{KEY}/{WID}/triage"
+                status, body = _post(daemon, path)
+                assert (status, body["started"], body["remaining"]) == (200, 2, 1), body
+                _wait_turns_done(d)
+                status, body = _post(daemon, path)
+                assert (status, body["started"], body["skipped"], body["remaining"]) == (200, 1, 2, 0), body
+                _wait_turns_done(d)
+        finally:
+            cw_server.TRIAGE_CAP = old
+
+
+def test_triage_guards_and_409s():
+    with cw_testlib.temp_home() as home:
+        d = _triage_setup(home)
+        path = f"/api/walkthrough/{KEY}/{WID}/triage"
+        with running_daemon() as daemon:
+            assert _request(daemon, "POST", path, body="{}")[0] == 403
+            assert _post(daemon, path, token="wrong")[0] == 403
+            assert _post(daemon, path, origin="http://evil.example")[0] == 403
+            assert _post(daemon, path, host="evil.example:9")[0] == 403
+            assert cw_ask.read_qa(d) == []
+            cw_store.write_json(d / "state.json", {"meta": {"pr": None}, "notes": []})
+            status, body = _post(daemon, path)
+            assert status == 409 and body["error"] == cw_server.NO_PR_MSG, body
+            daemon.is_running = lambda _d: True
+            status, body = _post(daemon, path)
+            assert status == 409 and body["error"] == cw_server.STILL_BUILDING_MSG, body
+
+
+def test_source_defaults_to_user_and_passes_through_the_pending_record():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        _append_qa(d, {"qid": "q-00000001", "anchor": {}, "status": "ok", "answer": "a", "question": "c"})
+        cw_ask.begin_turn(d, "q-00000002", {"kind": "section", "section": "S", "quote": "q"}, "c", source="triage")
+        by_qid = {r["qid"]: r for r in cw_ask.read_qa(d)}
+        assert by_qid["q-00000001"]["source"] == "user"
+        assert by_qid["q-00000002"]["source"] == "triage" and by_qid["q-00000002"]["status"] == "pending"
+
+
 def test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock():
     with cw_testlib.temp_home() as home:
         d, _ = _make_walkthrough(home)
@@ -1096,6 +1186,10 @@ if __name__ == "__main__":
         test_snapshot_mid_turn_carries_buffer_and_late_client_converges,
         test_events_registers_before_building_snapshot,
         test_thread_cap_counts_only_ok_and_pending_turns,
+        test_triage_starts_one_source_triage_turn_per_open_root_thread_and_publishes_nothing,
+        test_triage_cap_leaves_the_rest_remaining,
+        test_triage_guards_and_409s,
+        test_source_defaults_to_user_and_passes_through_the_pending_record,
         test_stopped_daemon_never_spawns_a_queued_turn,
         test_inflight_text_and_seq_are_consistent_under_the_live_lock,
         test_stop_kills_in_flight_turn_group,

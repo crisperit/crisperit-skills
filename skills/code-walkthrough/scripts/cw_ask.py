@@ -211,6 +211,7 @@ def read_qa(d, limit=None):
     for r in folded.values():
         r = dict(r)
         r.setdefault("thread_id", r["qid"])
+        r.setdefault("source", "user")
         r.setdefault("comment", r.get("question"))
         r.setdefault("question", r["comment"])
         turns.append(r)
@@ -596,11 +597,12 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     return "\n\n".join(parts)[:PROMPT_CAP]
 
 
-def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None):
+def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user"):
     """Persist the comment as a pending record before any model work, so it survives a crash
     and shows up in GET /qa while the turn is queued."""
     record = {"qid": qid, "thread_id": thread_id or qid, "anchor": anchor, "comment": comment,
-              "question": comment, "started_at": cw_store.now_iso(), "status": "pending"}
+              "question": comment, "started_at": cw_store.now_iso(), "status": "pending",
+              "source": source}
     _append_qa(d, record)
     if on_event:
         on_event("thread", {"kind": "turn", "record": record})
@@ -621,7 +623,7 @@ def finalise_stale(d, in_flight):
         if r.get("status") == "pending" and r["qid"] not in in_flight:
             _append_qa(d, {
                 "qid": r["qid"], "thread_id": r["thread_id"], "anchor": r.get("anchor"),
-                "comment": r["comment"], "question": r["question"],
+                "comment": r["comment"], "question": r["question"], "source": r["source"],
                 "started_at": r.get("started_at"), "finished_at": cw_store.now_iso(),
                 "status": "error", "error": "turn was interrupted",
                 "remedy": "send the comment again"})
@@ -826,7 +828,7 @@ def _openai_tools(d, qid, thread_id, on_event, live):
     return tools, handlers
 
 
-def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None):
+def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, source="user"):
     """Never raises: everything that can fail, including loading config and resolving the
     thread profile, runs inside the try below so a misconfigured role lands as an ordinary
     status: "error" record instead of killing the daemon's background thread silently.
@@ -835,7 +837,7 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None):
     live = live if live is not None else {}
     record = {
         "qid": qid, "thread_id": thread_id or qid, "started_at": cw_store.now_iso(),
-        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "status": "ok", "answer": None,
+        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "source": source, "status": "ok", "answer": None,
         "error": None, "remedy": None, "profile": None, "model": None, "session_id": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None},
     }

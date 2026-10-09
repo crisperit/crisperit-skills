@@ -992,6 +992,8 @@
     font-size:var(--fs-xs)}
   .cw-th-resolve{margin-left:auto}
   .cw-th-badge{color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
+  .cw-th-triage{border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-threads-triage-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
   .cw-th-summary{min-width:0;flex:1 1 12em;color:var(--muted);font-style:italic}
   .cw-turn{margin:8px 0}
   .cw-turn-q{margin:0;color:var(--muted);font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap}
@@ -3963,6 +3965,18 @@
       }catch(e){}
       renderThread(t);
     }
+    function triageCandidates(notes,turnsByNote){
+      return notes.filter(n=>{
+        if(n.origin!=='github'||!n.gh_thread_id||n.reply_to||n.in_reply_to||n.resolved) return false;
+        const turns=(turnsByNote&&turnsByNote.get(n.id))||[];
+        return !turns.some(r=>r.source==='triage'||r.status==='pending');
+      });
+    }
+    function waitingCount(outcomes){
+      let c=0;
+      for(const o of outcomes) if(o&&o.state==='proposed') c++;
+      return c;
+    }
     function stateOf(t){
       if(t.resolved) return 'resolved';
       if(t.turns.some(r=>r.status==='pending')) return 'working';
@@ -4405,6 +4419,7 @@
       if(o.outcome==='page_edit') syncPageEdit(o);
       const t=threads.get(o.thread_id);
       if(t) renderThread(t);
+      renderList();
     }
 
     function buildThread(t){
@@ -4412,9 +4427,10 @@
       const head=mk('div','cw-thread-head');
       t.foldBtn=mkBtn('Fold','cw-th-fold');
       t.badge=mk('span','cw-th-badge','Resolved');
+      t.triageTag=mk('span','cw-th-triage','triage'); t.triageTag.hidden=true;
       t.summary=mk('span','cw-th-summary');
       t.resolveBtn=mkBtn('Resolve','cw-th-resolve');
-      head.append(t.foldBtn,t.badge,t.summary,t.resolveBtn);
+      head.append(t.foldBtn,t.badge,t.triageTag,t.summary,t.resolveBtn);
       t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
       t.body=mk('div','cw-thread-body');
       t.turnsEl=mk('div','cw-turns');
@@ -4447,6 +4463,7 @@
       t.foldBtn.setAttribute('aria-expanded',String(!collapsed));
       t.resolveBtn.textContent=t.resolved?'Reopen':'Resolve';
       t.badge.hidden=!t.resolved;
+      t.triageTag.hidden=first.source!=='triage';
       t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
       t.summary.hidden=!collapsed;
       t.body.hidden=collapsed;
@@ -4526,7 +4543,8 @@
     dlg.id='cw-threads'; dlg.setAttribute('aria-label','Threads');
     const dlgHead=mk('div'); dlgHead.id='cw-threads-head';
     const dlgClose=mkBtn('✕'); dlgClose.id='cw-threads-close'; dlgClose.setAttribute('aria-label','Close');
-    dlgHead.append(mk('span',null,'Threads'),dlgClose);
+    const dlgTitle=mk('span',null,'Threads');
+    dlgHead.append(dlgTitle,dlgClose);
     const dlgBody=mk('div'); dlgBody.id='cw-threads-body';
     const listEl=mk('ul'); listEl.id='cw-threads-list';
     const unplacedWrap=mk('section'); unplacedWrap.id='cw-threads-unplaced';
@@ -4546,7 +4564,21 @@
         navigator.clipboard.writeText(text).then(done).catch(fallback);
       } else fallback();
     });
-    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,thSubmit,thCopyMsg);
+    const triageBtn=mkBtn('Triage','fb-ghost'); triageBtn.id='cw-threads-triage'; triageBtn.hidden=true;
+    const triageMsg=mk('p'); triageMsg.id='cw-threads-triage-msg'; triageMsg.setAttribute('role','status');
+    const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+    triageBtn.addEventListener('click',()=>{
+      triageBtn.disabled=true; triageMsg.textContent='Starting…';
+      postJson('/triage',{})
+        .then(({ok,body})=>{
+          triageBtn.disabled=false;
+          if(!ok||body.error){ triageMsg.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
+          triageMsg.textContent='Started '+(body.started||0)+', skipped '+(body.skipped||0)+(body.remaining>0?' ('+body.remaining+' more not started)':'');
+          loadQa();
+        })
+        .catch(()=>{ triageBtn.disabled=false; triageMsg.textContent='Request failed -- check the daemon is still running.'; });
+    });
+    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,thSubmit,triageBtn,thCopyMsg,triageMsg);
     const commentsBtn=$('hr-comments-btn');
     if(commentsBtn) commentsBtn.hidden=true;
     dlgBody.append(thTop,listEl,unplacedWrap);
@@ -4556,7 +4588,17 @@
 
     function renderList(){
       const all=[...threads.values()];
-      threadsBtn.textContent='Threads ('+all.filter(t=>!t.resolved).length+')';
+      const waiting=waitingCount([...outcomesByQid.values()].flatMap(m=>[...m.values()]));
+      const label='Threads ('+all.filter(t=>!t.resolved).length+')'+(waiting?' \u00b7 '+waiting+' wait for you':'');
+      threadsBtn.textContent=label; dlgTitle.textContent=label;
+      const turnsByNote=new Map();
+      for(const t of all){
+        const a=(t.turns[0]||{}).anchor;
+        if(a&&a.kind==='thread') turnsByNote.set(a.note_id,(turnsByNote.get(a.note_id)||[]).concat(t.turns));
+      }
+      const cand=(state.meta&&state.meta.pr)?triageCandidates(state.notes,turnsByNote).length:0;
+      triageBtn.hidden=!cand;
+      triageBtn.textContent='Triage '+plural(cand,'open thread');
       const rows=[];
       for(const t of all.filter(t=>t.placed)){
         const li=document.createElement('li');
