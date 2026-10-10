@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Batch-2 integration self-check (phase2-spec.md section 1): the real cw_run.py orchestration
 driven through the real in-process cw_server.Daemon, over HTTP and SSE, with cw_testlib.StubLLM
-standing in for the model backend -- no fakes, no mocks of our own modules. Assert-based, no
+standing in for the model backend -- no fakes, no mocks of our own modules -- plus the tests that
+spawn a real detached cw_server.py process. conftest.py marks this file `e2e`. Assert-based, no
 framework; also collected by pytest.
 """
 
-import http.client
+import contextlib
+import functools
 import json
+import os
+import signal
 import socket
 import subprocess
 import sys
@@ -16,14 +20,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import cw_llm  # noqa: E402
 import cw_mcp  # noqa: E402
 import cw_run  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
-
-cw_llm.BACKOFF_S = [0, 0]
 
 SCRIPTS_DIR = cw_run.SCRIPTS_DIR
 DELAY = 0.5
@@ -57,24 +58,7 @@ def _stub_reply(body, _n):
     raise RuntimeError(f"unexpected model {model!r}")
 
 
-def _http(daemon, method, path, *, host=None, origin=None, token=None, body=None):
-    conn = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=10)
-    try:
-        conn.putrequest(method, path, skip_host=True)
-        conn.putheader("Host", host or f"127.0.0.1:{daemon.port}")
-        if origin is not None:
-            conn.putheader("Origin", origin)
-        if token is not None:
-            conn.putheader("X-CW-Token", token)
-        data = body.encode() if isinstance(body, str) else body
-        if data is not None:
-            conn.putheader("Content-Length", str(len(data)))
-            conn.putheader("Content-Type", "application/json")
-        conn.endheaders(data)
-        resp = conn.getresponse()
-        return resp.status, resp.read()
-    finally:
-        conn.close()
+_http = functools.partial(cw_testlib.request, timeout=10)
 
 
 def _rpc(daemon, tool, args):
@@ -93,12 +77,7 @@ def _extract_cw_live(html):
     return start, end, json.loads(inner)
 
 
-def _sse_connect(daemon, key, wid):
-    sock = socket.create_connection(("127.0.0.1", daemon.port), timeout=10)
-    req = (f"GET /api/walkthrough/{key}/{wid}/events?k={daemon.token} HTTP/1.1\r\n"
-           f"Host: 127.0.0.1:{daemon.port}\r\nConnection: keep-alive\r\n\r\n")
-    sock.sendall(req.encode())
-    return sock
+_sse_connect = functools.partial(cw_testlib.sse_connect, timeout=10)
 
 
 def _sse_read_events(sock, *, stop_names, timeout=20):
@@ -265,7 +244,8 @@ def test_two_batch_run_through_the_real_daemon():
 # ---------------------------------------------------------------------------
 
 def test_no_backend_through_mcp_tools_call_gives_iserror_with_remedy():
-    with cw_testlib.temp_home():
+    cw_testlib.require_posix()
+    with cw_testlib.temp_home(), _stopped_afterward():
         proc = subprocess.Popen(
             [sys.executable, str(SCRIPTS_DIR / "cw_mcp.py"), "mcp"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -290,74 +270,78 @@ def test_no_backend_through_mcp_tools_call_gives_iserror_with_remedy():
                 payload = json.loads(result["content"][0]["text"])
                 assert payload.get("remedy"), payload
         finally:
-            try:
-                cw_mcp.cmd_stop()
-            except Exception:
-                pass
             proc.stdin.close()
             proc.terminate()
             proc.wait(timeout=10)
 
 
 # ---------------------------------------------------------------------------
-# Final gate failure
+# Real detached daemon (cw_mcp.ensure_server spawns cw_server.py serve)
 # ---------------------------------------------------------------------------
 
-def test_final_gate_failure_gives_gate_lines_through_walkthrough_get_and_serves_partial():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\n"}, {"foo.py": "a\nX\n"})
-        key = cw_store.repo_key(str(repo))
-        wid = cw_store.walkthrough_id("main...HEAD")
-        d = cw_store.walkthrough_dir(key, wid, create=True)
-        diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
-        (d / "raw.diff").write_text(diff_text)
-        (d / "partial.html").write_text("<html><head><title>t</title></head><body>skeleton</body></html>")
-        (d / "analysis.json").write_text(json.dumps({"files": []}))  # missing required top-level keys
-        meta = {
-            "id": wid, "key": key, "status": "building", "repo": str(repo), "base": base, "head": head,
-            "slug": "t", "page": "partial", "rev": 0, "steps": {}, "usage": {}, "batches_done": [],
-            "batches": 0, "gate": [], "error": None, "remedy": None, "paths": [], "explain": False,
-            "created_at": cw_store.now_iso(), "updated_at": cw_store.now_iso(), "target": "main...HEAD",
-            "route": "small",
-        }
-        cw_store.write_json(d / "meta.json", meta)
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
-        daemon = cw_server.Daemon(write_server_json=False)
-        daemon.start()
-        try:
-            # SSE connected before the failure fires: a client watching for the documented
-            # "name run marks the end" contract must see it over the wire, not just via a
-            # separate meta.json/RPC poll (run() returns "failed" here without raising).
-            sock = _sse_connect(daemon, key, wid)
+
+def _wait(cond, timeout=5, interval=0.1):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(interval)
+    return cond()
+
+
+@contextlib.contextmanager
+def _stopped_afterward():
+    """Whatever daemon this test starts, make sure it is gone before the test ends."""
+    try:
+        yield
+    finally:
+        info = cw_store.read_json(cw_store.server_json_path())
+        if info and _pid_alive(info.get("pid")):
             try:
-                ok = cw_run._final_build(d, meta, {}, lambda ev, data: daemon.hub.emit(key, wid, ev, data))
-                assert ok is False
-                events = _sse_read_events(sock, stop_names=("done", "failed"))
-            finally:
-                sock.close()
-            run_events = [data for ev, data in events if ev == "step" and data.get("name") == "run"]
-            assert run_events and run_events[-1]["status"] == "failed", events
+                cw_mcp.cmd_stop()
+            except Exception:
+                pass
+        if info and _pid_alive(info.get("pid")):
+            try:
+                os.kill(info["pid"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
-            status, body = _rpc(daemon, "walkthrough_get", {"id": wid, "key": key})
-            assert status == 200 and body["ok"], body
-            result = body["result"]
-            assert result["status"] == "failed"
-            assert result["summary"]["gate"], result
 
-            status, page_bytes = _http(daemon, "GET", f"/walkthrough/{key}/{wid}/?k={daemon.token}")
-            assert status == 200, status
-            assert b"skeleton" in page_bytes  # partial page served, never promoted to final
+def test_ensure_server_race_then_stop():
+    cw_testlib.require_posix()
+    with cw_testlib.temp_home(), _stopped_afterward():
+        assert cw_mcp.cmd_stop() == 0  # "not running", nothing started yet
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(cw_mcp.ensure_server())) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert len(results) == 2
+        assert results[0]["pid"] == results[1]["pid"]
+        pid = results[0]["pid"]
+        assert _pid_alive(pid)
+
+        assert cw_mcp.cmd_stop() == 0
+        assert _wait(lambda: not _pid_alive(pid), timeout=5)
+
+
+def test_idle_exit_within_five_seconds():
+    cw_testlib.require_posix()
+    with cw_testlib.temp_home():
+        os.environ["CW_IDLE_S"] = "1"
+        try:
+            with _stopped_afterward():
+                info = cw_mcp.ensure_server()
+                assert _wait(lambda: not _pid_alive(info["pid"]), timeout=5)
         finally:
-            daemon.stop()
-
-
-if __name__ == "__main__":
-    tests = [
-        test_two_batch_run_through_the_real_daemon,
-        test_no_backend_through_mcp_tools_call_gives_iserror_with_remedy,
-        test_final_gate_failure_gives_gate_lines_through_walkthrough_get_and_serves_partial,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
+            os.environ.pop("CW_IDLE_S", None)

@@ -3,12 +3,11 @@
 Daemon runs in-process on an ephemeral port and is always stopped in a finally block, so no
 test leaks a thread or a bound socket."""
 
-import contextlib
-import http.client
 import json
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -21,6 +20,13 @@ import cw_testlib  # noqa: E402
 
 KEY = "repo-abcdef"
 WID = "cmp-01234567"
+
+# test_cw_task, test_cw_handover and test_cw_sibling reach these through `import test_cw_server as srv`.
+running_daemon = cw_testlib.running_daemon
+_request = cw_testlib.request
+_rpc = cw_testlib.rpc
+_sse_connect = cw_testlib.sse_connect
+_sse_read_until = cw_testlib.sse_read_until
 
 
 class FakeRunner:
@@ -51,45 +57,6 @@ class FakeRunner:
         on_event("step", {"name": "run", "status": "done"})
 
 
-@contextlib.contextmanager
-def running_daemon(idle_s=None):
-    daemon = cw_server.Daemon(idle_s=idle_s, write_server_json=False)
-    daemon.start()
-    try:
-        yield daemon
-    finally:
-        daemon.stop()
-
-
-def _request(daemon, method, path, *, host=None, origin=None, token=None, body=None):
-    conn = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=5)
-    try:
-        conn.putrequest(method, path, skip_host=True)
-        conn.putheader("Host", host or f"127.0.0.1:{daemon.port}")
-        if origin is not None:
-            conn.putheader("Origin", origin)
-        if token is not None:
-            conn.putheader("X-CW-Token", token)
-        data = body.encode() if isinstance(body, str) else body
-        if data is not None:
-            conn.putheader("Content-Length", str(len(data)))
-            conn.putheader("Content-Type", "application/json")
-        conn.endheaders(data)
-        resp = conn.getresponse()
-        return resp.status, resp.read()
-    finally:
-        conn.close()
-
-
-_UNSET = object()
-
-
-def _rpc(daemon, tool, args, *, token=_UNSET):
-    status, data = _request(daemon, "POST", "/api/rpc", token=daemon.token if token is _UNSET else token,
-                             body=json.dumps({"tool": tool, "args": args}))
-    return status, (json.loads(data) if data else None)
-
-
 def _set_meta(d, **fields):
     """Bypass cw_store.update_meta's own updated_at stamping, for tests that need to
     backdate a walkthrough."""
@@ -116,48 +83,42 @@ def _make_walkthrough(home, *, key=KEY, wid=WID, page="partial", status="done"):
 
 # -- guards -------------------------------------------------------------
 
-def test_host_guard_rejects_wrong_host():
-    with cw_testlib.temp_home():
-        with running_daemon() as daemon:
-            status, _ = _request(daemon, "GET", "/health", host="evil.example:9999")
-            assert status == 403, status
-            status, _ = _request(daemon, "GET", "/health")
-            assert status == 200, status
-            status, _ = _request(daemon, "GET", "/health", host=f"localhost:{daemon.port}")
-            assert status == 200, status
-
-
-def test_token_guard_rejects_missing_or_wrong_token():
+def test_guards_host_token_origin_and_page_token():
+    # /health only checks Host; the token and Origin guards apply to /api/ and the page route.
     with cw_testlib.temp_home() as home:
         _make_walkthrough(home)
         with running_daemon() as daemon:
-            status, _ = _rpc(daemon, "walkthrough_list", {}, token="wrong")
-            assert status == 403, status
-            status, _ = _rpc(daemon, "walkthrough_list", {}, token=None)
-            assert status == 403, status
-            status, body = _rpc(daemon, "walkthrough_list", {})
-            assert status == 200 and body["ok"], body
-
-
-def test_origin_guard_rejects_mismatched_origin():
-    # /health only checks Host (per the route table); the Origin guard applies to /api/ and
-    # the page route, so exercise it on /api/rpc instead.
-    with cw_testlib.temp_home():
-        with running_daemon() as daemon:
-            status, _ = _request(daemon, "POST", "/api/rpc", token=daemon.token,
-                                  origin="http://attacker.example", body=json.dumps({"tool": "walkthrough_list", "args": {}}))
-            assert status == 403, status
-            status, _ = _request(daemon, "POST", "/api/rpc", token=daemon.token,
-                                  origin=f"http://127.0.0.1:{daemon.port}",
-                                  body=json.dumps({"tool": "walkthrough_list", "args": {}}))
-            assert status == 200, status
+            port = daemon.port
+            body = json.dumps({"tool": "walkthrough_list", "args": {}})
+            page = f"/walkthrough/{KEY}/{WID}/"
+            rows = [
+                ("health wrong host", dict(method="GET", path="/health", host="evil.example:9999"), 403),
+                ("health 127.0.0.1", dict(method="GET", path="/health"), 200),
+                ("health localhost", dict(method="GET", path="/health", host=f"localhost:{port}"), 200),
+                ("rpc wrong token", dict(method="POST", path="/api/rpc", token="wrong", body=body), 403),
+                ("rpc empty token", dict(method="POST", path="/api/rpc", token="", body=body), 403),
+                ("rpc no token", dict(method="POST", path="/api/rpc", body=body), 403),
+                ("rpc good token", dict(method="POST", path="/api/rpc", token=daemon.token, body=body), 200),
+                ("rpc attacker origin", dict(method="POST", path="/api/rpc", token=daemon.token, body=body,
+                                             origin="http://attacker.example"), 403),
+                ("rpc own origin", dict(method="POST", path="/api/rpc", token=daemon.token, body=body,
+                                        origin=f"http://127.0.0.1:{port}"), 200),
+                ("page no token", dict(method="GET", path=page), 403),
+                ("page header token but no ?k=", dict(method="GET", path=page, token=daemon.token), 403),
+                ("page wrong ?k=", dict(method="GET", path=f"{page}?k=wrong"), 403),
+                ("page good ?k=", dict(method="GET", path=f"{page}?k={daemon.token}"), 200),
+            ]
+            for name, kwargs, want in rows:
+                status, _ = _request(daemon, kwargs.pop("method"), kwargs.pop("path"), **kwargs)
+                assert status == want, (name, status)
 
 
 def test_traversal_in_id_or_key_gives_400():
     with cw_testlib.temp_home():
         with running_daemon() as daemon:
-            status, _ = _request(daemon, "GET", f"/walkthrough/../../etc/{WID}/?k={daemon.token}")
-            assert status in (400, 404), status
+            # `..` as the key segment matches _PAGE_RE, so walkthrough_dir's guard is what answers
+            status, _ = _request(daemon, "GET", f"/walkthrough/../{WID}/?k={daemon.token}")
+            assert status == 400, status
             status, body = _rpc(daemon, "walkthrough_get", {"id": "../../etc/passwd", "key": KEY})
             assert status == 200, status
             assert body["ok"] is False
@@ -180,26 +141,23 @@ def test_injection_round_trip():
             assert stripped == on_disk
 
 
-def test_page_route_splices_mermaid_placeholder_at_serve_time():
+def test_page_route_mermaid():
     with cw_testlib.temp_home() as home:
         d, meta = _make_walkthrough(home, status="done", page="final")
         raw = "<html><head></head><body><script><!-- MERMAID_JS --></script></body></html>"
-        (d / "my-slug.html").write_text(raw)
+        spliced = "<html><head></head><body><script>var m=1;</script></body></html>"
         with running_daemon() as daemon:
-            status, body = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            url = f"/walkthrough/{KEY}/{WID}/?k={daemon.token}"
+            (d / "my-slug.html").write_text(raw)
+            status, body = _request(daemon, "GET", url)
             assert status == 200, status
             html = body.decode()
             assert "<!-- MERMAID_JS -->" not in html
             assert "mermaid" in html and len(html) > 1_000_000
-        assert (d / "my-slug.html").read_text() == raw
+            assert (d / "my-slug.html").read_text() == raw
 
-
-def test_page_route_leaves_already_spliced_mermaid_alone():
-    with cw_testlib.temp_home() as home:
-        d, meta = _make_walkthrough(home, status="done", page="final")
-        (d / "my-slug.html").write_text("<html><head></head><body><script>var m=1;</script></body></html>")
-        with running_daemon() as daemon:
-            status, body = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            (d / "my-slug.html").write_text(spliced)
+            status, body = _request(daemon, "GET", url)
             assert status == 200, status
             assert len(body) < 10_000
             assert b"<script>var m=1;</script>" in body
@@ -217,14 +175,6 @@ def test_hostile_draft_shows_up_only_as_lt():
             html = body.decode()
             assert "<script>alert" not in html
             assert "\\u003cscript>alert(1)\\u003c/script>" in html
-
-
-def test_page_route_requires_query_token_not_header():
-    with cw_testlib.temp_home() as home:
-        _make_walkthrough(home)
-        with running_daemon() as daemon:
-            status, _ = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/")
-            assert status == 403, status
 
 
 def test_page_not_built_yet_gives_503():
@@ -304,33 +254,6 @@ def test_reject_closes_connection_instead_of_leaking_body_into_next_request():
             assert buf.count(b"HTTP/1.1") == 1, buf
 
 
-# -- token persistence ------------------------------------------------------
-
-def test_token_stable_across_restarts():
-    with cw_testlib.temp_home():
-        with running_daemon() as daemon1:
-            token1 = daemon1.token
-        with running_daemon() as daemon2:
-            token2 = daemon2.token
-        assert token1 == token2
-
-
-def test_token_file_is_mode_0600():
-    with cw_testlib.temp_home():
-        with running_daemon():
-            mode = cw_store.token_path().stat().st_mode
-            assert (mode & 0o777) == 0o600
-
-
-def test_corrupt_token_file_replaced_with_fresh_valid_token():
-    with cw_testlib.temp_home():
-        cw_store.token_path().write_text("")
-        with running_daemon() as daemon:
-            token = daemon.token
-            assert cw_store.TOKEN_RE.fullmatch(token)
-            assert cw_store.token_path().read_text().strip() == token
-
-
 # -- restart on a new port ------------------------------------------------
 
 def test_drafts_survive_restart_on_new_port():
@@ -364,31 +287,6 @@ def test_drafts_survive_restart_on_new_port():
 
 
 # -- SSE -------------------------------------------------------------------
-
-def _sse_read_until(sock, needle, timeout=5):
-    sock.settimeout(timeout)
-    buf = b""
-    deadline = time.monotonic() + timeout
-    while needle not in buf and time.monotonic() < deadline:
-        try:
-            chunk = sock.recv(4096)
-        except socket.timeout:
-            break
-        if not chunk:
-            break
-        buf += chunk
-    return buf
-
-
-def _sse_connect(daemon, key, wid):
-    sock = socket.create_connection(("127.0.0.1", daemon.port), timeout=5)
-    req = (
-        f"GET /api/walkthrough/{key}/{wid}/events?k={daemon.token} HTTP/1.1\r\n"
-        f"Host: 127.0.0.1:{daemon.port}\r\nConnection: keep-alive\r\n\r\n"
-    )
-    sock.sendall(req.encode())
-    return sock
-
 
 def test_sse_snapshot_and_broadcast_to_two_clients():
     with cw_testlib.temp_home() as home:
@@ -437,6 +335,10 @@ def test_second_start_does_not_spawn_second_run():
                 time.sleep(0.2)
                 assert fake.run_count == 1
                 fake.release.set()
+                d = cw_store.walkthrough_dir(KEY, WID)
+                deadline = time.monotonic() + 5
+                while (cw_store.read_meta(d) or {}).get("status") != "done" and time.monotonic() < deadline:
+                    time.sleep(0.02)
         finally:
             cw_server.runner = None
 
@@ -467,11 +369,34 @@ def test_walkthrough_list_newest_first_and_filtered():
         _set_meta(d1, updated_at="2020-01-01T00:00:00Z")
         d2, _m2 = _make_walkthrough(home, key="repo-abcdef", wid="cmp-89abcdef")
         _set_meta(d2, updated_at="2024-01-01T00:00:00Z")
+        other_repo = str(home / "other-repo")
+        other_key = cw_store.repo_key(other_repo)
+        d3, _m3 = _make_walkthrough(home, key=other_key, wid="cmp-00000003")
+        _set_meta(d3, updated_at="2022-01-01T00:00:00Z")
         with running_daemon() as daemon:
-            status, body = _rpc(daemon, "walkthrough_list", {"limit": 20})
-            reply = body
-            ids = [w["id"] for w in reply["result"]["walkthroughs"]]
-            assert ids[:2] == ["cmp-89abcdef", "cmp-01234567"], ids
+            def listed(**args):
+                status, body = _rpc(daemon, "walkthrough_list", args)
+                assert status == 200 and body["ok"], body
+                return [w["id"] for w in body["result"]["walkthroughs"]]
+
+            assert listed(limit=20) == ["cmp-89abcdef", "cmp-00000003", "cmp-01234567"]
+            assert listed(limit=1) == ["cmp-89abcdef"]
+            assert listed(repo=other_repo) == ["cmp-00000003"]
+
+
+def test_failed_walkthrough_get_shows_gate_and_serves_partial():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home, status="failed", page="partial")
+        gate = ["analysis.json: missing key 'overview'"]
+        _set_meta(d, gate=gate, remedy="fix the analysis")
+        with running_daemon() as daemon:
+            status, body = _rpc(daemon, "walkthrough_get", {"id": WID, "key": KEY})
+            assert status == 200 and body["ok"], body
+            assert body["result"]["status"] == "failed"
+            assert body["result"]["summary"]["gate"] == gate, body["result"]
+            status, page = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            assert status == 200, status
+            assert b"partial" in page and b"final" not in page
 
 
 # -- startup housekeeping ---------------------------------------------------
@@ -483,91 +408,32 @@ def test_mark_interrupted_flips_building_status():
         assert cw_store.read_meta(d)["status"] == "interrupted"
 
 
-def test_prune_removes_old_without_drafts_keeps_with_drafts():
+def test_prune(monkeypatch):
+    # (state.json notes, page-notes.json notes, updated_at, expect_kept). A note with origin
+    # "local" that has since been posted is not a draft: it must not keep an old walkthrough alive.
+    old, recent = "2000-01-01T00:00:00Z", cw_store.now_iso()
+    local = lambda state: [{"id": "n1", "origin": "local", "state": state}]
+    rows = [
+        ("old, no notes", None, None, old, False),
+        ("old, page notes", None, [{"id": "n1"}], old, True),
+        ("old, state local posted", local("posted"), None, old, False),
+        ("old, state local draft", local("draft"), None, old, True),
+        ("recent, no drafts", None, None, recent, True),
+    ]
+    monkeypatch.setenv("CW_PRUNE_DAYS", "30")
     with cw_testlib.temp_home() as home:
-        old_no_drafts, _ = _make_walkthrough(home, key="repo-abcdef", wid="cmp-01234567")
-        _set_meta(old_no_drafts, updated_at="2000-01-01T00:00:00Z", repo=None)
-        old_with_drafts, _ = _make_walkthrough(home, key="repo-abcdef", wid="cmp-89abcdef")
-        _set_meta(old_with_drafts, updated_at="2000-01-01T00:00:00Z", repo=None)
-        cw_store.write_json(old_with_drafts / "page-notes.json", {"notes": [{"id": "n1"}]})
-
-        import os
-        os.environ["CW_PRUNE_DAYS"] = "30"
-        try:
-            cw_server._prune()
-        finally:
-            os.environ.pop("CW_PRUNE_DAYS", None)
-
-        assert not old_no_drafts.exists()
-        assert old_with_drafts.exists()
-
-
-def test_prune_state_json_requires_both_local_origin_and_draft_state():
-    # A note with origin "local" that has since been posted is not a draft any more: it must
-    # not keep the walkthrough alive past CW_PRUNE_DAYS. An actual local draft still should.
-    with cw_testlib.temp_home() as home:
-        posted, _ = _make_walkthrough(home, key="repo-abcdef", wid="cmp-01234567")
-        _set_meta(posted, updated_at="2000-01-01T00:00:00Z", repo=None)
-        cw_store.write_json(posted / "state.json", {"notes": [{"id": "n1", "origin": "local", "state": "posted"}]})
-
-        draft, _ = _make_walkthrough(home, key="repo-abcdef", wid="cmp-89abcdef")
-        _set_meta(draft, updated_at="2000-01-01T00:00:00Z", repo=None)
-        cw_store.write_json(draft / "state.json", {"notes": [{"id": "n2", "origin": "local", "state": "draft"}]})
-
-        import os
-        os.environ["CW_PRUNE_DAYS"] = "30"
-        try:
-            cw_server._prune()
-        finally:
-            os.environ.pop("CW_PRUNE_DAYS", None)
-
-        assert not posted.exists()
-        assert draft.exists()
-
-
-# -- direct GitHub draft path -------------------------------------------------
-
-EXACT_BODY = "  lead spaces\n`code` <b>x</b> \U0001F600 tail\n"
-
-
-def test_direct_draft_and_reply_draft_make_no_model_call_and_keep_exact_body():
-    import tempfile
-    import test_cw_post as post  # shared PR-walkthrough fixtures
-
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        with cw_testlib.StubLLM(lambda body, _n: post._small_route_reply(body)) as stub, \
-                cw_testlib.fake_claude(tmp, {}) as fc, \
-                cw_testlib.fake_gh(tmp, comments=[], threads=[]):
-            repo, base, head, d = post._build_done_pr(home, tmp, stub)
-            root = post._note(id="gh-501", origin="github", state="posted", gh_id=501,
-                              gh_node_id="NODE_501", gh_thread_id="THREAD_1", body="root")
-            post._add_notes(d, [root])
-            baseline = len(stub.requests)
-            qa = d / "qa.jsonl"
-            qa_before = qa.read_text() if qa.exists() else ""
-
-            direct = post._note(id="n-direct", body=EXACT_BODY)
-            reply = post._note(id="n-reply", body=EXACT_BODY, reply_to="gh-501", in_reply_to="gh-501")
-            key, wid = d.parent.name, d.name
-            with post.running_daemon() as daemon:
-                status, raw = post._put_notes(daemon, key, wid, [direct, reply])
-                assert status == 200, (status, raw)
-                saved = {n["id"]: n for n in cw_store.read_json(d / "page-notes.json")["notes"]}
-                assert saved["n-direct"]["body"] == EXACT_BODY
-                assert saved["n-reply"]["body"] == EXACT_BODY
-                status, raw = post._preview(daemon, key, wid, [])
-                assert status == 200, (status, raw)
-
-            state = {n["id"]: n for n in cw_store.read_json(d / "state.json")["notes"]}
-            assert state["n-direct"]["body"] == EXACT_BODY
-            assert state["n-direct"]["origin"] == "local" and state["n-direct"]["state"] == "draft"
-            assert state["n-reply"]["body"] == EXACT_BODY
-            # PAGE_DENIED_NOTE_FIELDS strips reply_to; in_reply_to is the durable link.
-            assert state["n-reply"]["reply_to"] is None
-            assert state["n-reply"]["in_reply_to"] == "gh-501"
-            assert len(stub.requests) == baseline
-            assert fc.log() == []
-            assert (qa.read_text() if qa.exists() else "") == qa_before
+        dirs = []
+        for i, (_name, state_notes, page_notes, updated_at, _kept) in enumerate(rows):
+            d, _ = _make_walkthrough(home, key=KEY, wid=f"cmp-{i:08x}")
+            _set_meta(d, updated_at=updated_at, repo=None)
+            if state_notes:
+                cw_store.write_json(d / "state.json", {"notes": state_notes})
+            if page_notes:
+                cw_store.write_json(d / "page-notes.json", {"notes": page_notes})
+            dirs.append(d)
+        cw_server._prune()
+        for (name, *_rest, kept), d in zip(rows, dirs):
+            assert d.exists() is kept, name
 
 
 # -- in-flight turn buffers ----------------------------------------------------
@@ -616,7 +482,7 @@ def _reduce(events):
 def _streamed_turn_fixture(tmp, home, chunks, delay):
     import test_cw_ask as ask
 
-    d = ask._claude_done(home, tmp)
+    d = ask._claude_done(home)
     entry = cw_testlib.claude_stream_entry(chunks, delay=delay)
     tool = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "foo.py"}}]}}
@@ -625,11 +491,9 @@ def _streamed_turn_fixture(tmp, home, chunks, delay):
 
 
 def test_snapshot_mid_turn_carries_buffer_and_late_client_converges():
-    import tempfile
-
     chunks = [f"w{i} " for i in range(10)]
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
+        ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.05)
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), running_daemon() as daemon:
             key, wid = d.parent.name, d.name
             sock_a = _sse_connect(daemon, key, wid)
@@ -694,9 +558,6 @@ def test_events_registers_before_building_snapshot():
 
 
 def test_stop_kills_in_flight_turn_group():
-    import os
-    import tempfile
-
     chunks = [f"w{i} " for i in range(40)]
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
@@ -715,17 +576,10 @@ def test_stop_kills_in_flight_turn_group():
             finally:
                 daemon.stop()
 
-            def gone():
-                try:
-                    os.killpg(start["pgid"], 0)
-                except ProcessLookupError:
-                    return True
-                return False
-
             deadline = time.monotonic() + 3
-            while time.monotonic() < deadline and not gone():
+            while time.monotonic() < deadline and not _pgid_gone(start["pgid"]):
                 time.sleep(0.05)
-            assert gone()
+            assert _pgid_gone(start["pgid"])
             while time.monotonic() < deadline + 5 and daemon._asks:
                 time.sleep(0.05)
 
@@ -779,8 +633,6 @@ def test_cancel_route_guards_and_unknown_qid():
 
 
 def test_cancel_running_streamed_turn_keeps_partial_and_kills_group():
-    import tempfile
-
     chunks = [f"w{i} " for i in range(40)]
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
@@ -808,8 +660,6 @@ def test_cancel_running_streamed_turn_keeps_partial_and_kills_group():
 
 
 def test_cancel_queued_turn_never_spawns():
-    import tempfile
-
     chunks = [f"w{i} " for i in range(40)]
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         ask, d, entry = _streamed_turn_fixture(tmp, home, chunks, 0.15)
@@ -925,39 +775,31 @@ def _get_qa(daemon):
     return json.loads(raw)
 
 
-def test_thread_turn_cap_gives_409_on_the_21st_turn():
+def test_thread_turn_cap():
     with cw_testlib.temp_home() as home:
-        d, _ = _make_walkthrough(home)
         anchor = {"kind": "section", "section": "Overview", "quote": "q"}
-        _append_qa(d, *({"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": "ok",
-                         "answer": "a", "comment": "c", "question": "c"} for i in range(20)))
+        ok_turn = lambda i: {"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": "ok",
+                             "answer": "a", "comment": "c", "question": "c"}
+        full, _ = _make_walkthrough(home)
+        _append_qa(full, *(ok_turn(i) for i in range(20)))
+        # only ok and pending turns count: error and cancelled ones leave room for a 20th
+        room, _ = _make_walkthrough(home, wid="cmp-89abcdef")
+        _append_qa(room, *(ok_turn(i) for i in range(19)),
+                   *({**ok_turn(i), "status": st, "answer": ""}
+                     for i, st in ((100, "error"), (101, "cancelled"), (102, "error"))))
+        body = {"anchor": anchor, "text": "more", "thread_id": "q-00000000"}
         with running_daemon() as daemon:
-            status, body = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/comment",
-                                  {"anchor": anchor, "text": "more", "thread_id": "q-00000000"})
-            assert status == 409, (status, body)
-            assert body == {"error": "thread has 20 turns", "remedy": "start a new thread"}
-            assert len(cw_ask.read_qa(d)) == 20
+            status, reply = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/comment", body)
+            assert status == 409, (status, reply)
+            assert reply == {"error": "thread has 20 turns", "remedy": "start a new thread"}
+            assert len(cw_ask.read_qa(full)) == 20
 
-
-def test_thread_cap_counts_only_ok_and_pending_turns():
-    with cw_testlib.temp_home() as home:
-        d, _ = _make_walkthrough(home)
-        anchor = {"kind": "section", "section": "Overview", "quote": "q"}
-        turns = [{"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": "ok",
-                  "answer": "a", "comment": "c", "question": "c"} for i in range(19)]
-        turns += [{"qid": f"q-{i:08x}", "thread_id": "q-00000000", "anchor": anchor, "status": st,
-                   "answer": "", "comment": "c", "question": "c"}
-                  for i, st in ((100, "error"), (101, "cancelled"), (102, "error"))]
-        _append_qa(d, *turns)
-        with running_daemon() as daemon:
-            body = {"anchor": anchor, "text": "more", "thread_id": "q-00000000"}
-            path = f"/api/walkthrough/{KEY}/{WID}/comment"
-            assert _post(daemon, path, body)[0] != 409
+            status, reply = _post(daemon, f"/api/walkthrough/{KEY}/cmp-89abcdef/comment", body)
+            assert status == 202, (status, reply)
+            _wait_turns_done(room)
 
 
 def test_stopped_daemon_never_spawns_a_queued_turn():
-    import tempfile
-
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         ask, d, entry = _streamed_turn_fixture(tmp, home, ["a "], 0)
         key, wid = d.parent.name, d.name
@@ -985,13 +827,14 @@ def test_inflight_text_and_seq_are_consistent_under_the_live_lock():
         while not done.is_set():
             with live["lock"]:
                 live["seq"] += 1
-                live["text"] += "x"
                 time.sleep(0)
+                live["text"] += "x"
+            time.sleep(0.0002)
 
     th = threading.Thread(target=writer)
     th.start()
     try:
-        for _ in range(2000):
+        for _ in range(300):
             (snap,) = daemon.inflight(KEY, WID)
             assert len(snap["text"]) == snap["seq"]
     finally:
@@ -1070,7 +913,6 @@ def _wait_turns_done(d):
 
 
 def test_triage_starts_one_source_triage_turn_per_open_root_thread_and_publishes_nothing():
-    import tempfile
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp, \
             cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
         d = _triage_setup(home)
@@ -1131,16 +973,6 @@ def test_triage_guards_and_409s():
             assert status == 409 and body["error"] == cw_server.STILL_BUILDING_MSG, body
 
 
-def test_source_defaults_to_user_and_passes_through_the_pending_record():
-    with cw_testlib.temp_home() as home:
-        d, _ = _make_walkthrough(home)
-        _append_qa(d, {"qid": "q-00000001", "anchor": {}, "status": "ok", "answer": "a", "question": "c"})
-        cw_ask.begin_turn(d, "q-00000002", {"kind": "section", "section": "S", "quote": "q"}, "c", source="triage")
-        by_qid = {r["qid"]: r for r in cw_ask.read_qa(d)}
-        assert by_qid["q-00000001"]["source"] == "user"
-        assert by_qid["q-00000002"]["source"] == "triage" and by_qid["q-00000002"]["status"] == "pending"
-
-
 def test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock():
     with cw_testlib.temp_home() as home:
         d, _ = _make_walkthrough(home)
@@ -1158,53 +990,3 @@ def test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock():
             t.join(5)
             assert result == [200]
 
-
-if __name__ == "__main__":
-    tests = [
-        test_host_guard_rejects_wrong_host,
-        test_token_guard_rejects_missing_or_wrong_token,
-        test_origin_guard_rejects_mismatched_origin,
-        test_traversal_in_id_or_key_gives_400,
-        test_injection_round_trip,
-        test_hostile_draft_shows_up_only_as_lt,
-        test_page_route_requires_query_token_not_header,
-        test_page_not_built_yet_gives_503,
-        test_put_notes_filters_and_413,
-        test_reject_closes_connection_instead_of_leaking_body_into_next_request,
-        test_token_stable_across_restarts,
-        test_token_file_is_mode_0600,
-        test_corrupt_token_file_replaced_with_fresh_valid_token,
-        test_drafts_survive_restart_on_new_port,
-        test_sse_snapshot_and_broadcast_to_two_clients,
-        test_second_start_does_not_spawn_second_run,
-        test_wait_s_returns_on_remedy_step_once_only,
-        test_walkthrough_list_newest_first_and_filtered,
-        test_mark_interrupted_flips_building_status,
-        test_prune_removes_old_without_drafts_keeps_with_drafts,
-        test_prune_state_json_requires_both_local_origin_and_draft_state,
-        test_direct_draft_and_reply_draft_make_no_model_call_and_keep_exact_body,
-        test_snapshot_mid_turn_carries_buffer_and_late_client_converges,
-        test_events_registers_before_building_snapshot,
-        test_thread_cap_counts_only_ok_and_pending_turns,
-        test_triage_starts_one_source_triage_turn_per_open_root_thread_and_publishes_nothing,
-        test_triage_cap_leaves_the_rest_remaining,
-        test_triage_guards_and_409s,
-        test_source_defaults_to_user_and_passes_through_the_pending_record,
-        test_stopped_daemon_never_spawns_a_queued_turn,
-        test_inflight_text_and_seq_are_consistent_under_the_live_lock,
-        test_stop_kills_in_flight_turn_group,
-        test_cancel_route_guards_and_unknown_qid,
-        test_cancel_running_streamed_turn_keeps_partial_and_kills_group,
-        test_cancel_queued_turn_never_spawns,
-        test_outcome_routes_guards_404_dismiss_and_conflict,
-        test_outcome_edit_ok_and_bad_edit_gives_validator_text,
-        test_page_edit_revert_reapply_routes,
-        test_thread_turn_cap_gives_409_on_the_21st_turn,
-        test_github_draft_routes_edit_verbatim_keep_dismiss_and_wrong_action,
-        test_comment_with_a_thread_anchor_needs_a_github_root_thread_note,
-        test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

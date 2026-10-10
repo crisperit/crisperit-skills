@@ -5,117 +5,89 @@ cw_run.py/cw_ask.py, cw_testlib.StubLLM standing in for the model backend -- no 
 own modules besides that one external boundary."""
 
 import contextlib
-import http.client
 import json
-import socket
+import shutil
 import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_ask  # noqa: E402
-import cw_llm  # noqa: E402
 import cw_mcp  # noqa: E402
-import cw_run  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
-
-cw_llm.BACKOFF_S = [0, 0]
 
 ANCHOR_LINE = {"kind": "line", "path": "foo.py", "side": "RIGHT", "line": 2,
                "end_line": None, "hunk_id": "foo.py\t@@ -1,3 +1,3 @@", "quote": "X"}
 ANCHOR_SECTION = {"kind": "section", "section": "Overview", "quote": "q"}
 ANCHOR_BLOCK = {"kind": "block", "block": "overview:p1", "section": "Overview", "quote": "q"}
-
-
-def _small_route_reply(body):
-    seed = cw_testlib.first_json_block(cw_testlib.last_user_text(body))
-    analysis = {
-        "files": [{"path": f["path"], "role": "does a thing",
-                   "hunks": [{"header": h["header"], "note": "explains it"} for h in f["hunks"]]}
-                  for f in seed["files"]],
-        "overview": "o", "verdict": "v", "flow_mermaid": "",
-    }
-    return cw_testlib.tool_call("submit_analysis", analysis)
+ANCHOR_THREAD = {"kind": "thread", "note_id": "gh-501", "quote": "please fix"}
 
 
 def _combined_script(ask_handler):
     def script(body, n):
         model = body.get("model")
         if model == "prose-m":
-            return _small_route_reply(body)
+            return cw_testlib.small_route_reply(body)
         if model == "ask-m":
             return ask_handler(body, n)
         raise RuntimeError(f"unexpected model {model!r}")
     return script
 
 
-def _write_config(home, stub, **limits):
-    cw_testlib.write_config(
-        home,
-        {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m"), "k": stub.profile("ask-m")},
-        {"analysis": "a", "prose": "p", "ask": "k"},
-        **limits,
-    )
+_TEMPLATE = {}
 
 
-def _build_done(home, tmp, stub, **limits):
-    """A one-line-change repo, built end to end on the small route, with no PR -- enough of a
-    walkthrough for cw_ask to read raw.diff and analysis.json from."""
-    repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
-    _write_config(home, stub, **limits)
-    d, _meta, _reused = cw_run.prepare_walkthrough(
-        {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t"})
-    status = cw_run.run(d, lambda ev, data: None)
-    assert status == "done", status
+@pytest.fixture(scope="module", autouse=True)
+def _drop_template():
+    yield
+    stack = _TEMPLATE.pop("stack", None)
+    _TEMPLATE.clear()
+    if stack:
+        stack.close()
+
+
+def _template():
+    """One built walkthrough for the whole module (a render subprocess and a git worktree,
+    about 1.9s), copied into each test's own store by _done."""
+    if not _TEMPLATE:
+        stack = contextlib.ExitStack()
+        try:
+            repo_tmp = stack.enter_context(tempfile.TemporaryDirectory())  # copies' head/.git points into this repo
+            saved = Path(stack.enter_context(tempfile.TemporaryDirectory())) / "tpl"
+            with cw_testlib.temp_home() as home, \
+                    cw_testlib.StubLLM(lambda body, n: cw_testlib.small_route_reply(body)) as stub:
+                d = cw_testlib.build_done(home, repo_tmp, stub)
+                shutil.copytree(d, saved, symlinks=True)
+        except BaseException:
+            stack.close()
+            raise
+        _TEMPLATE.update(stack=stack, dir=saved, key=d.parent.name, wid=d.name)
+    return _TEMPLATE
+
+
+def _done(home, stub=None, **limits):
+    """A private copy of the built walkthrough in this test's store, enough for cw_ask to read
+    raw.diff and analysis.json from; with a stub, also the route config pointing at it."""
+    tpl = _template()
+    d = cw_store.walkthrough_dir(tpl["key"], tpl["wid"], create=True)
+    shutil.copytree(tpl["dir"], d, symlinks=True, dirs_exist_ok=True)
+    if stub is not None:
+        cw_testlib.write_route_config(home, stub, **limits)
     return d
-
-
-@contextlib.contextmanager
-def running_daemon(idle_s=None):
-    daemon = cw_server.Daemon(idle_s=idle_s, write_server_json=False)
-    daemon.start()
-    try:
-        yield daemon
-    finally:
-        daemon.stop()
-
-
-def _request(daemon, method, path, *, host=None, origin=None, token=None, body=None):
-    conn = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=5)
-    try:
-        conn.putrequest(method, path, skip_host=True)
-        conn.putheader("Host", host or f"127.0.0.1:{daemon.port}")
-        if origin is not None:
-            conn.putheader("Origin", origin)
-        if token is not None:
-            conn.putheader("X-CW-Token", token)
-        data = body.encode() if isinstance(body, str) else body
-        if data is not None:
-            conn.putheader("Content-Length", str(len(data)))
-            conn.putheader("Content-Type", "application/json")
-        conn.endheaders(data)
-        resp = conn.getresponse()
-        return resp.status, resp.read()
-    finally:
-        conn.close()
-
-
-def _post_ask(daemon, key, wid, anchor, question, *, token=None):
-    return _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/ask",
-                     token=daemon.token if token is None else token,
-                     body=json.dumps({"anchor": anchor, "question": question}))
 
 
 def _post_comment(daemon, key, wid, anchor, text, thread_id=None, *, token=None):
     body = {"anchor": anchor, "text": text}
     if thread_id:
         body["thread_id"] = thread_id
-    return _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
-                     token=daemon.token if token is None else token, body=json.dumps(body))
+    return cw_testlib.request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
+                              token=daemon.token if token is None else token, body=json.dumps(body))
 
 
 def _wait_final(d, count, timeout=10):
@@ -126,37 +98,6 @@ def _wait_final(d, count, timeout=10):
             break
         time.sleep(0.05)
     return cw_ask.read_qa(d)
-
-
-def _rpc(daemon, tool, args):
-    status, data = _request(daemon, "POST", "/api/rpc", token=daemon.token,
-                             body=json.dumps({"tool": tool, "args": args}))
-    return status, (json.loads(data) if data else None)
-
-
-def _sse_read_until(sock, needle, timeout=5):
-    sock.settimeout(timeout)
-    buf = b""
-    deadline = time.monotonic() + timeout
-    while needle not in buf and time.monotonic() < deadline:
-        try:
-            chunk = sock.recv(4096)
-        except socket.timeout:
-            break
-        if not chunk:
-            break
-        buf += chunk
-    return buf
-
-
-def _sse_connect(daemon, key, wid):
-    sock = socket.create_connection(("127.0.0.1", daemon.port), timeout=5)
-    req = (
-        f"GET /api/walkthrough/{key}/{wid}/events?k={daemon.token} HTTP/1.1\r\n"
-        f"Host: 127.0.0.1:{daemon.port}\r\nConnection: keep-alive\r\n\r\n"
-    )
-    sock.sendall(req.encode())
-    return sock
 
 
 # ---------------------------------------------------------------------------
@@ -171,17 +112,17 @@ def test_ask_gives_qa_record_and_sse_answer():
             return cw_testlib.text("It assigns X on line 2.")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
-                sock = _sse_connect(daemon, key, wid)
+            with cw_testlib.running_daemon() as daemon:
+                sock = cw_testlib.sse_connect(daemon, key, wid)
                 try:
-                    snap = _sse_read_until(sock, b"event: snapshot")
+                    snap = cw_testlib.sse_read_until(sock, b"event: snapshot")
                     assert b"event: snapshot" in snap, snap
-                    status, raw = _post_ask(daemon, key, wid, ANCHOR_LINE, "why X?")
+                    status, raw = _post_comment(daemon, key, wid, ANCHOR_LINE, "why X?")
                     assert status == 202, (status, raw)
                     assert json.loads(raw)["qid"].startswith("q-")
-                    more = _sse_read_until(sock, b'"status": "ok"')
+                    more = cw_testlib.sse_read_until(sock, b'"status": "ok"')
                     assert b"event: thread" in more, more
                     assert b'"kind": "turn"' in more and b'"status": "pending"' in more, more
                     assert b'"status": "ok"' in more, more
@@ -203,7 +144,7 @@ def test_ask_gives_qa_record_and_sse_answer():
 def test_oversized_selection_refused_quote_never_cut():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
 
             big_quote = "q" * 17000
             anchor = cw_ask.validate_anchor({"kind": "section", "section": "Overview", "quote": big_quote})
@@ -214,9 +155,9 @@ def test_oversized_selection_refused_quote_never_cut():
                 assert e.remedy == "select a smaller range"
 
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
-                status, raw = _post_ask(daemon, key, wid,
-                                         {"kind": "section", "section": "Overview", "quote": big_quote}, "why?")
+            with cw_testlib.running_daemon() as daemon:
+                status, raw = _post_comment(daemon, key, wid,
+                                            {"kind": "section", "section": "Overview", "quote": big_quote}, "why?")
                 assert status == 400, (status, raw)
                 assert json.loads(raw)["remedy"] == "select a smaller range"
 
@@ -238,7 +179,7 @@ def test_oversized_selection_refused_quote_never_cut():
 def test_prompt_order_hunk_notes_and_pair_limit():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
 
             for i in range(7):
                 cw_ask._append_qa(d, {
@@ -271,7 +212,7 @@ def test_prompt_order_hunk_notes_and_pair_limit():
 def test_answer_never_raises_on_a_malformed_ask_profile():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             config_path = cw_store.config_path()
             config = json.loads(config_path.read_text())
             config["profiles"]["k"] = {"model": "ask-m"}  # missing base_url: role_profile raises
@@ -286,19 +227,19 @@ def test_answer_never_raises_on_a_malformed_ask_profile():
 # Same-thread comments run one after the other, different threads side by side
 # ---------------------------------------------------------------------------
 
-def test_same_thread_comments_run_sequentially():
+def test_same_thread_comments_run_sequentially_and_keep_the_first_turn_anchor():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         def ask_handler(body, n):
-            return cw_testlib.delayed(0.5, cw_testlib.text("ans"))
+            return cw_testlib.delayed(0.2, cw_testlib.text("ans"))
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
+            with cw_testlib.running_daemon() as daemon:
                 status1, raw1 = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q1")
                 assert status1 == 202
                 tid = json.loads(raw1)["thread_id"]
-                status2, raw2 = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q2", tid)
+                status2, raw2 = _post_comment(daemon, key, wid, ANCHOR_SECTION, "q2", tid)
                 assert status2 == 202
                 assert json.loads(raw2)["thread_id"] == tid
                 records = _wait_final(d, 2)
@@ -307,17 +248,21 @@ def test_same_thread_comments_run_sequentially():
             first, second = records
             assert first["finished_at"] <= second["started_at"]
             assert stub.peak_in_flight == 1
+            assert [r["anchor"] for r in records] == [ANCHOR_BLOCK, ANCHOR_BLOCK]
 
 
 def test_different_threads_run_concurrently():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        both_in_flight = threading.Barrier(2, timeout=5)
+
         def ask_handler(body, n):
-            return cw_testlib.delayed(0.8, cw_testlib.text("ans"))
+            both_in_flight.wait()
+            return cw_testlib.text("ans")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
+            with cw_testlib.running_daemon() as daemon:
                 assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q1")[0] == 202
                 assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "q2")[0] == 202
                 records = _wait_final(d, 2)
@@ -335,9 +280,9 @@ def test_comment_is_persisted_pending_before_turn_starts():
             return cw_testlib.text("ans")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
+            with cw_testlib.running_daemon() as daemon:
                 try:
                     status, raw = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "hold on")
                     assert status == 202
@@ -346,7 +291,7 @@ def test_comment_is_persisted_pending_before_turn_starts():
                     assert [(t["qid"], t["status"], t["comment"], t["question"]) for t in turns] == [
                         (qid, "pending", "hold on", "hold on")]
                     assert turns[0]["thread_id"] == qid
-                    status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
+                    status, raw = cw_testlib.request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
                                             token=daemon.token)
                     assert json.loads(raw) == {"turns": turns, "resolved": [], "outcomes": []}
                 finally:
@@ -359,21 +304,21 @@ def test_comment_is_persisted_pending_before_turn_starts():
 # Anchors, per-thread history, folding, resolve
 # ---------------------------------------------------------------------------
 
-def test_block_anchor_accepted_and_bad_key_refused():
-    anchor = cw_ask.validate_anchor(dict(ANCHOR_BLOCK))
-    assert anchor == {"kind": "block", "block": "overview:p1", "section": "Overview", "quote": "q"}
+def test_validate_anchor():
+    assert cw_ask.validate_anchor(dict(ANCHOR_BLOCK)) == {
+        "kind": "block", "block": "overview:p1", "section": "Overview", "quote": "q"}
     assert cw_ask.validate_anchor({"kind": "block", "block": "a.b|c-d_e", "quote": "q"})["section"] is None
+    assert cw_ask.validate_anchor(dict(ANCHOR_THREAD)) == ANCHOR_THREAD
     for bad in ({"kind": "block", "block": "has space", "quote": "q"},
                 {"kind": "block", "block": "", "quote": "q"},
                 {"kind": "block", "block": "x" * 201, "quote": "q"},
                 {"kind": "block", "quote": "q"},
                 {"kind": "block", "block": "ok", "quote": ""},
-                {"kind": "block", "block": "ok", "section": 3, "quote": "q"}):
-        try:
+                {"kind": "block", "block": "ok", "section": 3, "quote": "q"},
+                {"kind": "thread", "quote": "q"}, {"kind": "thread", "note_id": 5, "quote": "q"},
+                {"kind": "thread", "note_id": "a b", "quote": "q"}, {"kind": "thread", "note_id": "gh-1"}):
+        with pytest.raises(cw_store.CWError, match="^bad anchor"):
             cw_ask.validate_anchor(bad)
-            raise AssertionError(f"expected CWError for {bad}")
-        except cw_store.CWError as e:
-            assert str(e).startswith("bad anchor")
 
 
 def _turn(qid, comment, answer, thread_id=None, status="ok"):
@@ -383,10 +328,20 @@ def _turn(qid, comment, answer, thread_id=None, status="ok"):
     return record
 
 
+def test_source_defaults_to_user_and_passes_through_the_pending_record():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        cw_ask._append_qa(d, {"qid": "q-00000001", "anchor": {}, "status": "ok", "answer": "a", "question": "c"})
+        cw_ask.begin_turn(d, "q-00000002", {"kind": "section", "section": "S", "quote": "q"}, "c", source="triage")
+        by_qid = {r["qid"]: r for r in cw_ask.read_qa(d)}
+        assert by_qid["q-00000001"]["source"] == "user"
+        assert by_qid["q-00000002"]["source"] == "triage" and by_qid["q-00000002"]["status"] == "pending"
+
+
 def test_prompt_history_is_per_thread_and_ignores_unfinished_turns():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             cw_ask._append_qa(d, _turn("q-a1", "mine-1", "ans-mine-1", "t-a"))
             cw_ask._append_qa(d, _turn("q-b1", "theirs-1", "ans-theirs", "t-b"))
             cw_ask._append_qa(d, _turn("q-a2", "mine-2", None, "t-a", status="pending"))
@@ -404,7 +359,7 @@ def test_prompt_history_is_per_thread_and_ignores_unfinished_turns():
 def test_old_record_without_thread_id_folds_as_its_own_thread():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             cw_ask._append_qa(d, _turn("q-old", "legacy", "old answer"))
             cw_ask._append_qa(d, {"qid": "q-new", "thread_id": "q-new", "comment": "c",
                                   "question": "c", "status": "pending"})
@@ -422,7 +377,7 @@ def test_old_record_without_thread_id_folds_as_its_own_thread():
 def test_read_threads_folds_resolve_events_and_readers_skip_them():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             cw_ask._append_qa(d, _turn("q-1", "c1", "a1", "q-1"))
             cw_ask._append_qa(d, _turn("q-2", "c2", "a2", "q-1"))
             cw_ask._append_qa(d, _turn("q-3", "c3", "a3", "q-3"))
@@ -440,38 +395,38 @@ def test_read_threads_folds_resolve_events_and_readers_skip_them():
 def test_resolve_route_guards_and_effect():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
             cw_ask._append_qa(d, _turn("q-1", "c1", "a1", "q-1"))
             path = f"/api/walkthrough/{key}/{wid}/threads/q-1/resolve"
             body = json.dumps({"resolved": True})
-            with running_daemon() as daemon:
-                sock = _sse_connect(daemon, key, wid)
+            with cw_testlib.running_daemon() as daemon:
+                sock = cw_testlib.sse_connect(daemon, key, wid)
                 try:
-                    _sse_read_until(sock, b"event: snapshot")
-                    assert _request(daemon, "POST", path, body=body)[0] == 403
-                    assert _request(daemon, "POST", path, token="wrong", body=body)[0] == 403
-                    assert _request(daemon, "POST", path, token=daemon.token, host="evil.example:9",
+                    cw_testlib.sse_read_until(sock, b"event: snapshot")
+                    assert cw_testlib.request(daemon, "POST", path, body=body)[0] == 403
+                    assert cw_testlib.request(daemon, "POST", path, token="wrong", body=body)[0] == 403
+                    assert cw_testlib.request(daemon, "POST", path, token=daemon.token, host="evil.example:9",
                                      body=body)[0] == 403
-                    assert _request(daemon, "POST", path, token=daemon.token,
+                    assert cw_testlib.request(daemon, "POST", path, token=daemon.token,
                                      origin="http://attacker.example", body=body)[0] == 403
                     assert cw_ask.read_threads(d)["q-1"]["resolved"] is False
 
                     bad = f"/api/walkthrough/{key}/{wid}/threads/bad.id/resolve"
-                    assert _request(daemon, "POST", bad, token=daemon.token, body=body)[0] == 400
+                    assert cw_testlib.request(daemon, "POST", bad, token=daemon.token, body=body)[0] == 400
                     missing = f"/api/walkthrough/{key}/{wid}/threads/q-nope/resolve"
-                    assert _request(daemon, "POST", missing, token=daemon.token, body=body)[0] == 404
-                    assert _request(daemon, "POST", path, token=daemon.token,
+                    assert cw_testlib.request(daemon, "POST", missing, token=daemon.token, body=body)[0] == 404
+                    assert cw_testlib.request(daemon, "POST", path, token=daemon.token,
                                      body=json.dumps({"resolved": "yes"}))[0] == 400
 
-                    status, raw = _request(daemon, "POST", path, token=daemon.token,
+                    status, raw = cw_testlib.request(daemon, "POST", path, token=daemon.token,
                                             origin=f"http://127.0.0.1:{daemon.port}", body=body)
                     assert (status, json.loads(raw)) == (200, {"ok": True})
-                    events = _sse_read_until(sock, b'"kind": "resolve"')
+                    events = cw_testlib.sse_read_until(sock, b'"kind": "resolve"')
                     assert b'"thread_id": "q-1"' in events and b'"resolved": true' in events, events
                 finally:
                     sock.close()
-                status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=daemon.token)
+                status, raw = cw_testlib.request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=daemon.token)
                 assert json.loads(raw)["resolved"] == ["q-1"]
 
 
@@ -484,15 +439,15 @@ def test_stale_pending_becomes_error_but_in_flight_stays_pending():
             return cw_testlib.text("ans")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
             cw_ask._append_qa(d, {"qid": "q-dead", "thread_id": "q-dead", "anchor": ANCHOR_BLOCK,
                                   "comment": "c", "question": "c", "started_at": "t0", "status": "pending"})
-            with running_daemon() as daemon:
+            with cw_testlib.running_daemon() as daemon:
                 try:
                     status, raw = _post_comment(daemon, key, wid, ANCHOR_BLOCK, "live")
                     live = json.loads(raw)["qid"]
-                    status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
+                    status, raw = cw_testlib.request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa",
                                             token=daemon.token)
                     by_qid = {t["qid"]: t for t in json.loads(raw)["turns"]}
                     assert by_qid[live]["status"] == "pending"
@@ -505,32 +460,19 @@ def test_stale_pending_becomes_error_but_in_flight_stays_pending():
                 _wait_final(d, 2)
 
 
-def test_follow_up_keeps_first_turn_anchor():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("ans"))) as stub:
-            d = _build_done(home, tmp, stub)
-            key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
-                tid = json.loads(_post_comment(daemon, key, wid, ANCHOR_BLOCK, "q1")[1])["thread_id"]
-                _wait_final(d, 1)
-                assert _post_comment(daemon, key, wid, ANCHOR_SECTION, "q2", tid)[0] == 202
-                records = _wait_final(d, 2)
-            assert [r["anchor"] for r in records] == [ANCHOR_BLOCK, ANCHOR_BLOCK]
-
-
 def test_comment_on_resolved_thread_reopens_it_and_emits_resolve():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("ans"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
             cw_ask._append_qa(d, _turn("q-1", "c1", "a1", "q-1"))
             cw_ask.append_resolve(d, "q-1", True)
-            with running_daemon() as daemon:
-                sock = _sse_connect(daemon, key, wid)
+            with cw_testlib.running_daemon() as daemon:
+                sock = cw_testlib.sse_connect(daemon, key, wid)
                 try:
-                    _sse_read_until(sock, b"event: snapshot")
+                    cw_testlib.sse_read_until(sock, b"event: snapshot")
                     assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "again", "q-1")[0] == 202
-                    events = _sse_read_until(sock, b'"resolved": false')
+                    events = cw_testlib.sse_read_until(sock, b'"resolved": false')
                     assert b'"kind": "resolve"' in events and b'"thread_id": "q-1"' in events, events
                 finally:
                     sock.close()
@@ -541,9 +483,9 @@ def test_comment_on_resolved_thread_reopens_it_and_emits_resolve():
 def test_comment_route_guards_and_unknown_thread():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
+            with cw_testlib.running_daemon() as daemon:
                 assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "c", token="")[0] == 403
                 assert _post_comment(daemon, key, wid, {"kind": "block", "block": "no good", "quote": "q"},
                                       "c")[0] == 400
@@ -551,7 +493,7 @@ def test_comment_route_guards_and_unknown_thread():
                 assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "x" * 2001)[0] == 400
                 assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "c", "q-nope")[0] == 404
                 assert _post_comment(daemon, key, wid, ANCHOR_BLOCK, "c", "bad id")[0] == 400
-                status, _ = _request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
+                status, _ = cw_testlib.request(daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
                                       token=daemon.token, origin="http://attacker.example",
                                       body=json.dumps({"anchor": ANCHOR_BLOCK, "text": "c"}))
                 assert status == 403
@@ -565,10 +507,10 @@ def test_comment_route_guards_and_unknown_thread():
 def test_hung_endpoint_cut_at_timeout():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         def ask_handler(body, n):
-            return cw_testlib.delayed(3, cw_testlib.text("ans"))
+            return cw_testlib.delayed(1, cw_testlib.text("ans"))
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub, timeout_s=1)
+            d = _done(home, stub, timeout_s=0.3)
             anchor = cw_ask.validate_anchor(dict(ANCHOR_SECTION))
             record = cw_ask.answer(d, "q-test", anchor, "why?", on_event=None)
             assert record["status"] == "error"
@@ -576,26 +518,23 @@ def test_hung_endpoint_cut_at_timeout():
 
 
 # ---------------------------------------------------------------------------
-# Guards: no token 403, bad anchor 400, oversize 413; walkthrough_get surfaces qa
+# Guards: GET /qa needs the token, nonsense anchor 400, oversize 413; walkthrough_get surfaces qa
 # ---------------------------------------------------------------------------
 
-def test_guards_and_walkthrough_get_qa():
+def test_qa_guards_and_walkthrough_get_qa():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            with running_daemon() as daemon:
-                status, _ = _post_ask(daemon, key, wid, ANCHOR_SECTION, "q", token="")
+            with cw_testlib.running_daemon() as daemon:
+                status, _ = cw_testlib.request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=None)
                 assert status == 403
 
-                status, _ = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=None)
-                assert status == 403
-
-                status, raw = _post_ask(daemon, key, wid, {"kind": "nonsense"}, "q")
+                status, raw = _post_comment(daemon, key, wid, {"kind": "nonsense"}, "q")
                 assert status == 400, (status, raw)
 
-                status, _ = _request(
-                    daemon, "POST", f"/api/walkthrough/{key}/{wid}/ask",
+                status, _ = cw_testlib.request(
+                    daemon, "POST", f"/api/walkthrough/{key}/{wid}/comment",
                     token=daemon.token, body="x" * (cw_server.MAX_BODY + 1))
                 assert status == 413
 
@@ -604,19 +543,30 @@ def test_guards_and_walkthrough_get_qa():
                     "question": "hi", "status": "ok", "answer": "there", "error": None,
                     "remedy": None, "profile": "k", "model": "ask-m", "usage": {},
                 })
-                status, payload = _rpc(daemon, "walkthrough_get", {"id": wid, "key": key, "parts": ["qa"]})
+                status, payload = cw_testlib.rpc(daemon, "walkthrough_get", {"id": wid, "key": key, "parts": ["qa"]})
                 assert status == 200
                 qa_list = payload["result"]["qa"]
                 assert any(q["qid"] == "q-abc" and q["answer"] == "there" for q in qa_list)
 
-                status, raw = _request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=daemon.token)
+                status, raw = cw_testlib.request(daemon, "GET", f"/api/walkthrough/{key}/{wid}/qa", token=daemon.token)
                 assert status == 200
                 full = json.loads(raw)["turns"]
                 assert any(r["qid"] == "q-abc" and r["profile"] == "k" and r["thread_id"] == "q-abc"
                            and r["comment"] == "hi" for r in full)
 
 
-def test_idle_exit_waits_for_in_flight_ask():
+def test_idle_exit_waits_for_in_flight_ask(monkeypatch):
+    class FastTick:
+        """The idle watchdog sleeps a hardcoded second per tick; scale its sleeps down."""
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        @staticmethod
+        def sleep(seconds):
+            time.sleep(seconds / 20)
+
+    monkeypatch.setattr(cw_server, "time", FastTick())
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         release = threading.Event()
 
@@ -625,34 +575,31 @@ def test_idle_exit_waits_for_in_flight_ask():
             return cw_testlib.text("ans")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             key, wid = d.parent.name, d.name
-            daemon = cw_server.Daemon(idle_s=1, write_server_json=False)
-            daemon.start()
-            try:
-                status, _ = _post_ask(daemon, key, wid, ANCHOR_SECTION, "why?")
-                assert status == 202
-                time.sleep(1.5)
-                assert not daemon._stopped.is_set(), "daemon stopped while an ask was in flight"
-                release.set()
+            with cw_testlib.running_daemon(idle_s=0.2) as daemon:
+                try:
+                    status, raw = cw_testlib.request(
+                        daemon, "POST", f"/api/walkthrough/{key}/{wid}/ask", token=daemon.token,
+                        body=json.dumps({"anchor": ANCHOR_SECTION, "question": "why?"}))
+                    assert status == 202 and json.loads(raw)["qid"].startswith("q-")
+                    time.sleep(0.5)
+                    assert not daemon._stopped.is_set(), "daemon stopped while an ask was in flight"
+                finally:
+                    release.set()
                 deadline = time.monotonic() + 5
                 while not daemon._stopped.is_set() and time.monotonic() < deadline:
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                 assert daemon._stopped.is_set()
-            finally:
-                release.set()
-                daemon.stop()
 
 
 # ---------------------------------------------------------------------------
 # ask role on the claude-code backend
 # ---------------------------------------------------------------------------
 
-def _claude_done(home, tmp, roles=None, profiles=None):
-    with cw_testlib.StubLLM(_combined_script(lambda body, n: _small_route_reply(body))) as stub:
-        d = _build_done(home, tmp, stub)
-    cw_testlib.write_config(
-        home, profiles or {"k": {"kind": "claude-code", "model": "sonnet"}}, roles or {"ask": "k"})
+def _claude_done(home):
+    d = _done(home)
+    cw_testlib.write_config(home, {"k": {"kind": "claude-code", "model": "sonnet"}}, {"ask": "k"})
     return d
 
 
@@ -665,9 +612,9 @@ def _cturn(d, qid, comment, thread_id=None, live=None, anchor=None, on_event=Non
     return record, events
 
 
-def test_ask_on_claude_code_sums_usage_and_omits_json_schema():
+def test_ask_on_claude_code_sums_usage_and_omits_json_schema_and_names_the_ctx_dir():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         usage = {"input_tokens": 7, "output_tokens": 3,
                  "cache_creation_input_tokens": 2, "cache_read_input_tokens": 1}
         with cw_testlib.fake_claude(tmp, {"sonnet": [cw_testlib.claude_stream_entry(
@@ -682,33 +629,18 @@ def test_ask_on_claude_code_sums_usage_and_omits_json_schema():
         assert record["usage"]["cost_usd"] is None
         entry = fc.log()[-1]
         assert not any(a.startswith("--json-schema") for a in entry["argv"])
-        assert "--safe-mode" not in entry["argv"]
+        system = entry["argv"][entry["argv"].index("--system-prompt") + 1] \
+            if "--system-prompt" in entry["argv"] else " ".join(entry["argv"])
+        assert str((d / "ctx").resolve()) in system and "{ctx_note}" not in system
         assert any(a.startswith("--session-id") or a == "--session-id" for a in entry["argv"])
         assert Path(entry["cwd"]).resolve() == (d / "head").resolve()
         assert (d / "ctx" / "analysis.json").is_file() and (d / "ctx" / "raw.diff").is_file()
         assert cw_store.read_json(d / "meta.json")["usage"]["thread"]["calls"] == 1
 
 
-def test_claude_deltas_are_ordered_and_coalesced():
+def test_claude_deltas_are_ordered_coalesced_and_move_live_text_and_seq():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        chunks = [f"w{i} " for i in range(40)]
-        with cw_testlib.fake_claude(tmp, {"sonnet": [
-                cw_testlib.claude_stream_entry(chunks, delay=0.005)]}):
-            live = {}
-            record, events = _cturn(d, "q1", "why?", live=live)
-        deltas = [data for kind, data in events if kind == "delta"]
-        assert 0 < len(deltas) < len(chunks), len(deltas)
-        assert [x["seq"] for x in deltas] == list(range(1, len(deltas) + 1))
-        assert "".join(x["text"] for x in deltas) == "".join(chunks)
-        assert all(x["qid"] == "q1" and x["thread_id"] == "q1" for x in deltas)
-        assert live["text"] == record["answer"] == "".join(chunks)
-        assert events[-1][0] == "thread"
-
-
-def test_claude_live_text_and_seq_move_with_each_delta():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         chunks = [f"w{i} " for i in range(40)]
         live, seen, bad = {}, [], []
 
@@ -720,9 +652,15 @@ def test_claude_live_text_and_seq_move_with_each_delta():
 
         with cw_testlib.fake_claude(tmp, {"sonnet": [
                 cw_testlib.claude_stream_entry(chunks, delay=0.005)]}):
-            record, _ = _cturn(d, "q1", "why?", live=live, on_event=hook)
-        assert seen and not bad, bad
-        assert record["answer"] == "".join(chunks)
+            record, events = _cturn(d, "q1", "why?", live=live, on_event=hook)
+        deltas = [data for kind, data in events if kind == "delta"]
+        assert 0 < len(deltas) < len(chunks), len(deltas)
+        assert [x["seq"] for x in deltas] == list(range(1, len(deltas) + 1))
+        assert "".join(x["text"] for x in deltas) == "".join(chunks)
+        assert all(x["qid"] == "q1" and x["thread_id"] == "q1" for x in deltas)
+        assert live["text"] == record["answer"] == "".join(chunks)
+        assert events[-1][0] == "thread"
+        assert not bad, bad
 
 
 def test_claude_answer_joins_text_blocks_and_reports_progress():
@@ -741,22 +679,26 @@ def test_claude_answer_joins_text_blocks_and_reports_progress():
             "type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/a/b.py"}}]}}]
         + block("After.") + entry["stream"][-1:])
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
             record, events = _cturn(d, "q1", "why?")
     assert record["answer"] == "Before.\n\nAfter."
     assert "".join(x["text"] for k, x in events if k == "delta") == "Before.\n\nAfter."
+    assert [k for k, _ in events][:3] == ["delta", "progress", "delta"]
     progress = [x for k, x in events if k == "progress"]
     assert [(x["tool"], x["detail"]) for x in progress] == [("Read", "/a/b.py")]
 
 
 def test_claude_followup_resumes_and_failed_resume_reseeds():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
+        failed = cw_testlib.claude_stream_entry(["stale ", "text"], session_id="s-x")
+        failed["stream"] = failed["stream"][1:]
+        failed.update(exit=1, stderr="no conversation found")
         script = {"sonnet": [
             cw_testlib.claude_stream_entry(["one"], session_id="s-1"),
             cw_testlib.claude_stream_entry(["two"], session_id="s-1"),
-            {"stream": [], "exit": 1, "stderr": "no conversation found"},
+            failed,
             cw_testlib.claude_stream_entry(["three"], session_id="s-2"),
         ]}
         with cw_testlib.fake_claude(tmp, script) as fc:
@@ -768,32 +710,23 @@ def test_claude_followup_resumes_and_failed_resume_reseeds():
             assert "Previous Q&A" not in resumed["stdin"]
             assert "second?" in resumed["stdin"]
 
-            record, _ = _cturn(d, "q3", "third?", thread_id="q1")
+            live, seqs = {}, []
+            record, _ = _cturn(d, "q3", "third?", thread_id="q1", live=live,
+                               on_event=lambda k, x: seqs.append(x["seq"]) if k == "delta" else None)
         assert record["status"] == "ok" and record["answer"] == "three"
         assert record["session_id"] == "s-2"
         reseeded = fc.log()[3]
         assert "--resume" not in reseeded["argv"] and "--session-id" in reseeded["argv"]
         assert "Previous Q&A" in reseeded["stdin"]
         assert "reseeded" in cw_store.log_path().read_text()
-
-
-def test_thread_role_wins_over_ask_and_falls_back():
-    profiles = {"k": {"kind": "claude-code", "model": "ask-m"},
-                "t": {"kind": "claude-code", "model": "thr-m"}}
-    script = {"ask-m": [cw_testlib.claude_stream_entry(["from ask"])],
-              "thr-m": [cw_testlib.claude_stream_entry(["from thread"])]}
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp, roles={"ask": "k", "thread": "t"}, profiles=profiles)
-        with cw_testlib.fake_claude(tmp, script):
-            assert _cturn(d, "q1", "why?")[0]["answer"] == "from thread"
-        cw_testlib.write_config(home, profiles, {"ask": "k"})
-        with cw_testlib.fake_claude(tmp, script):
-            assert _cturn(d, "q2", "why?")[0]["answer"] == "from ask"
+        assert live["text"] == "three"
+        assert max(seqs) >= 3 and live["seq"] > max(seqs)
+        assert record["usage"]["prompt_tokens"] == 20
 
 
 def test_claude_aborts_fast_when_outcome_server_missing():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         entry = cw_testlib.claude_stream_entry(["a", "b"], init_cw=False, delay=10)
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
             started = time.time()
@@ -802,29 +735,6 @@ def test_claude_aborts_fast_when_outcome_server_missing():
         assert record["status"] == "error"
         assert record["error"] == "the outcome server did not start"
         assert record["remedy"] == "see server.log"
-
-
-def test_claude_cancel_keeps_partial_text():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        entry = cw_testlib.claude_stream_entry(["part ", "two ", "three"], delay=3)
-        live = {}
-
-        def cancel():
-            deadline = time.time() + 20
-            while not live.get("text") and time.time() < deadline:
-                time.sleep(0.02)
-            live["cancelled"] = True
-            cw_ask._kill(live["proc"])
-
-        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
-            t = threading.Thread(target=cancel)
-            t.start()
-            record, events = _cturn(d, "q1", "why?", live=live)
-            t.join()
-        assert record["status"] == "cancelled"
-        assert record["answer"] == "part "
-        assert record["error"] is None
 
 
 def _seed_review_threads(d, **overrides):
@@ -838,23 +748,9 @@ def _propose(thread="$FIRST_RESOLVABLE", at=1):
     return [{"at": at, "name": "propose_resolve", "arguments": {"thread": thread, "why": "foo.py:2 now assigns X"}}]
 
 
-def test_resolvable_is_for_line_anchors_over_open_root_review_threads():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        _seed_review_threads(d)
-        found = cw_ask._resolvable(d, ANCHOR_LINE)
-        assert [(c["id"], c["path"], c["line"], c["author"], c["body"]) for c in found] == [
-            ("gh-501", "foo.py", 2, "rev", "please fix")]
-        assert cw_ask._resolvable(d, ANCHOR_SECTION) == cw_ask._resolvable(d, ANCHOR_BLOCK) == []
-        assert cw_ask._resolvable(d, {**ANCHOR_LINE, "line": 3}) == []
-        assert len(cw_ask._resolvable(d, {**ANCHOR_LINE, "line": 1, "end_line": 2})) == 1
-        _seed_review_threads(d, resolved=True)
-        assert cw_ask._resolvable(d, ANCHOR_LINE) == []
-
-
 def test_proposed_resolve_lands_as_outcome_before_the_final_thread_event():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         _seed_review_threads(d)
         entry = cw_testlib.claude_stream_entry(["fixed"], mcp_calls=_propose())
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc:
@@ -873,7 +769,7 @@ def test_proposed_resolve_lands_as_outcome_before_the_final_thread_event():
 
 def test_resolve_for_a_non_candidate_thread_is_refused_and_records_nothing():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         _seed_review_threads(d)
         entry = cw_testlib.claude_stream_entry(["no"], mcp_calls=_propose("gh-999"))
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
@@ -891,7 +787,7 @@ def test_openai_turn_records_propose_resolve_and_keeps_looping():
             return cw_testlib.text("Looks settled.")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             _seed_review_threads(d)
             record, events = _cturn(d, "q1", "ok?", anchor=ANCHOR_LINE)
         assert record["status"] == "ok" and record["answer"] == "Looks settled."
@@ -903,7 +799,7 @@ def test_openai_turn_records_propose_resolve_and_keeps_looping():
 
 def test_dismissed_suggestion_is_fed_into_the_next_turn():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         _seed_review_threads(d)
         script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_propose()),
                              cw_testlib.claude_stream_entry(["two"]),
@@ -918,24 +814,13 @@ def test_dismissed_suggestion_is_fed_into_the_next_turn():
         assert "dismissed your suggestion to resolve foo.py:2: foo.py:2 now assigns X" in second
         assert "gh-501, foo.py:2, rev" in second
         assert "dismissed" not in third
-
-
-def test_text_is_flushed_before_a_following_tool_event():
-    entry = cw_testlib.claude_stream_entry(["a", "b"])
-    entry["stream"].insert(4, {"type": "assistant", "message": {"content": [{
-        "type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/x"}}]}})
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
-            _record, events = _cturn(d, "q1", "why?")
-    kinds = [k for k, _ in events]
-    assert kinds[:3] == ["delta", "delta", "progress"], kinds
-    assert [x["text"] for k, x in events if k == "delta"] == ["a", "b"]
+        reseed = cw_ask.build_prompt(d, cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "q1")
+        assert "dismissed your suggestion to resolve foo.py:2" in reseed
 
 
 def test_cancel_after_result_completes_and_books_usage():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         live = {}
         entry = cw_testlib.claude_stream_entry(["done"])
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
@@ -947,7 +832,7 @@ def test_cancel_after_result_completes_and_books_usage():
 
 def test_cancel_without_result_keeps_the_buffered_tail():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         entry = cw_testlib.claude_stream_entry(["a", "b"])
         entry["stream"] = entry["stream"][:4] + [{"_sleep": 30}]
         live = {}
@@ -965,98 +850,43 @@ def test_cancel_without_result_keeps_the_buffered_tail():
             t.start()
             record, _ = _cturn(d, "q1", "why?", live=live)
             t.join()
-        assert record["status"] == "cancelled" and record["answer"] == "ab"
+        assert record["status"] == "cancelled" and record["answer"] == "ab" and record["error"] is None
         assert record["usage"]["prompt_tokens"] == 0
 
 
-def test_openai_cancel_stops_at_the_next_tool_boundary():
+@pytest.mark.parametrize("late", [False, True], ids=["at-tool-boundary", "after-full-answer"])
+def test_openai_cancel(late):
     live = {}
 
     def ask_handler(body, n):
-        live["cancelled"] = True
-        return cw_testlib.tool_call("read_file", {"path": "foo.py"})
-
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
-            before = stub.count("ask-m")
-            record, _ = _cturn(d, "q1", "why?", live=live)
-            assert stub.count("ask-m") - before == 1
-        assert record["status"] == "cancelled" and record["answer"] == "" and record["error"] is None
-
-
-def test_openai_late_cancel_keeps_a_fully_generated_answer():
-    live = {}
-
-    def ask_handler(body, n):
-        if n == 0:
+        if late and n == 0:
             return cw_testlib.tool_call("read_file", {"path": "foo.py"})
         live["cancelled"] = True
-        return cw_testlib.text("the full answer")
+        return cw_testlib.text("the full answer") if late else cw_testlib.tool_call("read_file", {"path": "foo.py"})
 
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             record, _ = _cturn(d, "q1", "why?", live=live)
-        assert record["status"] == "ok" and record["answer"] == "the full answer"
+            assert stub.count("ask-m") == (2 if late else 1)
+        if late:
+            assert record["status"] == "ok" and record["answer"] == "the full answer"
+        else:
+            assert record["status"] == "cancelled" and record["answer"] == "" and record["error"] is None
 
 
-def test_claude_reseed_replaces_live_text_bumps_seq_and_books_failed_usage():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        failed = cw_testlib.claude_stream_entry(["stale ", "text"], session_id="s-x")
-        failed["stream"] = failed["stream"][1:]
-        failed.update(exit=1, stderr="no conversation found")
-        script = {"sonnet": [
-            cw_testlib.claude_stream_entry(["one"], session_id="s-1"),
-            failed,
-            cw_testlib.claude_stream_entry(["fresh"], session_id="s-2"),
-        ]}
-        with cw_testlib.fake_claude(tmp, script):
-            _cturn(d, "q1", "first?")
-            live, deltas = {}, []
-            record, _ = _cturn(
-                d, "q2", "second?", thread_id="q1", live=live,
-                on_event=lambda k, x: deltas.append(x["seq"]) if k == "delta" else None)
-        assert record["answer"] == "fresh" and live["text"] == "fresh"
-        assert max(deltas) >= 3 and live["seq"] > max(deltas)
-        assert record["usage"]["prompt_tokens"] == 20
-
-
-def test_system_prompt_ctx_note_only_on_the_claude_path():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        with cw_testlib.fake_claude(tmp, {"sonnet": [cw_testlib.claude_stream_entry(["x"])]}) as fc:
-            _cturn(d, "q1", "why?")
-        argv = fc.log()[-1]["argv"]
-        system = argv[argv.index("--system-prompt") + 1] if "--system-prompt" in argv else " ".join(argv)
-        assert str((d / "ctx").resolve()) in system and "{ctx_note}" not in system
-
+def test_openai_prompt_has_no_ctx_note():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("fine"))) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             _cturn(d, "q1", "why?")
             content = [r for r in stub.requests if r.get("model") == "ask-m"][-1]["messages"][0]["content"]
         assert "analysis.json" not in content and "{ctx_note}" not in content and "\n\n\n" not in content
 
 
-def test_reseeded_prompt_lists_earlier_dismissed_suggestion():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
-        _seed_review_threads(d)
-        script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_propose()),
-                             {"stream": [], "exit": 1, "stderr": "no conversation found"},
-                             cw_testlib.claude_stream_entry(["two"], session_id="s-2")]}
-        with cw_testlib.fake_claude(tmp, script) as fc:
-            _cturn(d, "q1", "first?", anchor=ANCHOR_LINE)
-            cw_ask.outcome_action(d, cw_ask.read_outcomes(d)[0]["oid"], "dismiss")
-            _cturn(d, "q2", "second?", thread_id="q1", anchor=ANCHOR_LINE)
-        assert "dismissed your suggestion to resolve foo.py:2" in fc.log()[2]["stdin"]
-
-
 def test_finalise_stale_keeps_outcomes_accepted_before_the_kill():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         _seed_review_threads(d)
         cw_ask.begin_turn(d, "q-dead", ANCHOR_LINE, "c")
         cw_ask.write_turn_anchor(d, "q-dead", "q-dead", ANCHOR_LINE)
@@ -1068,33 +898,17 @@ def test_finalise_stale_keeps_outcomes_accepted_before_the_kill():
         assert cw_ask.read_qa(d)[0]["status"] == "error"
 
 
-def test_outcome_action_states_and_done_folding():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+def test_resolve_outcome_folds_to_done_once_the_github_thread_is_resolved():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
         _seed_review_threads(d)
         cw_ask.write_turn_anchor(d, "q1", "q1", ANCHOR_LINE)
         cw_mcp.accept_outcome(d, "q1", "propose_resolve", {"thread": "gh-501", "why": "w"})
         cw_ask.sweep_outcomes(d, "q1", "q1")
         oid = cw_ask.read_outcomes(d)[0]["oid"]
         events = []
-        on_event = lambda kind, data: events.append((kind, data))
-
-        def refused(action, payload=None, target=oid):
-            try:
-                cw_ask.outcome_action(d, target, action, payload)
-            except cw_ask.OutcomeError as e:
-                return e.kind, str(e)
-            raise AssertionError("not refused")
-
-        assert refused("dismiss", target="o-00000000")[0] == "not_found"
-        kind, message = refused("edit", {"thread": "gh-999", "why": "w"})
-        assert kind == "invalid" and "gh-999" in message
-        assert refused("edit", {"thread": "gh-501", "why": " "})[0] == "invalid"
-        edited = cw_ask.outcome_action(d, oid, "edit", {"thread": "gh-501", "why": " better "}, on_event)
-        assert edited["state"] == "proposed" and edited["payload"]["why"] == "better"
-        dismissed = cw_ask.outcome_action(d, oid, "dismiss", on_event=on_event)
-        assert dismissed["state"] == "dismissed" and [k for k, _ in events] == ["outcome", "outcome"]
-        assert refused("dismiss") == ("conflict", "outcome is not open")
+        dismissed = cw_ask.outcome_action(d, oid, "dismiss", on_event=lambda kind, data: events.append(kind))
+        assert dismissed["state"] == "dismissed" and events == ["outcome"]
         assert cw_ask.read_outcomes(d) == [dismissed]
 
         cw_ask.write_turn_anchor(d, "q2", "q1", ANCHOR_LINE)
@@ -1111,7 +925,7 @@ def _page_edit_call(at=1, **over):
 
 def test_page_edit_applies_at_creation_and_revert_reapply_fold():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         entry = cw_testlib.claude_stream_entry(["added a note"], mcp_calls=_page_edit_call())
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc:
             record, events = _cturn(d, "q1", "add a note", anchor=ANCHOR_BLOCK)
@@ -1125,18 +939,7 @@ def test_page_edit_applies_at_creation_and_revert_reapply_fold():
         oid = outcome["oid"]
         seen = []
         on_event = lambda kind, data: seen.append(data["state"])
-
-        def refused(action):
-            try:
-                cw_ask.outcome_action(d, oid, action)
-            except cw_ask.OutcomeError as e:
-                return e.kind
-            raise AssertionError("not refused")
-
-        assert refused("reapply") == "conflict"
-        assert refused("dismiss") == "invalid" and refused("edit") == "invalid"
         assert cw_ask.outcome_action(d, oid, "revert", on_event=on_event)["state"] == "reverted"
-        assert refused("revert") == "conflict"
         assert cw_ask.outcome_action(d, oid, "reapply", on_event=on_event)["state"] == "applied"
         assert seen == ["reverted", "applied"]
         assert cw_ask.read_threads(d)["q1"]["outcomes"][0]["state"] == "applied"
@@ -1144,7 +947,7 @@ def test_page_edit_applies_at_creation_and_revert_reapply_fold():
 
 def test_page_edit_undo_and_redo_reach_the_next_prompt():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d = _claude_done(home, tmp)
+        d = _claude_done(home)
         script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_page_edit_call()),
                              cw_testlib.claude_stream_entry(["two"]),
                              cw_testlib.claude_stream_entry(["three"])]}
@@ -1161,27 +964,26 @@ def test_page_edit_undo_and_redo_reach_the_next_prompt():
         assert "The user redid your page edit" in third and "undid" not in third
 
 
-def test_page_edit_on_a_line_anchor_is_refused_and_openai_path_registers_the_tool():
+def test_openai_path_registers_the_outcome_tools_and_refuses_a_page_edit_on_a_line_anchor():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         def ask_handler(body, n):
-            if n == 0:
+            if n in (0, 2):
                 return cw_testlib.tool_call("propose_page_edit", {
                     "op": "replace", "target": "overview:p1", "block": {"type": "list", "text": "- x"}})
             return cw_testlib.text("done")
 
         with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
-            d = _build_done(home, tmp, stub)
+            d = _done(home, stub)
             record, events = _cturn(d, "q1", "list it", anchor=ANCHOR_BLOCK)
             names = [t["function"]["name"] for t in
                      [r for r in stub.requests if r.get("model") == "ask-m"][-1]["tools"]]
             line_record, line_events = _cturn(d, "q2", "x", anchor=ANCHOR_LINE)
         assert {"propose_resolve", "propose_page_edit", "propose_github_draft"} <= set(names)
-        assert record["status"] == "ok" and [o["state"] for o in cw_ask.read_outcomes(d)] == ["applied"]
-        assert "outcome" in [k for k, _ in events]
-        assert "outcome" not in [k for k, _ in line_events]
+        assert record["status"] == "ok" and "outcome" in [k for k, _ in events]
+        assert line_record["status"] == "ok" and "outcome" not in [k for k, _ in line_events]
+        assert [o["state"] for o in cw_ask.read_outcomes(d)] == ["applied"]
 
 
-ANCHOR_THREAD = {"kind": "thread", "note_id": "gh-501", "quote": "please fix"}
 DRAFT_COMMENT = "  you should guard this\n```py\nx = 1\n```\n<b>now</b> \U0001F680\n"
 
 
@@ -1196,15 +998,7 @@ def _thread_state(d):
     cw_store.write_json(Path(d) / "state.json", {"notes": [reply, root, other, draft]})
 
 
-def test_thread_anchor_validation_and_turn_anchor_doc():
-    assert cw_ask.validate_anchor(dict(ANCHOR_THREAD)) == ANCHOR_THREAD
-    for bad in ({"kind": "thread", "quote": "q"}, {"kind": "thread", "note_id": 5, "quote": "q"},
-                {"kind": "thread", "note_id": "a b", "quote": "q"}, {"kind": "thread", "note_id": "gh-1"}):
-        try:
-            cw_ask.validate_anchor(bad)
-        except cw_store.CWError:
-            continue
-        raise AssertionError(bad)
+def test_turn_anchor_doc_lists_replyable_and_resolvable_threads_by_anchor_kind():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         _thread_state(d)
@@ -1224,6 +1018,15 @@ def test_thread_anchor_validation_and_turn_anchor_doc():
         assert sorted(r["id"] for r in line["replyable"]) == ["gh-501", "gh-600"]
         assert [r["id"] for r in line["resolvable"]] == ["gh-501"]
         assert doc(ANCHOR_BLOCK)["replyable"] == [] and doc(ANCHOR_SECTION)["replyable"] == []
+        assert [r["id"] for r in doc(ANCHOR_LINE)["replyable"]] == ["gh-501"]
+        miss = doc({**ANCHOR_LINE, "line": 3})
+        assert [r["id"] for r in miss["replyable"]] == ["gh-600"] and miss["resolvable"] == []
+        notes = cw_store.read_json(d / "state.json")["notes"]
+        for n in notes:
+            if n["id"] == "gh-502":
+                n["in_reply_to"] = n.pop("reply_to")
+        cw_store.write_json(d / "state.json", {"notes": notes})
+        assert [r["id"] for r in doc(ANCHOR_LINE)["replyable"]] == ["gh-501"]
 
 
 def test_thread_anchor_prompt_carries_the_thread_in_order_and_its_hunk_but_no_drafts():
@@ -1302,54 +1105,3 @@ def test_github_draft_dismissal_and_edit_reach_the_next_prompt():
         cw_ask.mark_outcome(d, one["oid"], "published")
         assert "published" not in cw_ask.build_prompt(d, dict(ANCHOR_LINE), "next", "q1", resumed=True)
 
-
-if __name__ == "__main__":
-    tests = [
-        test_ask_gives_qa_record_and_sse_answer,
-        test_oversized_selection_refused_quote_never_cut,
-        test_prompt_order_hunk_notes_and_pair_limit,
-        test_answer_never_raises_on_a_malformed_ask_profile,
-        test_same_thread_comments_run_sequentially,
-        test_different_threads_run_concurrently,
-        test_comment_is_persisted_pending_before_turn_starts,
-        test_block_anchor_accepted_and_bad_key_refused,
-        test_prompt_history_is_per_thread_and_ignores_unfinished_turns,
-        test_old_record_without_thread_id_folds_as_its_own_thread,
-        test_read_threads_folds_resolve_events_and_readers_skip_them,
-        test_resolve_route_guards_and_effect,
-        test_comment_route_guards_and_unknown_thread,
-        test_hung_endpoint_cut_at_timeout,
-        test_guards_and_walkthrough_get_qa,
-        test_idle_exit_waits_for_in_flight_ask,
-        test_ask_on_claude_code_sums_usage_and_omits_json_schema,
-        test_claude_deltas_are_ordered_and_coalesced,
-        test_claude_answer_joins_text_blocks_and_reports_progress,
-        test_claude_followup_resumes_and_failed_resume_reseeds,
-        test_thread_role_wins_over_ask_and_falls_back,
-        test_claude_aborts_fast_when_outcome_server_missing,
-        test_claude_cancel_keeps_partial_text,
-        test_resolvable_is_for_line_anchors_over_open_root_review_threads,
-        test_proposed_resolve_lands_as_outcome_before_the_final_thread_event,
-        test_resolve_for_a_non_candidate_thread_is_refused_and_records_nothing,
-        test_openai_turn_records_propose_resolve_and_keeps_looping,
-        test_dismissed_suggestion_is_fed_into_the_next_turn,
-        test_text_is_flushed_before_a_following_tool_event,
-        test_cancel_after_result_completes_and_books_usage,
-        test_cancel_without_result_keeps_the_buffered_tail,
-        test_openai_cancel_stops_at_the_next_tool_boundary,
-        test_system_prompt_ctx_note_only_on_the_claude_path,
-        test_reseeded_prompt_lists_earlier_dismissed_suggestion,
-        test_finalise_stale_keeps_outcomes_accepted_before_the_kill,
-        test_outcome_action_states_and_done_folding,
-        test_page_edit_applies_at_creation_and_revert_reapply_fold,
-        test_page_edit_undo_and_redo_reach_the_next_prompt,
-        test_page_edit_on_a_line_anchor_is_refused_and_openai_path_registers_the_tool,
-        test_thread_anchor_validation_and_turn_anchor_doc,
-        test_thread_anchor_prompt_carries_the_thread_in_order_and_its_hunk_but_no_drafts,
-        test_github_draft_outcome_states_and_guards,
-        test_github_draft_dismissal_and_edit_reach_the_next_prompt,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

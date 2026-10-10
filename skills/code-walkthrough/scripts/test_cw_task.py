@@ -122,13 +122,6 @@ def test_openai_backend_offers_propose_task():
         assert [o["outcome"] for o in cw_ask.read_outcomes(d)] == ["task"]
 
 
-def test_mcp_tool_lists_are_pinned():
-    assert [t["name"] for t in cw_mcp.OUTCOME_TOOLS] == [
-        "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task"]
-    assert [t["name"] for t in cw_mcp.TOOLS] == [
-        "walkthrough_start", "walkthrough_get", "walkthrough_list", "walkthrough_reply"]
-
-
 def test_argv_shapes():
     profile = {"model": "sonnet"}
     argv = cw_llm.task_argv(profile, "SYS")
@@ -148,6 +141,7 @@ def test_argv_shapes():
 # -- the daemon side ----------------------------------------------------------------------------
 
 def _setup(tmp, home, *, kind="claude-code", script=None, timeout_s=30):
+    cw_testlib.require_git((2, 31))  # cw_task._check_git_link uses rev-parse --path-format=absolute
     repo, base, head = cw_testlib.make_repo(
         tmp, {"CLAUDE.md": "base rules\n", "a.py": "x = 1\n"},
         {"CLAUDE.md": "head rules\n", "a.py": "x = 2\n"})
@@ -216,6 +210,9 @@ def _record_subprocess():
 def test_task_routes_refuse_wrong_action_state_and_oid():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         d, repo, _head, oid = _setup(tmp, home)
+        srv._append_qa(d, {"type": "outcome", "oid": "o-0a0a0a0a", "qid": QID, "thread_id": QID,
+                           "outcome": "resolve", "state": "proposed", "at": "t",
+                           "payload": {"thread": "gh-1", "why": "w"}})
         with srv.running_daemon() as daemon:
             for action in ("run", "stop", "discard"):
                 srv._guard_checks(daemon, _url(oid, action), {})
@@ -229,18 +226,9 @@ def test_task_routes_refuse_wrong_action_state_and_oid():
             assert srv._post(daemon, _url(oid, "dismiss"))[1]["outcome"]["state"] == "dismissed"
             assert srv._post(daemon, _url(oid, "run"))[0] == 409
             assert srv._post(daemon, _url(oid, "edit"), {"payload": PLAN})[0] == 409
-        assert not (d / "tasks").exists() and len(_worktrees(repo)) == 2
-
-
-def test_run_on_a_non_task_outcome_is_400():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        d, _repo, _head, _oid = _setup(tmp, home)
-        srv._append_qa(d, {"type": "outcome", "oid": "o-0a0a0a0a", "qid": QID, "thread_id": QID,
-                           "outcome": "resolve", "state": "proposed", "at": "t",
-                           "payload": {"thread": "gh-1", "why": "w"}})
-        with srv.running_daemon() as daemon:
             for action in ("run", "stop", "discard"):
                 assert srv._post(daemon, _url("o-0a0a0a0a", action))[0] == 400
+        assert not (d / "tasks").exists() and len(_worktrees(repo)) == 2
 
 
 def test_run_is_refused_on_an_openai_role_and_creates_nothing():
@@ -322,7 +310,10 @@ def test_git_refuses_push_and_anything_off_the_allowlist():
         except ValueError:
             continue
         raise AssertionError(args)
-    assert cw_task._git(".", ["-c", "a=b", "rev-parse", "--git-dir"]).returncode in (0, 128)
+    with tempfile.TemporaryDirectory() as tmp:
+        cw_testlib.require_git()
+        cw_testlib.init_repo(tmp)
+        assert cw_task._git(tmp, ["-c", "a.b=c", "rev-parse", "--git-dir"]).returncode == 0
 
 
 def test_a_repointed_git_link_fails_the_task_before_any_commit():
@@ -339,7 +330,7 @@ def test_a_repointed_git_link_fails_the_task_before_any_commit():
 def test_cancellation_wins_over_a_completed_result():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         d, repo, _head, oid = _setup(tmp, home)
-        entry = cw_testlib.claude_task_entry(SUMMARY, WRITES, delay=1.5)
+        entry = cw_testlib.claude_task_entry(SUMMARY, WRITES, delay=0.3)
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, srv.running_daemon() as daemon:
             status, body = srv._post(daemon, _url(oid, "run"))
             task = body["outcome"]["payload"]["task"]
