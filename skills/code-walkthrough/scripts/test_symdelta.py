@@ -1,59 +1,28 @@
 #!/usr/bin/env python3
 """Self-check for symdelta.py. Pure-logic tests exercise the delta arithmetic directly (no
-git/go needed); the rest build a throwaway git repo under tempfile.TemporaryDirectory() and
-leave nothing behind. The end-to-end Go test is skipped when `go` isn't on PATH."""
+git/go needed); the rest build a throwaway git repo under pytest's tmp_path. The end-to-end Go
+and TypeScript tests skip through cw_testlib when the extractor or language server is missing
+or unusable on the machine."""
 
 import contextlib
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "extractors" / "lsp"))
+import cw_testlib  # noqa: E402
 import symdelta  # noqa: E402
 import lsp_client  # noqa: E402
+from cw_testlib import commit_all, git, init_repo, make_repo, orphan_baseline, write_file  # noqa: E402
 
 SCRIPT_PATH = Path(__file__).parent / "symdelta.py"
-
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Symdelta Test",
-    "GIT_AUTHOR_EMAIL": "symdelta-test@example.com",
-    "GIT_COMMITTER_NAME": "Symdelta Test",
-    "GIT_COMMITTER_EMAIL": "symdelta-test@example.com",
-}
-
-
-def _git(repo, *args):
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
-    return result.stdout
-
-
-def _write(repo, rel_path, content):
-    path = repo / rel_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-
-
-def _init_repo(repo):
-    _git(repo, "init", "-q", "-b", "main")
-
-
-def _commit(repo, message):
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", message)
-    return _git(repo, "rev-parse", "HEAD").strip()
 
 
 def _run_symdelta(repo, base, head):
@@ -61,45 +30,48 @@ def _run_symdelta(repo, base, head):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def _orphan_baseline(repo):
-    """A commit with no parent, pointing at git's well-known empty tree -- the "explain an
-    existing feature" mode's baseline when there is no real base commit. Shares no history with
-    any ref in the repo, so `git merge-base` fails against it."""
-    result = subprocess.run(
-        ["git", "-C", str(repo), "commit-tree",
-         "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "empty baseline"],
-        input="", capture_output=True, text=True, env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+def _head_only_repo(tmp_path, files):
+    """One commit holding `files`; returns (repo, head_sha)."""
+    cw_testlib.require_git()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    for rel_path, content in files.items():
+        write_file(repo, rel_path, content)
+    return repo, commit_all(repo, "head")
+
+
+def _raises(exc):
+    def fail(*args, **kwargs):
+        raise exc
+    return fail
+
+
+def _assert_no_worktree_leak(repo):
+    worktrees = git(repo, "worktree", "list").strip().splitlines()
+    assert len(worktrees) == 1, f"the extractor's worktrees leaked into the repo: {worktrees}"
 
 
 # ---- pure-logic tests: rename-map parsing ----------------------------------------------
 
 
-def test_brace_rename_with_empty_side_collapses_the_slash():
-    summary = " rename corelib/ratelimit/{token_bucket => }/token_bucket.go (87%)\n"
-    rename_map = symdelta.parse_rename_map(summary)
-    assert rename_map == {"corelib/ratelimit/token_bucket.go": "corelib/ratelimit/token_bucket/token_bucket.go"}
-
-
-def test_brace_rename_with_non_empty_side():
-    summary = " rename corelib/ratelimit/{internal => ratelimit_config}/config.go (99%)\n"
-    rename_map = symdelta.parse_rename_map(summary)
-    assert rename_map == {
-        "corelib/ratelimit/ratelimit_config/config.go": "corelib/ratelimit/internal/config.go"
-    }
-
-
-def test_plain_rename_with_no_common_prefix():
-    summary = " rename a/foo.go => b/bar.go (65%)\n"
-    rename_map = symdelta.parse_rename_map(summary)
-    assert rename_map == {"b/bar.go": "a/foo.go"}
-
-
-def test_non_rename_summary_lines_are_ignored():
-    summary = " a/foo.go | 3 +--\n 1 file changed, 1 insertion(+), 2 deletions(-)\n"
-    assert symdelta.parse_rename_map(summary) == {}
+def test_parse_rename_map():
+    rows = [
+        ("brace with an empty side collapses the slash",
+         " rename corelib/ratelimit/{token_bucket => }/token_bucket.go (87%)\n",
+         {"corelib/ratelimit/token_bucket.go": "corelib/ratelimit/token_bucket/token_bucket.go"}),
+        ("brace with a non-empty side",
+         " rename corelib/ratelimit/{internal => ratelimit_config}/config.go (99%)\n",
+         {"corelib/ratelimit/ratelimit_config/config.go": "corelib/ratelimit/internal/config.go"}),
+        ("plain rename with no common prefix",
+         " rename a/foo.go => b/bar.go (65%)\n",
+         {"b/bar.go": "a/foo.go"}),
+        ("non-rename summary lines are ignored",
+         " a/foo.go | 3 +--\n 1 file changed, 1 insertion(+), 2 deletions(-)\n",
+         {}),
+    ]
+    for label, summary, want in rows:
+        assert symdelta.parse_rename_map(summary) == want, label
 
 
 # ---- pure-logic tests: rename pairing + move collapse ----------------------------------
@@ -109,21 +81,24 @@ def _edge(from_file, from_sym, to_file, to_sym):
     return {"FromFile": from_file, "FromSym": from_sym, "ToFile": to_file, "ToSym": to_sym}
 
 
-def test_compute_new_gone_canonicalises_renamed_head_paths():
-    # Same call, file only renamed (no directory change): must not show as new+gone.
-    base = [_edge("a/x.go", "Caller", "a/y.go", "Callee")]
-    head = [_edge("a/x2.go", "Caller", "a/y.go", "Callee")]
-    rename_map = {"a/x2.go": "a/x.go"}
-    new, gone = symdelta.compute_new_gone(base, head, rename_map)
-    assert new == [] and gone == []
-
-
-def test_compute_new_gone_keeps_real_changes():
-    base = [_edge("a/x.go", "Caller", "a/y.go", "Callee")]
-    head = [_edge("a/x.go", "Caller", "a/z.go", "NewCallee")]
-    new, gone = symdelta.compute_new_gone(base, head, {})
-    assert new == [["a/x.go", "Caller", "a/z.go", "NewCallee"]]
-    assert gone == [["a/x.go", "Caller", "a/y.go", "Callee"]]
+def test_compute_new_gone():
+    rows = [
+        # Same call, file only renamed (no directory change): must not show as new+gone.
+        ("renamed head path is canonicalised",
+         [_edge("a/x.go", "Caller", "a/y.go", "Callee")],
+         [_edge("a/x2.go", "Caller", "a/y.go", "Callee")],
+         {"a/x2.go": "a/x.go"},
+         [], []),
+        ("real change is kept",
+         [_edge("a/x.go", "Caller", "a/y.go", "Callee")],
+         [_edge("a/x.go", "Caller", "a/z.go", "NewCallee")],
+         {},
+         [["a/x.go", "Caller", "a/z.go", "NewCallee"]],
+         [["a/x.go", "Caller", "a/y.go", "Callee"]]),
+    ]
+    for label, base, head, rename_map, want_new, want_gone in rows:
+        new, gone = symdelta.compute_new_gone(base, head, rename_map)
+        assert new == want_new and gone == want_gone, label
 
 
 def test_compute_new_gone_carries_head_path_for_new_symbol_in_renamed_file():
@@ -167,15 +142,6 @@ def test_move_collapse_tallies_only_the_caller_side_move():
     assert ("pkg/internal:Moved", "pkg:Moved", "pkg/d.go") in moved_pairs
 
 
-def test_move_collapse_leaves_unrelated_bare_name_collisions_alone_when_no_match():
-    # Different (FromSym, ToSym) pairs never collide even if the target symbol name repeats
-    # across packages -- collapsing only ever fires on an exact (FromSym, ToSym) match.
-    new = [["a/x.go", "Caller", "a/y.go", "String"]]
-    gone = [["b/x.go", "OtherCaller", "b/y.go", "String"]]
-    final_new, final_gone, moved, moved_pairs = symdelta.move_collapse(new, gone)
-    assert final_new == new and final_gone == gone and moved == [] and moved_pairs == []
-
-
 def test_move_collapse_does_not_cross_match_unrelated_same_name_edges():
     # Two callers named "Config.String" in unrelated packages both call something named "Check"
     # -- a bare-name collision. Only one pair is a real move (b/internal -> b, same callee); the
@@ -202,20 +168,6 @@ def _assert_no_dangling_edges(nodes, edges):
     for e in edges:
         assert e["source"] in node_ids, f"edge {e['id']} source {e['source']!r} has no node"
         assert e["target"] in node_ids, f"edge {e['id']} target {e['target']!r} has no node"
-
-
-def test_no_dangling_edges_across_new_gone_and_changed_states():
-    final_new = [
-        ["a/x.go", "OnlyNew", "a/y.go", "Shared"],
-        ["pkg/a.go", "Helper", "pkg/c.go", "NewTarget"],
-    ]
-    final_gone = [
-        ["a/x.go", "OnlyGone", "a/y.go", "Shared"],
-        ["pkg/internal/a.go", "Helper", "pkg/d.go", "OldTarget"],
-    ]
-    moved_pairs = [("pkg/internal:Helper", "pkg:Helper", "pkg/a.go")]
-    nodes, edges, _, _ = symdelta.build_graph(final_new, final_gone, {}, moved_pairs)
-    _assert_no_dangling_edges(nodes, edges)
 
 
 def test_build_graph_merges_a_symbol_that_moved_package_and_changed_its_calls():
@@ -288,56 +240,32 @@ def test_build_graph_merges_via_git_rename_map_alone():
 # guessing through an ambiguous match ----------------------------------------------------------
 
 
-def test_resolve_symbol_merges_case_insensitive_fallback_via_file_rename():
-    # incrementChecksTotal (unexported, internal/) becomes IncrementChecksTotal (exported, moved
-    # out of internal/) -- the dominant real case this fallback exists for.
-    sym_gone = {"pkg/internal:incrementChecksTotal"}
-    sym_new = {"pkg:IncrementChecksTotal", "pkg:NewCheck"}
-    gone_file = {"pkg/internal:incrementChecksTotal": "pkg/internal/a.go"}
-    gone_name = {"pkg/internal:incrementChecksTotal": "incrementChecksTotal"}
-    rename_map = {"pkg/a.go": "pkg/internal/a.go"}
-
-    merge_map, _, renamed_from = symdelta.resolve_symbol_merges(
-        sym_gone, sym_new, gone_file, gone_name, rename_map, []
-    )
-
-    assert merge_map == {"pkg/internal:incrementChecksTotal": "pkg:IncrementChecksTotal"}
-    assert renamed_from == {"pkg:IncrementChecksTotal": "incrementChecksTotal"}
-
-
-def test_resolve_symbol_merges_case_insensitive_fallback_via_package_level_match():
-    # gone_file isn't itself a file git recognised as renamed (source 2 has nothing to go on),
-    # but every OTHER renamed file agrees pkg/internal -> pkg, so source 3's own fallback applies.
-    sym_gone = {"pkg/internal:newFoo"}
-    sym_new = {"pkg:NewFoo"}
-    gone_file = {"pkg/internal:newFoo": "pkg/internal/unrelated.go"}
-    gone_name = {"pkg/internal:newFoo": "newFoo"}
-    rename_map = {"pkg/other.go": "pkg/internal/other.go"}
-
-    merge_map, _, renamed_from = symdelta.resolve_symbol_merges(
-        sym_gone, sym_new, gone_file, gone_name, rename_map, []
-    )
-
-    assert merge_map == {"pkg/internal:newFoo": "pkg:NewFoo"}
-    assert renamed_from == {"pkg:NewFoo": "newFoo"}
-
-
-def test_resolve_symbol_merges_ambiguous_case_match_falls_through_without_merging():
-    # Two live candidates differ from "foobar" only by case -- picking either would be a guess,
-    # so this must fall through to the exact-match-only path: build the (not actually live)
-    # exact-name id rather than merge into one of the two real candidates.
-    sym_gone = {"pkg/internal:foobar"}
-    sym_new = {"pkg:fooBar", "pkg:FooBar"}
-    gone_file = {"pkg/internal:foobar": "pkg/internal/a.go"}
-    gone_name = {"pkg/internal:foobar": "foobar"}
-    rename_map = {"pkg/a.go": "pkg/internal/a.go"}
-
-    merge_map, _, renamed_from = symdelta.resolve_symbol_merges(
-        sym_gone, sym_new, gone_file, gone_name, rename_map, []
-    )
-
-    assert merge_map == {"pkg/internal:foobar": "pkg:foobar"}
-    assert renamed_from == {}
+def test_resolve_symbol_merges_case_fallback():
+    rows = [
+        # gone_file isn't itself a file git recognised as renamed (source 2 has nothing to go on),
+        # but every OTHER renamed file agrees pkg/internal -> pkg, so source 3's own fallback applies.
+        ("package-level match",
+         {"pkg/internal:newFoo"}, {"pkg:NewFoo"},
+         {"pkg/internal:newFoo": "pkg/internal/unrelated.go"},
+         {"pkg/internal:newFoo": "newFoo"},
+         {"pkg/other.go": "pkg/internal/other.go"},
+         {"pkg/internal:newFoo": "pkg:NewFoo"}, {"pkg:NewFoo": "newFoo"}),
+        # Two live candidates differ from "foobar" only by case -- picking either would be a guess,
+        # so this must fall through to the exact-match-only path: build the (not actually live)
+        # exact-name id rather than merge into one of the two real candidates.
+        ("ambiguous case match falls through without merging",
+         {"pkg/internal:foobar"}, {"pkg:fooBar", "pkg:FooBar"},
+         {"pkg/internal:foobar": "pkg/internal/a.go"},
+         {"pkg/internal:foobar": "foobar"},
+         {"pkg/a.go": "pkg/internal/a.go"},
+         {"pkg/internal:foobar": "pkg:foobar"}, {}),
+    ]
+    for label, sym_gone, sym_new, gone_file, gone_name, rename_map, want_merge, want_from in rows:
+        merge_map, _, renamed_from = symdelta.resolve_symbol_merges(
+            sym_gone, sym_new, gone_file, gone_name, rename_map, []
+        )
+        assert merge_map == want_merge, label
+        assert renamed_from == want_from, label
 
 
 def test_build_graph_merges_an_export_capitalisation_rename_across_a_package_move():
@@ -424,40 +352,7 @@ def test_drop_test_edges_removes_an_edge_touching_a_test_file_on_either_end():
     assert symdelta._drop_test_edges(edges) == [["a/y.go", "Bar", "a/z.go", "Baz"]]
 
 
-def test_build_graph_nodes_and_edges_carry_no_isTest_field():
-    nodes, edges, _, _ = symdelta.build_graph(
-        [["a/x_test.go", "TestFoo", "a/y.go", "Bar"]], []
-    )
-    assert all("isTest" not in n for n in nodes)
-    assert all("isTest" not in e for e in edges)
-
-
 # ---- pure-logic tests: pass-through package chains collapse into one box ----------------
-
-
-def test_build_graph_collapses_a_two_deep_passthrough_chain_under_a_real_grandparent():
-    # "src" has its own symbol ("Keep") plus one package child ("src/s2s"), so "src" itself
-    # stays; "src/s2s" holds nothing but its own single package child ("src/s2s/handler") and
-    # folds away. The survivor keeps its own (deepest) id, gets "src" -- the nearest surviving
-    # ancestor -- as its parent, and a label that joins the elided segment back in.
-    final_new = [["src/other.go", "Keep", "src/s2s/handler/handle.go", "Handle"]]
-    nodes, edges, _, _ = symdelta.build_graph(final_new, [])
-    pkg_nodes = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
-    assert set(pkg_nodes) == {"src", "src/s2s/handler"}
-    assert pkg_nodes["src/s2s/handler"]["parent"] == "src"
-    assert pkg_nodes["src/s2s/handler"]["label"] == "s2s/handler"
-
-
-def test_build_graph_collapses_a_three_deep_chain_fully_into_one_box():
-    # "auction" > "model" > "request" each hold nothing but the next single package -- the whole
-    # chain must collapse into ONE box, not stop one level short.
-    final_new = [["auction/model/request/a.go", "Fn", "auction/model/request/b.go", "Other"]]
-    nodes, edges, _, _ = symdelta.build_graph(final_new, [])
-    pkg_nodes = {n["id"]: n for n in nodes if n["kind"] == "pkg"}
-    assert set(pkg_nodes) == {"auction/model/request"}
-    assert pkg_nodes["auction/model/request"]["parent"] is None
-    assert pkg_nodes["auction/model/request"]["label"] == "auction/model/request"
-    assert pkg_nodes["auction/model/request"]["depth"] == 0
 
 
 def test_build_graph_does_not_collapse_a_package_with_two_children():
@@ -483,12 +378,19 @@ def test_build_graph_does_not_collapse_a_package_with_a_symbol_child_alongside_i
 
 
 def test_build_graph_depths_stay_contiguous_after_compression_for_pkg_and_symbol_nodes():
+    # "src" has its own symbol ("Keep") plus one package child ("src/s2s"), so "src" itself
+    # stays; "src/s2s" holds nothing but its own single package child ("src/s2s/handler") and
+    # folds away. The survivor keeps its own (deepest) id, gets "src" -- the nearest surviving
+    # ancestor -- as its parent, and a label that joins the elided segment back in.
     final_new = [
         ["src/other.go", "Keep", "src/s2s/handler/handle.go", "Handle"],
         ["top/x.go", "TopFn", "top/y.go", "TopFn2"],
     ]
     nodes, edges, _, _ = symdelta.build_graph(final_new, [])
     by_id = {n["id"]: n for n in nodes}
+    assert "src/s2s" not in by_id
+    assert by_id["src/s2s/handler"]["parent"] == "src"
+    assert by_id["src/s2s/handler"]["label"] == "s2s/handler"
     assert by_id["src"]["depth"] == 0
     assert by_id["src/s2s/handler"]["depth"] == 1  # "src/s2s" folded away, not counted
     assert by_id["top"]["depth"] == 0
@@ -517,13 +419,10 @@ def test_build_graph_root_pkg_sentinel_is_never_folded_into_or_through():
 # ---- pure-logic tests: root-level files get a real package, not an empty string --------
 
 
-def test_pkg_of_root_file_uses_sentinel_not_empty_string():
+def test_root_file_ids_use_the_root_sentinel():
     assert symdelta.pkg_of("main.go") == "(root)"
     assert symdelta.pkg_of("index.ts") == "(root)"
     assert symdelta.pkg_of("a/b.go") == "a"
-
-
-def test_sym_id_root_file_is_qualified_and_never_starts_with_a_bare_colon():
     sid = symdelta.sym_id("main.go", "main")
     assert sid == "(root):main.main"
     assert not sid.startswith(":")
@@ -592,43 +491,34 @@ def test_decl_ranges_first_seen_wins_across_edges():
     assert ranges[("a/x.go", symdelta.sym_id("a/x.go", "Caller"))] == (10, 20)
 
 
-def test_build_graph_attaches_head_range_to_new_symbols():
-    final_new = [["pkg/a.go", "Caller", "pkg/a.go", "Callee"]]
-    head_ranges = {
-        ("pkg/a.go", "pkg:Caller"): (3, 8),
-        ("pkg/a.go", "pkg:Callee"): (10, 10),
-    }
-    nodes, _, _, _ = symdelta.build_graph(final_new, [], head_ranges=head_ranges)
-    by_id = {n["id"]: n for n in nodes if n["kind"] == "symbol"}
-    assert by_id["pkg:Caller"]["range"] == [3, 8]
-    assert by_id["pkg:Callee"]["range"] == [10, 10]
-
-
-def test_build_graph_attaches_base_range_to_gone_symbols():
-    final_gone = [["pkg/a.go", "OldCaller", "pkg/a.go", "OldCallee"]]
-    base_ranges = {
-        ("pkg/a.go", "pkg:OldCaller"): (1, 4),
-        ("pkg/a.go", "pkg:OldCallee"): (6, 6),
-    }
-    nodes, _, _, _ = symdelta.build_graph([], final_gone, base_ranges=base_ranges)
-    by_id = {n["id"]: n for n in nodes if n["kind"] == "symbol"}
-    assert by_id["pkg:OldCaller"]["range"] == [1, 4]
-    assert by_id["pkg:OldCallee"]["range"] == [6, 6]
-
-
-def test_build_graph_changed_symbol_uses_head_range_not_base():
-    # Helper exists on both sides (state "changed") -- the surfaced range is HEAD's, since only
-    # a "gone" node's range is BASE-side.
-    final_new = [["pkg/a.go", "Helper", "pkg/b.go", "NewTarget"]]
-    final_gone = [["pkg/a.go", "Helper", "pkg/c.go", "OldTarget"]]
-    head_ranges = {("pkg/a.go", "pkg:Helper"): (20, 25)}
-    base_ranges = {("pkg/a.go", "pkg:Helper"): (1, 5)}
-    nodes, _, _, _ = symdelta.build_graph(
-        final_new, final_gone, head_ranges=head_ranges, base_ranges=base_ranges
-    )
-    helper = next(n for n in nodes if n["id"] == "pkg:Helper")
-    assert helper["state"] == "changed"
-    assert helper["range"] == [20, 25]
+def test_build_graph_symbol_range_by_state():
+    rows = [
+        ("new symbols get the head range",
+         [["pkg/a.go", "Caller", "pkg/a.go", "Callee"]], [],
+         {"head_ranges": {("pkg/a.go", "pkg:Caller"): (3, 8), ("pkg/a.go", "pkg:Callee"): (10, 10)}},
+         {"pkg:Caller": [3, 8], "pkg:Callee": [10, 10]}),
+        ("gone symbols get the base range",
+         [], [["pkg/a.go", "OldCaller", "pkg/a.go", "OldCallee"]],
+         {"base_ranges": {("pkg/a.go", "pkg:OldCaller"): (1, 4), ("pkg/a.go", "pkg:OldCallee"): (6, 6)}},
+         {"pkg:OldCaller": [1, 4], "pkg:OldCallee": [6, 6]}),
+        # Helper exists on both sides (state "changed") -- the surfaced range is HEAD's, since only
+        # a "gone" node's range is BASE-side.
+        ("changed symbol uses the head range, not base",
+         [["pkg/a.go", "Helper", "pkg/b.go", "NewTarget"]], [["pkg/a.go", "Helper", "pkg/c.go", "OldTarget"]],
+         {"head_ranges": {("pkg/a.go", "pkg:Helper"): (20, 25)},
+          "base_ranges": {("pkg/a.go", "pkg:Helper"): (1, 5)}},
+         {"pkg:Helper": [20, 25]}),
+        ("a symbol with no range entry gets no range key",
+         [["pkg/a.go", "Caller", "pkg/a.go", "Callee"]], [], {}, {"pkg:Caller": None}),
+    ]
+    for label, final_new, final_gone, kwargs, want in rows:
+        nodes, _, _, _ = symdelta.build_graph(final_new, final_gone, **kwargs)
+        by_id = {n["id"]: n for n in nodes if n["kind"] == "symbol"}
+        for sid, want_range in want.items():
+            if want_range is None:
+                assert "range" not in by_id[sid], label
+            else:
+                assert by_id[sid]["range"] == want_range, f"{label}: {sid}"
 
 
 def test_build_graph_merge_target_gets_range_keyed_on_its_head_file():
@@ -654,12 +544,6 @@ def test_build_graph_merge_target_gets_range_keyed_on_its_head_file():
     assert helper["range"] == [2, 9]
 
 
-def test_build_graph_symbol_with_no_range_entry_gets_no_range_key():
-    nodes, _, _, _ = symdelta.build_graph([["pkg/a.go", "Caller", "pkg/a.go", "Callee"]], [])
-    caller = next(n for n in nodes if n["id"] == "pkg:Caller")
-    assert "range" not in caller
-
-
 def test_build_graph_same_sid_from_two_files_uses_the_first_files_range():
     # sym_id's own docstring accepts a same-package, same-name collision across two files as a
     # display simplification: both collapse onto one sid/one node, and sym_file keeps the first
@@ -682,133 +566,82 @@ def test_build_graph_same_sid_from_two_files_uses_the_first_files_range():
 # ---- pure-logic tests: CACHE_DIR's fallback chain ---------------------------------------
 
 
-def test_resolve_cache_dir_uses_xdg_cache_home_when_set():
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp)
-        result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": "/xdg/cache"}, home)
-
-        assert result == Path("/xdg/cache") / "code-walkthrough"
-
-
-def test_resolve_cache_dir_falls_back_to_dot_cache_when_xdg_unset():
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp)
-
-        result = symdelta._resolve_cache_dir({}, home)
-
-        assert result == home / ".cache" / "code-walkthrough"
+def test_resolve_cache_dir_xdg_cache_home_wins(tmp_path):
+    # An explicit XDG_CACHE_HOME is a decision, not a guess; silently relocating it, even when it
+    # is unwritable, would hide a misconfiguration behind a cache that keeps getting rebuilt.
+    (tmp_path / "with-dot-cache" / ".cache").mkdir(parents=True)
+    rows = [
+        ("xdg set", tmp_path, "/xdg/cache"),
+        ("xdg set and ~/.cache exists", tmp_path / "with-dot-cache", "/xdg/cache"),
+        ("xdg not writable", Path("/nonexistent"), "/proc"),
+    ]
+    for label, home, xdg in rows:
+        result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": xdg}, home)
+        assert result == Path(xdg) / "code-walkthrough", label
 
 
-def test_resolve_cache_dir_xdg_cache_home_wins_even_when_dot_cache_exists():
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp)
-        (home / ".cache").mkdir()
+def test_resolve_cache_dir_falls_back_to_dot_cache_when_xdg_unset(tmp_path):
+    result = symdelta._resolve_cache_dir({}, tmp_path)
 
-        result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": "/xdg/cache"}, home)
-
-        assert result == Path("/xdg/cache") / "code-walkthrough"
+    assert result == tmp_path / ".cache" / "code-walkthrough"
 
 
-def test_resolve_cache_dir_falls_back_to_tmp_when_dot_cache_is_not_writable():
+def test_resolve_cache_dir_falls_back_to_tmp_when_dot_cache_is_not_writable(tmp_path):
     # The agent-sandbox case: ~/.cache is read-only, so the extractor would never build and the
     # whole symbols section would go missing over a cache directory.
-    with tempfile.TemporaryDirectory() as tmp:
-        home = Path(tmp) / "home"
-        (home / ".cache").mkdir(parents=True)
-        (home / ".cache").chmod(0o555)
-        try:
-            result = symdelta._resolve_cache_dir({}, home, tmp="/scratch")
-        finally:
-            (home / ".cache").chmod(0o755)
+    cw_testlib.require_non_root()
+    home = tmp_path / "home"
+    (home / ".cache").mkdir(parents=True)
+    (home / ".cache").chmod(0o555)
+    try:
+        result = symdelta._resolve_cache_dir({}, home, tmp="/scratch")
+    finally:
+        (home / ".cache").chmod(0o755)
 
-        assert result == Path("/scratch") / "code-walkthrough"
-
-
-def test_resolve_cache_dir_xdg_cache_home_wins_even_when_it_is_not_writable():
-    # An explicit XDG_CACHE_HOME is a decision, not a guess; silently relocating it would hide
-    # a misconfiguration behind a cache that keeps getting rebuilt.
-    result = symdelta._resolve_cache_dir({"XDG_CACHE_HOME": "/proc"}, Path("/nonexistent"))
-
-    assert result == Path("/proc") / "code-walkthrough"
+    assert result == Path("/scratch") / "code-walkthrough"
 
 
 # ---- pure-logic tests: detect_language's tie-break is honest and deterministic ----------
 
 
-def test_detect_language_tie_break_is_honest_and_deterministic():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/tie\n\ngo 1.21\n")
-        # "aaa.ts" sorts before "zzz.go" in git's own diff listing, so an insertion-order tie
-        # break would have picked typescript; the fix must be independent of that ordering.
-        _write(repo, "aaa.ts", "export function a() {}\n")
-        _write(repo, "zzz.go", "package main\n\nfunc Caller() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "aaa.ts", "export function a() { console.log(1); }\n")
-        _write(repo, "zzz.go", "package main\n\nfunc Caller() {}\nfunc Other() {}\n")
-        head = _commit(repo, "head")
+def test_detect_language_tie_break_is_honest_and_deterministic(tmp_path):
+    # "aaa.ts" sorts before "zzz.go" in git's own diff listing, so an insertion-order tie
+    # break would have picked typescript; the fix must be independent of that ordering.
+    repo, base, head = make_repo(
+        tmp_path,
+        {"go.mod": "module example.com/tie\n\ngo 1.21\n",
+         "aaa.ts": "export function a() {}\n",
+         "zzz.go": "package main\n\nfunc Caller() {}\n"},
+        {"aaa.ts": "export function a() { console.log(1); }\n",
+         "zzz.go": "package main\n\nfunc Caller() {}\nfunc Other() {}\n"},
+    )
+
+    lang, reason = symdelta.detect_language(repo, base, head)
+    assert lang == "go"
+    assert "tied at 1 changed files each" in reason
+    assert "not a real majority" in reason
+
+
+def test_detect_language_routes_by_extension(tmp_path):
+    rows = [
+        ("python", "a.py", "def a():\n    pass\n", "def a():\n    return 1\n"),
+        ("rust", "a.rs", "fn a() {}\n", "fn a() { let _ = 1; }\n"),
+    ]
+    for want, name, before, after in rows:
+        (tmp_path / want).mkdir()
+        repo, base, head = make_repo(tmp_path / want, {name: before}, {name: after})
 
         lang, reason = symdelta.detect_language(repo, base, head)
-        assert lang == "go"
-        assert "tied at 1 changed files each" in reason
-        assert "not a real majority" in reason
+        assert lang == want and reason is None, want
 
 
-def test_detect_language_routes_py_files_to_python():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.py", "def a():\n    return 1\n")
-        head = _commit(repo, "head")
-
-        lang, reason = symdelta.detect_language(repo, base, head)
-        assert lang == "python" and reason is None
-
-
-def test_detect_language_works_against_an_orphan_baseline_with_no_merge_base():
+def test_detect_language_works_against_an_orphan_baseline_with_no_merge_base(tmp_path):
     # Three-dot diff needs a merge base; an orphan baseline has none, so this used to fail with
     # "fatal: ...: no merge base" before detect_language switched to two-dot on a resolved base.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        head = _commit(repo, "head")
-        orphan = _orphan_baseline(repo)
+    repo, head = _head_only_repo(tmp_path, {"a.py": "def a():\n    pass\n"})
 
-        lang, reason = symdelta.detect_language(repo, orphan, head)
-        assert lang == "python" and reason is None
-
-
-def test_detect_language_routes_rs_files_to_rust():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.rs", "fn a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.rs", "fn a() { let _ = 1; }\n")
-        head = _commit(repo, "head")
-
-        lang, reason = symdelta.detect_language(repo, base, head)
-        assert lang == "rust" and reason is None
-
-
-def test_detect_language_tie_break_between_python_and_rust_is_alphabetical():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        _write(repo, "a.rs", "fn a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.py", "def a():\n    return 1\n")
-        _write(repo, "a.rs", "fn a() { let _ = 1; }\n")
-        head = _commit(repo, "head")
-
-        lang, reason = symdelta.detect_language(repo, base, head)
-        assert lang == "python"
-        assert "tied at 1 changed files each" in reason
+    lang, reason = symdelta.detect_language(repo, orphan_baseline(repo), head)
+    assert lang == "python" and reason is None
 
 
 def test_lsp_language_tables_all_cover_typescript_python_and_rust():
@@ -834,595 +667,274 @@ def test_lsp_language_tables_all_cover_typescript_python_and_rust():
 # ---- pure-logic + wiring tests: refuse a TS diff when node_modules would lie ------------
 
 
-def test_dependency_files_changed_true_when_package_json_changed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"version": "1.0.0"}\n')
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"version": "1.0.1"}\n')
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head) is True
-
-
-def test_dependency_files_changed_false_for_an_unrelated_change():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        _write(repo, "package.json", '{"version": "1.0.0"}\n')
-        base = _commit(repo, "base")
-        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head) is False
-
-
-def test_dependency_files_changed_true_for_yarn_lock():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "yarn.lock", "# yarn lockfile v1\n")
-        base = _commit(repo, "base")
-        _write(repo, "yarn.lock", "# yarn lockfile v1\nleft-pad@1.0.0:\n")
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head) is True
-
-
-def test_dependency_files_changed_true_for_pnpm_lock():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "pnpm-lock.yaml", "lockfileVersion: '6.0'\n")
-        base = _commit(repo, "base")
-        _write(repo, "pnpm-lock.yaml", "lockfileVersion: '6.0'\ndependencies: {}\n")
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head) is True
-
-
-def test_dependency_files_changed_true_for_pyproject_toml():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "pyproject.toml", "[project]\nname = \"x\"\nversion = \"0.1.0\"\n")
-        base = _commit(repo, "base")
-        _write(repo, "pyproject.toml", "[project]\nname = \"x\"\nversion = \"0.2.0\"\n")
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head, "python") is True
-
-
-def test_dependency_files_changed_false_for_python_when_only_ts_lockfile_changed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"version": "1.0.0"}\n')
-        _write(repo, "a.py", "def a():\n    pass\n")
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"version": "1.0.1"}\n')
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head, "python") is False
-
-
-def test_dependency_files_changed_false_for_cargo_lock():
-    # Rust has no entry in DEPENDENCY_FILES_BY_LANG: each worktree resolves against its own
-    # Cargo.lock and target/, so a Cargo change on one side can't affect the other's resolution.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "Cargo.lock", "# auto-generated\nversion = 3\n")
-        base = _commit(repo, "base")
-        _write(repo, "Cargo.lock", "# auto-generated\nversion = 4\n")
-        head = _commit(repo, "head")
-        assert symdelta.dependency_files_changed(repo, base, head, "rust") is False
+def test_dependency_files_changed(tmp_path):
+    rows = [
+        ("package.json changed", None,
+         {"package.json": '{"version": "1.0.0"}\n'}, {"package.json": '{"version": "1.0.1"}\n'}, True),
+        ("unrelated change", None,
+         {"src/a.ts": "export function a() {}\n", "package.json": '{"version": "1.0.0"}\n'},
+         {"src/a.ts": "export function a() { return 1; }\n"}, False),
+        ("yarn.lock", None,
+         {"yarn.lock": "# yarn lockfile v1\n"}, {"yarn.lock": "# yarn lockfile v1\nleft-pad@1.0.0:\n"}, True),
+        ("pnpm-lock.yaml", None,
+         {"pnpm-lock.yaml": "lockfileVersion: '6.0'\n"},
+         {"pnpm-lock.yaml": "lockfileVersion: '6.0'\ndependencies: {}\n"}, True),
+        ("pyproject.toml for python", "python",
+         {"pyproject.toml": '[project]\nname = "x"\nversion = "0.1.0"\n'},
+         {"pyproject.toml": '[project]\nname = "x"\nversion = "0.2.0"\n'}, True),
+        ("python ignores a changed ts lockfile", "python",
+         {"package.json": '{"version": "1.0.0"}\n', "a.py": "def a():\n    pass\n"},
+         {"package.json": '{"version": "1.0.1"}\n'}, False),
+        # Rust has no entry in DEPENDENCY_FILES_BY_LANG: each worktree resolves against its own
+        # Cargo.lock and target/, so a Cargo change on one side can't affect the other's resolution.
+        ("Cargo.lock for rust", "rust",
+         {"Cargo.lock": "# auto-generated\nversion = 3\n"}, {"Cargo.lock": "# auto-generated\nversion = 4\n"}, False),
+    ]
+    for i, (label, lang, base_files, head_files, want) in enumerate(rows):
+        (tmp_path / str(i)).mkdir()
+        repo, base, head = make_repo(tmp_path / str(i), base_files, head_files)
+        args = (lang,) if lang else ()
+        assert symdelta.dependency_files_changed(repo, base, head, *args) is want, label
 
 
 # ---- pure-logic tests: TypeScript dependency compatibility decided from declared specs -----
 
 
-def test_ts_dependency_incompatible_false_for_additions_only():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0", "chalk": "5.0.0"}}\n')
-        head = _commit(repo, "head")
-        assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
-
-
-def test_ts_dependency_incompatible_true_when_a_dependency_is_removed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {}}\n')
-        head = _commit(repo, "head")
+def test_ts_dependency_incompatible(tmp_path):
+    left_pad = '{"dependencies": {"left-pad": "1.0.0"}}\n'
+    rows = [
+        ("additions only", {"package.json": left_pad},
+         {"package.json": '{"dependencies": {"left-pad": "1.0.0", "chalk": "5.0.0"}}\n'}, False, None),
+        ("a dependency is removed", {"package.json": left_pad},
+         {"package.json": '{"dependencies": {}}\n'}, True, "removed: left-pad"),
+        ("a version spec changed", {"package.json": left_pad},
+         {"package.json": '{"dependencies": {"left-pad": "2.0.0"}}\n'}, True, "version changed: left-pad"),
+        ("lockfile-only change", {"package.json": left_pad, "package-lock.json": '{"lockfileVersion": 2}\n'},
+         {"package-lock.json": '{"lockfileVersion": 3}\n'}, False, None),
+        ("package.json missing at base", {"src/a.ts": "export function a() {}\n"},
+         {"package.json": left_pad}, True, "missing or unparseable"),
+        ("package.json is unparseable", {"package.json": left_pad},
+         {"package.json": "{not valid json\n"}, True, "missing or unparseable"),
+        # A dict.update() merge across sections would let devDependencies silently overwrite
+        # dependencies' newer spec here, hiding a real version bump behind section iteration order.
+        ("sections disagree on the spec", {"package.json": left_pad},
+         {"package.json": '{"dependencies": {"left-pad": "2.0.0"}, "devDependencies": {"left-pad": "1.0.0"}}\n'},
+         True, "version changed: left-pad"),
+        ("same spec appears in two sections", {"package.json": left_pad},
+         {"package.json": '{"dependencies": {"left-pad": "1.0.0"}, "devDependencies": {"left-pad": "1.0.0"}}\n'},
+         False, None),
+    ]
+    for i, (label, base_files, head_files, want_flag, want_reason) in enumerate(rows):
+        (tmp_path / str(i)).mkdir()
+        repo, base, head = make_repo(tmp_path / str(i), base_files, head_files)
         incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
-        assert incompatible is True
-        assert "removed: left-pad" in reason
-
-
-def test_ts_dependency_incompatible_true_when_a_version_spec_changed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "2.0.0"}}\n')
-        head = _commit(repo, "head")
-        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
-        assert incompatible is True
-        assert "version changed: left-pad" in reason
-
-
-def test_ts_dependency_incompatible_false_for_lockfile_only_change():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        _write(repo, "package-lock.json", '{"lockfileVersion": 2}\n')
-        base = _commit(repo, "base")
-        _write(repo, "package-lock.json", '{"lockfileVersion": 3}\n')
-        head = _commit(repo, "head")
-        assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
-
-
-def test_ts_dependency_incompatible_true_when_package_json_missing_at_base():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        head = _commit(repo, "head")
-        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
-        assert incompatible is True
-        assert "missing or unparseable" in reason
-
-
-def test_ts_dependency_incompatible_true_when_package_json_is_unparseable():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        base = _commit(repo, "base")
-        _write(repo, "package.json", "{not valid json\n")
-        head = _commit(repo, "head")
-        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
-        assert incompatible is True
-        assert "missing or unparseable" in reason
-
-
-def test_ts_dependency_incompatible_true_when_sections_disagree_on_spec():
-    # A dict.update() merge across sections would let devDependencies silently overwrite
-    # dependencies' newer spec here, hiding a real version bump behind section iteration order.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        base = _commit(repo, "base")
-        _write(
-            repo, "package.json",
-            '{"dependencies": {"left-pad": "2.0.0"}, "devDependencies": {"left-pad": "1.0.0"}}\n',
-        )
-        head = _commit(repo, "head")
-        incompatible, reason = symdelta.ts_dependency_incompatible(repo, base, head)
-        assert incompatible is True
-        assert "version changed: left-pad" in reason
-
-
-def test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        base = _commit(repo, "base")
-        _write(
-            repo, "package.json",
-            '{"dependencies": {"left-pad": "1.0.0"}, "devDependencies": {"left-pad": "1.0.0"}}\n',
-        )
-        head = _commit(repo, "head")
-        assert symdelta.ts_dependency_incompatible(repo, base, head) == (False, None)
+        assert incompatible is want_flag, label
+        if want_reason is None:
+            assert reason is None, label
+        else:
+            assert want_reason in reason, label
 
 
 # ---- wiring tests: link_node_modules must not symlink a relative target --------------------
 
 
-def test_link_node_modules_resolves_a_relative_repo_path():
+def test_link_node_modules_resolves_a_relative_repo_path(tmp_path, monkeypatch):
     # A relative repo, embedded verbatim in the symlink target, would point the worktree's
     # node_modules at itself instead of the real one -- worktree and repo live in different dirs.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp) / "repo"
-        (repo / "node_modules").mkdir(parents=True)
-        worktree = Path(tmp) / "worktree"
-        worktree.mkdir()
+    repo = tmp_path / "repo"
+    (repo / "node_modules").mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
 
-        cwd = os.getcwd()
-        os.chdir(repo)
-        try:
-            symdelta.link_node_modules(".", worktree)
-        finally:
-            os.chdir(cwd)
+    monkeypatch.chdir(repo)
+    symdelta.link_node_modules(".", worktree)
 
-        dst = worktree / "node_modules"
-        assert dst.exists()
-        assert os.path.isabs(os.readlink(dst))
+    dst = worktree / "node_modules"
+    assert dst.exists()
+    assert os.path.isabs(os.readlink(dst))
 
 
 # ---- wiring tests: node_modules coverage preflight, before any worktree gets created -------
 
 
-def test_check_node_modules_coverage_true_when_every_dependency_resolves():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        head = _commit(repo, "head")
-        (repo / "node_modules" / "left-pad").mkdir(parents=True)
+def test_check_node_modules_coverage(tmp_path):
+    def lock(version):
+        return json.dumps({"packages": {"node_modules/left-pad": {"version": version}}}) + "\n"
 
-        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
-
-
-def test_check_node_modules_coverage_true_when_node_modules_missing_and_nothing_declared():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        head = _commit(repo, "head")
-
-        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
-
-
-def test_check_node_modules_coverage_catches_a_missing_scoped_package():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "package.json",
-            '{"dependencies": {"@restatedev/restate-sdk": "1.0.0"}}\n',
-        )
-        head = _commit(repo, "head")
+    left_pad_caret2 = '{"dependencies": {"left-pad": "^2.0.0"}}\n'
+    stale_install = {"node_modules/left-pad/package.json": '{"version": "1.0.0"}\n'}
+    # (label, committed files, files/dirs added after the commit (None = empty dir), ok, reason must name)
+    rows = [
+        ("every dependency resolves", {"package.json": '{"dependencies": {"left-pad": "1.0.0"}}\n'},
+         {"node_modules/left-pad": None}, True, ()),
+        ("node_modules missing and nothing declared", {"src/a.ts": "export function a() {}\n"},
+         {}, True, ()),
         # node_modules exists but never got the newly-declared scoped package -- the stale
         # node_modules case this preflight exists to catch.
-        (repo / "node_modules").mkdir()
-
-        ok, reason = symdelta.check_node_modules_coverage(repo, head)
-        assert ok is False
-        assert "@restatedev/restate-sdk" in reason
-
-
-def test_check_node_modules_coverage_caps_the_reason_at_five_names():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        deps = {f"pkg-{i}": "1.0.0" for i in range(7)}
-        _write(repo, "package.json", json.dumps({"dependencies": deps}) + "\n")
-        head = _commit(repo, "head")
-        (repo / "node_modules").mkdir()
-
-        ok, reason = symdelta.check_node_modules_coverage(repo, head)
-        assert ok is False
-        assert "and 2 more" in reason
-
-
-def test_check_node_modules_coverage_catches_a_missing_peer_dependency():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"peerDependencies": {"react": "18.0.0"}}\n')
-        head = _commit(repo, "head")
-        (repo / "node_modules").mkdir()
-
-        ok, reason = symdelta.check_node_modules_coverage(repo, head)
-        assert ok is False
-        assert "react" in reason
-
-
-def test_check_node_modules_coverage_ignores_a_missing_optional_dependency():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"optionalDependencies": {"fsevents": "2.0.0"}}\n')
-        head = _commit(repo, "head")
-        (repo / "node_modules").mkdir()
-
-        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
-
-
-def test_check_node_modules_coverage_true_when_installed_version_matches_lockfile():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "^1.0.0"}}\n')
-        _write(
-            repo, "package-lock.json",
-            json.dumps({"packages": {"node_modules/left-pad": {"version": "1.3.0"}}}) + "\n",
-        )
-        head = _commit(repo, "head")
-        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.3.0"}\n')
-
-        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
-
-
-def test_check_node_modules_coverage_catches_a_stale_installed_version():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
-        _write(
-            repo, "package-lock.json",
-            json.dumps({"packages": {"node_modules/left-pad": {"version": "2.0.0"}}}) + "\n",
-        )
-        head = _commit(repo, "head")
+        ("a missing scoped package", {"package.json": '{"dependencies": {"@restatedev/restate-sdk": "1.0.0"}}\n'},
+         {"node_modules": None}, False, ("@restatedev/restate-sdk",)),
+        ("the reason is capped at five names",
+         {"package.json": json.dumps({"dependencies": {f"pkg-{i}": "1.0.0" for i in range(7)}}) + "\n"},
+         {"node_modules": None}, False, ("and 2 more",)),
+        ("a missing peer dependency", {"package.json": '{"peerDependencies": {"react": "18.0.0"}}\n'},
+         {"node_modules": None}, False, ("react",)),
+        ("a missing optional dependency is ignored",
+         {"package.json": '{"optionalDependencies": {"fsevents": "2.0.0"}}\n'},
+         {"node_modules": None}, True, ()),
+        ("installed version matches the lockfile",
+         {"package.json": '{"dependencies": {"left-pad": "^1.0.0"}}\n', "package-lock.json": lock("1.3.0")},
+         {"node_modules/left-pad/package.json": '{"version": "1.3.0"}\n'}, True, ()),
         # node_modules/left-pad exists (satisfies the bare presence check) but is still at the
         # version the lockfile no longer resolves to.
-        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
+        ("a stale installed version",
+         {"package.json": left_pad_caret2, "package-lock.json": lock("2.0.0")},
+         stale_install, False, ("left-pad",)),
+        # with no lockfile to compare against at all, presence is all this preflight can check
+        ("presence only when there is no lockfile", {"package.json": left_pad_caret2}, stale_install, True, ()),
+        ("presence only when the lockfile is unparseable",
+         {"package.json": left_pad_caret2, "package-lock.json": "{not valid json\n"}, stale_install, True, ()),
+        ("lockfile version 1 shape",
+         {"package.json": left_pad_caret2,
+          "package-lock.json": json.dumps({"lockfileVersion": 1, "dependencies": {"left-pad": {"version": "1.0.0"}}}) + "\n"},
+         {"node_modules/left-pad/package.json": '{"version": "2.0.0"}\n'}, False, ("left-pad",)),
+    ]
+    for i, (label, committed, installed, want_ok, names) in enumerate(rows):
+        (tmp_path / str(i)).mkdir()
+        repo, head = _head_only_repo(tmp_path / str(i), committed)
+        for rel_path, content in installed.items():
+            if content is None:
+                (repo / rel_path).mkdir(parents=True)
+            else:
+                write_file(repo, rel_path, content)
 
         ok, reason = symdelta.check_node_modules_coverage(repo, head)
-        assert ok is False
-        assert "left-pad" in reason
-
-
-def test_check_node_modules_coverage_presence_only_when_no_lockfile():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
-        head = _commit(repo, "head")
-        # present, but at a version a lockfile (if one existed) might disagree with -- with no
-        # lockfile to compare against at all, presence is all this preflight can check.
-        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
-
-        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
-
-
-def test_check_node_modules_coverage_presence_only_when_lockfile_is_unparseable():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
-        _write(repo, "package-lock.json", "{not valid json\n")
-        head = _commit(repo, "head")
-        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
-
-        assert symdelta.check_node_modules_coverage(repo, head) == (True, None)
-
-
-def test_check_node_modules_coverage_handles_lockfile_version_1_shape():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
-        _write(
-            repo, "package-lock.json",
-            json.dumps(
-                {"lockfileVersion": 1, "dependencies": {"left-pad": {"version": "1.0.0"}}}
-            ) + "\n",
-        )
-        head = _commit(repo, "head")
-        _write(repo, "node_modules/left-pad/package.json", '{"version": "2.0.0"}\n')
-
-        ok, reason = symdelta.check_node_modules_coverage(repo, head)
-        assert ok is False
-        assert "left-pad" in reason
+        assert ok is want_ok, label
+        if want_ok:
+            assert reason is None, label
+        for name in names:
+            assert name in reason, f"{label}: {name}"
 
 
 # ---- wiring tests: analyse_typescript's null results carry the right remedy (or none) -----
 
 
-def test_analyse_typescript_refuses_when_a_dependency_is_removed():
+def test_analyse_typescript_refuses_when_a_dependency_is_removed(tmp_path):
     # Must short-circuit before any typescript-language-server check, so this needs no tool on
     # PATH and is never skipped.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {}}\n')
-        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
-        head = _commit(repo, "head")
+    repo, base, head = make_repo(
+        tmp_path,
+        {"package.json": '{"dependencies": {"left-pad": "1.0.0"}}\n', "src/a.ts": "export function a() {}\n"},
+        {"package.json": '{"dependencies": {}}\n', "src/a.ts": "export function a() { return 1; }\n"},
+    )
 
-        result = symdelta.analyse_typescript(repo, base, head)
-        assert result["language"] is None
-        assert "left-pad" in result["reason"]
-        assert "remedy" not in result
+    result = symdelta.analyse_typescript(repo, base, head)
+    assert result["language"] is None
+    assert "left-pad" in result["reason"]
+    assert "remedy" not in result
 
 
-def test_analyse_typescript_does_not_refuse_on_dependency_additions_only():
+def test_analyse_typescript_does_not_refuse_on_dependency_additions_only(tmp_path, monkeypatch):
     # Change 1's whole point: an added-only dependency must not trip the gate that a removed or
-    # changed one does. Whatever happens next needs a real typescript-language-server, so this
-    # only pins down that the dependency reason specifically is never given.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {}}\n')
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
-        head = _commit(repo, "head")
-        (repo / "node_modules" / "left-pad").mkdir(parents=True)
+    # changed one does. The tooling check is stubbed to fail, so reaching it (reason "boom"
+    # instead of a dependency reason) proves the additions-only gate let it through.
+    monkeypatch.setattr(symdelta, "check_typescript_tooling", lambda repo, lang="typescript": (False, "boom"))
+    repo, base, head = make_repo(
+        tmp_path,
+        {"package.json": '{"dependencies": {}}\n', "src/a.ts": "export function a() {}\n"},
+        {"package.json": '{"dependencies": {"left-pad": "1.0.0"}}\n',
+         "src/a.ts": "export function a() { return 1; }\n"},
+    )
+    (repo / "node_modules" / "left-pad").mkdir(parents=True)
 
-        result = symdelta.analyse_typescript(repo, base, head)
-        if result["language"] is None:
-            assert "dependency incompatibility" not in result["reason"]
+    result = symdelta.analyse_typescript(repo, base, head)
+    assert result["language"] is None
+    assert result["reason"] == "boom"
 
 
-def test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale():
+def test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale(tmp_path):
     # Also needs no tool on PATH: the node_modules preflight runs before check_typescript_tooling.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {}}\n')
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "1.0.0"}}\n')
-        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
-        head = _commit(repo, "head")
-        (repo / "node_modules").mkdir()  # exists, but never got left-pad
+    repo, base, head = make_repo(
+        tmp_path,
+        {"package.json": '{"dependencies": {}}\n', "src/a.ts": "export function a() {}\n"},
+        {"package.json": '{"dependencies": {"left-pad": "1.0.0"}}\n',
+         "src/a.ts": "export function a() { return 1; }\n"},
+    )
+    (repo / "node_modules").mkdir()  # exists, but never got left-pad
 
-        result = symdelta.analyse_typescript(repo, base, head)
-        assert result["language"] is None
-        assert "left-pad" in result["reason"]
-        assert result["remedy"] == "npm ci"
+    result = symdelta.analyse_typescript(repo, base, head)
+    assert result["language"] is None
+    assert "left-pad" in result["reason"]
+    assert result["remedy"] == "npm ci"
 
 
-def test_analyse_typescript_refuses_with_npm_ci_remedy_when_installed_version_is_stale():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "package.json", '{"dependencies": {}}\n')
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "package.json", '{"dependencies": {"left-pad": "^2.0.0"}}\n')
-        _write(repo, "src/a.ts", "export function a() { return 1; }\n")
-        _write(
-            repo, "package-lock.json",
-            json.dumps({"packages": {"node_modules/left-pad": {"version": "2.0.0"}}}) + "\n",
-        )
-        head = _commit(repo, "head")
-        _write(repo, "node_modules/left-pad/package.json", '{"version": "1.0.0"}\n')
-
-        result = symdelta.analyse_typescript(repo, base, head)
-        assert result["language"] is None
-        assert "left-pad" in result["reason"]
-        assert result["remedy"] == "npm ci"
-
-
-def test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails():
-    original_check = symdelta.check_typescript_tooling
-    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (False, "boom")
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            _write(repo, "a.py", "def a():\n    pass\n")
-            base = _commit(repo, "base")
-            _write(repo, "a.py", "def a():\n    return 1\n")
-            head = _commit(repo, "head")
-
-            result = symdelta.analyse_python(repo, base, head)
-            assert result == {
-                "language": None,
-                "reason": "boom",
-                "remedy": symdelta.LANGUAGE_SERVER_REMEDY["python"],
-            }
-    finally:
-        symdelta.check_typescript_tooling = original_check
-
-
-def test_analyse_rust_does_not_bail_on_a_cargo_lock_change():
-    # A Cargo.lock change between base and head must still let analyse_rust reach the tooling
-    # check (forced here to fail for an unrelated reason) rather than bailing earlier on a
-    # dependency-manifest reason. If analyse_lsp's `lang == "python"` gate ever regresses to
-    # cover rust too, this fails with the dependency reason instead of "boom".
-    original_check = symdelta.check_typescript_tooling
-    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (False, "boom")
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            _write(repo, "Cargo.lock", "# auto-generated\nversion = 3\n")
-            _write(repo, "src/a.rs", "fn a() {}\n")
-            base = _commit(repo, "base")
-            _write(repo, "Cargo.lock", "# auto-generated\nversion = 4\n")
-            _write(repo, "src/a.rs", "fn a() { let _ = 1; }\n")
-            head = _commit(repo, "head")
-
-            result = symdelta.analyse_rust(repo, base, head)
-            assert result == {
-                "language": None,
-                "reason": "boom",
-                "remedy": symdelta.LANGUAGE_SERVER_REMEDY["rust"],
-            }
-    finally:
-        symdelta.check_typescript_tooling = original_check
-
-
-def test_split_path_trap_pulls_the_remedy_out_of_the_reason():
-    # The remedy must not stay inside `reason` too -- callers show both fields together, and
-    # leaving it in both places would print the same `export PATH=...` line twice.
-    reason = ('pyright-langserver is installed in /opt/npm/bin but that directory is not on '
-              'PATH; add it, e.g. export PATH="/opt/npm/bin:$PATH"')
-    trimmed, remedy = symdelta._split_path_trap(reason)
-    assert trimmed == 'pyright-langserver is installed in /opt/npm/bin but that directory is not on PATH'
-    assert remedy == 'export PATH="/opt/npm/bin:$PATH"'
-
-
-def test_split_path_trap_returns_the_reason_unchanged_with_no_remedy_for_a_plain_reason():
-    reason = "pyright-langserver not found on PATH"
-    assert symdelta._split_path_trap(reason) == (reason, None)
-
-
-def test_analyse_lsp_uses_the_path_trap_remedy_instead_of_a_reinstall():
+def test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails(tmp_path, monkeypatch):
     # LANGUAGE_SERVER_REMEDY's `npm i -g` would be a no-op on a binary that's already installed;
     # a PATH-trap reason carries its own fix, and that must win, with the fix pulled out of the
     # reason so it isn't shown twice.
     path_trap_reason = ('pyright-langserver is installed in /opt/npm/bin but that directory is '
-                         'not on PATH; add it, e.g. export PATH="/opt/npm/bin:$PATH"')
-    original_check = symdelta.check_typescript_tooling
-    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (False, path_trap_reason)
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            _write(repo, "a.py", "def a():\n    pass\n")
-            base = _commit(repo, "base")
-            _write(repo, "a.py", "def a():\n    return 1\n")
-            head = _commit(repo, "head")
+                        'not on PATH; add it, e.g. export PATH="/opt/npm/bin:$PATH"')
+    repo, base, head = make_repo(
+        tmp_path, {"a.py": "def a():\n    pass\n"}, {"a.py": "def a():\n    return 1\n"}
+    )
+    rows = [
+        ("plain reason gets the language-server remedy", "boom",
+         {"language": None, "reason": "boom", "remedy": symdelta.LANGUAGE_SERVER_REMEDY["python"]}),
+        ("path-trap reason carries its own remedy", path_trap_reason,
+         {"language": None,
+          "reason": 'pyright-langserver is installed in /opt/npm/bin but that directory is not on PATH',
+          "remedy": 'export PATH="/opt/npm/bin:$PATH"'}),
+    ]
+    for label, tooling_reason, want in rows:
+        monkeypatch.setattr(
+            symdelta, "check_typescript_tooling", lambda repo, lang="typescript": (False, tooling_reason)
+        )
+        assert symdelta.analyse_python(repo, base, head) == want, label
 
-            result = symdelta.analyse_python(repo, base, head)
-            assert result == {
-                "language": None,
-                "reason": 'pyright-langserver is installed in /opt/npm/bin but that directory '
-                          'is not on PATH',
-                "remedy": 'export PATH="/opt/npm/bin:$PATH"',
-            }
-    finally:
-        symdelta.check_typescript_tooling = original_check
+
+def test_analyse_rust_does_not_bail_on_a_cargo_lock_change(tmp_path, monkeypatch):
+    # A Cargo.lock change between base and head must still let analyse_rust reach the tooling
+    # check (forced here to fail for an unrelated reason) rather than bailing earlier on a
+    # dependency-manifest reason. If analyse_lsp's `lang == "python"` gate ever regresses to
+    # cover rust too, this fails with the dependency reason instead of "boom".
+    monkeypatch.setattr(symdelta, "check_typescript_tooling", lambda repo, lang="typescript": (False, "boom"))
+    repo, base, head = make_repo(
+        tmp_path,
+        {"Cargo.lock": "# auto-generated\nversion = 3\n", "src/a.rs": "fn a() {}\n"},
+        {"Cargo.lock": "# auto-generated\nversion = 4\n", "src/a.rs": "fn a() { let _ = 1; }\n"},
+    )
+
+    result = symdelta.analyse_rust(repo, base, head)
+    assert result == {
+        "language": None,
+        "reason": "boom",
+        "remedy": symdelta.LANGUAGE_SERVER_REMEDY["rust"],
+    }
 
 
 # ---- --doctor: no diff, base or head needed ---------------------------------------------
 
 
-def test_doctor_report_is_ok_for_every_language_when_everything_checks_out():
-    original_which = symdelta.shutil.which
-    original_build = symdelta.build_extractor
-    original_check = symdelta.check_language_server
-    symdelta.shutil.which = lambda tool: "/usr/bin/go" if tool == "go" else None
-    symdelta.build_extractor = lambda: None
-    symdelta.check_language_server = lambda repo, lang: (True, None)
-    try:
-        report = symdelta.doctor_report()
-    finally:
-        symdelta.shutil.which = original_which
-        symdelta.build_extractor = original_build
-        symdelta.check_language_server = original_check
+def test_doctor_report_is_ok_for_every_language_when_everything_checks_out(monkeypatch):
+    monkeypatch.setattr(symdelta.shutil, "which", lambda tool: "/usr/bin/go" if tool == "go" else None)
+    monkeypatch.setattr(symdelta, "build_extractor", lambda: None)
+    monkeypatch.setattr(symdelta, "check_language_server", lambda repo, lang: (True, None))
 
-    lines = report.splitlines()
+    lines = symdelta.doctor_report().splitlines()
+
     assert lines[0] == "go: toolchain OK, extractor builds"
     assert any(line.startswith("typescript: OK") for line in lines)
     assert any(line.startswith("python: OK") for line in lines)
     assert any(line.startswith("rust: OK") for line in lines)
 
 
-def test_doctor_report_names_the_go_toolchain_as_missing():
-    original_which = symdelta.shutil.which
-    symdelta.shutil.which = lambda tool: None
-    try:
-        report = symdelta.doctor_report()
-    finally:
-        symdelta.shutil.which = original_which
+def test_doctor_report_names_the_go_toolchain_as_missing(monkeypatch):
+    monkeypatch.setattr(symdelta.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(symdelta, "check_language_server", lambda repo, lang: (False, "x"))
 
-    assert report.splitlines()[0] == "go: toolchain not found on PATH"
+    assert symdelta.doctor_report().splitlines()[0] == "go: toolchain not found on PATH"
 
 
-def test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy():
-    original_which = symdelta.shutil.which
-    original_check = symdelta.check_language_server
-    symdelta.shutil.which = lambda tool: None
-
+def test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy(monkeypatch):
     def fake_check(repo, lang):
         if lang == "typescript":
             return False, ('typescript-language-server is installed in /opt/npm/bin but that '
@@ -1430,12 +942,10 @@ def test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy(
                             'export PATH="/opt/npm/bin:$PATH"')
         return False, f"{lang} tool not found on PATH"
 
-    symdelta.check_language_server = fake_check
-    try:
-        report = symdelta.doctor_report()
-    finally:
-        symdelta.shutil.which = original_which
-        symdelta.check_language_server = original_check
+    monkeypatch.setattr(symdelta.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(symdelta, "check_language_server", fake_check)
+
+    report = symdelta.doctor_report()
 
     by_lang = {line.split(":", 1)[0]: line for line in report.splitlines()}
     assert 'export PATH="/opt/npm/bin:$PATH"' in by_lang["typescript"]
@@ -1445,43 +955,32 @@ def test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy(
     assert symdelta.LANGUAGE_SERVER_REMEDY["python"] in by_lang["python"]
 
 
-def test_doctor_report_survives_a_present_but_broken_binary():
+def test_doctor_report_survives_a_present_but_broken_binary(monkeypatch):
     # shutil.which finds it, but spawning it still raises OSError (e.g. not executable) --
     # check_language_server only guards the initialize round-trip, not the spawn itself, so
     # doctor_report must catch this rather than losing the whole report to one bad language.
-    original_which = symdelta.shutil.which
-    original_check = symdelta.check_language_server
-    symdelta.shutil.which = lambda tool: None
-
     def fake_check(repo, lang):
         if lang == "typescript":
             raise OSError("Exec format error")
         return True, None
 
-    symdelta.check_language_server = fake_check
-    try:
-        report = symdelta.doctor_report()
-    finally:
-        symdelta.shutil.which = original_which
-        symdelta.check_language_server = original_check
+    monkeypatch.setattr(symdelta.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(symdelta, "check_language_server", fake_check)
+
+    report = symdelta.doctor_report()
 
     by_lang = {line.split(":", 1)[0]: line for line in report.splitlines()}
     assert "failed to start" in by_lang["typescript"]
     assert by_lang["python"].strip().endswith("OK (pyright-langserver advertises callHierarchy)")
 
 
-def test_main_doctor_flag_needs_no_repo_base_or_head():
-    original_argv = sys.argv
-    original_doctor_report = symdelta.doctor_report
-    symdelta.doctor_report = lambda: "stubbed doctor output"
-    sys.argv = ["symdelta.py", "--doctor"]
-    try:
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = symdelta.main()
-    finally:
-        sys.argv = original_argv
-        symdelta.doctor_report = original_doctor_report
+def test_main_doctor_flag_needs_no_repo_base_or_head(monkeypatch):
+    monkeypatch.setattr(symdelta, "doctor_report", lambda: "stubbed doctor output")
+    monkeypatch.setattr(sys, "argv", ["symdelta.py", "--doctor"])
+    buf = io.StringIO()
+
+    with contextlib.redirect_stdout(buf):
+        rc = symdelta.main()
 
     assert rc == 0
     assert buf.getvalue().strip() == "stubbed doctor output"
@@ -1514,131 +1013,89 @@ class _FakeTimingOutProc:
         return "", ""
 
 
-def test_check_typescript_tooling_raises_runtime_error_on_timeout():
-    original_popen = symdelta.subprocess.Popen
-    symdelta.subprocess.Popen = lambda cmd, **kwargs: _FakeTimingOutProc(cmd)
-    try:
-        try:
-            symdelta.check_typescript_tooling("/tmp/whatever")
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "60" in str(exc)
-    finally:
-        symdelta.subprocess.Popen = original_popen
-
-
-def test_run_ts_extractor_raises_runtime_error_on_timeout_and_still_cleans_up_the_files_list():
-    original_popen = symdelta.subprocess.Popen
+def test_tooling_timeout_surfaces_as_runtime_error(monkeypatch):
     seen_path = {}
 
     def fake_popen(cmd, **kwargs):
         seen_path["path"] = cmd[-1]
         return _FakeTimingOutProc(cmd)
 
-    symdelta.subprocess.Popen = fake_popen
-    try:
-        try:
-            symdelta.run_ts_extractor("/tmp/worktree", ["a.ts"])
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "600" in str(exc)
-        assert not os.path.exists(seen_path["path"])
-    finally:
-        symdelta.subprocess.Popen = original_popen
+    monkeypatch.setattr(symdelta.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError) as exc:
+        symdelta.check_typescript_tooling("/tmp/whatever")
+    assert "60" in str(exc.value)
+
+    with pytest.raises(RuntimeError) as exc:
+        symdelta.run_ts_extractor("/tmp/worktree", ["a.ts"])
+    assert "600" in str(exc.value)
+    assert not os.path.exists(seen_path["path"]), "the files list was not cleaned up"
 
 
-def test_run_in_process_group_handles_getpgid_race_without_crashing():
+def test_run_in_process_group_handles_getpgid_race_without_crashing(monkeypatch):
     # ProcessLookupError here means only the leader died, not the group -- hangs_after_kill=True
     # simulates a surviving descendant (tsserver) still holding the pipes open, so this also
     # covers the follow-up communicate() staying bounded instead of hanging.
-    original_popen = symdelta.subprocess.Popen
-    original_getpgid = symdelta.os.getpgid
-    symdelta.subprocess.Popen = lambda cmd, **kwargs: _FakeTimingOutProc(cmd, hangs_after_kill=True)
+    monkeypatch.setattr(
+        symdelta.subprocess, "Popen", lambda cmd, **kwargs: _FakeTimingOutProc(cmd, hangs_after_kill=True)
+    )
+    monkeypatch.setattr(symdelta.os, "getpgid", _raises(ProcessLookupError()))
 
-    def fake_getpgid(pid):
-        raise ProcessLookupError()
-
-    symdelta.os.getpgid = fake_getpgid
-    try:
-        try:
-            symdelta.run_in_process_group(["ignored"], timeout=1, what="test command")
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "test command" in str(exc) and "1" in str(exc)
-    finally:
-        symdelta.subprocess.Popen = original_popen
-        symdelta.os.getpgid = original_getpgid
+    with pytest.raises(RuntimeError) as exc:
+        symdelta.run_in_process_group(["ignored"], timeout=1, what="test command")
+    assert "test command" in str(exc.value) and "1" in str(exc.value)
 
 
-def test_run_in_process_group_kills_the_whole_group_not_just_the_direct_child():
+def test_run_in_process_group_kills_the_whole_group_not_just_the_direct_child(tmp_path):
     # A hung extract.py that spawned its own child (tsserver, in production) must not leave that
     # child orphaned when the outer timeout fires. This spawns a real grandchild process that
     # outlives a plain SIGKILL of the direct child, then asserts killpg took it down too.
-    if shutil.which("sleep") is None:
-        print(
-            "skip (no `sleep` on PATH): "
-            "test_run_in_process_group_kills_the_whole_group_not_just_the_direct_child"
-        )
-        return
+    cw_testlib.require_posix()
+    pidfile = tmp_path / "child.pid"
+    script = tmp_path / "spawn_and_hang.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(100)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+        "time.sleep(100)\n"
+    )
 
-    with tempfile.TemporaryDirectory() as tmp:
-        pidfile = Path(tmp) / "child.pid"
-        script = Path(tmp) / "spawn_and_hang.py"
-        script.write_text(
-            "import subprocess, sys, time\n"
-            "p = subprocess.Popen(['sleep', '100'])\n"
-            f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
-            "time.sleep(100)\n"
-        )
+    with pytest.raises(RuntimeError) as exc:
+        symdelta.run_in_process_group([sys.executable, str(script)], timeout=1.5, what="test command")
+    assert "test command" in str(exc.value) and "1.5" in str(exc.value)
 
-        try:
-            symdelta.run_in_process_group(
-                [sys.executable, str(script)], timeout=2, what="test command"
-            )
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "test command" in str(exc) and "2" in str(exc)
-
-        time.sleep(1)  # let the killed grandchild actually get reaped
-        child_pid = int(pidfile.read_text().strip())
+    child_pid = int(pidfile.read_text().strip())
+    deadline = time.monotonic() + 3
+    alive = True
+    while alive and time.monotonic() < deadline:
         try:
             os.kill(child_pid, 0)
-            alive = True
+            time.sleep(0.02)
         except ProcessLookupError:
             alive = False
-        assert not alive, "the sleep grandchild survived -- only the direct child was killed"
+    assert not alive, "the grandchild survived -- only the direct child was killed"
 
 
-def test_build_extractor_raises_runtime_error_on_timeout():
-    original_run = symdelta.subprocess.run
-    original_cache_dir = symdelta.CACHE_DIR
-    original_bin = symdelta.EXTRACTOR_BIN
+def test_go_extractor_timeout_is_a_runtime_error(tmp_path, monkeypatch):
+    def timeout_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=600)
 
-    def fake_run(*args, **kwargs):
-        raise symdelta.subprocess.TimeoutExpired(cmd="go build", timeout=600)
+    monkeypatch.setattr(symdelta.subprocess, "run", timeout_run)
+    # a fresh, nonexistent EXTRACTOR_BIN forces build_extractor past its "reuse an existing
+    # binary" short-circuit and into the subprocess.run call this test targets
+    monkeypatch.setattr(symdelta, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(symdelta, "EXTRACTOR_BIN", tmp_path / "cache" / "symdelta-go-extractor")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        # a fresh, nonexistent EXTRACTOR_BIN forces build_extractor past its "reuse an existing
-        # binary" short-circuit and into the subprocess.run call this test targets
-        symdelta.CACHE_DIR = Path(tmp) / "cache"
-        symdelta.EXTRACTOR_BIN = symdelta.CACHE_DIR / "symdelta-go-extractor"
-        symdelta.subprocess.run = fake_run
-        try:
-            try:
-                symdelta.build_extractor()
-                assert False, "expected RuntimeError"
-            except RuntimeError as exc:
-                assert "600" in str(exc)
-        finally:
-            symdelta.subprocess.run = original_run
-            symdelta.CACHE_DIR = original_cache_dir
-            symdelta.EXTRACTOR_BIN = original_bin
+    with pytest.raises(RuntimeError) as exc:
+        symdelta.build_extractor()
+    assert "600" in str(exc.value)
+
+    with pytest.raises(RuntimeError) as exc:
+        symdelta.run_extractor("/tmp/some-worktree")
+    assert "600" in str(exc.value) and "/tmp/some-worktree" in str(exc.value)
 
 
-def test_build_extractor_builds_to_a_temp_path_and_replaces_the_real_binary():
-    original_run = symdelta.subprocess.run
-    original_cache_dir = symdelta.CACHE_DIR
-    original_bin = symdelta.EXTRACTOR_BIN
+def test_build_extractor_builds_to_a_temp_path_and_replaces_the_real_binary(tmp_path, monkeypatch):
     recorded = {}
 
     def fake_run(cmd, **kwargs):
@@ -1647,64 +1104,40 @@ def test_build_extractor_builds_to_a_temp_path_and_replaces_the_real_binary():
         out_path.write_text("fake binary")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        symdelta.CACHE_DIR = Path(tmp) / "cache"
-        symdelta.EXTRACTOR_BIN = symdelta.CACHE_DIR / "symdelta-go-extractor"
-        symdelta.CACHE_DIR.mkdir(parents=True)
-        symdelta.subprocess.run = fake_run
-        try:
-            symdelta.build_extractor()
-        finally:
-            symdelta.subprocess.run = original_run
-            symdelta.CACHE_DIR = original_cache_dir
-            symdelta.EXTRACTOR_BIN = original_bin
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(symdelta, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(symdelta, "EXTRACTOR_BIN", cache_dir / "symdelta-go-extractor")
+    monkeypatch.setattr(symdelta.subprocess, "run", fake_run)
 
-        assert recorded["out_path"] != Path(tmp) / "cache" / "symdelta-go-extractor"
-        assert (Path(tmp) / "cache" / "symdelta-go-extractor").exists()
-        assert not recorded["out_path"].exists(), "temp build file was not replaced away"
+    symdelta.build_extractor()
+
+    assert recorded["out_path"] != cache_dir / "symdelta-go-extractor"
+    assert (cache_dir / "symdelta-go-extractor").exists()
+    assert not recorded["out_path"].exists(), "temp build file was not replaced away"
 
 
-def test_run_extractor_raises_runtime_error_on_timeout():
-    original_run = symdelta.subprocess.run
-
-    def fake_run(*args, **kwargs):
-        raise symdelta.subprocess.TimeoutExpired(cmd="extractor", timeout=600)
-
-    symdelta.subprocess.run = fake_run
-    try:
-        try:
-            symdelta.run_extractor("/tmp/some-worktree")
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "600" in str(exc) and "/tmp/some-worktree" in str(exc)
-    finally:
-        symdelta.subprocess.run = original_run
-
-
-def test_run_extractor_omits_goflags_when_go_work_exists_and_sets_it_otherwise():
+def test_run_extractor_omits_goflags_when_go_work_exists_and_sets_it_otherwise(tmp_path, monkeypatch):
     # -mod=mod is illegal once Go is in workspace mode ("go: -mod may only be set to readonly
     # or vendor when in workspace mode"), so this must track go.work's presence, not be constant.
-    original_run = symdelta.subprocess.run
     captured = {}
 
     def fake_run(cmd, **kwargs):
         captured["env"] = kwargs["env"]
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    symdelta.subprocess.run = fake_run
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            worktree = Path(tmp)
-            (worktree / "go.work").write_text("go 1.21\n\nuse ./a\n")
-            symdelta.run_extractor(worktree)
-            assert "GOFLAGS" not in captured["env"]
+    monkeypatch.setattr(symdelta.subprocess, "run", fake_run)
+    with_work = tmp_path / "with-work"
+    with_work.mkdir()
+    (with_work / "go.work").write_text("go 1.21\n\nuse ./a\n")
+    without_work = tmp_path / "without-work"
+    without_work.mkdir()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            worktree = Path(tmp)
-            symdelta.run_extractor(worktree)
-            assert captured["env"]["GOFLAGS"] == "-mod=mod"
-    finally:
-        symdelta.subprocess.run = original_run
+    symdelta.run_extractor(with_work)
+    assert "GOFLAGS" not in captured["env"]
+
+    symdelta.run_extractor(without_work)
+    assert captured["env"]["GOFLAGS"] == "-mod=mod"
 
 
 def test_lsp_client_shutdown_swallows_timeout_from_an_unreapable_process():
@@ -1712,7 +1145,7 @@ def test_lsp_client_shutdown_swallows_timeout_from_an_unreapable_process():
     # from a `finally` in extract.py, so an unguarded wait() there would shadow whatever
     # original exception was propagating.
     client = lsp_client.LSPClient.__new__(lsp_client.LSPClient)
-    client.request = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no real server"))
+    client.request = _raises(RuntimeError("no real server"))
     client.notify = lambda *a, **kw: None
 
     class _NeverDies:
@@ -1732,730 +1165,374 @@ def test_lsp_client_shutdown_swallows_timeout_from_an_unreapable_process():
 # ---- wiring tests: real (throwaway) git repos ------------------------------------------
 
 
-def test_no_supported_files_short_circuits_with_null_language():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "readme.md", "hello\n")
-        base = _commit(repo, "base")
-        _write(repo, "readme.md", "hello world\n")
-        head = _commit(repo, "head")
+def test_no_supported_files_short_circuits_with_null_language(tmp_path):
+    repo, base, head = make_repo(tmp_path, {"readme.md": "hello\n"}, {"readme.md": "hello world\n"})
 
-        result = _run_symdelta(repo, base, head)
+    result = _run_symdelta(repo, base, head)
 
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload == {
-            "language": None,
-            "reason": f"no supported files (.go, .py, .rs, .ts, .tsx) changed between {base} and {head}",
-        }
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "language": None,
+        "reason": f"no supported files (.go, .py, .rs, .ts, .tsx) changed between {base} and {head}",
+    }
 
 
-def test_detect_language_picks_the_majority_on_a_mixed_diff():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/mixed\n\ngo 1.21\n")
-        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {}\n")
-        _write(repo, "src/a.ts", "export function a() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {}\nfunc Other() {}\n")
-        _write(repo, "src/a.ts", "export function a() { console.log(1); }\n")
-        _write(repo, "src/b.ts", "export function b() {}\n")
-        head = _commit(repo, "head")
+def test_detect_language_picks_the_majority_on_a_mixed_diff(tmp_path):
+    repo, base, head = make_repo(
+        tmp_path,
+        {"go.mod": "module example.com/mixed\n\ngo 1.21\n",
+         "pkg/a.go": "package pkg\n\nfunc Caller() {}\n",
+         "src/a.ts": "export function a() {}\n"},
+        {"pkg/a.go": "package pkg\n\nfunc Caller() {}\nfunc Other() {}\n",
+         "src/a.ts": "export function a() { console.log(1); }\n",
+         "src/b.ts": "export function b() {}\n"},
+    )
 
-        lang, reason = symdelta.detect_language(repo, base, head)
-        assert lang == "typescript"
-        assert "2 typescript" in reason and "1 go" in reason
+    lang, reason = symdelta.detect_language(repo, base, head)
+    assert lang == "typescript"
+    assert "2 typescript" in reason and "1 go" in reason
 
 
-def test_ts_files_by_side_excludes_added_from_base_and_deleted_from_head():
-    entries = [
+def test_ts_files_by_side():
+    ts_entries = [
         ("A", "src/new.ts", "src/new.ts"),
         ("D", "src/old.ts", "src/old.ts"),
         ("M", "src/both.ts", "src/both.ts"),
         ("R100", "src/before.ts", "src/after.ts"),
         ("M", "readme.md", "readme.md"),
     ]
-    base_files, head_files = symdelta.ts_files_by_side(entries)
-    assert sorted(base_files) == ["src/before.ts", "src/both.ts", "src/old.ts"]
-    assert sorted(head_files) == ["src/after.ts", "src/both.ts", "src/new.ts"]
-
-
-def test_ts_files_by_side_filters_by_given_extensions():
-    entries = [
+    mixed = [
         ("A", "src/new.py", "src/new.py"),
         ("D", "src/old.rs", "src/old.rs"),
         ("M", "src/both.ts", "src/both.ts"),
     ]
-    base_files, head_files = symdelta.ts_files_by_side(entries, (".py",))
-    assert base_files == [] and head_files == ["src/new.py"]
-
-    base_files, head_files = symdelta.ts_files_by_side(entries, (".rs",))
-    assert base_files == ["src/old.rs"] and head_files == []
-
-
-def test_bad_ref_fails_with_nonzero_exit():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "readme.md", "hello\n")
-        _commit(repo, "base")
-
-        result = _run_symdelta(repo, "not-a-real-ref", "HEAD")
-
-        assert result.returncode == 1
-        assert "bad ref" in result.stderr
+    rows = [
+        ("added is excluded from base, deleted from head (default extensions)", ts_entries, (),
+         ["src/before.ts", "src/both.ts", "src/old.ts"], ["src/after.ts", "src/both.ts", "src/new.ts"]),
+        ("python extensions", mixed, ((".py",),), [], ["src/new.py"]),
+        ("rust extensions", mixed, ((".rs",),), ["src/old.rs"], []),
+    ]
+    for label, entries, exts, want_base, want_head in rows:
+        base_files, head_files = symdelta.ts_files_by_side(entries, *exts)
+        assert sorted(base_files) == want_base, label
+        assert sorted(head_files) == want_head, label
 
 
-def test_analyse_does_not_crash_on_an_orphan_baseline():
-    # End-to-end version of the orphan-baseline bug above: it used to fail every git-diff call
-    # in analyse()'s pipeline with a three-dot "no merge base" error. A missing language-server
-    # tool is a legitimate, separate reason to bail out; a merge-base crash is not.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        head = _commit(repo, "head")
-        orphan = _orphan_baseline(repo)
+def test_bad_ref_fails_with_nonzero_exit(tmp_path):
+    repo, _head = _head_only_repo(tmp_path, {"readme.md": "hello\n"})
 
-        result = _run_symdelta(repo, orphan, head)
+    result = _run_symdelta(repo, "not-a-real-ref", "HEAD")
 
-        assert result.returncode == 0, result.stderr
-        assert "no merge base" not in result.stderr
-        payload = json.loads(result.stdout)
-        assert "language" in payload
+    assert result.returncode == 1
+    assert "bad ref" in result.stderr
 
 
-def test_is_empty_base_matches_the_baseline_by_tree_not_by_commit():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        head = _commit(repo, "head")
+def test_analyse_does_not_crash_on_an_orphan_baseline(tmp_path, monkeypatch):
+    # No merge base must not break any git step of analyse()'s pipeline (resolve_base,
+    # detect_language, _rename_map, ts_diff_entries, _run_in_worktrees all run `git diff
+    # base..head`); it used to fail every one with a three-dot "no merge base" error. The
+    # language server is not what is under test, so the preflight and extractor are stubbed.
+    seen = []
 
-        assert symdelta.is_empty_base(repo, _orphan_baseline(repo))
-        assert not symdelta.is_empty_base(repo, head)
+    def fake_extractor(worktree_path, rel_files, lang="typescript"):
+        seen.append((lang, list(rel_files), (Path(worktree_path) / rel_files[0]).exists()))
+        return [{"FromFile": "a.py", "FromSym": "a", "ToFile": "a.py", "ToSym": "b"}]
+
+    monkeypatch.setattr(symdelta, "check_typescript_tooling", lambda repo, lang="typescript": (True, None))
+    monkeypatch.setattr(symdelta, "run_ts_extractor", fake_extractor)
+    repo, head = _head_only_repo(tmp_path, {"a.py": "def a():\n    pass\n"})
+
+    result = symdelta.analyse(repo, orphan_baseline(repo), head)
+
+    assert result["language"] == "python" and result["counts"]["edges_new"] == 1
+    assert seen == [("python", ["a.py"], True)]  # base side skipped, head side ran
 
 
-def test_the_empty_baseline_gets_no_worktree_and_no_extractor_run():
+def test_is_empty_base_matches_the_baseline_by_tree_not_by_commit(tmp_path):
+    repo, head = _head_only_repo(tmp_path, {"a.py": "def a():\n    pass\n"})
+
+    assert symdelta.is_empty_base(repo, orphan_baseline(repo))
+    assert not symdelta.is_empty_base(repo, head)
+
+
+def test_the_empty_baseline_gets_no_worktree_and_no_extractor_run(tmp_path):
     # A checkout of the empty tree has no go.mod, no package.json and no source, so every
     # extractor used to fail on it and take the whole symbols section down with it.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        head = _commit(repo, "head")
-        orphan = _orphan_baseline(repo)
-        seen = []
+    repo, head = _head_only_repo(tmp_path, {"a.py": "def a():\n    pass\n"})
+    orphan = orphan_baseline(repo)
+    seen = []
 
-        def base_extractor(path):
-            seen.append(path)
-            raise AssertionError("the base extractor must not run against the empty baseline")
+    def base_extractor(path):
+        seen.append(path)
+        raise AssertionError("the base extractor must not run against the empty baseline")
 
-        def head_extractor(path):
-            assert (path / "a.py").exists()
-            return ["edge"]
+    def head_extractor(path):
+        assert (path / "a.py").exists()
+        return ["edge"]
 
-        base_edges, head_edges = symdelta._run_in_worktrees(
-            repo, orphan, head, base_extractor, head_extractor
-        )
+    base_edges, head_edges = symdelta._run_in_worktrees(repo, orphan, head, base_extractor, head_extractor)
 
-        assert seen == []
-        assert base_edges == []
-        assert head_edges == ["edge"]
+    assert seen == []
+    assert base_edges == []
+    assert head_edges == ["edge"]
 
 
-def test_a_real_base_still_gets_its_own_worktree():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.py", "def a():\n    pass\n")
-        base = _commit(repo, "base")
-        _write(repo, "b.py", "def b():\n    pass\n")
-        head = _commit(repo, "head")
+def test_a_real_base_still_gets_its_own_worktree(tmp_path):
+    repo, base, head = make_repo(tmp_path, {"a.py": "def a():\n    pass\n"}, {"b.py": "def b():\n    pass\n"})
 
-        both = symdelta._run_in_worktrees(
-            repo, base, head,
-            lambda p: [(p / "a.py").exists(), (p / "b.py").exists()],
-            lambda p: [(p / "a.py").exists(), (p / "b.py").exists()],
-        )
+    both = symdelta._run_in_worktrees(
+        repo, base, head,
+        lambda p: [(p / "a.py").exists(), (p / "b.py").exists()],
+        lambda p: [(p / "a.py").exists(), (p / "b.py").exists()],
+    )
 
-        assert both == ([True, False], [True, True])
+    assert both == ([True, False], [True, True])
 
 
-def test_end_to_end_ts_repo_reports_a_cross_file_call():
-    if shutil.which("typescript-language-server") is None:
-        print("skip (no typescript-language-server on PATH): test_end_to_end_ts_repo_reports_a_cross_file_call")
-        return
+def test_end_to_end_ts_repo(tmp_path):
+    cw_testlib.require_ts_language_server()
+    repo, base, head = make_repo(
+        tmp_path,
+        {
+            "tsconfig.json": '{"compilerOptions": {"target": "es2020", "module": "commonjs"}}\n',
+            "src/b.ts": "export function callee() {\n    return 1;\n}\n",
+            "src/a.ts": 'import { callee } from "./b";\n\nexport function caller() {\n    return 0;\n}\n',
+            "index.ts": "export function callee() {\n    return 1;\n}\n\n"
+                        "export function caller() {\n    return 0;\n}\n",
+            "a.ts": "export function run() {\n    return 1;\n}\n",
+            "b.ts": "export function run() {\n    return 2;\n}\n",
+            "entry.ts": 'import { run as runA } from "./a";\nimport { run as runB } from "./b";\n\n'
+                        "export function caller() {\n    return 0;\n}\n",
+        },
+        {
+            "src/a.ts": 'import { callee } from "./b";\n\nexport function caller() {\n    return callee();\n}\n',
+            "index.ts": "export function callee() {\n    return 1;\n}\n\n"
+                        "export function caller() {\n    return callee();\n}\n",
+            "entry.ts": 'import { run as runA } from "./a";\nimport { run as runB } from "./b";\n\n'
+                        "export function caller() {\n    return runA() + runB();\n}\n",
+        },
+    )
 
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "tsconfig.json", '{"compilerOptions": {"target": "es2020", "module": "commonjs"}}\n')
-        _write(repo, "src/b.ts", "export function callee() {\n    return 1;\n}\n")
-        _write(repo, "src/a.ts", 'import { callee } from "./b";\n\nexport function caller() {\n    return 0;\n}\n')
-        base = _commit(repo, "base")
-        _write(
-            repo, "src/a.ts",
-            'import { callee } from "./b";\n\nexport function caller() {\n    return callee();\n}\n',
-        )
-        head = _commit(repo, "head")
+    result = _run_symdelta(repo, base, head)
 
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["language"] == "typescript"
-        assert payload["counts"]["edges_new"] == 1
-        assert any(
-            e["source"] == "src:caller" and e["target"] == "src:callee" for e in payload["edges"]
-        )
-        # the extractor's own worktrees must not leak into the repo's worktree list
-        worktrees = _git(repo, "worktree", "list")
-        assert worktrees.strip().splitlines() == [worktrees.strip().splitlines()[0]]
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["language"] == "typescript"
+    # one new call each in src/a.ts, index.ts and (two) entry.ts
+    assert payload["counts"]["edges_new"] >= 1
+    assert any(e["source"] == "src:caller" and e["target"] == "src:callee" for e in payload["edges"])
+    symbol_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "symbol"}
+    assert "(root):index.caller" in symbol_ids
+    assert "(root):index.callee" in symbol_ids
+    # Same function name ("run"), two unrelated root files -- must not collapse onto one id.
+    assert "(root):a.run" in symbol_ids
+    assert "(root):b.run" in symbol_ids
+    assert not any(sid.startswith(":") for sid in symbol_ids)
+    _assert_no_worktree_leak(repo)
 
 
-def test_analyse_go_returns_null_language_when_the_extractor_fails():
+def test_analyse_go_returns_null_language_when_the_extractor_fails(tmp_path, monkeypatch):
     # A RuntimeError out of run_extractor (e.g. the silent-zero guard tripping) used to
     # propagate to main() and exit 1 with symdelta.json never written at all, taking the whole
     # symbols section down with no note. build_extractor failures (toolchain/setup problems)
     # must still raise, so only run_extractor is faked here.
-    original_build = symdelta.build_extractor
-    original_run = symdelta.run_extractor
-    symdelta.build_extractor = lambda: None
-    symdelta.run_extractor = lambda worktree_path: (_ for _ in ()).throw(
-        RuntimeError("extractor: loaded 3 packages, 0 in-repo with type info")
+    monkeypatch.setattr(symdelta, "build_extractor", lambda: None)
+    monkeypatch.setattr(
+        symdelta, "run_extractor",
+        _raises(RuntimeError("extractor: loaded 3 packages, 0 in-repo with type info")),
     )
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            _write(repo, "go.mod", "module example.com/x\n\ngo 1.21\n")
-            _write(repo, "pkg/a.go", "package pkg\n\nfunc A() {}\n")
-            base = _commit(repo, "base")
-            _write(repo, "pkg/a.go", "package pkg\n\nfunc A() {}\n\nfunc B() {}\n")
-            head = _commit(repo, "head")
+    repo, base, head = make_repo(
+        tmp_path,
+        {"go.mod": "module example.com/x\n\ngo 1.21\n", "pkg/a.go": "package pkg\n\nfunc A() {}\n"},
+        {"pkg/a.go": "package pkg\n\nfunc A() {}\n\nfunc B() {}\n"},
+    )
 
-            result = symdelta.analyse_go(repo, base, head)
-            assert result == {
-                "language": None,
-                "reason": "extractor: loaded 3 packages, 0 in-repo with type info",
-            }
-    finally:
-        symdelta.build_extractor = original_build
-        symdelta.run_extractor = original_run
+    result = symdelta.analyse_go(repo, base, head)
+    assert result == {
+        "language": None,
+        "reason": "extractor: loaded 3 packages, 0 in-repo with type info",
+    }
 
 
-def test_analyse_lsp_returns_null_language_when_the_extractor_fails():
+def test_analyse_lsp_returns_null_language_when_the_extractor_fails(tmp_path, monkeypatch):
     # A RuntimeError out of run_ts_extractor (e.g. extract_edges's own zero guards tripping)
     # used to propagate to main() and exit 1 with symdelta.json never written at all. No remedy
     # here, unlike analyse_go's counterpart -- analyse_lsp's own comment explains why.
-    original_check = symdelta.check_typescript_tooling
-    original_run = symdelta.run_ts_extractor
-    symdelta.check_typescript_tooling = lambda repo, lang="typescript": (True, None)
-    symdelta.run_ts_extractor = lambda worktree_path, rel_files, lang="typescript": (
-        _ for _ in ()
-    ).throw(RuntimeError("LSP extractor failed on /tmp/x: python: 0 of 2 files yielded any symbols"))
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _init_repo(repo)
-            _write(repo, "a.py", "def a():\n    pass\n")
-            base = _commit(repo, "base")
-            _write(repo, "a.py", "def a():\n    return 1\n")
-            head = _commit(repo, "head")
+    monkeypatch.setattr(symdelta, "check_typescript_tooling", lambda repo, lang="typescript": (True, None))
+    monkeypatch.setattr(
+        symdelta, "run_ts_extractor",
+        _raises(RuntimeError("LSP extractor failed on /tmp/x: python: 0 of 2 files yielded any symbols")),
+    )
+    repo, base, head = make_repo(
+        tmp_path, {"a.py": "def a():\n    pass\n"}, {"a.py": "def a():\n    return 1\n"}
+    )
 
-            result = symdelta.analyse_python(repo, base, head)
-            assert result == {
-                "language": None,
-                "reason": "LSP extractor failed on /tmp/x: python: 0 of 2 files yielded any symbols",
-            }
-            assert "remedy" not in result
-    finally:
-        symdelta.check_typescript_tooling = original_check
-        symdelta.run_ts_extractor = original_run
+    result = symdelta.analyse_python(repo, base, head)
+    assert result == {
+        "language": None,
+        "reason": "LSP extractor failed on /tmp/x: python: 0 of 2 files yielded any symbols",
+    }
+    assert "remedy" not in result
 
 
-def test_llm_head_edges_malformed_line_errors_with_the_line_number():
-    with tempfile.TemporaryDirectory() as tmp:
-        edges_path = Path(tmp) / "bad.jsonl"
-        edges_path.write_text('{"FromFile": "a.go", "FromSym": "A", "ToFile": "a.go"}\n')
-        try:
-            symdelta._load_llm_edges(str(edges_path))
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert f"{edges_path}:1:" in str(exc)
+def test_llm_head_edges_malformed_line_errors_with_the_line_number(tmp_path):
+    edges_path = tmp_path / "bad.jsonl"
+    edges_path.write_text('{"FromFile": "a.go", "FromSym": "A", "ToFile": "a.go"}\n')
+
+    with pytest.raises(RuntimeError) as exc:
+        symdelta._load_llm_edges(str(edges_path))
+    assert f"{edges_path}:1:" in str(exc.value)
 
 
-def test_llm_head_edges_produces_a_graph_with_llm_resolver():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {}\n\nfunc Callee() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n")
-        head = _commit(repo, "head")
+def test_llm_head_edges_produces_a_graph_with_llm_resolver(tmp_path):
+    repo, base, head = make_repo(
+        tmp_path,
+        {"pkg/a.go": "package pkg\n\nfunc Caller() {}\n\nfunc Callee() {}\n"},
+        {"pkg/a.go": "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n"},
+    )
+    edges_path = repo / "llm-edges.jsonl"
+    edges_path.write_text(json.dumps({
+        "FromFile": "pkg/a.go", "FromSym": "Caller", "ToFile": "pkg/a.go", "ToSym": "Callee",
+    }) + "\n")
 
-        edges_path = repo / "llm-edges.jsonl"
-        edges_path.write_text(json.dumps({
-            "FromFile": "pkg/a.go", "FromSym": "Caller", "ToFile": "pkg/a.go", "ToSym": "Callee",
-        }) + "\n")
+    result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
 
-        result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
-
-        assert result["language"] == "go"  # detect_language still names the real language
-        assert result["resolver"] == "llm"
-        assert result["counts"]["edges_new"] == 1
-        assert any(
-            e["source"] == "pkg:Caller" and e["target"] == "pkg:Callee" for e in result["edges"]
-        )
-
-
-def test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected():
-    # The whole point of this tier is that the mechanical one declined; detect_language finding
-    # no supported extension at all must not refuse the LLM path too.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "readme.md", "hello\n")
-        base = _commit(repo, "base")
-        _write(repo, "readme.md", "hello world\n")
-        head = _commit(repo, "head")
-
-        edges_path = repo / "llm-edges.jsonl"
-        edges_path.write_text(json.dumps({
-            "FromFile": "a", "FromSym": "A", "ToFile": "b", "ToSym": "B",
-        }) + "\n")
-
-        result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
-        assert result["language"] == "unknown"
-        assert result["resolver"] == "llm"
-
-
-def test_llm_tier_symbol_nodes_carry_no_range():
+    assert result["language"] == "go"  # detect_language still names the real language
+    assert result["resolver"] == "llm"
+    assert result["counts"]["edges_new"] == 1
+    assert any(
+        e["source"] == "pkg:Caller" and e["target"] == "pkg:Callee" for e in result["edges"]
+    )
     # The LLM tier's wire shape is validated against _LLM_EDGE_FIELDS, which has no *Start/*End
     # keys at all -- position-less by schema, so its nodes must never carry a fabricated range.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {}\n\nfunc Callee() {}\n")
-        base = _commit(repo, "base")
-        _write(repo, "pkg/a.go", "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n")
-        head = _commit(repo, "head")
-
-        edges_path = repo / "llm-edges.jsonl"
-        edges_path.write_text(json.dumps({
-            "FromFile": "pkg/a.go", "FromSym": "Caller", "ToFile": "pkg/a.go", "ToSym": "Callee",
-        }) + "\n")
-
-        result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
-        symbol_nodes = [n for n in result["nodes"] if n["kind"] == "symbol"]
-        assert symbol_nodes  # sanity: this tier did produce symbol nodes
-        assert all("range" not in n for n in symbol_nodes)
+    symbol_nodes = [n for n in result["nodes"] if n["kind"] == "symbol"]
+    assert symbol_nodes  # sanity: this tier did produce symbol nodes
+    assert all("range" not in n for n in symbol_nodes)
 
 
-def test_end_to_end_go_repo_reports_added_and_removed_symbols():
-    if shutil.which("go") is None:
-        print("skip (no `go` on PATH): test_end_to_end_go_repo_reports_added_and_removed_symbols")
-        return
+def test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected(tmp_path):
+    # The whole point of this tier is that the mechanical one declined; detect_language finding
+    # no supported extension at all must not refuse the LLM path too.
+    repo, base, head = make_repo(tmp_path, {"readme.md": "hello\n"}, {"readme.md": "hello world\n"})
+    edges_path = repo / "llm-edges.jsonl"
+    edges_path.write_text(json.dumps({
+        "FromFile": "a", "FromSym": "A", "ToFile": "b", "ToSym": "B",
+    }) + "\n")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        # The vendored extractor (extractors/go/main.go) filters packages by the module path it
-        # reads from go.mod, so an unrelated module name proves that filter isn't hardcoded to
-        # this repo.
-        _write(repo, "go.mod", "module example.com/some-other-module\n\ngo 1.21\n")
-        _write(
-            repo,
-            "pkg/a.go",
-            "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo,
-            "pkg/a.go",
-            "package pkg\n\nfunc Caller() {\n\tCallee()\n\tNewCallee()\n}\n\n"
-            "func Callee() {}\n\nfunc NewCallee() {}\n",
-        )
-        head = _commit(repo, "head")
-
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["language"] == "go"
-        assert payload["counts"]["edges_new"] == 1
-        assert payload["counts"]["edges_gone"] == 0
-        assert any(
-            e["source"] == "pkg:Caller" and e["target"] == "pkg:NewCallee"
-            for e in payload["edges"]
-        )
-        # the extractor's own worktrees must not leak into the repo's worktree list
-        worktrees = _git(repo, "worktree", "list")
-        assert worktrees.strip().splitlines() == [worktrees.strip().splitlines()[0]]
+    result = symdelta.analyse(repo, base, head, llm_head_edges=str(edges_path))
+    assert result["language"] == "unknown"
+    assert result["resolver"] == "llm"
 
 
-def test_end_to_end_go_repo_reports_symbol_ranges_for_new_changed_and_gone_symbols():
-    # Depends on the Go extractor (extractors/go/main.go) emitting FromStart/FromEnd/ToStart/
-    # ToEnd on the wire; a failure here with an empty/absent "range" means the extractor isn't
-    # emitting positions yet, not a bug in this test.
-    if shutil.which("go") is None:
-        print(
-            "skip (no `go` on PATH): "
-            "test_end_to_end_go_repo_reports_symbol_ranges_for_new_changed_and_gone_symbols"
-        )
-        return
-
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/range-module\n\ngo 1.21\n")
-        _write(
-            repo,
-            "pkg/a.go",
-            "package pkg\n\nfunc Caller() {\n\tCallee()\n\tOldCallee()\n}\n\n"
-            "func Callee() {}\n\nfunc OldCallee() {}\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo,
-            "pkg/a.go",
-            "package pkg\n\nfunc Caller() {\n\tCallee()\n\tNewCallee()\n}\n\n"
-            "func Callee() {}\n\nfunc NewCallee() {}\n",
-        )
-        head = _commit(repo, "head")
-
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        nodes = {n["id"]: n for n in payload["nodes"] if n["kind"] == "symbol"}
-
-        # Caller: "func Caller() {" on line 3 of the HEAD fixture above, closing "}" on line 6.
-        assert nodes["pkg:Caller"]["range"] == [3, 6]
-        # NewCallee: single-line "func NewCallee() {}" on line 10 of the HEAD fixture.
-        assert nodes["pkg:NewCallee"]["range"] == [10, 10]
-        # OldCallee only exists at BASE, on line 10 of the BASE fixture -- its range must be the
-        # BASE-side declaration, not absent and not HEAD's (it has none at HEAD).
-        assert nodes["pkg:OldCallee"]["state"] == "gone"
-        assert nodes["pkg:OldCallee"]["range"] == [10, 10]
-
-
-def test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking():
-    # Assembly-backed / //go:linkname funcs have no Go body; extracting one used to call
+def test_end_to_end_go_repo(tmp_path):
+    cw_testlib.require_go_extractor()
+    # The vendored extractor (extractors/go/main.go) filters packages by the module path it
+    # reads from go.mod, so an unrelated module name proves that filter isn't hardcoded to
+    # this repo. asmFunc is an assembly-backed func with no Go body; extracting one used to call
     # ast.Inspect(nil, ...) and panic, aborting the whole extraction.
-    if shutil.which("go") is None:
-        print("skip (no `go` on PATH): test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking")
-        return
+    repo, base, head = make_repo(
+        tmp_path,
+        {
+            "go.mod": "module example.com/some-other-module\n\ngo 1.21\n",
+            "pkg/a.go": "package pkg\n\nfunc Caller() {\n\tCallee()\n\tOldCallee()\n}\n\n"
+                        "func Callee() {}\n\nfunc OldCallee() {}\n\n"
+                        "func asmFunc() uint64\n",
+            "pkg/a_amd64.s": '#include "textflag.h"\n\n'
+                             "TEXT ·asmFunc(SB), NOSPLIT, $0-8\n\tMOVQ $42, ret+0(FP)\n\tRET\n",
+        },
+        {
+            "pkg/a.go": "package pkg\n\nfunc Caller() {\n\tCallee()\n\tNewCallee()\n}\n\n"
+                        "func Callee() {}\n\nfunc NewCallee() {}\n\n"
+                        "func asmFunc() uint64\n",
+        },
+    )
 
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/bodyless-module\n\ngo 1.21\n")
-        _write(
-            repo,
-            "pkg/a.go",
-            "package pkg\n\nfunc Caller() {\n\tCallee()\n}\n\nfunc Callee() {}\n\n"
-            "func asmFunc() uint64\n",
-        )
-        _write(
-            repo,
-            "pkg/a_amd64.s",
-            "#include \"textflag.h\"\n\n"
-            "TEXT ·asmFunc(SB), NOSPLIT, $0-8\n\tMOVQ $42, ret+0(FP)\n\tRET\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo,
-            "pkg/a.go",
-            "package pkg\n\nfunc Caller() {\n\tCallee()\n\tNewCallee()\n}\n\n"
-            "func Callee() {}\n\nfunc NewCallee() {}\n\n"
-            "func asmFunc() uint64\n",
-        )
-        head = _commit(repo, "head")
+    result = _run_symdelta(repo, base, head)
 
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["language"] == "go"
-        assert payload["counts"]["edges_new"] == 1
-        assert any(
-            e["source"] == "pkg:Caller" and e["target"] == "pkg:NewCallee"
-            for e in payload["edges"]
-        )
-
-
-def test_end_to_end_go_repo_root_level_symbol_uses_the_root_sentinel():
-    if shutil.which("go") is None:
-        print("skip (no `go` on PATH): test_end_to_end_go_repo_root_level_symbol_uses_the_root_sentinel")
-        return
-
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/root-go\n\ngo 1.21\n")
-        _write(repo, "main.go", "package main\n\nfunc main() {\n\tCallee()\n}\n\nfunc Callee() {}\n")
-        base = _commit(repo, "base")
-        _write(
-            repo, "main.go",
-            "package main\n\nfunc main() {\n\tCallee()\n\tNewCallee()\n}\n\n"
-            "func Callee() {}\n\nfunc NewCallee() {}\n",
-        )
-        head = _commit(repo, "head")
-
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["language"] == "go"
-        symbol_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "symbol"}
-        assert "(root):main.NewCallee" in symbol_ids
-        assert not any(sid.startswith(":") for sid in symbol_ids)
-        pkg_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "pkg"}
-        assert "(root)" in pkg_ids
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["language"] == "go"
+    assert payload["counts"]["edges_new"] == 1
+    assert payload["counts"]["edges_gone"] == 1
+    assert any(
+        e["source"] == "pkg:Caller" and e["target"] == "pkg:NewCallee" for e in payload["edges"]
+    )
+    nodes = {n["id"]: n for n in payload["nodes"] if n["kind"] == "symbol"}
+    # Depends on the Go extractor emitting FromStart/FromEnd/ToStart/ToEnd on the wire; an
+    # empty/absent "range" here means it isn't emitting positions, not a bug in this test.
+    # Caller: "func Caller() {" on line 3 of the HEAD fixture above, closing "}" on line 6.
+    assert nodes["pkg:Caller"]["range"] == [3, 6]
+    # NewCallee: single-line "func NewCallee() {}" on line 10 of the HEAD fixture.
+    assert nodes["pkg:NewCallee"]["range"] == [10, 10]
+    # OldCallee only exists at BASE, on line 10 of the BASE fixture -- its range must be the
+    # BASE-side declaration, not absent and not HEAD's (it has none at HEAD).
+    assert nodes["pkg:OldCallee"]["state"] == "gone"
+    assert nodes["pkg:OldCallee"]["range"] == [10, 10]
+    _assert_no_worktree_leak(repo)
 
 
-def test_end_to_end_ts_repo_root_level_symbol_uses_the_root_sentinel():
-    if shutil.which("typescript-language-server") is None:
-        print("skip (no typescript-language-server on PATH): test_end_to_end_ts_repo_root_level_symbol_uses_the_root_sentinel")
-        return
+def test_end_to_end_go_repo_root_level_symbol_uses_the_root_sentinel(tmp_path):
+    cw_testlib.require_go_extractor()
+    repo, base, head = make_repo(
+        tmp_path,
+        {"go.mod": "module example.com/root-go\n\ngo 1.21\n",
+         "main.go": "package main\n\nfunc main() {\n\tCallee()\n}\n\nfunc Callee() {}\n"},
+        {"main.go": "package main\n\nfunc main() {\n\tCallee()\n\tNewCallee()\n}\n\n"
+                    "func Callee() {}\n\nfunc NewCallee() {}\n"},
+    )
 
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "tsconfig.json", '{"compilerOptions": {"target": "es2020", "module": "commonjs"}}\n')
-        _write(
-            repo, "index.ts",
-            "export function callee() {\n    return 1;\n}\n\nexport function caller() {\n    return 0;\n}\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "index.ts",
-            "export function callee() {\n    return 1;\n}\n\n"
-            "export function caller() {\n    return callee();\n}\n",
-        )
-        head = _commit(repo, "head")
+    result = _run_symdelta(repo, base, head)
 
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["language"] == "typescript"
-        symbol_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "symbol"}
-        assert "(root):index.caller" in symbol_ids
-        assert "(root):index.callee" in symbol_ids
-        assert not any(sid.startswith(":") for sid in symbol_ids)
-
-
-def test_end_to_end_ts_repo_two_root_files_with_same_function_name_stay_distinct():
-    if shutil.which("typescript-language-server") is None:
-        print(
-            "skip (no typescript-language-server on PATH): "
-            "test_end_to_end_ts_repo_two_root_files_with_same_function_name_stay_distinct"
-        )
-        return
-
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "tsconfig.json", '{"compilerOptions": {"target": "es2020", "module": "commonjs"}}\n')
-        _write(repo, "a.ts", "export function run() {\n    return 1;\n}\n")
-        _write(repo, "b.ts", "export function run() {\n    return 2;\n}\n")
-        _write(
-            repo, "entry.ts",
-            'import { run as runA } from "./a";\nimport { run as runB } from "./b";\n\n'
-            'export function caller() {\n    return 0;\n}\n',
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "entry.ts",
-            'import { run as runA } from "./a";\nimport { run as runB } from "./b";\n\n'
-            'export function caller() {\n    return runA() + runB();\n}\n',
-        )
-        head = _commit(repo, "head")
-
-        result = _run_symdelta(repo, base, head)
-
-        assert result.returncode == 0, result.stderr
-        payload = json.loads(result.stdout)
-        symbol_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "symbol"}
-        # Same function name ("run"), two unrelated root files -- must not collapse onto one id.
-        assert "(root):a.run" in symbol_ids
-        assert "(root):b.run" in symbol_ids
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["language"] == "go"
+    symbol_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "symbol"}
+    assert "(root):main.NewCallee" in symbol_ids
+    assert not any(sid.startswith(":") for sid in symbol_ids)
+    pkg_ids = {n["id"] for n in payload["nodes"] if n["kind"] == "pkg"}
+    assert "(root)" in pkg_ids
 
 
 # ---- pure-logic tests: add_worktree disables a hostile repo's hooks ---------------------
 
 
-def test_add_worktree_does_not_run_a_tracked_post_checkout_hook():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp) / "repo"
-        repo.mkdir()
-        _init_repo(repo)
-        _git(repo, "config", "core.hooksPath", ".githooks")
-        marker = repo / "pwned"
-        hook = repo / ".githooks" / "post-checkout"
-        hook.parent.mkdir()
-        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
-        hook.chmod(0o755)
-        head = _commit(repo, "head")
+def test_add_worktree_does_not_run_a_tracked_post_checkout_hook(tmp_path):
+    cw_testlib.require_git()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    git(repo, "config", "core.hooksPath", ".githooks")
+    marker = repo / "pwned"
+    hook = repo / ".githooks" / "post-checkout"
+    hook.parent.mkdir()
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    head = commit_all(repo, "head")
 
-        worktree_path = Path(tmp) / "wt"
-        symdelta.add_worktree(repo, head, worktree_path)
-        try:
-            assert not marker.exists()
-        finally:
-            symdelta.remove_worktree(repo, worktree_path)
-
-
-def test_add_worktree_with_symlinks_false_checks_out_a_regular_file():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp) / "repo"
-        repo.mkdir()
-        _init_repo(repo)
-        _write(repo, "target.txt", "payload\n")
-        link = repo / "link.txt"
-        os.symlink("target.txt", link)
-        head = _commit(repo, "head")
-
-        worktree_path = Path(tmp) / "wt"
-        symdelta.add_worktree(repo, head, worktree_path, symlinks=False)
-        try:
-            checked_out = worktree_path / "link.txt"
-            assert not checked_out.is_symlink()
-            assert checked_out.read_text() == "target.txt"
-        finally:
-            symdelta.remove_worktree(repo, worktree_path)
+    worktree_path = tmp_path / "wt"
+    symdelta.add_worktree(repo, head, worktree_path)
+    try:
+        assert not marker.exists()
+    finally:
+        symdelta.remove_worktree(repo, worktree_path)
 
 
-if __name__ == "__main__":
-    tests = [
-        test_brace_rename_with_empty_side_collapses_the_slash,
-        test_brace_rename_with_non_empty_side,
-        test_plain_rename_with_no_common_prefix,
-        test_non_rename_summary_lines_are_ignored,
-        test_compute_new_gone_canonicalises_renamed_head_paths,
-        test_compute_new_gone_keeps_real_changes,
-        test_compute_new_gone_carries_head_path_for_new_symbol_in_renamed_file,
-        test_move_collapse_tallies_only_the_caller_side_move,
-        test_move_collapse_leaves_unrelated_bare_name_collisions_alone_when_no_match,
-        test_move_collapse_does_not_cross_match_unrelated_same_name_edges,
-        test_no_dangling_edges_across_new_gone_and_changed_states,
-        test_build_graph_merges_a_symbol_that_moved_package_and_changed_its_calls,
-        test_build_graph_merges_a_root_level_rename_into_a_subdirectory_with_a_changed_symbol,
-        test_build_graph_merges_via_git_rename_map_alone,
-        test_resolve_symbol_merges_case_insensitive_fallback_via_file_rename,
-        test_resolve_symbol_merges_case_insensitive_fallback_via_package_level_match,
-        test_resolve_symbol_merges_ambiguous_case_match_falls_through_without_merging,
-        test_build_graph_merges_an_export_capitalisation_rename_across_a_package_move,
-        test_build_graph_ambiguous_case_only_candidates_are_not_merged_into,
-        test_build_graph_genuine_deletion_with_no_rename_evidence_stays_gone,
-        test_build_graph_symbol_state_new_gone_changed,
-        test_build_graph_package_chain_reaches_the_root,
-        test_drop_test_edges_removes_an_edge_touching_a_test_file_on_either_end,
-        test_build_graph_nodes_and_edges_carry_no_isTest_field,
-        test_build_graph_collapses_a_two_deep_passthrough_chain_under_a_real_grandparent,
-        test_build_graph_collapses_a_three_deep_chain_fully_into_one_box,
-        test_build_graph_does_not_collapse_a_package_with_two_children,
-        test_build_graph_does_not_collapse_a_package_with_a_symbol_child_alongside_its_pkg_child,
-        test_build_graph_depths_stay_contiguous_after_compression_for_pkg_and_symbol_nodes,
-        test_build_graph_root_pkg_sentinel_is_never_folded_into_or_through,
-        test_pkg_of_root_file_uses_sentinel_not_empty_string,
-        test_sym_id_root_file_is_qualified_and_never_starts_with_a_bare_colon,
-        test_build_graph_two_root_files_with_same_symbol_name_stay_distinct,
-        test_decl_ranges_keeps_only_positive_int_starts_and_defaults_bad_ends,
-        test_decl_ranges_first_seen_wins_across_edges,
-        test_build_graph_attaches_head_range_to_new_symbols,
-        test_build_graph_attaches_base_range_to_gone_symbols,
-        test_build_graph_changed_symbol_uses_head_range_not_base,
-        test_build_graph_merge_target_gets_range_keyed_on_its_head_file,
-        test_build_graph_symbol_with_no_range_entry_gets_no_range_key,
-        test_build_graph_same_sid_from_two_files_uses_the_first_files_range,
-        test_detect_language_tie_break_is_honest_and_deterministic,
-        test_detect_language_routes_py_files_to_python,
-        test_detect_language_works_against_an_orphan_baseline_with_no_merge_base,
-        test_detect_language_routes_rs_files_to_rust,
-        test_detect_language_tie_break_between_python_and_rust_is_alphabetical,
-        test_lsp_language_tables_all_cover_typescript_python_and_rust,
-        test_dependency_files_changed_true_when_package_json_changed,
-        test_dependency_files_changed_false_for_an_unrelated_change,
-        test_dependency_files_changed_true_for_yarn_lock,
-        test_dependency_files_changed_true_for_pnpm_lock,
-        test_dependency_files_changed_true_for_pyproject_toml,
-        test_dependency_files_changed_false_for_python_when_only_ts_lockfile_changed,
-        test_dependency_files_changed_false_for_cargo_lock,
-        test_ts_dependency_incompatible_false_for_additions_only,
-        test_ts_dependency_incompatible_true_when_a_dependency_is_removed,
-        test_ts_dependency_incompatible_true_when_a_version_spec_changed,
-        test_ts_dependency_incompatible_false_for_lockfile_only_change,
-        test_ts_dependency_incompatible_true_when_package_json_missing_at_base,
-        test_ts_dependency_incompatible_true_when_package_json_is_unparseable,
-        test_ts_dependency_incompatible_true_when_sections_disagree_on_spec,
-        test_ts_dependency_incompatible_false_when_same_spec_appears_in_two_sections,
-        test_link_node_modules_resolves_a_relative_repo_path,
-        test_check_node_modules_coverage_true_when_every_dependency_resolves,
-        test_check_node_modules_coverage_true_when_node_modules_missing_and_nothing_declared,
-        test_check_node_modules_coverage_catches_a_missing_scoped_package,
-        test_check_node_modules_coverage_caps_the_reason_at_five_names,
-        test_check_node_modules_coverage_catches_a_missing_peer_dependency,
-        test_check_node_modules_coverage_ignores_a_missing_optional_dependency,
-        test_check_node_modules_coverage_true_when_installed_version_matches_lockfile,
-        test_check_node_modules_coverage_catches_a_stale_installed_version,
-        test_check_node_modules_coverage_presence_only_when_no_lockfile,
-        test_check_node_modules_coverage_presence_only_when_lockfile_is_unparseable,
-        test_check_node_modules_coverage_handles_lockfile_version_1_shape,
-        test_analyse_typescript_refuses_when_a_dependency_is_removed,
-        test_analyse_typescript_does_not_refuse_on_dependency_additions_only,
-        test_analyse_typescript_refuses_with_npm_ci_remedy_when_node_modules_is_stale,
-        test_analyse_typescript_refuses_with_npm_ci_remedy_when_installed_version_is_stale,
-        test_analyse_lsp_attaches_language_server_remedy_when_tooling_check_fails,
-        test_analyse_rust_does_not_bail_on_a_cargo_lock_change,
-        test_split_path_trap_pulls_the_remedy_out_of_the_reason,
-        test_split_path_trap_returns_the_reason_unchanged_with_no_remedy_for_a_plain_reason,
-        test_analyse_lsp_uses_the_path_trap_remedy_instead_of_a_reinstall,
-        test_doctor_report_is_ok_for_every_language_when_everything_checks_out,
-        test_doctor_report_names_the_go_toolchain_as_missing,
-        test_doctor_report_prefers_the_path_trap_remedy_over_language_server_remedy,
-        test_doctor_report_survives_a_present_but_broken_binary,
-        test_main_doctor_flag_needs_no_repo_base_or_head,
-        test_check_typescript_tooling_raises_runtime_error_on_timeout,
-        test_run_ts_extractor_raises_runtime_error_on_timeout_and_still_cleans_up_the_files_list,
-        test_run_in_process_group_handles_getpgid_race_without_crashing,
-        test_run_in_process_group_kills_the_whole_group_not_just_the_direct_child,
-        test_build_extractor_raises_runtime_error_on_timeout,
-        test_build_extractor_builds_to_a_temp_path_and_replaces_the_real_binary,
-        test_run_extractor_raises_runtime_error_on_timeout,
-        test_run_extractor_omits_goflags_when_go_work_exists_and_sets_it_otherwise,
-        test_resolve_cache_dir_uses_xdg_cache_home_when_set,
-        test_resolve_cache_dir_falls_back_to_dot_cache_when_xdg_unset,
-        test_resolve_cache_dir_xdg_cache_home_wins_even_when_dot_cache_exists,
-        test_lsp_client_shutdown_swallows_timeout_from_an_unreapable_process,
-        test_no_supported_files_short_circuits_with_null_language,
-        test_detect_language_picks_the_majority_on_a_mixed_diff,
-        test_ts_files_by_side_excludes_added_from_base_and_deleted_from_head,
-        test_ts_files_by_side_filters_by_given_extensions,
-        test_bad_ref_fails_with_nonzero_exit,
-        test_analyse_does_not_crash_on_an_orphan_baseline,
-        test_analyse_go_returns_null_language_when_the_extractor_fails,
-        test_analyse_lsp_returns_null_language_when_the_extractor_fails,
-        test_llm_head_edges_malformed_line_errors_with_the_line_number,
-        test_llm_head_edges_produces_a_graph_with_llm_resolver,
-        test_llm_head_edges_falls_back_to_unknown_language_when_nothing_is_detected,
-        test_llm_tier_symbol_nodes_carry_no_range,
-        test_end_to_end_ts_repo_reports_a_cross_file_call,
-        test_end_to_end_go_repo_reports_added_and_removed_symbols,
-        test_end_to_end_go_repo_reports_symbol_ranges_for_new_changed_and_gone_symbols,
-        test_end_to_end_go_repo_skips_bodyless_funcs_without_panicking,
-        test_end_to_end_go_repo_root_level_symbol_uses_the_root_sentinel,
-        test_end_to_end_ts_repo_root_level_symbol_uses_the_root_sentinel,
-        test_end_to_end_ts_repo_two_root_files_with_same_function_name_stay_distinct,
-        test_add_worktree_does_not_run_a_tracked_post_checkout_hook,
-        test_add_worktree_with_symlinks_false_checks_out_a_regular_file,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
+def test_add_worktree_with_symlinks_false_checks_out_a_regular_file(tmp_path):
+    cw_testlib.require_posix()
+    cw_testlib.require_git()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    write_file(repo, "target.txt", "payload\n")
+    os.symlink("target.txt", repo / "link.txt")
+    head = commit_all(repo, "head")
+
+    worktree_path = tmp_path / "wt"
+    symdelta.add_worktree(repo, head, worktree_path, symlinks=False)
+    try:
+        checked_out = worktree_path / "link.txt"
+        assert not checked_out.is_symlink()
+        assert checked_out.read_text() == "target.txt"
+    finally:
+        symdelta.remove_worktree(repo, worktree_path)

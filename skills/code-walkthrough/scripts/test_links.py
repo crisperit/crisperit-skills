@@ -2,21 +2,13 @@
 """Self-check for links.py. Assert-based, no framework, no network."""
 
 import hashlib
-import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_testlib  # noqa: E402
 from links import build, file_anchor, line_range, repo_web_url  # noqa: E402
-
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Links Test",
-    "GIT_AUTHOR_EMAIL": "links-test@example.com",
-    "GIT_COMMITTER_NAME": "Links Test",
-    "GIT_COMMITTER_EMAIL": "links-test@example.com",
-}
 
 DIFF = """diff --git a/pkg/thing.py b/pkg/thing.py
 --- a/pkg/thing.py
@@ -34,22 +26,14 @@ diff --git a/dropped.py b/dropped.py
 """
 
 
-def _git(repo, *args):
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
-    return result.stdout
-
-
-def _repo(tmp, remote):
+def _repo(tmp, remote=None):
+    cw_testlib.require_git()
     repo = Path(tmp)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "remote", "add", "origin", remote)
-    (repo / "f.txt").write_text("x\n")
-    _git(repo, "add", "f.txt")
-    _git(repo, "commit", "-q", "-m", "first")
+    cw_testlib.init_repo(repo)
+    if remote:
+        cw_testlib.git(repo, "remote", "add", "origin", remote)
+    cw_testlib.write_file(repo, "f.txt", "x\n")
+    cw_testlib.commit_all(repo, "first")
     return repo
 
 
@@ -67,18 +51,19 @@ def test_line_range_reads_the_new_side_and_skips_pure_deletions():
     assert line_range("@@ -1 +7 @@") == (7, 7)
 
 
-def test_ssh_and_https_remotes_both_become_a_web_url():
-    for remote in ("git@github.com:o/r.git", "https://github.com/o/r.git",
-                   "ssh://git@github.com/o/r", "https://token@github.com/o/r"):
-        with tempfile.TemporaryDirectory() as tmp:
-            assert repo_web_url(str(_repo(tmp, remote))) == "https://github.com/o/r"
-
-
-def test_enterprise_host_is_kept():
+def test_remotes_become_a_web_url():
     with tempfile.TemporaryDirectory() as tmp:
-        repo = _repo(tmp, "git@git.corp.example:team/app.git")
+        repo = _repo(tmp, "git@github.com:o/r.git")
+        for remote, expected in (
+            ("git@github.com:o/r.git", "https://github.com/o/r"),
+            ("https://github.com/o/r.git", "https://github.com/o/r"),
+            ("ssh://git@github.com/o/r", "https://github.com/o/r"),
+            ("https://token@github.com/o/r", "https://github.com/o/r"),
+            ("git@git.corp.example:team/app.git", "https://git.corp.example/team/app"),
+        ):
+            cw_testlib.git(repo, "remote", "set-url", "origin", remote)
 
-        assert repo_web_url(str(repo)) == "https://git.corp.example/team/app"
+            assert repo_web_url(str(repo)) == expected, remote
 
 
 def test_urls_are_built_per_file_and_per_hunk():
@@ -120,11 +105,7 @@ def test_unpushed_head_is_flagged_so_dead_links_can_be_skipped():
 
 def test_no_remote_means_no_links_at_all():
     with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _git(repo, "init", "-q", "-b", "main")
-        (repo / "f.txt").write_text("x\n")
-        _git(repo, "add", "f.txt")
-        _git(repo, "commit", "-q", "-m", "first")
+        repo = _repo(tmp)
 
         result = build(str(repo), DIFF, "HEAD", "19")
 
@@ -140,21 +121,3 @@ def test_a_path_with_a_space_is_encoded():
         result = build(str(repo), spaced, "HEAD", "19")
 
         assert "my%20file.py" in result["files"][0]["blob_url"]
-
-
-if __name__ == "__main__":
-    tests = [
-        test_file_anchor_is_sha256_of_the_path,
-        test_line_range_reads_the_new_side_and_skips_pure_deletions,
-        test_ssh_and_https_remotes_both_become_a_web_url,
-        test_enterprise_host_is_kept,
-        test_urls_are_built_per_file_and_per_hunk,
-        test_no_pr_number_means_no_pr_links_but_still_blob_links,
-        test_unpushed_head_is_flagged_so_dead_links_can_be_skipped,
-        test_no_remote_means_no_links_at_all,
-        test_a_path_with_a_space_is_encoded,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

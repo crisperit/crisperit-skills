@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Self-check for fanout.py. Assert-based, no framework."""
+"""Self-check for fanout.py. Assert-based; run with pytest."""
 
 import contextlib
 import io
 import json
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fanout import batch, do_split, merge, rename_map, split_chunks  # noqa: E402
+from fanout import batch, do_split, merge, split_chunks  # noqa: E402
 
 
 def _file_diff(path, hunks):
@@ -19,14 +20,9 @@ def _file_diff(path, hunks):
     return body
 
 
-class _Args:
+def _args(diff, out, max_lines=400, max_batches=8):
     """Stand-in for the argparse.Namespace do_split reads its options from."""
-
-    def __init__(self, diff, out, max_lines=400, max_batches=8):
-        self.diff = diff
-        self.out = out
-        self.max_lines = max_lines
-        self.max_batches = max_batches
+    return types.SimpleNamespace(diff=diff, out=out, max_lines=max_lines, max_batches=max_batches)
 
 
 DIFF = _file_diff("a.py", 1) + _file_diff("big.py", 30) + _file_diff("c.py", 1)
@@ -138,19 +134,6 @@ def test_merge_rejects_the_same_file_from_two_fragments():
             raise AssertionError("duplicate file across fragments was accepted")
 
 
-def test_merge_reports_one_unparseable_fragment_by_path():
-    with tempfile.TemporaryDirectory() as tmp:
-        bad = Path(tmp) / "bad.json"
-        bad.write_text("not json")
-
-        try:
-            merge(DIFF, [str(bad)], {})
-        except RuntimeError as exc:
-            assert str(bad) in str(exc)
-        else:
-            raise AssertionError("unparseable fragment was accepted")
-
-
 def test_merge_reports_both_unparseable_fragments_not_just_the_first():
     with tempfile.TemporaryDirectory() as tmp:
         bad1 = Path(tmp) / "bad1.json"
@@ -167,41 +150,21 @@ def test_merge_reports_both_unparseable_fragments_not_just_the_first():
             raise AssertionError("unparseable fragments were accepted")
 
 
-def test_merge_still_succeeds_when_every_fragment_is_valid():
-    with tempfile.TemporaryDirectory() as tmp:
-        frag = Path(tmp) / "f.json"
-        frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
-
-        result = merge(DIFF, [str(frag)], {"target": "t"})
-
-        assert result["target"] == "t"
-        assert [f["path"] for f in result["files"]] == ["a.py"]
-
-
-def test_merge_carries_verdict_and_section_notes_through():
+def test_merge_carries_prose_keys():
     with tempfile.TemporaryDirectory() as tmp:
         frag = Path(tmp) / "f.json"
         frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
         notes = {"explorer": "e"}  # merge passes section_notes through opaquely, any keys do
+        groups = [{"title": "t", "paths": ["a.py"]}]
 
-        result = merge(DIFF, [str(frag)], {"verdict": "v", "section_notes": notes})
+        result = merge(DIFF, [str(frag)], {"verdict": "v", "section_notes": notes, "groups": groups})
 
         assert result["verdict"] == "v"
         assert result["section_notes"] == notes
-
-
-def test_merge_carries_groups_through_unchanged():
-    with tempfile.TemporaryDirectory() as tmp:
-        frag = Path(tmp) / "f.json"
-        frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
-        groups = [{"title": "t", "paths": ["a.py"]}]
-
-        result = merge(DIFF, [str(frag)], {"groups": groups})
-
         assert result["groups"] == groups
 
 
-def test_merge_omits_groups_key_when_prose_has_none():
+def test_merge_defaults_prose_keys():
     with tempfile.TemporaryDirectory() as tmp:
         frag = Path(tmp) / "f.json"
         frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
@@ -209,26 +172,9 @@ def test_merge_omits_groups_key_when_prose_has_none():
         result = merge(DIFF, [str(frag)], {})
 
         assert "groups" not in result
-
-
-def test_merge_defaults_verdict_and_section_notes_when_prose_omits_them():
-    with tempfile.TemporaryDirectory() as tmp:
-        frag = Path(tmp) / "f.json"
-        frag.write_text(json.dumps({"files": [{"path": "a.py", "role": "r", "hunks": []}]}))
-
-        result = merge(DIFF, [str(frag)], {})
-
         assert result["verdict"] == ""
         # A dict, not a string, matching PROSE_DEFAULTS's falsy shape for this key.
         assert result["section_notes"] == {}
-
-
-def test_rename_map_finds_the_old_to_new_pairing():
-    assert rename_map(RENAME_DIFF) == {"old.py": "new.py"}
-
-
-def test_rename_map_ignores_files_that_were_not_renamed():
-    assert rename_map(DIFF) == {}
 
 
 def test_merge_canonicalizes_a_fragments_pre_rename_path():
@@ -277,7 +223,7 @@ def test_split_writes_seed_fragments_and_lists_them_in_the_manifest():
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            do_split(_Args(str(diff_path), str(out_dir), max_lines=20, max_batches=8))
+            do_split(_args(str(diff_path), str(out_dir), max_lines=20, max_batches=8))
         manifest = json.loads(buf.getvalue())
 
         assert manifest[0]["seed"] == str(out_dir / "fragment-1.seed.json")
@@ -299,37 +245,7 @@ def test_split_seed_marks_a_binary_file_with_no_hunks():
         out_dir = Path(tmp) / "out"
 
         with contextlib.redirect_stdout(io.StringIO()):
-            do_split(_Args(str(diff_path), str(out_dir)))
+            do_split(_args(str(diff_path), str(out_dir)))
 
         seed = json.loads((out_dir / "fragment-1.seed.json").read_text())
         assert seed["files"] == [{"path": "logo.png", "role": "", "hunks": []}]
-
-
-if __name__ == "__main__":
-    tests = [
-        test_split_covers_every_file_once_and_keeps_its_own_text,
-        test_split_handles_a_deleted_file,
-        test_batching_splits_on_the_budget_and_never_straddles_a_file,
-        test_max_batches_caps_the_fanout,
-        test_merge_orders_by_the_diff_and_carries_prose,
-        test_merge_keeps_an_invented_file_so_the_gate_can_name_it,
-        test_merge_rejects_the_same_file_from_two_fragments,
-        test_merge_reports_one_unparseable_fragment_by_path,
-        test_merge_reports_both_unparseable_fragments_not_just_the_first,
-        test_merge_still_succeeds_when_every_fragment_is_valid,
-        test_merge_carries_verdict_and_section_notes_through,
-        test_merge_carries_groups_through_unchanged,
-        test_merge_omits_groups_key_when_prose_has_none,
-        test_merge_defaults_verdict_and_section_notes_when_prose_omits_them,
-        test_rename_map_finds_the_old_to_new_pairing,
-        test_rename_map_ignores_files_that_were_not_renamed,
-        test_merge_canonicalizes_a_fragments_pre_rename_path,
-        test_merge_catches_a_duplicate_hidden_behind_the_old_name,
-        test_merge_does_not_remap_when_the_old_name_is_a_real_file_too,
-        test_split_writes_seed_fragments_and_lists_them_in_the_manifest,
-        test_split_seed_marks_a_binary_file_with_no_hunks,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

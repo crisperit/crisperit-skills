@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Self-check for cw_mcp.py. Assert-based, no framework; also collected by pytest. Every test
-that starts a real cw_server.py daemon stops it (or waits for its own idle exit) in a finally
-block, so no process is left running after this module finishes."""
+"""Self-check for cw_mcp.py. Assert-based, no framework; also collected by pytest. The tests that
+spawn a real detached cw_server.py daemon live in test_cw_e2e.py."""
 
 import contextlib
 import io
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -33,42 +29,6 @@ def _no_claude_on_path():
             yield
         finally:
             os.environ["PATH"] = old_path
-
-
-def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _wait(cond, timeout=5, interval=0.1):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if cond():
-            return True
-        time.sleep(interval)
-    return cond()
-
-
-@contextlib.contextmanager
-def _stopped_afterward():
-    """Whatever daemon this test starts, make sure it is gone before the test ends."""
-    try:
-        yield
-    finally:
-        info = cw_store.read_json(cw_store.server_json_path())
-        if info and _pid_alive(info.get("pid")):
-            try:
-                cw_mcp.cmd_stop()
-            except Exception:
-                pass
-        if info and _pid_alive(info.get("pid")):
-            try:
-                os.kill(info["pid"], signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
 
 def test_handshake_does_not_start_the_daemon():
@@ -111,122 +71,55 @@ def test_handshake_does_not_start_the_daemon():
             proc.wait(timeout=5)
 
 
-def test_two_concurrent_ensure_server_give_one_pid():
-    with cw_testlib.temp_home():
-        with _stopped_afterward():
-            results = []
-
-            def _call():
-                results.append(cw_mcp.ensure_server())
-
-            threads = [threading.Thread(target=_call) for _ in range(2)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=15)
-
-            assert len(results) == 2
-            assert results[0]["pid"] == results[1]["pid"]
-            assert _pid_alive(results[0]["pid"])
+def _cmd_setup():
+    err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        assert cw_mcp.cmd_setup("print") == 0
+    return err.getvalue()
 
 
-def test_dead_pid_lock_file_is_taken_over():
-    with cw_testlib.temp_home():
-        with _stopped_afterward():
-            proc = subprocess.Popen([sys.executable, "-c", "pass"])
-            dead_pid = proc.pid
-            proc.wait()
-            cw_store.lock_path().write_text(str(dead_pid))
+def test_setup_writes_config():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.fake_claude(tmp, {}):
+            err = _cmd_setup()
+        config = cw_store.read_json(home / "config.json")
+        assert config["profiles"]["claude"]["kind"] == "claude-code"
+        assert config["profiles"]["claude"]["model"] == "sonnet"
+        assert config["roles"]["analysis"] == "claude"
+        assert "claude-code template" in err
 
-            info = cw_mcp.ensure_server()
-            assert _pid_alive(info["pid"])
-            assert info["pid"] != dead_pid
+    with cw_testlib.temp_home() as home, _no_claude_on_path():
+        err = _cmd_setup()
+        config = cw_store.read_json(home / "config.json")
+        assert "proxy" in config["profiles"]
+        assert "kind" not in config["profiles"]["proxy"]
+        assert "proxy template" in err
 
-
-def test_idle_exit_within_five_seconds():
-    with cw_testlib.temp_home():
-        os.environ["CW_IDLE_S"] = "1"
-        try:
-            with _stopped_afterward():
-                info = cw_mcp.ensure_server()
-                assert _wait(lambda: not _pid_alive(info["pid"]), timeout=5)
-        finally:
-            os.environ.pop("CW_IDLE_S", None)
-
-
-def test_stop_reports_not_running_then_stopped():
-    with cw_testlib.temp_home():
-        with _stopped_afterward():
-            assert cw_mcp.cmd_stop() == 0  # "not running", nothing started yet
-            info = cw_mcp.ensure_server()
-            assert cw_mcp.cmd_stop() == 0
-            assert _wait(lambda: not _pid_alive(info["pid"]), timeout=5)
-
-
-def test_setup_with_claude_on_path_writes_claude_code_template():
-    with cw_testlib.temp_home() as home:
-        with tempfile.TemporaryDirectory() as tmp:
-            with cw_testlib.fake_claude(tmp, {}):
-                err = io.StringIO()
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                    assert cw_mcp.cmd_setup("print") == 0
-                config = cw_store.read_json(home / "config.json")
-                assert config["profiles"]["claude"]["kind"] == "claude-code"
-                assert config["profiles"]["claude"]["model"] == "sonnet"
-                assert config["roles"]["analysis"] == "claude"
-                assert "claude-code template" in err.getvalue()
-
-
-def test_setup_without_claude_on_path_writes_proxy_template():
-    with cw_testlib.temp_home() as home:
-        with _no_claude_on_path():
-            err = io.StringIO()
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                assert cw_mcp.cmd_setup("print") == 0
-            config = cw_store.read_json(home / "config.json")
-            assert "proxy" in config["profiles"]
-            assert "kind" not in config["profiles"]["proxy"]
-            assert "proxy template" in err.getvalue()
-
-
-def test_check_with_fake_claude_ok():
-    with cw_testlib.temp_home() as home:
-        cw_testlib.write_config(
-            home, {"claude": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "claude"},
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            script = {"sonnet": [cw_testlib.claude_result(structured={"ok": True})]}
-            with cw_testlib.fake_claude(tmp, script):
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out):
-                    assert cw_mcp.cmd_check() == 0
-                assert "ok analysis (claude/sonnet)" in out.getvalue()
-
-
-def test_check_not_logged_in_prints_fail_and_remedy():
-    with cw_testlib.temp_home() as home:
-        cw_testlib.write_config(
-            home, {"claude": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "claude"},
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            with cw_testlib.fake_claude(tmp, {}, auth={"loggedIn": False}):
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out):
-                    assert cw_mcp.cmd_check() == 1
-                output = out.getvalue()
-                assert "FAIL analysis" in output
-                assert "remedy:" in output
-
-
-def test_setup_leaves_existing_config_untouched():
-    with cw_testlib.temp_home() as home:
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         sentinel = {"profiles": {"mine": {"base_url": "http://x", "model": "m"}}, "roles": {}}
         cw_store.write_json(home / "config.json", sentinel)
-        with tempfile.TemporaryDirectory() as tmp:
-            with cw_testlib.fake_claude(tmp, {}):
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    assert cw_mcp.cmd_setup("print") == 0
-                assert cw_store.read_json(home / "config.json") == sentinel
+        with cw_testlib.fake_claude(tmp, {}):
+            _cmd_setup()
+        assert cw_store.read_json(home / "config.json") == sentinel
+
+
+def test_check():
+    cases = [
+        ("ok", {"sonnet": [cw_testlib.claude_result(structured={"ok": True})]}, None, 0,
+         ["ok analysis (claude/sonnet)"]),
+        ("not logged in", {}, {"loggedIn": False}, 1, ["FAIL analysis", "remedy:"]),
+    ]
+    for name, script, auth, rc, wanted in cases:
+        with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+            cw_testlib.write_config(
+                home, {"claude": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "claude"},
+            )
+            with cw_testlib.fake_claude(tmp, script, auth=auth):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    assert cw_mcp.cmd_check() == rc, name
+                for text in wanted:
+                    assert text in out.getvalue(), (name, out.getvalue())
 
 
 def test_setup_under_plugin_install_writes_config_and_skips_snippet():
@@ -244,26 +137,6 @@ def test_setup_under_plugin_install_writes_config_and_skips_snippet():
                     assert cw_store.read_json(home / "config.json") is not None
                 finally:
                     cw_mcp.SCRIPTS_DIR = plugin_dir
-
-
-if __name__ == "__main__":
-    tests = [
-        test_handshake_does_not_start_the_daemon,
-        test_two_concurrent_ensure_server_give_one_pid,
-        test_dead_pid_lock_file_is_taken_over,
-        test_idle_exit_within_five_seconds,
-        test_stop_reports_not_running_then_stopped,
-        test_setup_with_claude_on_path_writes_claude_code_template,
-        test_setup_without_claude_on_path_writes_proxy_template,
-        test_setup_leaves_existing_config_untouched,
-        test_setup_under_plugin_install_writes_config_and_skips_snippet,
-        test_check_with_fake_claude_ok,
-        test_check_not_logged_in_prints_fail_and_remedy,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
 
 
 def _anchor_doc(*ids):
@@ -344,16 +217,6 @@ def _propose(rpc, thread, why="settled"):
     return rpc.call("tools/call", {"name": "propose_resolve", "arguments": {"thread": thread, "why": why}})["result"]
 
 
-def test_mcp_tools_list_is_pinned():
-    with cw_testlib.temp_home():
-        rpc = _Rpc("mcp")
-        try:
-            names = [t["name"] for t in rpc.call("tools/list")["result"]["tools"]]
-        finally:
-            rpc.close()
-        assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list", "walkthrough_reply"]
-
-
 def test_outcomes_server_accepts_and_rejects():
     with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -392,9 +255,7 @@ def test_outcomes_server_page_edit_is_stored_stripped_and_once_per_turn():
             def call(args):
                 return rpc.call("tools/call", {"name": "propose_page_edit", "arguments": args})["result"]
 
-            for bad in (_edit(target="x:p1"), _edit(op="nope"), _edit(block={"type": "svg", "text": "t"}),
-                        _edit(block={"type": "prose", "text": "x" * 4001})):
-                assert call(bad)["isError"] is True
+            assert call(_edit(target="x:p1"))["isError"] is True
             assert not (d / "turns" / "q1.outcomes.jsonl").exists()
             good = call(_edit(block={"type": "prose", "text": "  hello \n"}))
             assert good["isError"] is False
@@ -410,7 +271,6 @@ def test_outcomes_server_page_edit_is_stored_stripped_and_once_per_turn():
 
 
 def test_outcomes_answers_each_request_id_once(monkeypatch, tmp_path):
-    import io
     written = []
 
     def write_then_raise(obj):

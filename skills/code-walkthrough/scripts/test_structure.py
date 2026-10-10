@@ -1,53 +1,21 @@
 #!/usr/bin/env python3
-"""Self-check for structure.py. End-to-end tests build a throwaway git repo under
-tempfile.TemporaryDirectory() and drive the CLI directly, matching test_symdelta.py's style;
-a couple of pure-logic tests exercise apply_cap and _member_states directly, no git needed.
-The Go case is skipped when `go` isn't on PATH."""
+"""Self-check for structure.py. End-to-end tests build a throwaway git repo under pytest's
+tmp_path and drive the CLI directly; a couple of pure-logic tests exercise apply_cap and
+_member_states directly, no git needed. Tests that need a tree-sitter grammar or the Go helper
+skip via cw_testlib when the machine lacks it."""
 
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_testlib  # noqa: E402
 import structure  # noqa: E402
+from cw_testlib import commit_all, git, init_repo, make_repo, orphan_baseline, write_file  # noqa: E402
 
 SCRIPT_PATH = Path(__file__).parent / "structure.py"
-
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Structure Test",
-    "GIT_AUTHOR_EMAIL": "structure-test@example.com",
-    "GIT_COMMITTER_NAME": "Structure Test",
-    "GIT_COMMITTER_EMAIL": "structure-test@example.com",
-}
-
-
-def _git(repo, *args):
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True,
-        env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
-    return result.stdout
-
-
-def _write(repo, rel_path, content):
-    path = repo / rel_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-
-
-def _init_repo(repo):
-    _git(repo, "init", "-q", "-b", "main")
-
-
-def _commit(repo, message):
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", message)
-    return _git(repo, "rev-parse", "HEAD").strip()
 
 
 def _write_json(repo, name, payload):
@@ -76,17 +44,14 @@ def _run_structure(repo, base, head, symdelta_path=None, analysis_path=None, env
     return json.loads(out_path.read_text())
 
 
-def _orphan_baseline(repo):
-    """A commit with no parent, pointing at git's well-known empty tree -- the "explain an
-    existing feature" mode's baseline when there is no real base commit. Shares no history with
-    any ref in the repo, so `git merge-base` fails against it."""
-    result = subprocess.run(
-        ["git", "-C", str(repo), "commit-tree",
-         "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "empty baseline"],
-        input="", capture_output=True, text=True, env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+def _run_ts(tmp_path, base_files, head_files, symdelta=None, analysis=None, **kw):
+    """make_repo plus one structure.py run, for TypeScript fixtures; skips without a grammar."""
+    cw_testlib.require_tree_sitter("typescript")
+    repo, base, head = make_repo(tmp_path, base_files, head_files)
+    symdelta_path = _write_json(repo, "symdelta.json", symdelta) if symdelta is not None else None
+    analysis_path = _write_json(repo, "analysis.json", analysis) if analysis is not None else None
+    return _run_structure(repo, base, head, symdelta_path=symdelta_path,
+                          analysis_path=analysis_path, **kw)
 
 
 def _component(result, name):
@@ -113,100 +78,49 @@ def _edge_symdelta(src_file, src_name, dst_file, dst_name):
 # ---- new / changed / removed / unchanged, TypeScript ---------------------------------------
 
 
-def test_new_top_level_function_is_new():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function existing() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function existing() { return 1; }\n"
-            "export function fresh() { return 2; }\n",
-        )
-        head = _commit(repo, "head")
-
-        # existing->fresh keeps both boxed (state-inspectable) instead of also_touched -- see
-        # _edge_symdelta.
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "existing", "a.ts", "fresh")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        assert _component(result, "fresh")["state"] == "new"
-        assert _component(result, "existing")["state"] == "unchanged"
-
-
-def test_modified_function_body_is_changed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function greet() { return 'hi'; }\n"
-            "export function caller() { return greet(); }\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function greet() { return 'hello'; }\n"
-            "export function caller() { return greet(); }\n",
-        )
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "caller", "a.ts", "greet")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        assert _component(result, "greet")["state"] == "changed"
-
-
-def test_whitespace_only_change_is_unchanged():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function greet() { return 1; }\n"
-            "export function caller() { return greet(); }\n",
-        )
-        base = _commit(repo, "base")
+def test_component_state_per_file_change(tmp_path):
+    rows = [
+        ("new top-level function",
+         {"a.ts": "export function existing() { return 1; }\n"},
+         {"a.ts": "export function existing() { return 1; }\n"
+                  "export function fresh() { return 2; }\n"},
+         ("existing", "fresh"), {"fresh": "new", "existing": "unchanged"}),
+        ("modified function body",
+         {"a.ts": "export function greet() { return 'hi'; }\n"
+                  "export function caller() { return greet(); }\n"},
+         {"a.ts": "export function greet() { return 'hello'; }\n"
+                  "export function caller() { return greet(); }\n"},
+         ("caller", "greet"), {"greet": "changed"}),
         # caller gets a genuine change so it's "touched" -- greet's whitespace-only reformat is
         # the thing under test, and it needs a touched neighbour to stay boxed under the
         # unreferenced-unchanged filter (see drop_unreferenced_unchanged).
-        _write(
-            repo, "a.ts",
-            "export function greet() {\n  return 1;\n}\n"
-            "export function caller() { return greet() + 1; }\n",
-        )
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "caller", "a.ts", "greet")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        assert _component(result, "greet")["state"] == "unchanged"
-
-
-def test_removed_function_is_removed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function gone() { return 1; }\n"
-            "export function caller() { return gone(); }\n",
-        )
-        base = _commit(repo, "base")
-        _write(repo, "a.ts", "export function caller() { return 1; }\n")
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "caller", "a.ts", "gone")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        comp = _component(result, "gone")
-        assert comp["state"] == "removed"
-        assert comp["file"] == "a.ts"
+        ("whitespace-only change",
+         {"a.ts": "export function greet() { return 1; }\n"
+                  "export function caller() { return greet(); }\n"},
+         {"a.ts": "export function greet() {\n  return 1;\n}\n"
+                  "export function caller() { return greet() + 1; }\n"},
+         ("caller", "greet"), {"greet": "unchanged"}),
+        ("removed function",
+         {"a.ts": "export function gone() { return 1; }\n"
+                  "export function caller() { return gone(); }\n"},
+         {"a.ts": "export function caller() { return 1; }\n"},
+         ("caller", "gone"), {"gone": "removed"}),
+        ("unchanged callee reached by an edge from a touched caller",
+         {"a.ts": "export function caller() { return callee(); }\n"
+                  "export function callee() { return 1; }\n"},
+         {"a.ts": "export function caller() { return callee() + 1; }\n"
+                  "export function callee() { return 1; }\n"},
+         ("caller", "callee"), {"callee": "unchanged"}),
+    ]
+    for i, (label, base_files, head_files, (src, dst), want) in enumerate(rows):
+        (tmp_path / str(i)).mkdir()
+        result = _run_ts(tmp_path / str(i), base_files, head_files,
+                         symdelta=_edge_symdelta("a.ts", src, "a.ts", dst))
+        for name, state in want.items():
+            assert _component(result, name)["state"] == state, f"{label}: {name}"
+        if "removed" in want.values():
+            assert _component(result, "gone")["file"] == "a.ts", label
+        assert result["dropped"] == 0, label
 
 
 # ---- matched-entry order: deterministic, not PYTHONHASHSEED-dependent ----------------------
@@ -226,263 +140,181 @@ def test_build_components_orders_matched_entries_deterministically():
 # ---- moved: same name, different file, no git rename detected (the WorkflowsPort case) -----
 
 
-def test_interface_moved_into_a_differently_named_file_is_moved_not_new_and_removed():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "src/old.port.ts", "export interface WorkflowsPort {\n  list(): void;\n}\n")
-        base = _commit(repo, "base")
-        _git(repo, "rm", "-q", "src/old.port.ts")
-        _write(
-            repo, "src/new.port.ts",
-            "export interface WorkflowsPort {\n"
-            "  list(): void;\n"
-            "  payloadSchemaFor(name: string): void;\n"
-            "}\n"
-            "export interface OrchestratorPort {\n  run(): void;\n}\n",
-        )
-        head = _commit(repo, "head")
+def test_interface_moved_into_a_differently_named_file_is_moved_not_new_and_removed(tmp_path):
+    cw_testlib.require_tree_sitter("typescript")
+    repo, base, head = make_repo(
+        tmp_path,
+        {"src/old.port.ts": "export interface WorkflowsPort {\n  list(): void;\n}\n"},
+        {
+            "src/old.port.ts": None,
+            "src/new.port.ts": "export interface WorkflowsPort {\n"
+                               "  list(): void;\n"
+                               "  payloadSchemaFor(name: string): void;\n"
+                               "}\n"
+                               "export interface OrchestratorPort {\n  run(): void;\n}\n",
+        },
+    )
 
-        # Content differs enough that git's own rename detection won't pair the two files --
-        # exactly the situation build_components has to resolve by symbol name instead.
-        status = _git(repo, "diff", "--name-status", "-M", f"{base}...{head}")
-        assert not status.splitlines()[0].startswith("R")
+    # Content differs enough that git's own rename detection won't pair the two files --
+    # exactly the situation build_components has to resolve by symbol name instead.
+    status = git(repo, "diff", "--name-status", "-M", f"{base}...{head}")
+    assert not status.splitlines()[0].startswith("R")
 
-        symdelta_path = _write_json(
-            repo, "symdelta.json",
-            _edge_symdelta("src/new.port.ts", "WorkflowsPort", "src/new.port.ts", "OrchestratorPort"),
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        comp = _component(result, "WorkflowsPort")
-        assert comp["state"] == "moved"
-        assert comp["file"] == "src/new.port.ts"
-        member_states = {m["name"]: m["state"] for m in comp["members"]}
-        assert member_states == {"list": "unchanged", "payloadSchemaFor": "new"}
-        # The new file's second interface is genuinely new, not a second "moved" guess
-        # consuming the already-matched base-side name.
-        assert _component(result, "OrchestratorPort")["state"] == "new"
+    symdelta_path = _write_json(
+        repo, "symdelta.json",
+        _edge_symdelta("src/new.port.ts", "WorkflowsPort", "src/new.port.ts", "OrchestratorPort"),
+    )
+    result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
+    comp = _component(result, "WorkflowsPort")
+    assert comp["state"] == "moved"
+    assert comp["file"] == "src/new.port.ts"
+    member_states = {m["name"]: m["state"] for m in comp["members"]}
+    assert member_states == {"list": "unchanged", "payloadSchemaFor": "new"}
+    # The new file's second interface is genuinely new, not a second "moved" guess
+    # consuming the already-matched base-side name.
+    assert _component(result, "OrchestratorPort")["state"] == "new"
 
 
-def test_coincidentally_same_named_function_in_an_unrelated_file_is_removed_and_new():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "old.ts",
-            "export function anchor() { return Validate(); }\n"
-            "export function Validate() { return 1; }\n",
-        )
-        _write(repo, "brandnew.ts", "export function unrelatedPlaceholder() { return 0; }\n")
-        base = _commit(repo, "base")
-        _git(repo, "rm", "-q", "old.ts")
-        _write(
-            repo, "brandnew.ts",
-            "export function unrelatedPlaceholder() { return 0; }\n"
-            "export function Validate() { return 999; }\n",
-        )
-        head = _commit(repo, "head")
-
-        # A call edge on each side keeps both Validates boxed rather than also_touched.
-        symdelta_path = _write_json(repo, "symdelta.json", {
-            "nodes": [
-                {"id": "n:anchor", "label": "anchor", "kind": "symbol", "file": "old.ts"},
-                {"id": "n:v-old", "label": "Validate", "kind": "symbol", "file": "old.ts"},
-                {"id": "n:up", "label": "unrelatedPlaceholder", "kind": "symbol", "file": "brandnew.ts"},
-                {"id": "n:v-new", "label": "Validate", "kind": "symbol", "file": "brandnew.ts"},
-            ],
-            "edges": [
-                {"id": "e0", "source": "n:anchor", "target": "n:v-old"},
-                {"id": "e1", "source": "n:up", "target": "n:v-new"},
-            ],
-        })
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        removed = [c for c in result["components"] if c["name"] == "Validate" and c["file"] == "old.ts"]
-        new = [c for c in result["components"] if c["name"] == "Validate" and c["file"] == "brandnew.ts"]
-        assert len(removed) == 1 and removed[0]["state"] == "removed"
-        assert len(new) == 1 and new[0]["state"] == "new"
-        assert not any(c["name"] == "Validate" and c["state"] == "moved" for c in result["components"])
+def test_coincidentally_same_named_function_in_an_unrelated_file_is_removed_and_new(tmp_path):
+    # A call edge on each side keeps both Validates boxed rather than also_touched.
+    symdelta = {
+        "nodes": [
+            {"id": "n:anchor", "label": "anchor", "kind": "symbol", "file": "old.ts"},
+            {"id": "n:v-old", "label": "Validate", "kind": "symbol", "file": "old.ts"},
+            {"id": "n:up", "label": "unrelatedPlaceholder", "kind": "symbol", "file": "brandnew.ts"},
+            {"id": "n:v-new", "label": "Validate", "kind": "symbol", "file": "brandnew.ts"},
+        ],
+        "edges": [
+            {"id": "e0", "source": "n:anchor", "target": "n:v-old"},
+            {"id": "e1", "source": "n:up", "target": "n:v-new"},
+        ],
+    }
+    result = _run_ts(
+        tmp_path,
+        {
+            "old.ts": "export function anchor() { return Validate(); }\n"
+                      "export function Validate() { return 1; }\n",
+            "brandnew.ts": "export function unrelatedPlaceholder() { return 0; }\n",
+        },
+        {
+            "old.ts": None,
+            "brandnew.ts": "export function unrelatedPlaceholder() { return 0; }\n"
+                           "export function Validate() { return 999; }\n",
+        },
+        symdelta=symdelta,
+    )
+    removed = [c for c in result["components"] if c["name"] == "Validate" and c["file"] == "old.ts"]
+    new = [c for c in result["components"] if c["name"] == "Validate" and c["file"] == "brandnew.ts"]
+    assert len(removed) == 1 and removed[0]["state"] == "removed"
+    assert len(new) == 1 and new[0]["state"] == "new"
+    assert not any(c["name"] == "Validate" and c["state"] == "moved" for c in result["components"])
 
 
 # ---- a symbol that only gains a new caller must never read as new (the defineTool case) ----
 
 
-def test_function_unchanged_but_gains_a_caller_is_not_new():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        # shared.ts must itself be part of the diff (structure.py only parses changed files,
-        # per spec) but defineTool's own body must not change -- an unrelated addition next
-        # to it is what a real "gains a caller elsewhere" diff usually also touches.
-        _write(
-            repo, "shared.ts",
-            "export function defineTool(x) { return x; }\n"
-            "export function unrelated() { return 0; }\n",
-        )
-        _write(repo, "caller.ts", "export function existingCaller() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(
-            repo, "shared.ts",
-            "export function defineTool(x) { return x; }\n"
-            "export function unrelated() { return 1; }\n",
-        )
-        _write(
-            repo, "caller.ts",
-            "import { defineTool } from './shared';\n"
-            "export function existingCaller() { return 1; }\n"
-            "export function newCaller() { return defineTool(1); }\n",
-        )
-        head = _commit(repo, "head")
+def test_function_unchanged_but_gains_a_caller_is_not_new(tmp_path):
+    # shared.ts must itself be part of the diff (structure.py only parses changed files,
+    # per spec) but defineTool's own body must not change -- an unrelated addition next
+    # to it is what a real "gains a caller elsewhere" diff usually also touches.
+    symdelta = {
+        "nodes": [
+            {"id": "caller:newCaller", "label": "newCaller", "kind": "symbol",
+             "file": "caller.ts", "state": "new"},
+            {"id": "shared:defineTool", "label": "defineTool", "kind": "symbol",
+             "file": "shared.ts", "state": "new"},
+        ],
+        "edges": [
+            {"id": "e0", "source": "caller:newCaller", "target": "shared:defineTool",
+             "state": "new"},
+        ],
+    }
+    result = _run_ts(
+        tmp_path,
+        {
+            "shared.ts": "export function defineTool(x) { return x; }\n"
+                         "export function unrelated() { return 0; }\n",
+            "caller.ts": "export function existingCaller() { return 1; }\n",
+        },
+        {
+            "shared.ts": "export function defineTool(x) { return x; }\n"
+                         "export function unrelated() { return 1; }\n",
+            "caller.ts": "import { defineTool } from './shared';\n"
+                         "export function existingCaller() { return 1; }\n"
+                         "export function newCaller() { return defineTool(1); }\n",
+        },
+        symdelta=symdelta,
+    )
 
-        symdelta_payload = {
-            "nodes": [
-                {"id": "caller:newCaller", "label": "newCaller", "kind": "symbol",
-                 "file": "caller.ts", "state": "new"},
-                {"id": "shared:defineTool", "label": "defineTool", "kind": "symbol",
-                 "file": "shared.ts", "state": "new"},
-            ],
-            "edges": [
-                {"id": "e0", "source": "caller:newCaller", "target": "shared:defineTool",
-                 "state": "new"},
-            ],
-        }
-        symdelta_path = _write_json(repo, "symdelta.json", symdelta_payload)
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-
-        define_tool = _component(result, "defineTool")
-        assert define_tool["state"] == "unchanged"
-        edges = [e for e in result["edges"] if e["to"] == define_tool["id"]]
-        assert edges and edges[0]["from"] == _component(result, "newCaller")["id"]
-
-
-def test_function_body_changed_and_gains_a_caller_is_changed_not_new():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "shared.ts",
-            "export function defineTool(x) { return x; }\n"
-            "export function other() { return defineTool(0); }\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "shared.ts",
-            "export function defineTool(x) { return x * 2; }\n"
-            "export function other() { return defineTool(0); }\n",
-        )
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("shared.ts", "other", "shared.ts", "defineTool")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        assert _component(result, "defineTool")["state"] == "changed"
+    define_tool = _component(result, "defineTool")
+    assert define_tool["state"] == "unchanged"
+    edges = [e for e in result["edges"] if e["to"] == define_tool["id"]]
+    assert edges and edges[0]["from"] == _component(result, "newCaller")["id"]
 
 
 # ---- local closures never surface as members or components ---------------------------------
 
 
-def test_local_closure_is_never_a_member_or_component():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function helper() { return outer(); }\n"
-            "export function outer() {\n  const inner = () => 1;\n  return inner();\n}\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function helper() { return outer(); }\n"
-            "export function outer() {\n"
-            "  const inner = () => 1;\n"
-            "  function nested() { return 2; }\n"
-            "  return inner() + nested();\n"
-            "}\n",
-        )
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "helper", "a.ts", "outer")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        names = {c["name"] for c in result["components"]}
-        assert "inner" not in names and "nested" not in names
-        assert _component(result, "outer")["members"] == []
+def test_local_closure_is_never_a_member_or_component(tmp_path):
+    result = _run_ts(
+        tmp_path,
+        {"a.ts": "export function helper() { return outer(); }\n"
+                 "export function outer() {\n  const inner = () => 1;\n  return inner();\n}\n"},
+        {"a.ts": "export function helper() { return outer(); }\n"
+                 "export function outer() {\n"
+                 "  const inner = () => 1;\n"
+                 "  function nested() { return 2; }\n"
+                 "  return inner() + nested();\n"
+                 "}\n"},
+        symdelta=_edge_symdelta("a.ts", "helper", "a.ts", "outer"),
+    )
+    names = {c["name"] for c in result["components"]}
+    assert "inner" not in names and "nested" not in names
+    assert _component(result, "outer")["members"] == []
 
 
 # ---- heritage --------------------------------------------------------------------------------
 
 
-def test_implements_is_recorded_from_ts_class_heritage():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export interface Base {\n  a(): void;\n}\n")
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export interface Base {\n  a(): void;\n}\n"
-            "export class Impl implements Base {\n  a(){}\n}\n",
-        )
-        head = _commit(repo, "head")
-
-        result = _run_structure(repo, base, head)
-        impl = _component(result, "Impl")
-        entries = [i for i in result["implements"] if i["from"] == impl["id"]]
-        assert entries == [{"from": impl["id"], "to": "Base", "kind": "implements"}]
+def test_implements_is_recorded_from_ts_class_heritage(tmp_path):
+    result = _run_ts(
+        tmp_path,
+        {"a.ts": "export interface Base {\n  a(): void;\n}\n"},
+        {"a.ts": "export interface Base {\n  a(): void;\n}\n"
+                 "export class Impl implements Base {\n  a(){}\n}\n"},
+    )
+    impl = _component(result, "Impl")
+    entries = [i for i in result["implements"] if i["from"] == impl["id"]]
+    assert entries == [{"from": impl["id"], "to": "Base", "kind": "implements"}]
 
 
 # ---- grouping via analysis.json --------------------------------------------------------------
 
 
-def test_group_index_matches_analysis_groups():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function a1() { return 1; }\n")
-        _write(repo, "b.ts", "export function b1() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.ts", "export function a1() { return 2; }\n")
-        _write(repo, "b.ts", "export function b1() { return 2; }\n")
-        head = _commit(repo, "head")
-
-        analysis_path = _write_json(
-            repo, "analysis.json", {"groups": [{"paths": ["a.ts"]}, {"paths": ["b.ts"]}]}
-        )
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "a1", "b.ts", "b1")
-        )
-        result = _run_structure(
-            repo, base, head, symdelta_path=symdelta_path, analysis_path=analysis_path
-        )
-        assert _component(result, "a1")["group"] == 0
-        assert _component(result, "b1")["group"] == 1
+def test_group_index_matches_analysis_groups(tmp_path):
+    result = _run_ts(
+        tmp_path,
+        {"a.ts": "export function a1() { return 1; }\n",
+         "b.ts": "export function b1() { return 1; }\n"},
+        {"a.ts": "export function a1() { return 2; }\n",
+         "b.ts": "export function b1() { return 2; }\n"},
+        symdelta=_edge_symdelta("a.ts", "a1", "b.ts", "b1"),
+        analysis={"groups": [{"paths": ["a.ts"]}, {"paths": ["b.ts"]}]},
+    )
+    assert _component(result, "a1")["group"] == 0
+    assert _component(result, "b1")["group"] == 1
 
 
-def test_group_is_null_without_an_analysis_file():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function helper() { return a1(); }\n"
-            "export function a1() { return 1; }\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function helper() { return a1(); }\n"
-            "export function a1() { return 2; }\n",
-        )
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "helper", "a.ts", "a1")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        assert _component(result, "a1")["group"] is None
+def test_group_is_null_without_an_analysis_file(tmp_path):
+    result = _run_ts(
+        tmp_path,
+        {"a.ts": "export function helper() { return a1(); }\n"
+                 "export function a1() { return 1; }\n"},
+        {"a.ts": "export function helper() { return a1(); }\n"
+                 "export function a1() { return 2; }\n"},
+        symdelta=_edge_symdelta("a.ts", "helper", "a.ts", "a1"),
+    )
+    assert _component(result, "a1")["group"] is None
 
 
 def test_group_titles_pure_logic():
@@ -494,69 +326,52 @@ def test_group_titles_pure_logic():
     assert structure.group_titles(None) == []
 
 
-def test_group_titles_surface_at_the_top_level_when_present():
+def test_group_titles_end_to_end(tmp_path):
     # sections.py labels its filter chips from this -- see render_structure's own chip test.
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function a1() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.ts", "export function a1() { return 2; }\n")
-        head = _commit(repo, "head")
-
-        analysis_path = _write_json(
-            repo, "analysis.json", {"groups": [{"title": "Auth", "paths": ["a.ts"]}]}
-        )
-
+    cw_testlib.require_tree_sitter("typescript")
+    repo, base, head = make_repo(
+        tmp_path,
+        {"a.ts": "export function a1() { return 1; }\n"},
+        {"a.ts": "export function a1() { return 2; }\n"},
+    )
+    rows = [
+        ("title present", {"groups": [{"title": "Auth", "paths": ["a.ts"]}]},
+         [{"index": 0, "title": "Auth"}]),
+        ("no group has a title", {"groups": [{"paths": ["a.ts"]}]}, None),
+    ]
+    for label, analysis, want in rows:
+        analysis_path = _write_json(repo, "analysis.json", analysis)
         result = _run_structure(repo, base, head, analysis_path=analysis_path)
-        assert result["groups"] == [{"index": 0, "title": "Auth"}]
-
-
-def test_no_groups_key_when_no_group_has_a_title():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function a1() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.ts", "export function a1() { return 2; }\n")
-        head = _commit(repo, "head")
-
-        analysis_path = _write_json(repo, "analysis.json", {"groups": [{"paths": ["a.ts"]}]})
-
-        result = _run_structure(repo, base, head, analysis_path=analysis_path)
-        assert "groups" not in result
+        if want is None:
+            assert "groups" not in result, label
+        else:
+            assert result["groups"] == want, label
 
 
 # ---- unsupported language -> language null, same pattern as symdelta ------------------------
 
 
-def test_unsupported_language_returns_null_language():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "README.md", "# hello\n")
-        base = _commit(repo, "base")
-        _write(repo, "README.md", "# hello world\n")
-        head = _commit(repo, "head")
+def test_unsupported_language_returns_null_language(tmp_path):
+    repo, base, head = make_repo(tmp_path, {"README.md": "# hello\n"}, {"README.md": "# hello world\n"})
 
-        result = _run_structure(repo, base, head)
-        assert result["language"] is None
-        assert result["components"] == []
-        assert "reason" in result
+    result = _run_structure(repo, base, head)
+
+    assert result["language"] is None
+    assert result["components"] == []
+    assert "reason" in result
 
 
-def test_missing_tree_sitter_falls_back_to_null_language():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function a1() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.ts", "export function a1() { return 2; }\n")
-        head = _commit(repo, "head")
+def test_missing_tree_sitter_falls_back_to_null_language(tmp_path):
+    repo, base, head = make_repo(
+        tmp_path,
+        {"a.ts": "export function a1() { return 1; }\n"},
+        {"a.ts": "export function a1() { return 2; }\n"},
+    )
 
-        result = _run_structure(repo, base, head, env={"STRUCTURE_NO_TREE_SITTER": "1"})
-        assert result["language"] is None
-        assert "reason" in result
+    result = _run_structure(repo, base, head, env={"STRUCTURE_NO_TREE_SITTER": "1"})
+
+    assert result["language"] is None
+    assert "reason" in result
 
 
 # ---- size cap: pure logic, no git needed -----------------------------------------------------
@@ -594,96 +409,46 @@ def test_size_cap_is_a_noop_under_the_cap():
 
 
 def test_size_cap_never_cuts_a_touched_component_for_an_unchanged_one():
-    # 32 touched (state "changed") plus 3 unchanged, all degree 0 -- ties fall to alphabetical
-    # id, which used to let an unchanged component win a slot a touched one needed.
-    components = {}
-    for i in range(32):
-        cid = f"file{i}.ts:Comp{i}"
-        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "changed", "group": None}
-    for i in range(32, 35):
-        cid = f"file{i}.ts:Comp{i}"
-        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "unchanged", "group": None}
+    # touched ties fall to alphabetical id on degree 0, which used to let an unchanged component win
+    # a slot a touched one needed. The second row also guards the cross-group round robin: group 0
+    # has 20 touched, group 1 only 5 unchanged, and alternating groups without regard to state would
+    # hand group 1's unchanged components a slot each round before group 0 ran out.
+    rows = [
+        ("single group", [(32, "changed", None), (3, "unchanged", None)], 30, 5),
+        ("two groups", [(20, "changed", 0), (5, "unchanged", 1)], 10, 15),
+    ]
+    for label, parts, cap, want_dropped in rows:
+        components = {}
+        n = 0
+        for count, state, group in parts:
+            for _ in range(count):
+                cid = f"file{n}.ts:Comp{n}"
+                components[cid] = {"id": cid, "name": f"Comp{n}", "state": state, "group": group}
+                n += 1
 
-    kept, kept_edges, dropped = structure.apply_cap(components, [], cap=30)
+        kept, kept_edges, dropped = structure.apply_cap(components, [], cap=cap)
 
-    assert len(kept) == 30
-    assert dropped == 5
-    assert all(c["state"] != "unchanged" for c in kept)
-
-
-def test_size_cap_never_cuts_a_touched_component_for_an_unchanged_one_across_groups():
-    # Group 0 has 20 touched components; group 1 has only 5 unchanged ones. A round robin
-    # that alternates groups without regard to state would give group 1's unchanged
-    # components a slot each round before group 0 exhausts its touched ones.
-    components = {}
-    for i in range(20):
-        cid = f"file{i}.ts:Comp{i}"
-        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "changed", "group": 0}
-    for i in range(20, 25):
-        cid = f"file{i}.ts:Comp{i}"
-        components[cid] = {"id": cid, "name": f"Comp{i}", "state": "unchanged", "group": 1}
-
-    kept, kept_edges, dropped = structure.apply_cap(components, [], cap=10)
-
-    assert len(kept) == 10
-    assert dropped == 15
-    assert all(c["state"] != "unchanged" for c in kept)
+        assert len(kept) == cap, label
+        assert dropped == want_dropped, label
+        assert all(c["state"] != "unchanged" for c in kept), label
 
 
 # ---- unreferenced unchanged components: dropped as noise, not as overflow -------------------
 
 
-def test_unreferenced_unchanged_component_excluded_and_not_counted_in_dropped():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function touched() { return 1; }\n"
-            "export function untouched() { return 2; }\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function touched() { return 99; }\n"
-            "export function untouched() { return 2; }\n",
-        )
-        head = _commit(repo, "head")
-
-        # No edge touches "untouched" at all -- it's an unrelated symbol build_components still
-        # parsed because it shares a changed file with "touched".
-        result = _run_structure(repo, base, head)
-        names = {c["name"] for c in result["components"]}
-        assert "touched" in names or "touched" in result["also_touched"]
-        assert "untouched" not in names
-        assert "untouched" not in result["also_touched"]
-        assert result["dropped"] == 0
-
-
-def test_unchanged_component_reached_by_an_edge_from_a_touched_one_is_kept():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "a.ts",
-            "export function caller() { return callee(); }\n"
-            "export function callee() { return 1; }\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function caller() { return callee() + 1; }\n"
-            "export function callee() { return 1; }\n",
-        )
-        head = _commit(repo, "head")
-
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "caller", "a.ts", "callee")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        callee = _component(result, "callee")
-        assert callee["state"] == "unchanged"
-        assert result["dropped"] == 0
+def test_unreferenced_unchanged_component_excluded_and_not_counted_in_dropped(tmp_path):
+    # No edge touches "untouched" at all -- it's an unrelated symbol build_components still
+    # parsed because it shares a changed file with "touched".
+    result = _run_ts(
+        tmp_path,
+        {"a.ts": "export function touched() { return 1; }\n"
+                 "export function untouched() { return 2; }\n"},
+        {"a.ts": "export function touched() { return 99; }\n"
+                 "export function untouched() { return 2; }\n"},
+    )
+    assert result["components"] == []
+    assert result["also_touched"] == ["touched"]
+    assert result["dropped"] == 0
 
 
 # ---- _member_states: pure logic --------------------------------------------------------------
@@ -701,93 +466,78 @@ def test_member_states_pure_logic():
 # ---- Go, via the tiny stdlib-only helper program ----------------------------------------------
 
 
-def test_go_struct_and_interface_states():
-    if shutil.which("go") is None:
-        print("skip (no `go` on PATH): test_go_struct_and_interface_states")
-        return
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/structuretest\n\ngo 1.21\n")
-        _write(
-            repo, "pkg/a.go",
-            "package pkg\n\n"
-            "type Greeter struct{}\n\n"
-            'func (g *Greeter) Greet() string { return "hi" }\n\n'
-            "func TopLevel() int { return 1 }\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "pkg/a.go",
-            "package pkg\n\n"
-            "type Greeter struct{}\n\n"
-            'func (g *Greeter) Greet() string { return "hello" }\n\n'
-            "func TopLevel() int { return 1 }\n\n"
-            "func NewFunc() int { return 2 }\n",
-        )
-        head = _commit(repo, "head")
+def test_go_struct_and_interface_states(tmp_path):
+    cw_testlib.require_tree_sitter("go")
+    repo, base, head = make_repo(
+        tmp_path,
+        {
+            "go.mod": "module example.com/structuretest\n\ngo 1.21\n",
+            "pkg/a.go": "package pkg\n\n"
+                        "type Greeter struct{}\n\n"
+                        'func (g *Greeter) Greet() string { return "hi" }\n\n'
+                        "func TopLevel() int { return 1 }\n",
+        },
+        {
+            "pkg/a.go": "package pkg\n\n"
+                        "type Greeter struct{}\n\n"
+                        'func (g *Greeter) Greet() string { return "hello" }\n\n'
+                        "func TopLevel() int { return 1 }\n\n"
+                        "func NewFunc() int { return 2 }\n",
+        },
+    )
 
-        # NewFunc -> TopLevel -> Greeter keeps all three boxed rather than also_touched.
-        symdelta_path = _write_json(repo, "symdelta.json", {
-            "nodes": [
-                {"id": "n:new", "label": "NewFunc", "kind": "symbol", "file": "pkg/a.go"},
-                {"id": "n:top", "label": "TopLevel", "kind": "symbol", "file": "pkg/a.go"},
-                {"id": "n:greeter", "label": "Greeter", "kind": "symbol", "file": "pkg/a.go"},
-            ],
-            "edges": [
-                {"id": "e0", "source": "n:new", "target": "n:top"},
-                {"id": "e1", "source": "n:top", "target": "n:greeter"},
-            ],
-        })
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        assert result["language"] == "go"
-        assert _component(result, "TopLevel")["state"] == "unchanged"
-        assert _component(result, "NewFunc")["state"] == "new"
-        greeter = _component(result, "Greeter")
-        assert greeter["state"] == "changed"
-        member_states = {m["name"]: m["state"] for m in greeter["members"]}
-        assert member_states == {"Greet": "changed"}
+    # NewFunc -> TopLevel -> Greeter keeps all three boxed rather than also_touched.
+    symdelta_path = _write_json(repo, "symdelta.json", {
+        "nodes": [
+            {"id": "n:new", "label": "NewFunc", "kind": "symbol", "file": "pkg/a.go"},
+            {"id": "n:top", "label": "TopLevel", "kind": "symbol", "file": "pkg/a.go"},
+            {"id": "n:greeter", "label": "Greeter", "kind": "symbol", "file": "pkg/a.go"},
+        ],
+        "edges": [
+            {"id": "e0", "source": "n:new", "target": "n:top"},
+            {"id": "e1", "source": "n:top", "target": "n:greeter"},
+        ],
+    })
+    result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
+    assert result["language"] == "go"
+    assert _component(result, "TopLevel")["state"] == "unchanged"
+    assert _component(result, "NewFunc")["state"] == "new"
+    greeter = _component(result, "Greeter")
+    assert greeter["state"] == "changed"
+    member_states = {m["name"]: m["state"] for m in greeter["members"]}
+    assert member_states == {"Greet": "changed"}
 
 
-def test_go_generic_receiver_method_is_a_member_and_a_new_one_marks_the_struct_changed():
-    if shutil.which("go") is None:
-        print(
-            "skip (no `go` on PATH): "
-            "test_go_generic_receiver_method_is_a_member_and_a_new_one_marks_the_struct_changed"
-        )
-        return
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "go.mod", "module example.com/structuretest\n\ngo 1.21\n")
-        _write(
-            repo, "pkg/box.go",
-            "package pkg\n\n"
-            "type Box[T any] struct {\n\tval T\n}\n\n"
-            "func (b *Box[T]) Get() T { return b.val }\n\n"
-            "func Use() int {\n\tb := &Box[int]{}\n\treturn b.Get()\n}\n",
-        )
-        base = _commit(repo, "base")
-        _write(
-            repo, "pkg/box.go",
-            "package pkg\n\n"
-            "type Box[T any] struct {\n\tval T\n}\n\n"
-            "func (b *Box[T]) Get() T { return b.val }\n\n"
-            "func (b *Box[T]) Set(v T) { b.val = v }\n\n"
-            "func Use() int {\n\tb := &Box[int]{}\n\treturn b.Get()\n}\n",
-        )
-        head = _commit(repo, "head")
+def test_go_generic_receiver_method_is_a_member_and_a_new_one_marks_the_struct_changed(tmp_path):
+    cw_testlib.require_tree_sitter("go")
+    repo, base, head = make_repo(
+        tmp_path,
+        {
+            "go.mod": "module example.com/structuretest\n\ngo 1.21\n",
+            "pkg/box.go": "package pkg\n\n"
+                          "type Box[T any] struct {\n\tval T\n}\n\n"
+                          "func (b *Box[T]) Get() T { return b.val }\n\n"
+                          "func Use() int {\n\tb := &Box[int]{}\n\treturn b.Get()\n}\n",
+        },
+        {
+            "pkg/box.go": "package pkg\n\n"
+                          "type Box[T any] struct {\n\tval T\n}\n\n"
+                          "func (b *Box[T]) Get() T { return b.val }\n\n"
+                          "func (b *Box[T]) Set(v T) { b.val = v }\n\n"
+                          "func Use() int {\n\tb := &Box[int]{}\n\treturn b.Get()\n}\n",
+        },
+    )
 
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("pkg/box.go", "Use", "pkg/box.go", "Box")
-        )
-        result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
-        box = _component(result, "Box")
-        # Before the fix, recvTypeName returned "" for a Box[T] receiver and Get() vanished
-        # entirely instead of showing up as a member.
-        member_states = {m["name"]: m["state"] for m in box["members"]}
-        assert member_states == {"Get": "unchanged", "Set": "new"}
-        assert box["state"] == "changed"
+    symdelta_path = _write_json(
+        repo, "symdelta.json", _edge_symdelta("pkg/box.go", "Use", "pkg/box.go", "Box")
+    )
+    result = _run_structure(repo, base, head, symdelta_path=symdelta_path)
+    box = _component(result, "Box")
+    # Before the fix, recvTypeName returned "" for a Box[T] receiver and Get() vanished
+    # entirely instead of showing up as a member.
+    member_states = {m["name"]: m["state"] for m in box["members"]}
+    assert member_states == {"Get": "unchanged", "Set": "new"}
+    assert box["state"] == "changed"
 
 
 # ---- test files: dropped before the cap, never a component or an also_touched entry ---------
@@ -810,25 +560,21 @@ def test_test_components_are_dropped_before_the_cap():
     assert kept_edges == []
 
 
-def test_a_test_file_component_never_takes_a_cap_slot_or_an_also_touched_entry():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "src/real.ts", "export function real() { return 1; }\n")
-        _write(repo, "src/real.test.ts", "export function testHelper() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(repo, "src/real.ts", "export function real() { return 2; }\n")
-        _write(repo, "src/real.test.ts", "export function testHelper() { return 2; }\n")
-        head = _commit(repo, "head")
-
-        result = _run_structure(repo, base, head)
-        names = {c["name"] for c in result["components"]}
-        # Neither function calls the other, so "real" (a real component) is expected to land in
-        # also_touched, not components -- the point here is that "testHelper" (a test-file
-        # component) appears in neither.
-        assert "real" in names or "real" in result["also_touched"]
-        assert "testHelper" not in names
-        assert "testHelper" not in result["also_touched"]
+def test_a_test_file_component_never_takes_a_cap_slot_or_an_also_touched_entry(tmp_path):
+    result = _run_ts(
+        tmp_path,
+        {"src/real.ts": "export function real() { return 1; }\n",
+         "src/real.test.ts": "export function testHelper() { return 1; }\n"},
+        {"src/real.ts": "export function real() { return 2; }\n",
+         "src/real.test.ts": "export function testHelper() { return 2; }\n"},
+    )
+    names = {c["name"] for c in result["components"]}
+    # Neither function calls the other, so "real" (a real component) is expected to land in
+    # also_touched, not components -- the point here is that "testHelper" (a test-file
+    # component) appears in neither.
+    assert "real" in names or "real" in result["also_touched"]
+    assert "testHelper" not in names
+    assert "testHelper" not in result["also_touched"]
 
 
 # ---- also_touched: an edgeless component draws no box, only a note --------------------------
@@ -845,21 +591,17 @@ def test_split_also_touched_pure_logic():
     assert [x["name"] for x in also_touched] == ["C"]
 
 
-def test_edgeless_component_moves_to_also_touched_end_to_end():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function a1() { return 1; }\n")
-        _write(repo, "b.ts", "export function b1() { return 1; }\n")
-        base = _commit(repo, "base")
-        _write(repo, "a.ts", "export function a1() { return 2; }\n")
-        _write(repo, "b.ts", "export function b1() { return 2; }\n")
-        head = _commit(repo, "head")
-
-        # No symdelta edges tying a1 and b1 together -- both stay isolated.
-        result = _run_structure(repo, base, head)
-        assert {c["name"] for c in result["components"]} == set()
-        assert sorted(result["also_touched"]) == ["a1", "b1"]
+def test_edgeless_component_moves_to_also_touched_end_to_end(tmp_path):
+    # No symdelta edges tying a1 and b1 together -- both stay isolated.
+    result = _run_ts(
+        tmp_path,
+        {"a.ts": "export function a1() { return 1; }\n",
+         "b.ts": "export function b1() { return 1; }\n"},
+        {"a.ts": "export function a1() { return 2; }\n",
+         "b.ts": "export function b1() { return 2; }\n"},
+    )
+    assert {c["name"] for c in result["components"]} == set()
+    assert sorted(result["also_touched"]) == ["a1", "b1"]
 
 
 # ---- row: barycenter ordering within a column, deterministic --------------------------------
@@ -888,107 +630,63 @@ def test_barycenter_row_order_reduces_crossings_and_is_deterministic():
 # ---- explain mode: orphan baseline, --paths scoping ------------------------------------------
 
 
-def test_orphan_base_with_no_merge_base_works():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function existing() { return 1; }\n")
-        _commit(repo, "base")
-        _write(
-            repo, "a.ts",
-            "export function existing() { return 1; }\n"
-            "export function fresh() { return 2; }\n",
-        )
-        head = _commit(repo, "head")
-        orphan = _orphan_baseline(repo)
+def test_orphan_base_with_no_merge_base_works(tmp_path):
+    cw_testlib.require_tree_sitter("typescript")
+    repo, _base, head = make_repo(
+        tmp_path,
+        {"a.ts": "export function existing() { return 1; }\n"},
+        {"a.ts": "export function existing() { return 1; }\n"
+                 "export function fresh() { return 2; }\n"},
+    )
+    orphan = orphan_baseline(repo)
 
-        # Three-dot needs a merge base; the orphan shares no history with head, so this used to
-        # die with "fatal: ...: no merge base" before changed_files() switched to two-dot.
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("a.ts", "existing", "a.ts", "fresh")
-        )
-        result = _run_structure(repo, orphan, head, symdelta_path=symdelta_path)
-        assert _component(result, "existing")["state"] == "new"
-        assert _component(result, "fresh")["state"] == "new"
+    # Three-dot needs a merge base; the orphan shares no history with head, so this used to
+    # die with "fatal: ...: no merge base" before changed_files() switched to two-dot.
+    symdelta_path = _write_json(
+        repo, "symdelta.json", _edge_symdelta("a.ts", "existing", "a.ts", "fresh")
+    )
+    result = _run_structure(repo, orphan, head, symdelta_path=symdelta_path)
+    assert _component(result, "existing")["state"] == "new"
+    assert _component(result, "fresh")["state"] == "new"
 
 
-def test_paths_scopes_the_component_set():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(
-            repo, "src/a/foo.ts",
-            "export function helper() { return foo(); }\n"
-            "export function foo() { return 1; }\n",
-        )
-        _write(repo, "src/b/bar.ts", "export function bar() { return 2; }\n")
-        head = _commit(repo, "head")
-        orphan = _orphan_baseline(repo)
+def test_paths_scopes_the_component_set(tmp_path):
+    cw_testlib.require_tree_sitter("typescript")
+    cw_testlib.require_git()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    write_file(
+        repo, "src/a/foo.ts",
+        "export function helper() { return foo(); }\n"
+        "export function foo() { return 1; }\n",
+    )
+    write_file(repo, "src/b/bar.ts", "export function bar() { return 2; }\n")
+    head = commit_all(repo, "head")
+    orphan = orphan_baseline(repo)
 
-        symdelta_path = _write_json(
-            repo, "symdelta.json", _edge_symdelta("src/a/foo.ts", "helper", "src/a/foo.ts", "foo")
-        )
-        # Against the orphan base every file counts as changed, so without --paths this pulls in
-        # the whole repo. Scoped to src/a, src/b's component must not appear.
-        result = _run_structure(repo, orphan, head, symdelta_path=symdelta_path, paths=["src/a"])
-        assert _component(result, "foo")["state"] == "new"
-        assert [c for c in result["components"] if c["name"] == "bar"] == []
-
-
-def test_bad_ref_fails_with_nonzero_exit():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp)
-        _init_repo(repo)
-        _write(repo, "a.ts", "export function a1() { return 1; }\n")
-        base = _commit(repo, "base")
-        symdelta_path = _write_json(repo, "symdelta.json", {"nodes": [], "edges": []})
-        out_path = repo / "structure.json"
-        cmd = [
-            sys.executable, str(SCRIPT_PATH), "--repo", str(repo), "--base", base,
-            "--head", "not-a-real-ref", "--symdelta", str(symdelta_path), "--out", str(out_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        assert result.returncode != 0
+    symdelta_path = _write_json(
+        repo, "symdelta.json", _edge_symdelta("src/a/foo.ts", "helper", "src/a/foo.ts", "foo")
+    )
+    # Against the orphan base every file counts as changed, so without --paths this pulls in
+    # the whole repo. Scoped to src/a, src/b's component must not appear.
+    result = _run_structure(repo, orphan, head, symdelta_path=symdelta_path, paths=["src/a"])
+    assert _component(result, "foo")["state"] == "new"
+    assert [c for c in result["components"] if c["name"] == "bar"] == []
 
 
-if __name__ == "__main__":
-    tests = [
-        test_new_top_level_function_is_new,
-        test_modified_function_body_is_changed,
-        test_whitespace_only_change_is_unchanged,
-        test_removed_function_is_removed,
-        test_build_components_orders_matched_entries_deterministically,
-        test_interface_moved_into_a_differently_named_file_is_moved_not_new_and_removed,
-        test_coincidentally_same_named_function_in_an_unrelated_file_is_removed_and_new,
-        test_function_unchanged_but_gains_a_caller_is_not_new,
-        test_function_body_changed_and_gains_a_caller_is_changed_not_new,
-        test_local_closure_is_never_a_member_or_component,
-        test_implements_is_recorded_from_ts_class_heritage,
-        test_group_index_matches_analysis_groups,
-        test_group_is_null_without_an_analysis_file,
-        test_group_titles_pure_logic,
-        test_group_titles_surface_at_the_top_level_when_present,
-        test_no_groups_key_when_no_group_has_a_title,
-        test_unsupported_language_returns_null_language,
-        test_missing_tree_sitter_falls_back_to_null_language,
-        test_size_cap_keeps_top_degree_components_and_reports_dropped,
-        test_size_cap_is_a_noop_under_the_cap,
-        test_size_cap_never_cuts_a_touched_component_for_an_unchanged_one,
-        test_unreferenced_unchanged_component_excluded_and_not_counted_in_dropped,
-        test_unchanged_component_reached_by_an_edge_from_a_touched_one_is_kept,
-        test_member_states_pure_logic,
-        test_go_struct_and_interface_states,
-        test_go_generic_receiver_method_is_a_member_and_a_new_one_marks_the_struct_changed,
-        test_test_components_are_dropped_before_the_cap,
-        test_a_test_file_component_never_takes_a_cap_slot_or_an_also_touched_entry,
-        test_split_also_touched_pure_logic,
-        test_edgeless_component_moves_to_also_touched_end_to_end,
-        test_barycenter_row_order_reduces_crossings_and_is_deterministic,
-        test_orphan_base_with_no_merge_base_works,
-        test_paths_scopes_the_component_set,
-        test_bad_ref_fails_with_nonzero_exit,
+def test_bad_ref_fails_with_nonzero_exit(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cw_testlib.require_git()
+    init_repo(repo)
+    write_file(repo, "a.ts", "export function a1() { return 1; }\n")
+    base = commit_all(repo, "base")
+    symdelta_path = _write_json(repo, "symdelta.json", {"nodes": [], "edges": []})
+    out_path = repo / "structure.json"
+    cmd = [
+        sys.executable, str(SCRIPT_PATH), "--repo", str(repo), "--base", base,
+        "--head", "not-a-real-ref", "--symdelta", str(symdelta_path), "--out", str(out_path),
     ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode != 0

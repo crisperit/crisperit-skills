@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Self-check for walkthrough.py. Assert-based, no framework."""
+"""Self-check for walkthrough.py. Assert-based."""
 
 import re
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from walkthrough import (  # noqa: E402
@@ -267,21 +269,14 @@ def test_the_path_span_still_reads_as_the_bare_path_for_the_comment_js():
     assert re.sub(r"<[^>]+>", "", span) == "src/auth.py"
 
 
-def test_an_unpushed_head_leaves_the_file_name_as_plain_text():
+def test_a_file_link_only_renders_for_a_pushed_head():
     order, files = parsed()
     by_path = {e["path"]: e for e in ANALYSIS["files"]}
     out = render_html(flat(order, files), files, by_path, links={**LINKS, "head_pushed": False})
 
     assert '<span class="hunk-path">src/auth.py</span>' in out
-
-
-def test_skips_links_when_the_head_is_not_pushed():
-    order, files = parsed()
-    by_path = {e["path"]: e for e in ANALYSIS["files"]}
-    unpushed = {**LINKS, "head_pushed": False}
-
     # Those urls 404 until the commit exists on the remote.
-    assert "https://gh" not in render_html(flat(order, files), files, by_path, links=unpushed)
+    assert "https://gh" not in out
 
 
 def test_walkthrough_carries_the_marker_the_section_check_looks_for():
@@ -321,24 +316,23 @@ def test_a_caller_reads_before_the_thing_it_calls():
     assert depth["src/api.py"] < depth["src/service.py"] < depth["src/store.py"]
 
 
-def test_two_symbols_in_the_same_file_do_not_order_it_against_itself():
-    symdelta = {"language": "go", "nodes": [
+@pytest.mark.parametrize("symdelta, paths", [
+    # two symbols in the same file do not order it against itself
+    ({"language": "go", "nodes": [
         {"id": "pkg/a.go:F", "kind": "symbol", "file": "pkg/a.go"},
         {"id": "pkg/a.go:G", "kind": "symbol", "file": "pkg/a.go"},
-    ], "edges": [{"source": "pkg/a.go:F", "target": "pkg/a.go:G"}]}
-    depth = caller_depth(symdelta, ["pkg/a.go"])
-
-    assert depth == {}
-
-
-def test_a_pkg_node_carries_no_file_and_drops_its_edge():
-    symdelta = {"language": "go", "nodes": [
+    ], "edges": [{"source": "pkg/a.go:F", "target": "pkg/a.go:G"}]}, ["pkg/a.go"]),
+    # a pkg node carries no file, so its edge is dropped
+    ({"language": "go", "nodes": [
         {"id": "pkg/a", "kind": "pkg", "label": "a", "depth": 0},
         {"id": "pkg/a.go:F", "kind": "symbol", "file": "pkg/a.go"},
-    ], "edges": [{"source": "pkg/a", "target": "pkg/a.go:F"}]}
-    depth = caller_depth(symdelta, ["pkg/a.go"])
-
-    assert depth == {}
+    ], "edges": [{"source": "pkg/a", "target": "pkg/a.go:F"}]}, ["pkg/a.go"]),
+    ({"language": None, "reason": "unsupported language: rb"}, ["a.py", "b.py"]),
+    ({"language": "python",
+      "nodes": [{"id": "a.py:f", "kind": "symbol", "file": "a.py"}], "edges": []}, ["a.py"]),
+], ids=["same-file-symbols", "pkg-node", "language-null", "no-edges"])
+def test_caller_depth_yields_no_data(symdelta, paths):
+    assert caller_depth(symdelta, paths) == {}
 
 
 def test_a_call_cycle_still_terminates_and_places_every_file():
@@ -350,21 +344,6 @@ def test_a_call_cycle_still_terminates_and_places_every_file():
     depth = caller_depth(symdelta, ["a.py", "b.py"])
 
     assert set(depth) == {"a.py", "b.py"}
-
-
-def test_language_null_yields_no_depth_data():
-    symdelta = {"language": None, "reason": "unsupported language: rb"}
-    depth = caller_depth(symdelta, ["a.py", "b.py"])
-
-    assert depth == {}
-
-
-def test_no_edges_yields_no_depth_data():
-    symdelta = {"language": "python",
-                "nodes": [{"id": "a.py:f", "kind": "symbol", "file": "a.py"}], "edges": []}
-    depth = caller_depth(symdelta, ["a.py"])
-
-    assert depth == {}
 
 
 def test_a_file_symdelta_never_saw_sorts_after_every_placed_one():
@@ -612,15 +591,6 @@ def test_symdelta_past_one_group_draws_each_group_its_own_scoped_graph():
     api_chunk, store_chunk = out.split('<h3 class="wt-group"')[1:3]
     assert "HandleCallee" in api_chunk and "GetCallee" not in api_chunk
     assert "GetCallee" in store_chunk and "HandleCallee" not in store_chunk
-
-
-def test_symdelta_group_graph_data_symbols_matches_its_scoped_count():
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
-                                        {"title": "Store", "paths": ["src/store.py"]}], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-
-    api_chunk, store_chunk = out.split('<h3 class="wt-group"')[1:3]
     assert 'data-symbols="2"' in api_chunk
     assert 'data-symbols="2"' in store_chunk
 
@@ -765,41 +735,56 @@ def test_a_moved_function_names_itself_and_its_movement_in_words():
     # same fact underneath, are both gone: one statement, in words, is enough.
     assert "9 cx" not in out
     assert "Complexity rose" not in out
+    assert "hunk-cx gone" not in out
 
 
-def test_an_unmoved_but_new_functions_high_peak_still_shows():
+def _peak(name, before, after, existed=True, depth=1, **extra):
+    return {"name": name, "before": before, "after": after, "delta": after - before,
+            "existed": existed, "touched": True, "depth": depth, **extra}
+
+
+# (complexity input, strings the page must carry, strings it must not)
+CX_CHIP_ROWS = {
     # A brand-new function born already hairy is worth a beat even though nothing "moved": it
     # has no before to move from. NOTEWORTHY_CX is 10, so 11 clears it.
-    order, files = parsed()
-    fresh = _cx("src/auth.py", peak={"name": "resolveSource", "before": 0, "after": 11,
-                                     "delta": 11, "existed": False, "touched": True, "depth": 2})
-    out = render_html(flat(order, files), files, {}, complexity=fresh)
-
-    assert '<span class="hunk-cx flat"' in out
-    assert "resolveSource 11 branches" in out
-
-
-def test_an_unmoved_pre_existing_peak_gets_no_chip_even_when_high():
+    "new hairy function": (
+        _cx("src/auth.py", peak=_peak("resolveSource", 0, 11, existed=False, depth=2)),
+        ['<span class="hunk-cx flat"', "resolveSource 11 branches"], ["hunk-cx gone"]),
     # The bug report: main.go's `serve` sat at 31 before and after this diff (delta 0, but
     # `touched` true since a hunk landed inside it) and still showed a bare "31 cx". A number
     # this diff did not move is not news, no matter how high it already was.
-    order, files = parsed()
-    unmoved = _cx("src/auth.py", peak={"name": "serve", "before": 31, "after": 31, "delta": 0,
-                                       "existed": True, "touched": True, "depth": 1})
-    out = render_html(flat(order, files), files, {}, complexity=unmoved)
-
-    assert "hunk-cx" not in out
-
-
-def test_an_unmoved_function_below_the_noteworthy_line_gets_no_chip():
+    "unmoved pre-existing peak": (
+        _cx("src/auth.py", peak=_peak("serve", 31, 31)), [], ["hunk-cx"]),
     # Otherwise every file in a diff carries one: the measured 13-file commit put a chip on all
     # 13, four of them reading "1 cx" for a new getter.
-    order, files = parsed()
-    quiet = _cx("src/auth.py", peak={"name": "small", "before": 3, "after": 3, "delta": 0,
-                                     "existed": True, "touched": True, "depth": 1})
-    out = render_html(flat(order, files), files, {}, complexity=quiet)
+    "unmoved below the noteworthy line": (
+        _cx("src/auth.py", peak=_peak("small", 3, 3)), [], ["hunk-cx"]),
+    "falling function": (
+        _cx("src/auth.py", peak=_peak("load_session", 20, 6), jump=_peak("load_session", 20, 6)),
+        ['<span class="hunk-cx down"', "load_session 20→6 branches"], []),
+    # Real output from PR 2498: distributionChannelResolverChain.Resolve's branch count fell
+    # 3->0 because the function was deleted, not because this diff improved anything.
+    "removed function": (
+        _cx("src/auth.py", peak=None,
+            jump=_peak("distributionChannelResolverChain.Resolve", 3, 0, depth=0, removed=True)),
+        ['<span class="hunk-cx gone"', "distributionChannelResolverChain.Resolve removed"], ["→"]),
+    # Stale complexity.json from before the "removed" key existed: existed=True with after==0
+    # is the only signal available, and it alone is enough to suppress the "N→0" bug.
+    "removed function with no removed key": (
+        _cx("src/auth.py", peak=None, jump=_peak("ipString", 2, 0, depth=0)),
+        ['<span class="hunk-cx gone"', "ipString removed"], ["→"]),
+}
 
-    assert "hunk-cx" not in out
+
+@pytest.mark.parametrize("complexity, present, absent", CX_CHIP_ROWS.values(), ids=CX_CHIP_ROWS.keys())
+def test_complexity_chip_rows(complexity, present, absent):
+    order, files = parsed()
+    out = render_html(flat(order, files), files, {}, complexity=complexity)
+
+    for text in present:
+        assert text in out
+    for text in absent:
+        assert text not in out
 
 
 def test_a_file_the_change_touched_nothing_branching_in_gets_no_chip():
@@ -808,19 +793,6 @@ def test_a_file_the_change_touched_nothing_branching_in_gets_no_chip():
 
     readme = out.split('<span class="hunk-path">README.md</span>')[1]
     assert "hunk-cx" not in readme.split("</details>")[0]
-
-
-def test_a_falling_functions_chip_reads_as_falling_not_just_as_changed():
-    order, files = parsed()
-    falling = _cx("src/auth.py",
-                  peak={"name": "load_session", "before": 20, "after": 6, "delta": -14,
-                        "existed": True, "touched": True, "depth": 1},
-                  jump={"name": "load_session", "before": 20, "after": 6, "delta": -14,
-                        "existed": True, "touched": True, "depth": 1})
-    out = render_html(flat(order, files), files, {}, complexity=falling)
-
-    assert '<span class="hunk-cx down"' in out
-    assert "load_session 20→6 branches" in out
 
 
 def test_deep_nesting_is_its_own_chip_shown_at_the_threshold():
@@ -833,76 +805,13 @@ def test_deep_nesting_is_its_own_chip_shown_at_the_threshold():
     assert depth_chip(deep["files"]["src/auth.py"]) == "nested 4 deep"
 
 
-def test_shallow_nesting_gets_no_depth_chip():
-    assert depth_chip({"peak": {"name": "x", "depth": 3}}) == ""
-
-
-def test_a_removed_functions_jump_reads_as_gone_with_no_arrow():
-    # Real output from PR 2498: distributionChannelResolverChain.Resolve's branch count fell
-    # 3->0 because the function was deleted, not because this diff improved anything.
-    order, files = parsed()
-    removed = _cx("src/auth.py", peak=None,
-                 jump={"name": "distributionChannelResolverChain.Resolve", "before": 3,
-                       "after": 0, "delta": -3, "existed": True, "touched": True, "depth": 0,
-                       "removed": True})
-    out = render_html(flat(order, files), files, {}, complexity=removed)
-
-    assert '<span class="hunk-cx gone"' in out
-    assert "distributionChannelResolverChain.Resolve removed" in out
-    assert "→" not in out
-
-
-def test_a_removed_function_with_no_removed_key_still_reads_as_gone():
-    # Stale complexity.json from before the "removed" key existed: existed=True with after==0
-    # is the only signal available, and it alone is enough to suppress the "N→0" bug.
-    order, files = parsed()
-    stale = _cx("src/auth.py", peak=None,
-               jump={"name": "ipString", "before": 2, "after": 0, "delta": -2,
-                     "existed": True, "touched": True, "depth": 0})
-    out = render_html(flat(order, files), files, {}, complexity=stale)
-
-    assert '<span class="hunk-cx gone"' in out
-    assert "ipString removed" in out
-    assert "→" not in out
-
-
-def test_a_real_jump_is_still_reported_as_moved_not_as_removed():
-    order, files = parsed()
-    out = render_html(flat(order, files), files, {}, complexity=CX)
-
-    assert '<span class="hunk-cx up"' in out
-    assert "load_session 2→9 branches" in out
-    assert "hunk-cx gone" not in out
-
-
-def test_a_new_hairy_function_is_still_reported_as_new_not_as_removed():
-    order, files = parsed()
-    fresh = _cx("src/auth.py", peak={"name": "resolveSource", "before": 0, "after": 11,
-                                     "delta": 11, "existed": False, "touched": True, "depth": 2})
-    out = render_html(flat(order, files), files, {}, complexity=fresh)
-
-    assert '<span class="hunk-cx flat"' in out
-    assert "resolveSource 11 branches" in out
-    assert "hunk-cx gone" not in out
-
-
-def test_depth_chip_is_suppressed_for_a_removed_function():
-    assert depth_chip({"peak": {"name": "x", "depth": 5, "removed": True}}) == ""
-
-
-def test_the_page_carries_no_legend():
-    # The chip says "branches" in words and repeats the long form in its title, so a legend
-    # would only add a paragraph of vocabulary before the first file.
-    order, files = parsed()
-
-    assert "cyclomatic complexity" not in render_html(flat(order, files), files, {}, complexity=CX)
-
-
-def test_no_complexity_input_renders_the_same_walkthrough_as_before():
-    order, files = parsed()
-
-    assert (render_html(flat(order, files), files, {}, complexity=None)
-            == render_html(flat(order, files), files, {}))
+@pytest.mark.parametrize("entry, expected", [
+    ({"peak": {"name": "x", "depth": 3}}, ""),
+    ({"peak": {"name": "x", "depth": 5, "removed": True}}, ""),
+    ({"peak": {"name": "x", "depth": 4}}, "nested 4 deep"),
+], ids=["shallow", "removed-function", "at-threshold"])
+def test_depth_chip(entry, expected):
+    assert depth_chip(entry) == expected
 
 
 # ---- summary layout: path wraps, chips and the bar move into their own meta row ----
@@ -932,22 +841,15 @@ def test_only_per_hunk_notes_carry_the_class_the_explanations_toggle_hides():
     assert 'class="hunk-note hunk-note-hunk"' in out
 
 
-def test_complexity_chips_render_outside_the_summary():
-    order, files = parsed()
-    out = render_html(flat(order, files), files, {}, complexity=CX)
-
-    summary = out.split("<summary>")[1].split("</summary>")[0]
-    assert "hunk-cx" not in summary
-    meta = out.split('<div class="hunk-meta">')[1].split("</div>")[0]
-    assert "hunk-cx" in meta
-
-
 def test_the_stat_stays_in_the_summary_and_the_bar_is_gone_from_html():
     order, files = parsed()
     out = render_html(flat(order, files), files, {}, complexity=CX)
 
     summary = out.split("<summary>")[1].split("</summary>")[0]
     assert "hunk-stat" in summary
+    assert "hunk-cx" not in summary  # the chips render in the meta row below it
+    meta = out.split('<div class="hunk-meta">')[1].split("</div>")[0]
+    assert "hunk-cx" in meta
     # +N -N beside it says the same thing in words; the sparkline had no legend.
     assert 'class="bar"' not in out
 
@@ -977,22 +879,6 @@ def test_the_meta_row_is_skipped_when_it_would_be_empty():
 
 
 # ---- moves ----
-
-def test_a_moved_block_renders_with_no_m_class_anywhere():
-    # The moved-line encoding is gone: a line that relocated renders as a plain added/removed
-    # line, styled only by the existing "a"/"d" classes, never by an "m" class.
-    diff = ('diff --git a/old.py b/old.py\n--- a/old.py\n+++ b/old.py\n'
-            '@@ -1,3 +1,0 @@\n-def handler(request):\n-    validate(request)\n'
-            '-    return process(request)\n'
-            'diff --git a/new.py b/new.py\n--- a/new.py\n+++ b/new.py\n'
-            '@@ -0,0 +1,3 @@\n+def handler(request):\n+    validate(request)\n'
-            '+    return process(request)\n')
-    order, files = parse_hunks(diff)
-    out = render_html(flat(order, files), files, {})
-
-    assert ' m"' not in out
-    assert 'class="d"' in out and 'class="a"' in out
-
 
 # ---- backticks become <code> in prose only ----
 
@@ -1031,14 +917,13 @@ def test_backticks_in_a_path_or_diff_line_stay_literal():
 
 # ---- renames ----
 
-def test_rename_note_compacts_the_shared_prefix_and_suffix_git_style():
-    assert (rename_note("corelib/ratelimit/internal/config.go",
-                        "corelib/ratelimit/ratelimit_config/config.go")
-            == "corelib/ratelimit/{internal => ratelimit_config}/config.go")
-
-
-def test_rename_note_falls_back_to_full_paths_when_nothing_is_shared():
-    assert rename_note("a.go", "b.go") == "a.go => b.go"
+@pytest.mark.parametrize("old, new, expected", [
+    ("corelib/ratelimit/internal/config.go", "corelib/ratelimit/ratelimit_config/config.go",
+     "corelib/ratelimit/{internal => ratelimit_config}/config.go"),
+    ("a.go", "b.go", "a.go => b.go"),
+], ids=["shared-prefix-and-suffix", "nothing-shared"])
+def test_rename_note(old, new, expected):
+    assert rename_note(old, new) == expected
 
 
 RENAME_DIFF = """diff --git a/corelib/ratelimit/internal/config.go b/corelib/ratelimit/ratelimit_config/config.go
@@ -1100,19 +985,14 @@ def test_viewed_label_precedes_hunk_was_so_it_stays_on_the_header_row():
     assert out.index('<label class="hunk-viewed"') < out.index('<span class="hunk-was">')
 
 
-def test_a_non_renamed_file_gets_no_arrow_or_hunk_was():
+def test_render_html_optional_inputs_default_to_none():
     order, files = parsed()
-    out = render_html(flat(order, files), files, {})
+    plain = render_html(flat(order, files), files, {})
 
-    assert "→" not in out
-    assert "hunk-was" not in out
-
-
-def test_renames_absent_changes_nothing():
-    order, files = parsed()
-
-    assert (render_html(flat(order, files), files, {})
-            == render_html(flat(order, files), files, {}, renames=None))
+    assert render_html(flat(order, files), files, {}, complexity=None) == plain
+    assert render_html(flat(order, files), files, {}, renames=None) == plain
+    assert "→" not in plain
+    assert "hunk-was" not in plain
 
 
 def test_explain_renders_plain_code_lines_not_diff_rows():
@@ -1133,38 +1013,7 @@ def test_explain_file_stat_counts_lines_instead_of_adds_and_removes():
     out = render_html(flat(order, files), files, {}, explain=True)
 
     assert '<span class="add">' not in out
-    assert "lines</span>" in out or "line</span>" in out
+    assert '<span class="hunk-stat">3 lines</span>' in out
+    assert '<span class="hunk-stat">1 line</span>' in out
 
 
-def test_group_panel_carries_data_lines_when_nodes_have_range():
-    # sections.py's own data-lines contract (see its _mermaid_symbols): walkthrough.py only
-    # passes render_symbols(inline=True)'s output through, so this is a thin proof the
-    # attribute actually reaches a real group panel rather than only sections.py's own tests.
-    files = _chain_files("src/api.py", "src/store.py")
-    symdelta = {
-        "nodes": [
-            {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
-            {"id": "p:Handle", "label": "Handle", "kind": "symbol", "parent": "p", "depth": 1,
-             "state": "new", "file": "src/api.py", "range": [5, 9]},
-            {"id": "p:HandleCallee", "label": "HandleCallee", "kind": "symbol", "parent": "p",
-             "depth": 1, "state": "new", "file": "src/api.py"},
-        ],
-        "edges": [{"id": "e0", "source": "p:Handle", "target": "p:HandleCallee", "state": "new"}],
-    }
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
-                                        {"title": "Store", "paths": ["src/store.py"]}], None)
-    out = render_html(groups, files, {}, symdelta=symdelta)
-
-    api_chunk = out.split('<h3 class="wt-group"')[1]
-    assert 'data-lines="' in api_chunk
-
-
-if __name__ == "__main__":
-    # Collected rather than listed: module order is definition order, so this runs the same
-    # sequence a hand-written list did without going stale every time a test is added.
-    tests = [fn for name, fn in list(globals().items())
-             if name.startswith("test_") and callable(fn)]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

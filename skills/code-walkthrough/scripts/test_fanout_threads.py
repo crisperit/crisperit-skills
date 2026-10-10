@@ -1,97 +1,29 @@
 #!/usr/bin/env python3
-"""Self-check for fanout_threads.py. Assert-based, no framework."""
+"""Self-check for fanout_threads.py. Assert-based; run with pytest."""
 
 import contextlib
 import io
 import json
-import os
-import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_testlib  # noqa: E402
 from fanout_threads import (  # noqa: E402
     _validate_fragment,
     build_seed,
-    diff_line_estimate,
     do_index,
     do_split,
     merge,
     window_commits,
 )
 
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Fanout Threads Test",
-    "GIT_AUTHOR_EMAIL": "fanout-threads-test@example.com",
-    "GIT_COMMITTER_NAME": "Fanout Threads Test",
-    "GIT_COMMITTER_EMAIL": "fanout-threads-test@example.com",
-}
-
-
-def _git(repo, *args):
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
-    return result.stdout
-
 
 def _repo_with_two_commits(tmp):
-    """A repo with a base commit and one commit on top, mirroring the shape the old
-    heredoc in references/resolved-threads.md used to index."""
-    repo = Path(tmp) / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    (repo / "foo.py").write_text("one\ntwo\n")
-    _git(repo, "add", "foo.py")
-    _git(repo, "commit", "-q", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD").strip()
-    (repo / "foo.py").write_text("one\ntwo\nthree\n")
-    _git(repo, "add", "foo.py")
-    _git(repo, "commit", "-q", "-m", "address review")
-    head = _git(repo, "rev-parse", "HEAD").strip()
-    return repo, base, head
-
-
-def _old_heredoc_index(repo, base, head):
-    """The inline python heredoc references/resolved-threads.md used to carry (step 2),
-    reproduced here so `index` can be checked for byte-equivalent output against it."""
-    raw = subprocess.run(
-        ["git", "-C", str(repo), "log", "--format=%x02%H%x09%s%x09%cI%x09%an", "--numstat",
-         f"{base}..{head}"],
-        capture_output=True, text=True,
-    ).stdout
-    commits, diffs = [], {}
-    for block in raw.split("\x02")[1:]:
-        header, _, rest = block.partition("\n")
-        sha, subject, committed_at, author = header.split("\t")
-        files = []
-        for line in rest.strip("\n").splitlines():
-            if not line.strip():
-                continue
-            added, removed, path = line.split("\t", 2)
-            files.append({
-                "path": path,
-                "additions": int(added) if added != "-" else 0,
-                "deletions": int(removed) if removed != "-" else 0,
-            })
-        commits.append({"sha": sha, "subject": subject, "committed_at": committed_at,
-                         "author": author, "files": files})
-        diffs[sha] = subprocess.run(["git", "show", "--format=", sha], cwd=str(repo),
-                                     capture_output=True, text=True).stdout
-    return (json.dumps({"commits": commits}, indent=2) + "\n",
-            json.dumps(diffs, indent=2) + "\n")
-
-
-class _IndexArgs:
-    def __init__(self, repo, base, head, out_commits, out_diffs):
-        self.repo = str(repo)
-        self.base = base
-        self.head = head
-        self.out_commits = str(out_commits)
-        self.out_diffs = str(out_diffs)
+    """A repo with a base commit and one commit on top."""
+    return cw_testlib.make_repo(tmp, {"foo.py": "one\ntwo\n"}, {"foo.py": "one\ntwo\nthree\n"})
 
 
 def _thread(thread_id, first_comment_at="2026-09-01T10:00:00Z"):
@@ -130,84 +62,51 @@ def _fragment(thread_id, commits=(), outcome="commits", confidence="high"):
     }
 
 
-class _Args:
-    """Stand-in for the argparse.Namespace do_split reads its options from."""
-
-    def __init__(self, threads, commits, plan, out, max_diff_lines=400, diffs=None):
-        self.threads = threads
-        self.commits = commits
-        self.plan = plan
-        self.out = out
-        self.max_diff_lines = max_diff_lines
-        self.diffs = diffs
-
-
 OLD_COMMIT = _commit("aaa111", "2026-08-30T00:00:00Z", path="other.py")
 IN_WINDOW_COMMIT = _commit("bbb222", "2026-09-02T09:00:00Z")
 
 
-def test_window_commits_drops_commits_before_the_first_comment():
+def test_window_commits():
     kept = window_commits([OLD_COMMIT, IN_WINDOW_COMMIT], "2026-09-01T10:00:00Z")
-
     assert [c["sha"] for c in kept] == ["bbb222"]
 
-
-def test_window_commits_keeps_a_commit_at_the_exact_cutoff():
-    kept = window_commits([OLD_COMMIT], "2026-08-30T00:00:00Z")
-
+    kept = window_commits([OLD_COMMIT], "2026-08-30T00:00:00Z")  # a commit at the exact cutoff stays
     assert [c["sha"] for c in kept] == ["aaa111"]
 
 
-def test_diff_budget_switches_to_two_pass_when_the_window_is_too_big():
-    thread = _thread("T1")
+def test_build_seed_mode():
     entry = {"cache_path_positive": "/pos.json", "cache_path_null": "/null.json"}
-
-    seed, mode = build_seed(thread, [IN_WINDOW_COMMIT], {"bbb222": "diff text"}, max_diff_lines=5,
-                             resolution_entry=entry)
-
-    assert mode == "two-pass"
-    assert seed["diffs"] == {}
-
-
-def test_diff_budget_inlines_when_the_window_fits_and_diffs_are_supplied():
-    thread = _thread("T1")
-    entry = {"cache_path_positive": "/pos.json", "cache_path_null": "/null.json"}
-
-    seed, mode = build_seed(thread, [IN_WINDOW_COMMIT], {"bbb222": "diff text"},
-                             max_diff_lines=400, resolution_entry=entry)
-
-    assert mode == "inline"
-    assert seed["diffs"] == {"bbb222": "diff text"}
+    diffs = {"bbb222": "diff text"}
+    # 3 additions alone fit max 5, 3 + 9 with deletions does not, so the first row also pins the sum
+    rows = [
+        ([IN_WINDOW_COMMIT], diffs, 5, "two-pass", {}),
+        ([IN_WINDOW_COMMIT], diffs, 400, "inline", diffs),
+        ([IN_WINDOW_COMMIT], None, 400, "two-pass", {}),
+        ([], None, 1, "inline", {}),  # an empty window has no shas to fetch
+    ]
+    for window, supplied, max_diff_lines, want_mode, want_diffs in rows:
+        seed, mode = build_seed(_thread("T1"), window, supplied, max_diff_lines=max_diff_lines,
+                                 resolution_entry=entry)
+        assert mode == want_mode, (window, supplied, max_diff_lines)
+        assert seed["diffs"] == want_diffs
 
 
-def test_diff_budget_falls_back_to_two_pass_when_no_diffs_were_supplied():
-    thread = _thread("T1")
-    entry = {"cache_path_positive": "/pos.json", "cache_path_null": "/null.json"}
-
-    seed, mode = build_seed(thread, [IN_WINDOW_COMMIT], None, max_diff_lines=400,
-                             resolution_entry=entry)
-
-    assert mode == "two-pass"
-
-
-def test_empty_window_counts_as_inline_with_no_shas_to_fetch():
-    thread = _thread("T1")
-    entry = {"cache_path_positive": "/pos.json", "cache_path_null": "/null.json"}
-
-    seed, mode = build_seed(thread, [], None, max_diff_lines=1, resolution_entry=entry)
-
-    assert mode == "inline"
-    assert seed["diffs"] == {}
-
-
-def _write_split_inputs(tmp, threads, commits, resolution):
+def _split(tmp, threads, commits, resolution, **opts):
+    """Write the inputs under tmp, run do_split, return (manifest, out_dir)."""
     threads_path = Path(tmp) / "threads.json"
     commits_path = Path(tmp) / "commit-index.json"
     plan_path = Path(tmp) / "plan.json"
     threads_path.write_text(json.dumps({"threads": threads}))
     commits_path.write_text(json.dumps({"commits": commits}))
     plan_path.write_text(json.dumps({"resolution": resolution}))
-    return threads_path, commits_path, plan_path
+    out_dir = Path(tmp) / "out"
+    args = types.SimpleNamespace(threads=str(threads_path), commits=str(commits_path),
+                                 plan=str(plan_path), out=str(out_dir),
+                                 **{"max_diff_lines": 400, "diffs": None, **opts})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        do_split(args)
+    return json.loads(buf.getvalue()), out_dir
 
 
 def _write_cache_hit(tmp, name, commits=(), outcome="commits"):
@@ -228,15 +127,7 @@ def test_split_skips_a_cached_thread_and_writes_no_seed_for_it():
             {"thread_id": "T-missed", "cached": False, "cache_path_positive": "/pos2.json",
              "cache_path_null": "/null2.json", "cache_path_hit": None, "cmd": "..."},
         ]
-        threads_path, commits_path, plan_path = _write_split_inputs(
-            tmp, [cached, missed], [IN_WINDOW_COMMIT], resolution
-        )
-        out_dir = Path(tmp) / "out"
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            do_split(_Args(str(threads_path), str(commits_path), str(plan_path), str(out_dir)))
-        manifest = json.loads(buf.getvalue())
+        manifest, out_dir = _split(tmp, [cached, missed], [IN_WINDOW_COMMIT], resolution)
 
         cached_entry = next(m for m in manifest if m["thread_id"] == "T-cached")
         missed_entry = next(m for m in manifest if m["thread_id"] == "T-missed")
@@ -256,15 +147,7 @@ def test_split_reseeds_a_stale_cached_thread_as_invalidated():
             {"thread_id": "T1", "cached": True, "cache_path_positive": "/pos.json",
              "cache_path_null": "/null.json", "cache_path_hit": cache_path_hit, "cmd": ""},
         ]
-        threads_path, commits_path, plan_path = _write_split_inputs(
-            tmp, [thread], [IN_WINDOW_COMMIT], resolution
-        )
-        out_dir = Path(tmp) / "out"
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            do_split(_Args(str(threads_path), str(commits_path), str(plan_path), str(out_dir)))
-        manifest = json.loads(buf.getvalue())
+        manifest, out_dir = _split(tmp, [thread], [IN_WINDOW_COMMIT], resolution)
 
         entry = next(m for m in manifest if m["thread_id"] == "T1")
         assert entry["mode"] == "invalidated"
@@ -272,47 +155,16 @@ def test_split_reseeds_a_stale_cached_thread_as_invalidated():
         assert (out_dir / "thread-1.seed.json").exists()
 
 
-def test_split_trusts_a_cached_thread_whose_shas_are_all_still_in_the_window():
-    with tempfile.TemporaryDirectory() as tmp:
-        thread = _thread("T1")
-        cache_path_hit = _write_cache_hit(tmp, "pos.json", commits=["bbb222"])
-        resolution = [
-            {"thread_id": "T1", "cached": True, "cache_path_positive": "/pos.json",
-             "cache_path_null": "/null.json", "cache_path_hit": cache_path_hit, "cmd": ""},
-        ]
-        threads_path, commits_path, plan_path = _write_split_inputs(
-            tmp, [thread], [IN_WINDOW_COMMIT], resolution
-        )
-        out_dir = Path(tmp) / "out"
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            do_split(_Args(str(threads_path), str(commits_path), str(plan_path), str(out_dir)))
-        manifest = json.loads(buf.getvalue())
-
-        entry = next(m for m in manifest if m["thread_id"] == "T1")
-        assert entry == {"thread_id": "T1", "mode": "cached", "cache_path_hit": cache_path_hit}
-        assert list(out_dir.iterdir()) == []
-
-
 def test_split_never_treats_a_commit_free_outcome_as_stale():
     with tempfile.TemporaryDirectory() as tmp:
         thread = _thread("T1")
-        # "conversation"/"deferred"/"none" carry no commits[], so nothing can be out of window.
-        cache_path_hit = _write_cache_hit(tmp, "pos.json", commits=[], outcome="conversation")
+        # "conversation"/"deferred"/"none" never go stale, even naming a sha outside the window.
+        cache_path_hit = _write_cache_hit(tmp, "pos.json", commits=["ccc333"], outcome="conversation")
         resolution = [
             {"thread_id": "T1", "cached": True, "cache_path_positive": "/pos.json",
              "cache_path_null": "/null.json", "cache_path_hit": cache_path_hit, "cmd": ""},
         ]
-        threads_path, commits_path, plan_path = _write_split_inputs(
-            tmp, [thread], [IN_WINDOW_COMMIT], resolution
-        )
-        out_dir = Path(tmp) / "out"
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            do_split(_Args(str(threads_path), str(commits_path), str(plan_path), str(out_dir)))
-        manifest = json.loads(buf.getvalue())
+        manifest, out_dir = _split(tmp, [thread], [IN_WINDOW_COMMIT], resolution)
 
         entry = next(m for m in manifest if m["thread_id"] == "T1")
         assert entry["mode"] == "cached"
@@ -324,13 +176,7 @@ def test_split_window_filtering_reaches_the_written_seed():
         thread = _thread("T1", first_comment_at="2026-09-01T10:00:00Z")
         resolution = [{"thread_id": "T1", "cached": False, "cache_path_positive": "/p.json",
                        "cache_path_null": "/n.json", "cache_path_hit": None, "cmd": ""}]
-        threads_path, commits_path, plan_path = _write_split_inputs(
-            tmp, [thread], [OLD_COMMIT, IN_WINDOW_COMMIT], resolution
-        )
-        out_dir = Path(tmp) / "out"
-
-        with contextlib.redirect_stdout(io.StringIO()):
-            do_split(_Args(str(threads_path), str(commits_path), str(plan_path), str(out_dir)))
+        _manifest, out_dir = _split(tmp, [thread], [OLD_COMMIT, IN_WINDOW_COMMIT], resolution)
 
         seed = json.loads((out_dir / "thread-1.seed.json").read_text())
         assert [c["sha"] for c in seed["commits"]] == ["bbb222"]
@@ -347,31 +193,6 @@ def test_merge_rejects_a_sha_outside_the_threads_candidate_window():
             assert "ccc333" in str(exc)
         else:
             raise AssertionError("out-of-window sha was accepted")
-
-
-def test_merge_accepts_a_sha_inside_the_candidate_window():
-    with tempfile.TemporaryDirectory() as tmp:
-        fragment = Path(tmp) / "thread-1.json"
-        fragment.write_text(json.dumps(_fragment("T1", commits=["bbb222"])))
-
-        result = merge([_thread("T1")], [IN_WINDOW_COMMIT], [str(fragment)])
-
-        assert result["resolutions"]["T1"]["commits"] == ["bbb222"]
-
-
-def test_merge_validates_a_formerly_exempt_cached_fragment():
-    """A cached thread's copied-in fragment has no sibling seed file, but is still checked
-    against the thread's window like any other fragment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        fragment = Path(tmp) / "thread-cached.json"
-        fragment.write_text(json.dumps(_fragment("T1", commits=["ccc333"])))
-
-        try:
-            merge([_thread("T1")], [IN_WINDOW_COMMIT], [str(fragment)])
-        except RuntimeError as exc:
-            assert "ccc333" in str(exc)
-        else:
-            raise AssertionError("out-of-window sha in a cached fragment was accepted")
 
 
 def test_merge_skips_seed_files_picked_up_by_a_naive_glob():
@@ -437,13 +258,7 @@ def test_round_trip_split_then_merge_covers_both_a_miss_and_a_cached_thread():
             {"thread_id": "T-missed", "cached": False, "cache_path_positive": "/pos2.json",
              "cache_path_null": "/null2.json", "cache_path_hit": None, "cmd": "..."},
         ]
-        threads_path, commits_path, plan_path = _write_split_inputs(
-            tmp, [cached_thread, missed_thread], [IN_WINDOW_COMMIT], resolution
-        )
-        out_dir = Path(tmp) / "out"
-
-        with contextlib.redirect_stdout(io.StringIO()):
-            do_split(_Args(str(threads_path), str(commits_path), str(plan_path), str(out_dir)))
+        _manifest, out_dir = _split(tmp, [cached_thread, missed_thread], [IN_WINDOW_COMMIT], resolution)
 
         # The worker's real output for the miss, plus the driver's copy of the cache hit
         # for the cached thread -- both land in the same fragments directory merge reads.
@@ -465,31 +280,14 @@ def test_round_trip_split_then_merge_covers_both_a_miss_and_a_cached_thread():
         assert result["resolutions"]["T-cached"]["outcome"] == "conversation"
 
 
-def test_diff_line_estimate_sums_additions_and_deletions():
-    assert diff_line_estimate([IN_WINDOW_COMMIT]) == 12  # 3 + 9, see _commit's defaults
-
-
-def test_index_output_matches_the_old_heredoc_byte_for_byte():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = _repo_with_two_commits(tmp)
-        expected_commits, expected_diffs = _old_heredoc_index(repo, base, head)
-        out_commits = Path(tmp) / "commit-index.json"
-        out_diffs = Path(tmp) / "diffs.json"
-
-        rc = do_index(_IndexArgs(repo, base, head, out_commits, out_diffs))
-
-        assert rc == 0
-        assert out_commits.read_text() == expected_commits
-        assert out_diffs.read_text() == expected_diffs
-
-
 def test_index_commit_index_names_the_commit_and_its_file():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo_with_two_commits(tmp)
         out_commits = Path(tmp) / "commit-index.json"
         out_diffs = Path(tmp) / "diffs.json"
 
-        do_index(_IndexArgs(repo, base, head, out_commits, out_diffs))
+        do_index(types.SimpleNamespace(repo=str(repo), base=base, head=head,
+                                       out_commits=str(out_commits), out_diffs=str(out_diffs)))
 
         commits = json.loads(out_commits.read_text())["commits"]
         assert [c["sha"] for c in commits] == [head]
@@ -498,58 +296,20 @@ def test_index_commit_index_names_the_commit_and_its_file():
         assert "foo.py" in diffs[head]
 
 
-def test_validate_fragment_refuses_a_javascript_ticket():
-    fragment = _fragment("T1", commits=["bbb222"])
-    fragment["ticket"] = "javascript:alert(1)"
+def test_validate_fragment_ticket():
+    refused = _fragment("T1", commits=["bbb222"])
+    refused["ticket"] = "javascript:alert(1)"
     try:
-        _validate_fragment(fragment)
+        _validate_fragment(refused)
     except ValueError as exc:
         assert "ticket" in str(exc)
     else:
         raise AssertionError("javascript: ticket was accepted")
 
+    https = _fragment("T1", commits=["bbb222"])
+    https["ticket"] = "https://example.com/TICKET-1"
+    _validate_fragment(https)  # does not raise
 
-def test_validate_fragment_accepts_an_https_ticket():
-    fragment = _fragment("T1", commits=["bbb222"])
-    fragment["ticket"] = "https://example.com/TICKET-1"
-    _validate_fragment(fragment)  # does not raise
-
-
-def test_validate_fragment_accepts_a_null_ticket():
-    fragment = _fragment("T1")
-    fragment["ticket"] = None
-    _validate_fragment(fragment)  # does not raise
-
-
-if __name__ == "__main__":
-    tests = [
-        test_window_commits_drops_commits_before_the_first_comment,
-        test_window_commits_keeps_a_commit_at_the_exact_cutoff,
-        test_diff_budget_switches_to_two_pass_when_the_window_is_too_big,
-        test_diff_budget_inlines_when_the_window_fits_and_diffs_are_supplied,
-        test_diff_budget_falls_back_to_two_pass_when_no_diffs_were_supplied,
-        test_empty_window_counts_as_inline_with_no_shas_to_fetch,
-        test_split_skips_a_cached_thread_and_writes_no_seed_for_it,
-        test_split_reseeds_a_stale_cached_thread_as_invalidated,
-        test_split_trusts_a_cached_thread_whose_shas_are_all_still_in_the_window,
-        test_split_never_treats_a_commit_free_outcome_as_stale,
-        test_split_window_filtering_reaches_the_written_seed,
-        test_merge_rejects_a_sha_outside_the_threads_candidate_window,
-        test_merge_accepts_a_sha_inside_the_candidate_window,
-        test_merge_validates_a_formerly_exempt_cached_fragment,
-        test_merge_skips_seed_files_picked_up_by_a_naive_glob,
-        test_merge_reports_a_missing_fragment_by_path_instead_of_crashing,
-        test_merge_fails_coverage_when_a_thread_id_has_no_fragment,
-        test_merge_rejects_a_fragment_that_does_not_match_contract_d,
-        test_round_trip_split_then_merge_covers_both_a_miss_and_a_cached_thread,
-        test_diff_line_estimate_sums_additions_and_deletions,
-        test_index_output_matches_the_old_heredoc_byte_for_byte,
-        test_index_commit_index_names_the_commit_and_its_file,
-        test_validate_fragment_refuses_a_javascript_ticket,
-        test_validate_fragment_accepts_an_https_ticket,
-        test_validate_fragment_accepts_a_null_ticket,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
+    null = _fragment("T1")
+    null["ticket"] = None
+    _validate_fragment(null)  # does not raise

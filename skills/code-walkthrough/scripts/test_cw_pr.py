@@ -9,26 +9,19 @@ of "2000-01-01T00:00:00Z" always keeps every commit inside its resolution window
 """
 
 import json
-import os
 import sys
 import tempfile
 import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import cw_llm  # noqa: E402
 import cw_run  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
 
-cw_llm.BACKOFF_S = [0, 0]
-
 
 def _pr_repo(tmp):
-    """A one-line-change repo with a GitHub origin, the fixture every test below starts from."""
-    repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
-    cw_testlib.git(repo, "remote", "add", "origin", "https://github.com/o/r.git")
-    return repo, base, head
+    return cw_testlib.pr_repo(tmp, remote_tracking=False)
 
 
 def _comment(gh_id, *, path="foo.py", line=2, side="RIGHT"):
@@ -57,40 +50,28 @@ def _valid_resolution(thread_id):
             "ticket": None, "commits": [], "files": [], "why": None, "confidence": "high"}
 
 
-def _small_route_reply(body):
-    seed = cw_testlib.first_json_block(cw_testlib.last_user_text(body))
-    analysis = {
-        "files": [{"path": f["path"], "role": "does a thing",
-                   "hunks": [{"header": h["header"], "note": "explains it"} for h in f["hunks"]]}
-                  for f in seed["files"]],
-        "overview": "o", "verdict": "v", "flow_mermaid": "",
-    }
-    return cw_testlib.tool_call("submit_analysis", analysis)
-
-
 # ---------------------------------------------------------------------------
 # Order: prepare, comments (2f), threads (2g), render
 # ---------------------------------------------------------------------------
 
-def test_order_prepare_comments_threads_render():
+def test_order_prepare_comments_threads_render(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GITHUB_TOKEN", "y")
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _pr_repo(tmp)
 
         def script(body, _n):
             model = body.get("model")
             if model == "prose-m":
-                return _small_route_reply(body)
+                return cw_testlib.small_route_reply(body)
             if model == "analysis-m":
                 return cw_testlib.tool_call("submit_resolution", _valid_resolution("T1"))
             raise RuntimeError(f"unexpected model {model!r}")
 
         with cw_testlib.StubLLM(script) as stub, cw_testlib.fake_gh(
             tmp, comments=[_comment(101)], threads=[_thread_node("T1", 101)],
-        ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
+        ) as gh:
+            cw_testlib.write_route_config(home, stub, ask=False)
             d, meta, _reused = cw_run.prepare_walkthrough(
                 {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
             events = []
@@ -108,6 +89,15 @@ def test_order_prepare_comments_threads_render():
         state = json.loads((d / "state.json").read_text())
         assert any(n["id"] == "gh-101" for n in state["notes"])
         assert "T1" in state["resolutions"]
+        assert meta["id"] == cw_store.walkthrough_id("t", 7, "o/r")
+
+        log = gh.log()
+        assert log
+        toplevel = str(repo.resolve())
+        for entry in log:
+            assert entry["cwd"] == toplevel
+            assert entry["gh_token"] is False
+            assert entry["github_token"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -117,13 +107,10 @@ def test_order_prepare_comments_threads_render():
 def test_no_resolved_threads_means_no_worker_call():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _pr_repo(tmp)
-        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, cw_testlib.fake_gh(
+        with cw_testlib.StubLLM(lambda body, _n: cw_testlib.small_route_reply(body)) as stub, cw_testlib.fake_gh(
             tmp, comments=[_comment(101)], threads=[_thread_node("T1", 101, resolved=False)],
         ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
+            cw_testlib.write_route_config(home, stub, ask=False)
             d, meta, _reused = cw_run.prepare_walkthrough(
                 {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
             events = []
@@ -158,16 +145,13 @@ def test_need_diffs_for_gives_diffs_then_resolves():
         def dispatch(body, n):
             model = body.get("model")
             if model == "prose-m":
-                return _small_route_reply(body)
+                return cw_testlib.small_route_reply(body)
             return script[model][min(n, len(script[model]) - 1)]
 
         with cw_testlib.StubLLM(dispatch) as stub, cw_testlib.fake_gh(
             tmp, comments=[_comment(101)], threads=[_thread_node("T1", 101)],
         ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
+            cw_testlib.write_route_config(home, stub, ask=False)
             d, meta, _reused = cw_run.prepare_walkthrough(
                 {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
             status = cw_run.run(d, lambda ev, data: None)
@@ -196,7 +180,7 @@ def test_bad_sha_or_javascript_ticket_dropped_from_merge():
         def dispatch(body, _n):
             model = body.get("model")
             if model == "prose-m":
-                return _small_route_reply(body)
+                return cw_testlib.small_route_reply(body)
             seed = cw_testlib.first_json_block(cw_testlib.last_user_text(body))
             thread_id = seed["thread_id"]
             with lock:
@@ -218,10 +202,7 @@ def test_bad_sha_or_javascript_ticket_dropped_from_merge():
             comments=[_comment(201), _comment(202), _comment(203)],
             threads=[_thread_node("A", 201), _thread_node("B", 202), _thread_node("C", 203)],
         ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
+            cw_testlib.write_route_config(home, stub, ask=False)
             d, meta, _reused = cw_run.prepare_walkthrough(
                 {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
             status = cw_run.run(d, lambda ev, data: None)
@@ -243,16 +224,13 @@ def test_cache_hit_then_refresh_make_no_model_calls():
         def dispatch(body, _n):
             model = body.get("model")
             if model == "prose-m":
-                return _small_route_reply(body)
+                return cw_testlib.small_route_reply(body)
             return cw_testlib.tool_call("submit_resolution", _valid_resolution("T1"))
 
         with cw_testlib.StubLLM(dispatch) as stub, cw_testlib.fake_gh(
             tmp, comments=[_comment(101)], threads=[_thread_node("T1", 101)],
         ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
+            cw_testlib.write_route_config(home, stub, ask=False)
             params = {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7}
             d, meta, _reused = cw_run.prepare_walkthrough(params)
             status = cw_run.run(d, lambda ev, data: None)
@@ -282,61 +260,17 @@ def test_cache_hit_then_refresh_make_no_model_calls():
 
 
 # ---------------------------------------------------------------------------
-# gh identity: every call in the repo toplevel, neither token forwarded
-# ---------------------------------------------------------------------------
-
-def test_gh_calls_run_in_toplevel_with_no_tokens():
-    os.environ["GH_TOKEN"] = "x"
-    os.environ["GITHUB_TOKEN"] = "y"
-    try:
-        with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-            repo, base, head = _pr_repo(tmp)
-
-            def dispatch(body, _n):
-                model = body.get("model")
-                if model == "prose-m":
-                    return _small_route_reply(body)
-                return cw_testlib.tool_call("submit_resolution", _valid_resolution("T1"))
-
-            with cw_testlib.StubLLM(dispatch) as stub, cw_testlib.fake_gh(
-                tmp, comments=[_comment(101)], threads=[_thread_node("T1", 101)],
-            ) as gh:
-                cw_testlib.write_config(
-                    home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                    {"analysis": "a", "prose": "p"},
-                )
-                d, meta, _reused = cw_run.prepare_walkthrough(
-                    {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
-                status = cw_run.run(d, lambda ev, data: None)
-
-            assert status == "done"
-            log = gh.log()
-            assert log
-            toplevel = str(repo.resolve())
-            for entry in log:
-                assert entry["cwd"] == toplevel
-                assert entry["gh_token"] is False
-                assert entry["github_token"] is False
-    finally:
-        os.environ.pop("GH_TOKEN", None)
-        os.environ.pop("GITHUB_TOKEN", None)
-
-
-# ---------------------------------------------------------------------------
 # gh failure: step failed with a remedy, run still finishes done
 # ---------------------------------------------------------------------------
 
 def test_gh_failure_fails_the_comments_step_with_a_remedy():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _pr_repo(tmp)
-        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, cw_testlib.fake_gh(
+        with cw_testlib.StubLLM(lambda body, _n: cw_testlib.small_route_reply(body)) as stub, cw_testlib.fake_gh(
             tmp, comments=[_comment(101)], threads=[_thread_node("T1", 101)],
             fail_ops=("rest-comments",),
         ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
+            cw_testlib.write_route_config(home, stub, ask=False)
             d, meta, _reused = cw_run.prepare_walkthrough(
                 {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
             status = cw_run.run(d, lambda ev, data: None)
@@ -346,25 +280,6 @@ def test_gh_failure_fails_the_comments_step_with_a_remedy():
         comments_step = meta["steps"]["comments"]
         assert comments_step["status"] == "failed"
         assert "gh auth login" in comments_step["remedy"]
-
-
-# ---------------------------------------------------------------------------
-# id and origin
-# ---------------------------------------------------------------------------
-
-def test_pr_id_matches_walkthrough_id_with_gh_repo():
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = _pr_repo(tmp)
-        with cw_testlib.StubLLM(lambda body, _n: _small_route_reply(body)) as stub, cw_testlib.fake_gh(
-            tmp, comments=[], threads=[],
-        ):
-            cw_testlib.write_config(
-                home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
-                {"analysis": "a", "prose": "p"},
-            )
-            d, meta, _reused = cw_run.prepare_walkthrough(
-                {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t", "pr": 7})
-        assert meta["id"] == cw_store.walkthrough_id("t", 7, "o/r")
 
 
 def test_non_github_origin_raises_cwerror_with_remedy():
@@ -379,21 +294,3 @@ def test_non_github_origin_raises_cwerror_with_remedy():
         except cw_store.CWError as e:
             assert "GitHub remote" in str(e)
             assert e.remedy
-
-
-if __name__ == "__main__":
-    tests = [
-        test_order_prepare_comments_threads_render,
-        test_no_resolved_threads_means_no_worker_call,
-        test_need_diffs_for_gives_diffs_then_resolves,
-        test_bad_sha_or_javascript_ticket_dropped_from_merge,
-        test_cache_hit_then_refresh_make_no_model_calls,
-        test_gh_calls_run_in_toplevel_with_no_tokens,
-        test_gh_failure_fails_the_comments_step_with_a_remedy,
-        test_pr_id_matches_walkthrough_id_with_gh_repo,
-        test_non_github_origin_raises_cwerror_with_remedy,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

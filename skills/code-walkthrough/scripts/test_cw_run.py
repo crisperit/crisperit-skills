@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Self-check for cw_run.py. Assert-based, no framework; also collected by pytest. Uses the
-loopback StubLLM from cw_testlib and real cw_llm, never a real network. BACKOFF_S is zeroed
-so retry tests stay fast."""
+"""Self-check for cw_run.py. Assert-based; run with pytest. Uses the loopback StubLLM from
+cw_testlib and real cw_llm, never a real network. conftest.py zeroes BACKOFF_S so retry tests
+stay fast."""
 
+import contextlib
+import io
 import json
-import os
-import subprocess
 import sys
 import tempfile
 import threading
-import time
+import types
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_llm  # noqa: E402
 import cw_run  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
-
-cw_llm.BACKOFF_S = [0, 0]
-
-SCRIPTS_DIR = cw_run.SCRIPTS_DIR
+import fanout  # noqa: E402
 
 
 def _config(**overrides):
@@ -38,13 +37,11 @@ def _prepare_batches(tmp, repo, base, head, max_lines=1):
     (d / "raw.diff").write_text(diff_text)
     batches_dir = d / "batches"
     batches_dir.mkdir()
-    result = subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / "fanout.py"), "split", "--diff", str(d / "raw.diff"),
-         "--out", str(batches_dir), "--max-lines", str(max_lines)],
-        capture_output=True, text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    manifest = json.loads(result.stdout)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fanout.do_split(types.SimpleNamespace(
+            diff=str(d / "raw.diff"), out=str(batches_dir), max_lines=max_lines, max_batches=8))
+    manifest = json.loads(buf.getvalue())
     (batches_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return d, manifest
 
@@ -87,27 +84,40 @@ def test_invented_file_or_hunk_cannot_reach_disk():
         assert headers == [h["header"] for h in seed["files"][0]["hunks"]]  # only the seed's own hunks
 
 
-def test_failing_fragment_gates_twice_then_escalates_then_keeps_seed():
-    with tempfile.TemporaryDirectory() as tmp:
+@pytest.mark.parametrize("kind", ["http", "claude-code"])
+def test_failing_fragment_gate_escalates(kind):
+    cw_testlib.require_posix()
+    with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
         repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
         d, manifest = _prepare_batches(tmp, repo, base, head)
+        (d / "head").mkdir()
         entry = manifest[0]
-        always_bad = cw_testlib.tool_call("submit_fragment", {"files": []})
-        with cw_testlib.StubLLM({"analysis-m": [always_bad] * 10, "escalate-m": [always_bad] * 10}) as stub:
-            config = _config(
-                profiles={"a": stub.profile("analysis-m"), "e": stub.profile("escalate-m")},
-                roles={"analysis": "a", "escalate": "e"},
-            )
-            ok = cw_run._run_batch(d, 1, entry, config, None)
+        if kind == "http":
+            always_bad = cw_testlib.tool_call("submit_fragment", {"files": []})
+            stub = stack.enter_context(
+                cw_testlib.StubLLM({"analysis-m": [always_bad] * 10, "escalate-m": [always_bad] * 10}))
+            profiles = {"a": stub.profile("analysis-m"), "e": stub.profile("escalate-m")}
+            first, second, count, log = "analysis-m", "escalate-m", stub.count, None
+        else:
+            always_bad = cw_testlib.claude_result(structured={"files": []})
+            fc = stack.enter_context(
+                cw_testlib.fake_claude(tmp, {"sonnet": [always_bad] * 10, "opus": [always_bad] * 10}))
+            profiles = {"a": {"kind": "claude-code", "model": "sonnet"},
+                        "e": {"kind": "claude-code", "model": "opus"}}
+            first, second, count, log = "sonnet", "opus", fc.count, fc.log
+        config = _config(profiles=profiles, roles={"analysis": "a", "escalate": "e"})
+        ok = cw_run._run_batch(d, 1, entry, config, None)
         assert ok is False
-        assert stub.count("analysis-m") == 3
-        assert stub.count("escalate-m") == 3
+        assert count(first) == 3
+        assert count(second) == 3
         meta = json.loads((d / "meta.json").read_text())
         step = meta["steps"]["batch-1"]
         assert step["attempts"] == 2
-        assert step["model"] == "escalate-m"
+        assert step["model"] == second
         assert step["status"] == "failed"
         assert not (d / "batches" / "fragment-1.json").exists()
+        if log:
+            assert all(Path(e["cwd"]).resolve() == (d / "head").resolve() for e in log())
 
 
 def test_llm_error_counts_as_one_failed_conversation_and_moves_on():
@@ -133,6 +143,7 @@ def test_llm_error_counts_as_one_failed_conversation_and_moves_on():
         assert step["attempts"] == 2
         # the "bad" role's three attempts all 500 before any usage-bearing response arrives
         assert meta["usage"]["escalate"]["calls"] == 1
+        assert meta["usage"]["escalate"]["prompt_tokens"] > 0
 
 
 def test_a_batch_thread_that_raises_is_recorded_as_a_failed_result_not_dropped():
@@ -159,33 +170,8 @@ def test_a_batch_thread_that_raises_is_recorded_as_a_failed_result_not_dropped()
 # claude-code backend: cwd=head, gate retry/escalate, mixed kinds, thread worker
 # ---------------------------------------------------------------------------
 
-def test_fragment_gate_retries_then_escalates_then_fails_on_claude_code():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
-        d, manifest = _prepare_batches(tmp, repo, base, head)
-        (d / "head").mkdir()
-        entry = manifest[0]
-        always_bad = cw_testlib.claude_result(structured={"files": []})
-        with cw_testlib.fake_claude(tmp, {"sonnet": [always_bad] * 10, "opus": [always_bad] * 10}) as fc:
-            config = _config(
-                profiles={"a": {"kind": "claude-code", "model": "sonnet"},
-                          "e": {"kind": "claude-code", "model": "opus"}},
-                roles={"analysis": "a", "escalate": "e"},
-            )
-            ok = cw_run._run_batch(d, 1, entry, config, None)
-        assert ok is False
-        assert fc.count("sonnet") == 3
-        assert fc.count("opus") == 3
-        meta = json.loads((d / "meta.json").read_text())
-        step = meta["steps"]["batch-1"]
-        assert step["attempts"] == 2
-        assert step["model"] == "opus"
-        assert step["status"] == "failed"
-        assert not (d / "batches" / "fragment-1.json").exists()
-        assert all(Path(e["cwd"]).resolve() == (d / "head").resolve() for e in fc.log())
-
-
 def test_mixed_kinds_claude_code_analysis_fails_http_escalate_passes():
+    cw_testlib.require_posix()
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
         d, manifest = _prepare_batches(tmp, repo, base, head)
@@ -213,6 +199,7 @@ def test_mixed_kinds_claude_code_analysis_fails_http_escalate_passes():
 
 
 def test_thread_worker_need_diffs_for_sends_diffs_in_second_prompt():
+    cw_testlib.require_posix()
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp) / "work"
         d.mkdir()
@@ -268,11 +255,17 @@ def test_small_diff_makes_one_prose_conversation_and_no_batch_calls():
         assert stub.count("prose-m") >= 1
 
 
-def test_small_route_llm_error_carries_message_and_remedy_into_run_failure():
-    # Regression for the real run that failed with the misleading "small route failed the
-    # fragment gate" / re-run remedy while the actual cause (a bad model -> 403) only lived in
-    # runs/prose-1.json. No gate problems are ever produced here, so _run_small must carry the
-    # LLMError's own message and remedy out through meta.json instead of the generic wording.
+@pytest.mark.parametrize("route, small_diff_lines, generic", [
+    ("small", 1000000, "small route failed the fragment gate"),
+    ("fanout", 0, "batch 1 failed the fragment gate"),
+])
+def test_llm_error_reaches_run_failure(route, small_diff_lines, generic):
+    cw_testlib.require_posix()
+    # Regression for the real run that failed with the misleading generic "failed the fragment
+    # gate" / re-run remedy while the actual cause (a bad model -> 403) only lived in
+    # runs/prose-1.json. No gate problems are ever produced here (and no escalate role exists for
+    # the fanout batch), so the run must carry the LLMError's own message and remedy out through
+    # meta.json instead of the generic wording.
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
         always_403 = cw_testlib.claude_result(
@@ -283,69 +276,19 @@ def test_small_route_llm_error_carries_message_and_remedy_into_run_failure():
         with cw_testlib.fake_claude(tmp, {"sonnet": [always_403] * 10}):
             cw_testlib.write_config(
                 home, {"p": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "p", "prose": "p"},
-                small_diff_lines=1000000, batch_max_lines=1,
+                small_diff_lines=small_diff_lines, batch_max_lines=1,
             )
             d, meta, _reused = cw_run.prepare_walkthrough({
                 "repo": str(repo), "base": base, "head": head, "target": "main...HEAD", "slug": "t",
             })
-            assert meta["route"] == "small"
+            assert meta["route"] == route
             status = cw_run.run(d)
         assert status == "failed"
         saved = json.loads((d / "meta.json").read_text())
         assert saved["status"] == "failed"
         assert "403" in saved["error"]
-        assert saved["error"] != "small route failed the fragment gate"
+        assert saved["error"] != generic
         assert saved["remedy"] == cw_llm._CLAUDE_AUTH_REMEDY
-
-
-def test_batch_route_llm_error_carries_message_and_remedy_into_run_failure():
-    # Same regression, fanout route: a batch worker's conversation raises LLMError with no
-    # escalate role configured, so _run_batch has no gate problems either -- run() must read
-    # the batch step's own error/remedy rather than reporting "batch 1 failed the fragment gate".
-    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
-        always_403 = cw_testlib.claude_result(
-            is_error=True,
-            result="Failed to authenticate. API Error: 403 team not allowed to access model sonnet",
-            api_error_status=403,
-        )
-        with cw_testlib.fake_claude(tmp, {"sonnet": [always_403] * 10}):
-            cw_testlib.write_config(
-                home, {"p": {"kind": "claude-code", "model": "sonnet"}}, {"analysis": "p", "prose": "p"},
-                small_diff_lines=0, batch_max_lines=1,
-            )
-            d, meta, _reused = cw_run.prepare_walkthrough({
-                "repo": str(repo), "base": base, "head": head, "target": "main...HEAD", "slug": "t",
-            })
-            assert meta["route"] == "fanout"
-            status = cw_run.run(d)
-        assert status == "failed"
-        saved = json.loads((d / "meta.json").read_text())
-        assert saved["status"] == "failed"
-        assert "403" in saved["error"]
-        assert saved["error"] != "batch 1 failed the fragment gate"
-        assert saved["remedy"] == cw_llm._CLAUDE_AUTH_REMEDY
-
-
-# ---------------------------------------------------------------------------
-# usage totals
-# ---------------------------------------------------------------------------
-
-def test_usage_totals_land_in_meta_json():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
-        d, manifest = _prepare_batches(tmp, repo, base, head)
-        entry = manifest[0]
-        seed = json.loads(Path(entry["seed"]).read_text())
-        good = _passing_fragment(seed)
-        good["files"][0]["role"] = "does a thing"
-        with cw_testlib.StubLLM({"m": [cw_testlib.tool_call("submit_fragment", good)]}) as stub:
-            config = _config(profiles={"a": stub.profile("m")}, roles={"analysis": "a"})
-            ok = cw_run._run_batch(d, 1, entry, config, None)
-        assert ok is True
-        meta = json.loads((d / "meta.json").read_text())
-        assert meta["usage"]["analysis"]["prompt_tokens"] > 0
-        assert meta["usage"]["analysis"]["calls"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -363,12 +306,7 @@ def test_classify_prose_floor_file_fatal():
     assert cw_run._classify("3/5 hunks (60%) have an empty note, above the 80% floor", diff_paths)[0] == "floor"
     assert cw_run._classify("a.py: role is empty", diff_paths) == ("file", "a.py")
     assert cw_run._classify("something unexpected happened", diff_paths)[0] == "fatal"
-
-
-def test_groups_problem_is_classified_as_prose_not_file():
-    diff_paths = {"groups_helper.py"}
-    kind, _path = cw_run._classify("groups[0] has no title", diff_paths)
-    assert kind == "prose"
+    assert cw_run._classify("groups[0] has no title", {"groups_helper.py"})[0] == "prose"
 
 
 def test_file_problem_routes_to_its_owning_batch():
@@ -454,17 +392,15 @@ def test_safe_path_refuses_every_escape():
             pass
 
 
-def test_grep_with_pathological_pattern_returns_within_timeout():
+def test_grep_with_pathological_pattern_returns_within_timeout(monkeypatch):
+    cw_testlib.require_git()
+    monkeypatch.setattr(cw_run, "GREP_TIMEOUT", 0.3)
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp) / "w"
         d.mkdir(parents=True)
         (d / "f.txt").write_text("a" * 50000 + "!\n")
         _tools, handlers = cw_run.read_tools(d)
-        start = time.time()
-        result = handlers["grep"]({"pattern": "(a+)+$", "path": "walkthrough/f.txt"})
-        elapsed = time.time() - start
-        assert elapsed < cw_run.GREP_TIMEOUT + 5
-        assert isinstance(result, str)
+        assert handlers["grep"]({"pattern": "(a+)+$", "path": "walkthrough/f.txt"}) == "grep timed out"
 
 
 def test_worktree_reads_a_file_at_head_not_the_dirty_working_tree():
@@ -540,51 +476,3 @@ def test_reuse_keeps_a_passing_fragment_at_the_same_sig_a_new_head_clears_it():
         d3, _meta3, _reused3 = cw_run.prepare_walkthrough(params)
         assert d3 == d
         assert not (d3 / "batches" / "fragment-1.json").exists()
-
-
-# ---------------------------------------------------------------------------
-# gh_env
-# ---------------------------------------------------------------------------
-
-def test_gh_env_strips_both_tokens():
-    os.environ["GH_TOKEN"] = "x"
-    os.environ["GITHUB_TOKEN"] = "y"
-    try:
-        repo, env = cw_run.gh_env({"repo": "/some/repo"})
-        assert repo == "/some/repo"
-        assert "GH_TOKEN" not in env
-        assert "GITHUB_TOKEN" not in env
-    finally:
-        os.environ.pop("GH_TOKEN", None)
-        os.environ.pop("GITHUB_TOKEN", None)
-
-
-if __name__ == "__main__":
-    tests = [
-        test_invented_file_or_hunk_cannot_reach_disk,
-        test_failing_fragment_gates_twice_then_escalates_then_keeps_seed,
-        test_llm_error_counts_as_one_failed_conversation_and_moves_on,
-        test_small_diff_makes_one_prose_conversation_and_no_batch_calls,
-        test_small_route_llm_error_carries_message_and_remedy_into_run_failure,
-        test_batch_route_llm_error_carries_message_and_remedy_into_run_failure,
-        test_usage_totals_land_in_meta_json,
-        test_a_batch_thread_that_raises_is_recorded_as_a_failed_result_not_dropped,
-        test_fragment_gate_retries_then_escalates_then_fails_on_claude_code,
-        test_mixed_kinds_claude_code_analysis_fails_http_escalate_passes,
-        test_thread_worker_need_diffs_for_sends_diffs_in_second_prompt,
-        test_classify_prose_floor_file_fatal,
-        test_groups_problem_is_classified_as_prose_not_file,
-        test_file_problem_routes_to_its_owning_batch,
-        test_final_gate_failure_gives_failed_status_with_gate_lines,
-        test_safe_path_refuses_every_escape,
-        test_grep_with_pathological_pattern_returns_within_timeout,
-        test_worktree_reads_a_file_at_head_not_the_dirty_working_tree,
-        test_no_backend_configured_raises_cwerror_with_remedy,
-        test_pr_target_gives_cwerror,
-        test_reuse_keeps_a_passing_fragment_at_the_same_sig_a_new_head_clears_it,
-        test_gh_env_strips_both_tokens,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

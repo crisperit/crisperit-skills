@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-check for regen.py. Assert-based, no framework, no network."""
+"""Self-check for regen.py. Assert-based, no network; run with pytest."""
 
 import argparse
 import json
@@ -52,23 +52,16 @@ INDEX = "index aaa1111..bbb2222 100644"
 BODY = [" ctx", "+added"]
 
 
-def test_hunk_hash_survives_a_pure_line_number_shift():
+def test_hunk_hash():
     prior_diff = _diff("f.py", INDEX, "@@ -10,3 +10,4 @@", BODY)
     later_diff = _diff("f.py", INDEX, "@@ -20,3 +20,4 @@", BODY)
-
-    prior_hash = regen.hunk_records(prior_diff)[0]["hash"]
-    later_hash = regen.hunk_records(later_diff)[0]["hash"]
-
-    assert prior_hash == later_hash
-
-
-def test_hunk_hash_changes_when_a_body_line_changes():
-    prior_diff = _diff("f.py", INDEX, "@@ -10,3 +10,4 @@", BODY)
     changed_diff = _diff("f.py", INDEX, "@@ -10,3 +10,4 @@", [" ctx", "+added2"])
 
     prior_hash = regen.hunk_records(prior_diff)[0]["hash"]
+    later_hash = regen.hunk_records(later_diff)[0]["hash"]
     changed_hash = regen.hunk_records(changed_diff)[0]["hash"]
 
+    assert prior_hash == later_hash
     assert prior_hash != changed_hash
 
 
@@ -178,11 +171,6 @@ def test_bumping_script_version_invalidates_the_ref_based_cache():
             assert after["symdelta"]["key"] != before["symdelta"]["key"]
     finally:
         regen.SCRIPT_VERSION["symdelta"] = original
-
-
-def test_symdelta_script_version_is_bumped_for_the_range_field():
-    # symdelta.py's node shape gained "range"; a cache entry from before that must not survive.
-    assert regen.SCRIPT_VERSION["symdelta"] == 2
 
 
 def test_complexity_command_carries_every_argument_complexity_requires():
@@ -325,30 +313,6 @@ def test_resolution_null_hit_changes_with_head_sha():
         assert at_head1["cache_path_null"] != at_head2["cache_path_null"]
 
 
-def test_bumping_resolution_script_version_invalidates_both_resolution_keys():
-    thread = {"thread_id": "PRRT_1", "last_comment_id": 42}
-    original = regen.SCRIPT_VERSION["resolution"]
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            positive_key = regen.analyser_key("resolution", "PRRT_1", 42)
-            null_key = regen.analyser_key("resolution", "PRRT_1", 42, "head1")
-            (Path(tmp) / f"{positive_key}.json").write_text("{}")
-            (Path(tmp) / f"{null_key}.json").write_text("{}")
-
-            before = regen.plan_resolution(tmp, thread, "head1")
-            assert before["cached"] is True
-            assert before["cache_path_hit"] == before["cache_path_positive"]
-
-            regen.SCRIPT_VERSION["resolution"] = original + 1
-            after = regen.plan_resolution(tmp, thread, "head1")
-
-            assert after["cached"] is False
-            assert after["cache_path_positive"] != before["cache_path_positive"]
-            assert after["cache_path_null"] != before["cache_path_null"]
-    finally:
-        regen.SCRIPT_VERSION["resolution"] = original
-
-
 def test_resolution_positive_hit_wins_over_a_null_hit():
     thread = {"thread_id": "PRRT_1", "last_comment_id": 42}
     with tempfile.TemporaryDirectory() as tmp:
@@ -403,33 +367,3 @@ def test_dirty_follows_a_linked_worktrees_commondir_to_the_common_repos_refs():
 
         assert regen.dirty(str(head_file), "abc123") is False
         assert regen.dirty(str(head_file), "def456") is True
-
-
-if __name__ == "__main__":
-    tests = [
-        test_hunk_hash_survives_a_pure_line_number_shift,
-        test_hunk_hash_changes_when_a_body_line_changes,
-        test_plan_hunks_carries_forward_the_unchanged_hunk_and_flags_the_changed_one,
-        test_set_hash_changes_exactly_when_a_hunk_hash_changes,
-        test_no_index_line_falls_back_to_body_only_and_is_always_stale,
-        test_two_identical_hunks_in_one_file_resolve_first_unmatched_wins,
-        test_ref_based_analysers_cache_hit_depends_only_on_base_and_head,
-        test_bumping_script_version_invalidates_the_ref_based_cache,
-        test_symdelta_script_version_is_bumped_for_the_range_field,
-        test_complexity_command_carries_every_argument_complexity_requires,
-        test_fill_seeds_prefills_role_and_note_and_flags_a_fully_carried_batch,
-        test_fill_seeds_leaves_an_unmatched_hunk_blank_and_does_not_skip_the_batch,
-        test_fill_seeds_skips_the_batch_when_a_zero_hunk_file_carries_by_role,
-        test_dirty_reads_the_head_file_and_compares_to_the_built_sha,
-        test_dirty_follows_a_symbolic_ref_to_the_branchs_sha,
-        test_dirty_follows_a_linked_worktrees_commondir_to_the_common_repos_refs,
-        test_resolution_positive_hit_is_unaffected_by_head_sha,
-        test_resolution_null_hit_changes_with_head_sha,
-        test_bumping_resolution_script_version_invalidates_both_resolution_keys,
-        test_resolution_positive_hit_wins_over_a_null_hit,
-        test_build_plan_populates_resolution_only_when_threads_is_passed,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

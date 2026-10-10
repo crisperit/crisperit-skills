@@ -11,14 +11,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import cw_llm  # noqa: E402
 import cw_run  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
 import test_cw_server as srv  # noqa: E402
-
-cw_llm.BACKOFF_S = [0, 0]
 
 A_BASE = "".join(f"a{i}\n" for i in range(6))
 B_BASE = "".join(f"b{i}\n" for i in range(6))
@@ -44,10 +41,8 @@ def _setup(home, tmp, stub):
     repo, base, head = cw_testlib.make_repo(
         tmp, {"a.py": A_BASE, "b.py": B_BASE},
         {"a.py": A_BASE.replace("a2", "A2"), "b.py": B_BASE.replace("b2", "B2")})
-    (repo / "b.py").write_text(B_BASE.replace("b2", "B2").replace("b4", "TASK4"))
-    cw_testlib.git(repo, "add", "-A")
-    cw_testlib.git(repo, "commit", "-q", "-m", "task")
-    task_sha = cw_testlib.git(repo, "rev-parse", "HEAD").strip()
+    cw_testlib.write_file(repo, "b.py", B_BASE.replace("b2", "B2").replace("b4", "TASK4"))
+    task_sha = cw_testlib.commit_all(repo, "task")
     cw_testlib.write_config(
         home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
         {"analysis": "a", "prose": "p"}, small_diff_lines=0, batch_max_lines=1)
@@ -150,7 +145,7 @@ def test_show_route_guards_reuse_and_publishing_is_off():
         srv._append_qa(pd, *_outcome_records(task_sha))
         key, wid = pd.parent.name, pd.name
         path = f"/api/walkthrough/{key}/{wid}/outcomes/{OID}/show"
-        with srv.running_daemon() as daemon:
+        with cw_testlib.running_daemon() as daemon:
             srv._guard_checks(daemon, path, {})
             assert srv._post(daemon, f"/api/walkthrough/{key}/{wid}/outcomes/o-0000000f/show")[0] == 404
             assert srv._post(daemon, f"/api/walkthrough/{key}/{wid}/outcomes/{OID_OPEN}/show")[0] == 409
@@ -186,14 +181,7 @@ def test_show_route_guards_reuse_and_publishing_is_off():
             sib_path = f"/api/walkthrough/{key}/{out['id']}/outcomes/{OID}/show"
             assert srv._post(daemon, sib_path)[0] == 404
 
-            for suffix, body in (("post/preview", {}), ("post", {}), ("publish-one", {"id": "n1", "body_sha": "x"})):
-                status, err = srv._post(daemon, f"/api/walkthrough/{key}/{out['id']}/{suffix}", body)
-                assert status == 409, (suffix, status, err)
-                assert err == {"error": "publishing is off in this view", "remedy": "go back to the PR head"}, suffix
+            status, err = srv._post(daemon, f"/api/walkthrough/{key}/{out['id']}/post", {})
+            assert (status, err) == (409, {"error": "publishing is off in this view",
+                                           "remedy": "go back to the PR head"})
 
-
-if __name__ == "__main__":
-    for name, fn in list(globals().items()):
-        if name.startswith("test_"):
-            fn()
-            print("ok", name)

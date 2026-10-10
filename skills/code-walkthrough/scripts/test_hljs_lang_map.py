@@ -17,12 +17,11 @@ def _lang_map_body():
     return template[start:end]
 
 
-def test_toml_extension_maps_to_ini():
-    assert "toml:'ini'" in _lang_map_body()
+def test_lang_map_routes_toml_and_cargo_lock_to_ini():
+    body = _lang_map_body()
 
-
-def test_cargo_lock_basename_maps_to_ini():
-    assert "'cargo.lock':'ini'" in _lang_map_body()
+    assert "toml:'ini'" in body
+    assert "'cargo.lock':'ini'" in body
 
 
 def test_bundle_ships_the_ini_grammar():
@@ -30,14 +29,3 @@ def test_bundle_ships_the_ini_grammar():
     # toml/cargo.lock entries rely on.
     assert "grmr_ini" in HLJS_BUNDLE.read_text()
 
-
-if __name__ == "__main__":
-    tests = [
-        test_toml_extension_maps_to_ini,
-        test_cargo_lock_basename_maps_to_ini,
-        test_bundle_ships_the_ini_grammar,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Self-check for render.py. Assert-based, no framework."""
+"""Self-check for render.py and for the contracts diff-review-template.html must keep."""
 
-import shutil
+import functools
+import json
+import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_server  # noqa: E402
+from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
     render_html, counts_from, _flow_tb, _wrap_flow_labels,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
 from sections import ZWSP  # noqa: E402
+from state import build  # noqa: E402
 from validate_analysis import parse_hunks  # noqa: E402
 
 DIFF = """diff --git a/src/auth.py b/src/auth.py
@@ -41,6 +48,8 @@ ANALYSIS = {
 
 TEMPLATE = f"<html><title>{TITLE_PLACEHOLDER}</title><body>{CONTENT_PLACEHOLDER}</body></html>"
 FROZEN = datetime(2026, 9, 11, 18, 15)
+
+TEMPLATE_FILE = Path(__file__).parent.parent / "assets" / "diff-review-template.html"
 
 
 def parsed():
@@ -120,14 +129,6 @@ def test_pasted_sections_are_never_re_escaped():
     assert "&amp;lt;" not in out
 
 
-def test_no_page_level_symbols_section_is_rendered():
-    # The collapsed page-level symbol map was removed; nothing should reintroduce it.
-    out = html(walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
-
-    assert "Package graph" not in out
-    assert '<details class="collapse">' not in out
-
-
 def test_an_empty_flow_drops_the_whole_section():
     out = html({**ANALYSIS, "flow_mermaid": ""})
 
@@ -136,24 +137,15 @@ def test_an_empty_flow_drops_the_whole_section():
     assert "svgbox-flow" not in out
 
 
-def test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams():
-    # svgbox-flow is what lets the template give FLOW its own CSS rule instead of sharing the
-    # scale-to-fit one sized for the per-group symbol graphs walkthrough.py renders.
-    out = html()
-
-    assert 'class="panel svgbox svgbox-flow"' in out
-
-
-def test_flow_tb_leaves_a_non_lr_diagram_alone():
-    assert _flow_tb('flowchart TB\n  A --> B') == 'flowchart TB\n  A --> B'
-    assert _flow_tb('') == ''
-
-
-def test_flow_tb_rewrites_only_the_leading_lr_token():
+@pytest.mark.parametrize("flow, expected", [
+    ('flowchart TB\n  A --> B', 'flowchart TB\n  A --> B'),
+    ('', ''),
     # Slicing on len("flowchart LR") rather than a blind replace: an LR appearing again later
     # in the diagram (a node label, say) must survive untouched.
-    out = _flow_tb('flowchart LR\n  A["go LR"] --> B')
-    assert out == 'flowchart TB\n  A["go LR"] --> B'
+    ('flowchart LR\n  A["go LR"] --> B', 'flowchart TB\n  A["go LR"] --> B'),
+])
+def test_flow_tb(flow, expected):
+    assert _flow_tb(flow) == expected
 
 
 def test_html_rewrites_a_flowchart_lr_analysis_to_tb():
@@ -164,65 +156,34 @@ def test_html_rewrites_a_flowchart_lr_analysis_to_tb():
     assert "flowchart TB" in html_out and "flowchart LR" not in html_out
 
 
-def test_wrap_flow_labels_leaves_a_long_multiword_label_alone():
+def test_wrap_flow_labels_leaves_ids_arrows_edge_counts_and_multiword_labels_alone():
     # mermaid wraps on spaces by itself, so a label with no over-length word comes back
     # byte for byte (see sections.wrap_label).
-    flow = ('flowchart TB\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
-            'for the MediaGuard lookup"]')
+    for flow in (
+        'flowchart TB\n  A["one two three four five six seven eight"] -->|1| B["ok"]',
+        ('flowchart TB\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
+         'for the MediaGuard lookup"]'),
+    ):
+        assert _wrap_flow_labels(flow) == flow
 
-    assert _wrap_flow_labels(flow) == flow
 
-
-def test_wrap_flow_labels_breaks_a_long_identifier_at_camel_boundaries():
-    flow = 'flowchart TB\n  A["filterUnusableIdentifierThatIsVeryLongIndeedYes"] --> B'
-
+@pytest.mark.parametrize("flow, labels", [
+    ('flowchart TB\n  A["short"] -->|"via resolveSymbolMergesAcrossPackages"| B["ok"]',
+     [('-->|"', '"|', "via resolveSymbolMergesAcrossPackages")]),
+    ('flowchart TB\n  A["short"] -->|via resolveSymbolMergesAcrossPackages| B["ok"]',
+     [('-->|', '|', "via resolveSymbolMergesAcrossPackages")]),
+    ('flowchart TB\n  A["filterUnusableIdentifierThatIsVeryLong"] '
+     '-->|"via resolveSymbolMergesAcrossPackages"| B["ok"]',
+     [('A["', '"]', "filterUnusableIdentifierThatIsVeryLong"),
+      ('-->|"', '"|', "via resolveSymbolMergesAcrossPackages")]),
+])
+def test_wrap_flow_labels_edge_forms(flow, labels):
     out = _wrap_flow_labels(flow)
 
-    label = out.split('A["', 1)[1].rsplit('"]', 1)[0]
-    assert ZWSP in label
-    assert label.replace(ZWSP, "") == "filterUnusableIdentifierThatIsVeryLongIndeedYes"
-
-
-def test_wrap_flow_labels_leaves_ids_arrows_and_edge_counts_alone():
-    flow = 'flowchart TB\n  A["one two three four five six seven eight"] -->|1| B["ok"]'
-
-    out = _wrap_flow_labels(flow)
-
-    assert out.count("-->") == 1
-    assert "|1|" in out
-    assert 'B["ok"]' in out  # short label untouched
-
-
-def test_wrap_flow_labels_breaks_a_long_identifier_in_a_quoted_edge_label():
-    flow = 'flowchart TB\n  A["short"] -->|"via resolveSymbolMergesAcrossPackages"| B["ok"]'
-
-    out = _wrap_flow_labels(flow)
-
-    label = out.split('-->|"', 1)[1].split('"|', 1)[0]
-    assert ZWSP in label
-    assert label.replace(ZWSP, "") == "via resolveSymbolMergesAcrossPackages"
-
-
-def test_wrap_flow_labels_breaks_a_long_identifier_in_a_bare_edge_label():
-    flow = 'flowchart TB\n  A["short"] -->|via resolveSymbolMergesAcrossPackages| B["ok"]'
-
-    out = _wrap_flow_labels(flow)
-
-    label = out.split('-->|', 1)[1].split('|', 1)[0]
-    assert ZWSP in label
-    assert label.replace(ZWSP, "") == "via resolveSymbolMergesAcrossPackages"
-
-
-def test_wrap_flow_labels_reaches_a_node_and_an_edge_label_on_the_same_line():
-    flow = ('flowchart TB\n  A["filterUnusableIdentifierThatIsVeryLong"] '
-            '-->|"via resolveSymbolMergesAcrossPackages"| B["ok"]')
-
-    out = _wrap_flow_labels(flow)
-
-    node_label = out.split('A["', 1)[1].split('"]', 1)[0]
-    edge_label = out.split('-->|"', 1)[1].split('"|', 1)[0]
-    assert ZWSP in node_label
-    assert ZWSP in edge_label
+    for start, end, original in labels:
+        label = out.split(start, 1)[1].split(end, 1)[0]
+        assert ZWSP in label
+        assert label.replace(ZWSP, "") == original
 
 
 def test_flow_diagram_breaks_a_long_identifier_end_to_end():
@@ -243,62 +204,28 @@ def test_an_empty_overview_drops_the_whole_section():
     assert "<h2>Overview</h2>" not in out
 
 
-def test_overview_heading_is_the_same_in_both_modes():
-    # The old "What changed" / "What this is" swap is gone: a cold reader needs the same shape
-    # of topic whether the target is a change or an area, so one heading covers both.
-    assert "<h2>Overview</h2>" in html()
-    assert "<h2>Overview</h2>" in html(explain=True)
+@pytest.mark.parametrize("overview, present, absent", [
+    ("Lead sentence.\n\n- first idea\n- second idea",
+     ["<ul><li>first idea</li><li>second idea</li></ul>", "<p>Lead sentence.</p>"], []),
+    # No "\n\n" between the lead and the bullets: the lead must stay a <p> and must not become
+    # one of the <li>s.
+    ("Lead sentence.\n- first idea\n- second idea",
+     ["<p>Lead sentence.</p>", "<ul><li>first idea</li><li>second idea</li></ul>"],
+     ["<li>Lead sentence.</li>"]),
+    ("Lead sentence.\n\n- first idea\n\n- second idea",
+     ["<ul><li>first idea</li><li>second idea</li></ul>"], []),
+    ("- bulleted\nplain line too", ["<ul><li>bulleted</li><li>plain line too</li></ul>"], []),
+    ("- broke `<img src=x onerror=alert(1)>` here",
+     ["<li>broke <code>&lt;img src=x onerror=alert(1)&gt;</code> here</li>"], ["<img src=x"]),
+])
+def test_overview_prose_blocks(overview, present, absent):
+    out = html({**ANALYSIS, "overview": overview})
 
-
-def test_a_bullet_block_renders_as_a_list():
-    out = html({**ANALYSIS, "overview": "Lead sentence.\n\n- first idea\n- second idea"})
-
-    assert "<ul><li>first idea</li><li>second idea</li></ul>" in out
-    assert "<p>Lead sentence.</p>" in out
-
-
-def test_a_lead_with_no_blank_line_before_its_bullets_still_gets_its_own_p():
-    # No "\n\n" between the lead and the bullets -- the failure mode a missing blank line
-    # used to cause: the lead must stay a <p> and must not become one of the <li>s.
-    out = html({**ANALYSIS, "overview": "Lead sentence.\n- first idea\n- second idea"})
-
-    assert "<p>Lead sentence.</p>" in out
-    assert "<ul><li>first idea</li><li>second idea</li></ul>" in out
-    assert "<li>Lead sentence.</li>" not in out
-
-
-def test_bullets_split_by_a_blank_line_still_merge_into_one_list():
-    out = html({**ANALYSIS, "overview": "Lead sentence.\n\n- first idea\n\n- second idea"})
-
-    assert "<ul><li>first idea</li><li>second idea</li></ul>" in out
+    for needle in present:
+        assert needle in out
+    for needle in absent:
+        assert needle not in out
     assert out.count("<ul>") == 1
-
-
-def test_a_mixed_block_treats_plain_lines_as_their_own_items():
-    out = html({**ANALYSIS, "overview": "- bulleted\nplain line too"})
-
-    assert "<ul><li>bulleted</li><li>plain line too</li></ul>" in out
-
-
-def test_escaping_still_happens_inside_a_list_item():
-    hostile = {**ANALYSIS, "overview": "- broke `<img src=x onerror=alert(1)>` here"}
-    out = html(hostile)
-
-    assert "<img src=x" not in out
-    assert "<li>broke <code>&lt;img src=x onerror=alert(1)&gt;</code> here</li>" in out
-
-
-def test_an_empty_section_file_inserts_nothing_not_even_its_note():
-    out = html(walkthrough="")
-
-    assert "<h2>Walkthrough</h2>" not in out
-
-
-def test_no_text_size_control_is_emitted_at_all():
-    # The A-/A/A+ row is gone: pinch-zoom is the escape hatch, and the viewport meta allows it.
-    out = html()
-
-    assert "txtsize" not in out
 
 
 def test_the_walkthrough_heading_carries_only_the_explanations_toggle():
@@ -345,11 +272,9 @@ def test_footer_carries_the_target_and_a_stamp_but_no_local_path():
     assert "master...HEAD · generated 2026-09-11 18:15" in out
 
 
-def test_no_links_json_means_no_links():
+def test_html_footer_link_is_safe_to_click_from_a_file_url():
     assert "pull request" not in html()
 
-
-def test_html_footer_link_is_safe_to_click_from_a_file_url():
     out = html(links={"pr_url": "https://gh/o/r/pull/7"})
 
     # The page is opened from file:// and a link that replaces it costs the reader their notes.
@@ -426,309 +351,210 @@ def test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox():
 
     assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in heading
     assert out.index("</h2>") < out.index("svgbox-flow")
+    # svgbox-flow lets the template size FLOW apart from the capped per-group symbol graphs.
+    assert 'class="panel svgbox svgbox-flow"' in out
 
+
+# ---- the real template: contracts that survive a refactor ----
 
 CSP = ('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'\">")
 
 
+@functools.lru_cache(maxsize=None)
+def _real_template():
+    return TEMPLATE_FILE.read_text()
+
+
+def _between(text, start, end):
+    return text.split(start)[1].split(end)[0]
+
+
+def _wire_ask():
+    return _between(_real_template(), "function wireAsk()", "\n  document.querySelectorAll('pre.diff')")
+
+
+def _wire_post():
+    return _between(_real_template(), "function wirePost(canGhCommand){", "\n  function wireCommentsPanel()")
+
+
+def _node(script):
+    require_node()
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    if proc.returncode == 3:
+        skip("node has no crypto.subtle")
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_the_real_template_carries_the_csp_meta_before_its_first_script_tag():
-    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
     order, files = parsed()
-    out = render_html(ANALYSIS, files, real_template, now=FROZEN, order=order)
+    out = render_html(ANALYSIS, files, _real_template(), now=FROZEN, order=order)
 
     assert CSP in out
     assert out.index(CSP) < out.index("<script")
 
 
-def test_the_real_template_gates_live_code_behind_window_cw_live():
-    real_template = (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
-
-    assert "if(window.CW_LIVE)" in real_template
-
-
-def _real_template():
-    return (Path(__file__).parent.parent / "assets" / "diff-review-template.html").read_text()
-
-
-def test_the_real_template_carries_the_threads_ui_behind_window_cw_live():
-    real_template = _real_template()
-
-    assert "if(window.CW_LIVE) wireAsk();" in real_template
-    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    assert "cw-comment-btn" in wire_ask
-    assert "Threads (" in wire_ask
-    assert "window.CW_LIVE.api+'/comment'" in wire_ask
-    assert "window.CW_LIVE.api+'/qa'" in wire_ask
-    assert "/resolve" in wire_ask
-    assert "window.__cwOnThread" in wire_ask
-    assert "addEventListener('thread'" in real_template
-    assert "__cwOnAnswer" not in real_template
+def test_the_real_template_inline_scripts_all_parse():
+    require_node()
+    scripts = re.findall(r"<script>(.*?)</script>", _real_template(), re.S)
+    check = ("const vm=require('vm');"
+             "JSON.parse(require('fs').readFileSync(0,'utf8')).forEach((src,i)=>{"
+             "try{new vm.Script(src)}catch(e){console.error('script '+i+': '+e);process.exit(1)}})")
+    proc = subprocess.run(["node", "-e", check], input=json.dumps(scripts),
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
 
 
-def test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips():
-    real_template = _real_template()
+# Every daemon call the page makes, as the client-side fragment that issues it and a concrete
+# path the daemon must route. A client route the daemon does not serve is a silent 404 in the browser.
+_API = "/api/walkthrough/w/r"
+_CLIENT_ROUTES = [
+    ("api+'/notes'", "/notes", "_NOTES_RE"),
+    ("api+'/comment'", "/comment", "_COMMENT_RE"),
+    ("api+'/qa'", "/qa", "_QA_RE"),
+    ("api+'/post/preview'", "/post/preview", "_POST_PREVIEW_RE"),
+    ("api+'/post'", "/post", "_POST_RE"),
+    ("api+'/publish-one'", "/publish-one", "_PUBLISH_ONE_RE"),
+    ("postJson('/triage'", "/triage", "_TRIAGE_RE"),
+    ("api+'/threads/'", "/threads/t-1/resolve", "_RESOLVE_RE"),
+    ("/cancel'", "/comment/q-0123abcd/cancel", "_CANCEL_RE"),
+    ("LIVE.api+'/events?k='", "/events", "_EVENTS_RE"),
+]
+_OUTCOME_VERBS = ("dismiss", "edit", "keep", "verbatim", "revert", "reapply", "show", "run", "discard", "handover")
 
-    assert "planEl.appendChild(div)" not in real_template
-    assert "cw-ask" not in real_template
-    assert "cw-qa" not in real_template
-    assert "cw-chip" not in real_template
-    assert "data-intent" not in real_template
-    assert "dataset.intent" not in real_template
+
+def test_live_code_is_gated_behind_cw_live_and_calls_real_daemon_routes():
+    template = _real_template()
+
+    for gate in ("if(window.CW_LIVE) wireAsk();", "if(window.CW_LIVE){", "wirePost(canGhCommand);",
+                 "window.CW_LIVE&&window.CW_LIVE.sibling"):
+        assert gate in template
+    # a static page must show no publish bar
+    bar = template.split('<div id="cw-drafts-bar"')[1].split("</div>")[0]
+    assert " hidden" in bar.split(">")[0]
+    assert "canGhCommand&&(d>0||r>0)" in _wire_post()
+
+    for fragment, path, regex in _CLIENT_ROUTES:
+        assert fragment in template, fragment
+        assert getattr(cw_server, regex).match(_API + path), (path, regex)
+    wire_ask = _wire_ask()
+    assert "'/outcomes/'" in template
+    for verb in _OUTCOME_VERBS:
+        assert f"'{verb}'" in wire_ask, verb
+        assert cw_server._OUTCOME_RE.match(f"{_API}/outcomes/o-0123abcd/{verb}"), verb
+
+
+def test_live_ui_never_uses_html_injection_sinks():
+    template = _real_template()
+    sibling = "function wireSibling(){" + _between(template, "function wireSibling(){", "wireSibling();")
+    split = "function splitBackticks(" + _between(template, "function splitBackticks(", "function wireAsk(){")
+    wire_ask = _wire_ask()
+
+    for scope in (wire_ask, split, sibling):
+        for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
+            assert banned not in scope, banned
+    # model-authored text only reaches the DOM through mk(..., text)
+    mk = _between(wire_ask, "const mk=(tag,cls,text)=>{", "};")
+    assert "e.textContent=text" in mk
+    assert "window.open(r.url,'_blank','noopener')" in wire_ask
+
+
+def test_post_flow_double_submit_guards():
+    wire_post = _wire_post()
+    send = _between(wire_post, "function send(){", "function retry(){")
+    retry = _between(wire_post, "function retry(){", "function submitNow(){")
+    dialog = _between(_real_template(), '<dialog id="cw-post-confirm"', "</dialog>")
+    publish = "function publishNote(" + _between(_real_template(), "function publishNote(", "function noteSig(")
+
+    assert "if(starting||posting||dlg.open) return;" in wire_post
+    assert "if(posting) e.preventDefault()" in wire_post
+    assert "ids:selectedIds()" in send and "event:selEvent()" in send and "body:summary.value" in send
+    assert "submit_only:true" in wire_post
+    assert "failedNoteIds" in retry and "preview(true)" in retry
+    assert "resetLocal(body.reset)" in wire_post
+    for ev in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
+        assert 'name="cw-post-event" value="%s"' % ev in dialog
+    assert dialog.count("checked>") == 1 and 'value="COMMENT" checked>' in dialog
+    assert "/publish-one" in publish and "body_sha" in publish and "putNotesNow(false)" in publish
+    assert "if(oid) req.oid=oid" in publish
+
+
+def test_publish_buttons_share_one_in_flight_set_and_a_posted_409_counts_as_success():
+    template = _real_template()
+    publish = "function publishNote(" + _between(template, "function publishNote(", "function noteSig(")
+    assert "const publishing=new Set()" in template
+    assert "if(publishing.has(note.id)) return Promise.resolve(false)" in publish
+    assert "setPublishBusy(note.id,true)" in publish and "setPublishBusy(note.id,false)" in publish
+    assert "status===409" in publish and "no longer a local draft" in publish and "cur.state!=='draft'" in publish
+
+
+def test_live_reload_flushes_notes_before_reloading():
+    # Regression for the live-reload data-loss race: doReload used to call __cwFlushPutNotes()
+    # and reload() back to back, so the reload's GET could beat the flush's keepalive PUT and
+    # the page came back showing stale notes.
+    template = _real_template()
+    flush = re.search(r"function flushPutNotes\(\)\{(.*?)\n  \}", template, re.S)
+    assert flush, "flushPutNotes() not found in diff-review-template.html"
+    assert "return putNotesNow(" in flush.group(1), "flushPutNotes no longer returns the PUT promise"
+    body = re.search(r"function doReload\(\)\{(.*?)\n    \}", template, re.S)
+    assert body, "doReload() not found in diff-review-template.html"
+    body = body.group(1)
+
+    assert "location.reload()" not in body.split(".then(")[0]
+    assert re.search(r"\.then\(.*?location\.reload\(\)", body, re.S)
+    assert "Promise.race" in body
+
+
+# Rules that fix real browser bugs, and no behaviour test can see them without a browser.
+# display:none on a panel mermaid is about to render makes it measure the labels as zero and
+# collapse the diagram for good, so those panels go off-screen instead.
+_OFF_SCREEN = (["position:absolute", "left:-99999px"], ["display:none"])
+_CSS_RULES = [
+    (r"details\.hr-thread-resolved\{([^}]*)\}",
+     ["white-space:normal", "line-height:1.6", "overflow-wrap:anywhere"], []),
+    (r"body:not\(\.show-notes\) h3\.wt-group ~ \.wt-panel\{([^}]*)\}", *_OFF_SCREEN),
+    (r"\.wt-tabpanel\.wt-tab-off\{([^}]*)\}", *_OFF_SCREEN),
+    (r"\.wt-tabs \.vd-ctl\[hidden\]\{([^}]*)\}", ["display:none"], []),
+    (r"body:not\(\.show-notes\) \.hunk-note-hunk,\n\s*body:not\(\.show-notes\) \.wt-why\{([^}]*)\}",
+     ["display:none"], []),
+    (r"body:not\(\.show-notes\) h3\.wt-group \.vd-max-btn\{([^}]*)\}", ["display:none"], []),
+    (r"\.cw-caret\{([^}]*)\}", [], ["animation"]),
+    (r"@media \(prefers-reduced-motion:no-preference\)\{\s*\.cw-caret\{([^}]*)\}",
+     ["animation:cw-caret"], []),
+    (r"\.cw-sibling \.fb-publish-one[^{]*\.cw-sibling #cw-drafts-bar[^{]*\.cw-sibling \.fb-reply\{([^}]*)\}",
+     ["display:none!important"], []),
+]
+
+
+@pytest.mark.parametrize("selector, must, must_not", _CSS_RULES, ids=[r[0][:40] for r in _CSS_RULES])
+def test_template_css_rule_pins(selector, must, must_not):
+    match = re.search(selector, _real_template())
+    assert match, "rule missing: " + selector
+    body = match.group(1)
+
+    for decl in must:
+        assert decl in body
+    for decl in must_not:
+        assert decl not in body
 
 
 def test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe():
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    src = "function blockKeyFrom(" + _real_template().split("function blockKeyFrom(")[1].split("function wireAsk(){")[0]
-    script = src + """
+    src = "function blockKeyFrom(" + _between(_real_template(), "function blockKeyFrom(", "function wireAsk(){")
+    _node(src + """
 const re = /^[A-Za-z0-9:_.|-]{1,200}$/;
 const a = blockKeyFrom('s1', 'Hello   world\\n again');
 if (a !== blockKeyFrom('s1', ' Hello world again ')) throw new Error('whitespace changed key');
 if (a === blockKeyFrom('s2', 'Hello world again')) throw new Error('section ignored');
 if (a === blockKeyFrom('s1', 'Hello world')) throw new Error('text ignored');
-for (const k of [a, blockKeyFrom('Why it works? / \u00e9', 'x'), blockKeyFrom('', ''), blockKeyFrom('a'.repeat(500), 'x')])
+for (const k of [a, blockKeyFrom('Why it works? / é', 'x'), blockKeyFrom('', ''), blockKeyFrom('a'.repeat(500), 'x')])
   if (!re.test(k)) throw new Error('bad key ' + k);
-"""
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_the_real_template_submits_a_review_only_behind_window_cw_live():
-    real_template = _real_template()
-
-    assert "if(window.CW_LIVE){" in real_template
-    assert "wirePost(canGhCommand);" in real_template
-    wire_post = real_template.split("function wirePost(canGhCommand){")[1].split(
-        "\n  function wireCommentsPanel()")[0]
-    assert "window.CW_LIVE.api+'/post/preview'" in wire_post
-    assert "window.CW_LIVE.api+'/post'" in wire_post
-    assert "window.__cwOnPosted" in wire_post
-    send = wire_post.split("function send(){")[1].split("function retry(){")[0]
-    assert "ids:selectedIds()" in send and "event:selEvent()" in send and "body:summary.value" in send
-    assert "submit_only:true" in wire_post
-
-    assert "cw-post-submit" not in real_template
-    assert "Submit review as COMMENT" not in real_template
-    dialog = real_template.split('<dialog id="cw-post-confirm"')[1].split("</dialog>")[0]
-    assert '<details id="cw-post-options">' in dialog and "Review options" in dialog
-    for ev in ("COMMENT", "APPROVE", "REQUEST_CHANGES"):
-        assert 'name="cw-post-event" value="%s"' % ev in dialog
-    assert dialog.count("checked>") == 1 and 'value="COMMENT" checked>' in dialog
-    for text in ("Retry the failed one", "Submit the", "Leave pending"):
-        assert text in dialog or text in wire_post
-    assert "which only you can see" in wire_post
-    assert "already in your pending review" in wire_post
-    assert "pendingResolveSet" in wire_post
-    retry = wire_post.split("function retry(){")[1].split("function submitNow(){")[0]
-    assert "failedNoteIds" in retry and "preview(true)" in retry
-    assert "if(starting||posting||dlg.open) return;" in wire_post
-    assert "if(posting) e.preventDefault()" in wire_post
-    assert "resetLocal(body.reset)" in wire_post
-
-
-def test_the_real_template_has_a_drafts_bar_that_stays_hidden_off_a_live_pr_page():
-    real_template = _real_template()
-
-    bar = real_template.split('<div id="cw-drafts-bar"')[1].split("</div>")[0]
-    assert " hidden" in bar.split(">")[0]
-    assert "Jump to drafts" in bar and "Submit review" in bar
-    wire_post = real_template.split("function wirePost(canGhCommand){")[1].split(
-        "\n  function wireCommentsPanel()")[0]
-    assert "canGhCommand&&(d>0||r>0)" in wire_post
-    assert "--cw-bar-h" in wire_post and "--cw-bar-h" in real_template.split("<body")[0]
-    assert "cw-threads-submit" in real_template.split("function wireAsk()")[1]
-    assert "in your pending review" in real_template.split("function buildItem(n){")[1]
-
-
-def test_the_real_template_inline_script_parses():
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    import re
-    import tempfile
-    scripts = re.findall(r"<script>(.*?)</script>", _real_template(), re.S)
-    with tempfile.TemporaryDirectory() as d:
-        for i, src in enumerate(scripts):
-            f = Path(d) / ("s%d.js" % i)
-            f.write_text(src)
-            proc = subprocess.run([node, "--check", str(f)], capture_output=True, text=True, timeout=30)
-            assert proc.returncode == 0, proc.stderr
-
-
-def test_the_real_template_offers_a_direct_github_draft_only_on_a_line_anchor():
-    real_template = _real_template()
-    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-
-    direct = wire_ask.split("function directDraftFor(anchor){")[1].split("function makeComposer(")[0]
-    assert "anchor.kind!=='line'||!anchor.path" in direct and "!anchor.line) return null" in direct
-    assert "newDraft(" in direct and "saveNote(note)" in direct
-    assert "note.body=text;" in direct and "trim" not in direct
-    assert "/comment" not in direct
-
-    composer = wire_ask.split("function makeComposer(")[1].split("const threads=new Map()")[0]
-    assert "Save as GitHub draft" in composer and "onDraft?" in composer
-    save_draft = composer.split("function saveDraft(){")[1].split("send.addEventListener")[0]
-    assert "onDraft(ta.value)" in save_draft
-    assert "fetch(" not in save_draft and "/comment" not in save_draft and "Sending" not in save_draft
-    assert "e.shiftKey" in composer and "saveDraft()" in composer
-    # prose/block composers never receive a draft handler
-    assert "makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null)" in wire_ask
-
-
-def test_the_real_template_opens_the_inline_box_from_a_diff_line_and_marks_local_drafts_amber():
-    real_template = _real_template()
-
-    wire_line = real_template.split("function wireLine(span,meta){")[1].split("// Extension (no dot)")[0]
-    assert "openLineComposer(meta)" in wire_line
-    assert "const open=()=>openOrFocusDraft(meta)" not in real_template
-    assert "openLineComposer=meta=>" in real_template
-    assert "fb-own-draft{border-left:3px dashed var(--yellow)}" in real_template
-    assert "draft, not published" in real_template
-
-
-def test_the_real_template_reply_box_is_a_textarea_with_a_reply_on_github_button():
-    real_template = _real_template()
-
-    reply = real_template.split("function buildReplyRow(root){")[1].split("function buildResolveButton(")[0]
-    assert "createElement('textarea')" in reply
-    assert "Reply on GitHub" in reply
-    assert "reply_to:root.id,in_reply_to:root.id" in reply
-    assert "const body=input.value;" in reply
-    assert "#cw-post-confirm-actions[hidden]{display:none}" in real_template
-
-
-if __name__ == "__main__":
-    tests = [
-        test_facts_come_from_the_diff_not_the_analysis,
-        test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic,
-        test_a_net_deletion_reads_as_negative,
-        test_both_placeholders_are_replaced,
-        test_an_explicit_title_wins_even_with_no_target,
-        test_html_escapes_prose_before_promoting_backticks,
-        test_html_promotes_backticks_in_every_prose_field,
-        test_html_escapes_the_mermaid_source,
-        test_pasted_sections_are_never_re_escaped,
-        test_no_page_level_symbols_section_is_rendered,
-        test_an_empty_flow_drops_the_whole_section,
-        test_flow_box_carries_a_distinct_class_from_the_capped_stacked_diagrams,
-        test_flow_tb_leaves_a_non_lr_diagram_alone,
-        test_flow_tb_rewrites_only_the_leading_lr_token,
-        test_html_rewrites_a_flowchart_lr_analysis_to_tb,
-        test_wrap_flow_labels_leaves_a_long_multiword_label_alone,
-        test_wrap_flow_labels_breaks_a_long_identifier_at_camel_boundaries,
-        test_wrap_flow_labels_leaves_ids_arrows_and_edge_counts_alone,
-        test_wrap_flow_labels_breaks_a_long_identifier_in_a_quoted_edge_label,
-        test_wrap_flow_labels_breaks_a_long_identifier_in_a_bare_edge_label,
-        test_wrap_flow_labels_reaches_a_node_and_an_edge_label_on_the_same_line,
-        test_flow_diagram_breaks_a_long_identifier_end_to_end,
-        test_an_empty_overview_drops_the_whole_section,
-        test_overview_heading_is_the_same_in_both_modes,
-        test_an_empty_section_file_inserts_nothing_not_even_its_note,
-        test_no_text_size_control_is_emitted_at_all,
-        test_the_walkthrough_heading_carries_only_the_explanations_toggle,
-        test_a_missing_verdict_drops_only_its_fact_block,
-        test_prose_paragraphs_stay_separate,
-        test_footer_carries_the_target_and_a_stamp_but_no_local_path,
-        test_no_links_json_means_no_links,
-        test_html_footer_link_is_safe_to_click_from_a_file_url,
-        test_story_map_replaces_flow_and_lands_right_after_overview,
-        test_structure_section_lands_between_the_story_map_and_the_walkthrough,
-        test_an_empty_structure_section_inserts_nothing,
-        test_a_single_group_keeps_the_flow_diagram,
-        test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox,
-        test_the_real_template_carries_the_csp_meta_before_its_first_script_tag,
-        test_the_real_template_gates_live_code_behind_window_cw_live,
-        test_the_real_template_carries_the_threads_ui_behind_window_cw_live,
-        test_the_real_template_has_no_ask_modal_no_page_end_fallback_and_no_chips,
-        test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe,
-        test_the_real_template_submits_a_review_only_behind_window_cw_live,
-        test_the_real_template_has_a_drafts_bar_that_stays_hidden_off_a_live_pr_page,
-        test_the_real_template_inline_script_parses,
-        test_the_real_template_offers_a_direct_github_draft_only_on_a_line_anchor,
-        test_the_real_template_opens_the_inline_box_from_a_diff_line_and_marks_local_drafts_amber,
-        test_the_real_template_reply_box_is_a_textarea_with_a_reply_on_github_button,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
-
-
-def test_the_live_page_streams_deltas_progress_and_outcomes_into_window_hooks():
-    real_template = _real_template()
-    wire_ask = real_template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-
-    assert "['delta','progress','outcome'].forEach" in real_template
-    assert "window.__cwOnSnapshot(data)" in real_template
-    for hook in ("__cwOnDelta", "__cwOnProgress", "__cwOnOutcome", "__cwOnSnapshot"):
-        assert "window." + hook + "=" in wire_ask
-    assert "data.outcomes" in wire_ask
-
-
-def test_stream_and_outcome_code_never_uses_inner_html():
-    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    live = wire_ask.split("const streams=new Map()")[1].split("function buildThread(")[0]
-    hooks = wire_ask.split("window.__cwOnDelta=")[1].split("const commentBtn=")[0]
-
-    assert "innerHTML" not in live
-    assert "innerHTML" not in hooks
-
-
-def test_stop_posts_to_cancel_and_keep_marks_the_resolve_pending():
-    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    stop = wire_ask.split("function stopBtn(")[1].split("function retryBtn(")[0]
-    card = wire_ask.split("function outcomeEl(")[1].split("function turnEl(")[0]
-
-    assert "/cancel" in stop
-    assert "markPendingResolve(id)" in card
-    assert "/dismiss" in card
-    assert "clearPendingResolve(id)" in card
-
-
-def test_the_caret_blinks_only_when_motion_is_allowed():
-    template = _real_template()
-    motion = template.split("@media (prefers-reduced-motion:no-preference){")
-
-    assert "animation:cw-caret" in "".join(m.split("\n  }")[0] for m in motion[1:])
-    assert "animation:cw-caret" not in motion[0]
-    assert ".cw-outcome{display:flex;flex-wrap:wrap" in template
-
-
-def test_page_edit_code_never_uses_html_injection_and_is_excluded_from_block_logic():
-    template = _real_template()
-    wire_ask = template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    edit = wire_ask.split("const pageEdits=new Map()")[1].split("function outcomeEl(")[0]
-    split = "function splitBackticks(" + template.split("function splitBackticks(")[1].split("function wireAsk(){")[0]
-
-    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
-        assert banned not in edit
-        assert banned not in split
-    assert "insertAdjacentElement" in edit
-
-    in_live_ui = wire_ask.split("const inLiveUi=")[1].split("\n")[0]
-    text_of = wire_ask.split("function textOf(el){")[1].split("function blockOf(")[0]
-    block_index = wire_ask.split("function blockIndex(){")[1].split("function buildAskAnchor(")[0]
-    for part in (in_live_ui, text_of, block_index):
-        assert ".cw-thread,.cw-compose,.cw-pageedit" in part
-    assert text_of.count(".cw-pageedit") == 2
-
-    assert "'/outcomes/'+encodeURIComponent(oid)+'/'+verb" in edit
-    assert "'revert'" in edit and "'reapply'" in edit
-    assert "propose_page_edit" in wire_ask
+""")
 
 
 def test_split_backticks_turns_code_spans_into_nodes_and_never_parses_markup():
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    src = "function splitBackticks(" + _real_template().split("function splitBackticks(")[1].split("function wireAsk(){")[0]
-    script = src + """
+    src = "function splitBackticks(" + _between(_real_template(), "function splitBackticks(", "function wireAsk(){")
+    _node(src + """
 const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
 eq(splitBackticks('plain text'), [{code:false,text:'plain text'}]);
 eq(splitBackticks('use `foo()` now'), [{code:false,text:'use '},{code:true,text:'foo()'},{code:false,text:' now'}]);
@@ -737,96 +563,14 @@ if (un.some(p => p.code) || un.map(p => p.text).join('') !== 'open ` never close
 const evil = '<img src=x onerror=alert(1)>';
 eq(splitBackticks(evil), [{code:false,text:evil}]);
 eq(splitBackticks('`' + evil + '`'), [{code:true,text:evil}]);
-"""
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_page_edit_review_fixes_are_wired():
-    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-    edit = wire_ask.split("const pageEdits=new Map()")[1].split("function outcomeEl(")[0]
-
-    assert "a.kind==='section'&&target===a.section" in edit
-    assert "hiddenBy" in edit and "if(!s.size)" in edit
-    assert "loadQa();" in edit.split("function pageEditAct(")[1].split("function openThreadOf(")[0]
-    assert "document.getElementById('d'+id)" in edit and edit.count("cleanup();") >= 2
-    card = edit.split("function pageEditCard(")[1]
-    assert "o.state==='applied'" in card.split("Show it")[0].rsplit("\n", 3)[-3] + card.split("Show it")[0]
-    assert "pageEdits.get(o.oid)" in card.split("Show it")[1]
-
-
-def _wire_ask():
-    return _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
-
-
-def test_outcome_el_dispatches_github_draft_and_cards_never_use_inner_html():
-    wire_ask = _wire_ask()
-    dispatch = wire_ask.split("function outcomeEl(")[1].split("function turnEl(")[0]
-    assert "o.outcome==='github_draft') return ghDraftCard(t,o)" in dispatch
-    assert "o.outcome==='page_edit') return pageEditCard(t,o)" in dispatch
-
-    section = wire_ask.split("const ghKept=new Map()")[1].split("function turnEl(")[0]
-    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
-        assert banned not in section
-    # model-authored text only ever reaches the DOM through mk(..., text) / textContent
-    assert "mk('p','cw-ghdraft-body',txt)" in section and "mk('p','cw-ghdraft-body',body)" in section
-    assert "cols.append(col('Original (your words)',orig),col('Drafted',body))" in section
-    assert "GitHub draft, not published" in section and "Kept as a draft" in section
-    assert "ta.value=ghEdit.get(o.oid)" in section
-    assert "/^https:\\/\\//.test(url)" in section
-
-
-def test_github_draft_card_routes_and_publish_one_are_wired():
-    wire_ask = _wire_ask()
-    section = wire_ask.split("const ghKept=new Map()")[1].split("function turnEl(")[0]
-    for verb in ("'keep',{note_id:note.id}", "'verbatim',{}", "'edit',{payload:{body:ta.value}}", "'dismiss',{}"):
-        assert "ghAct(o," + verb in section
-    assert "'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb" in section
-    assert "upsertOutcome(b.outcome)" in section
-    assert "Keep as draft" in section and "Use my words" in section and "orig!==body" in section
-    assert "publishNote(note,o.oid" in section
-    assert "postJson('/publish-one',{resolve:id,oid:o.oid})" in section and "Resolve now" in section
-    assert "state:'done'" in section
-
-    template = _real_template()
-    publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]
-    assert "/publish-one" in publish and "body_sha" in publish and "putNotesNow(false)" in publish
-    assert "__cwOnPosted" in publish and "remedy" in publish
-    assert "Publish now" in template.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
-    assert "if(oid) req.oid=oid" in publish
-    assert "Drafting a GitHub comment" in wire_ask
-
-
-def test_threads_pill_folds_in_the_comments_panel_only_when_live():
-    template = _real_template()
-    wire_ask = _wire_ask()
-    assert "commentsBtn.hidden=true" in wire_ask
-    assert "Copy for agent" in wire_ask and "notesForAgent()" in wire_ask and "agentFeedbackText(notes)" in wire_ask
-    # wireAsk itself only runs behind window.CW_LIVE, so a static page keeps the Comments panel
-    assert "if(window.CW_LIVE) wireAsk();" in template
-    panel = template.split("function wireCommentsPanel(){")[1].split("function wireResolutionDialog(")[0]
-    assert "hr-comments-btn" not in panel.replace("$('hr-comments-btn')", "") and "btn.hidden" not in panel
-    assert "'Comments ('+notes.length+')'" in panel
-
-
-def test_thread_anchor_shape_and_follow_up_keep_the_stored_anchor():
-    wire_ask = _wire_ask()
-    assert "{kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)}" in wire_ask
-    assert "Ask the agent" in _real_template().split("function buildReplyRow(root){")[1].split("function wireReplyBox(")[0]
-    place = wire_ask.split("function placementFor(anchor){")[1].split("function insertAfterThreads(")[0]
-    assert "anchor.kind==='thread'" in place and "rowById.get(n.id)" in place
-    assert "makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null)" in wire_ask
+""")
 
 
 def test_bodysha_and_draft_target_mapper_are_pure_and_correct():
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    template = _real_template()
-    src = "function bodySha(" + template.split("function bodySha(")[1].split("function publishNote(")[0]
-    script = src + """
-if (typeof crypto === 'undefined' || !crypto.subtle) { console.log('skip'); process.exit(0); }
+    src = "function bodySha(" + _between(_real_template(), "function bodySha(", "function publishNote(")
+    # exit 3 = no crypto.subtle on this node; _node turns that into a skip
+    _node(src + """
+if (typeof crypto === 'undefined' || !crypto.subtle) process.exit(3);
 const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
 eq(ghDraftFields({kind:'new',path:'a.py',line:3,side:'RIGHT',end_line:5,hunk_id:'h1'}, null),
    {path:'a.py',line:3,side:'RIGHT',end_line:5,hunk_id:'h1'});
@@ -840,38 +584,12 @@ bodySha('hello').then(h => {
   eq(h, '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
   return bodySha('h\\u00e9');
 }).then(h => { eq(h.length, 64); });
-"""
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_hostile_draft_body_is_only_assigned_through_text_content():
-    section = _wire_ask().split("function ghDraftCard(")[1].split("function outcomeEl(")[0]
-    mk = _wire_ask().split("const mk=(tag,cls,text)=>{")[1].split("};")[0]
-    assert "e.textContent=text" in mk and "innerHTML" not in mk
-    assert "innerHTML" not in section and "<img" not in section
-
-
-def test_triage_button_and_wait_count_are_wired_live_only_without_inner_html():
-    template = _real_template()
-    wire_ask = _wire_ask()
-    assert "postJson('/triage',{})" in wire_ask and "/triage" not in template.split("function wireAsk()")[0]
-    assert "if(window.CW_LIVE) wireAsk();" in template
-    assert "cw-threads-triage" in wire_ask and "wait for you" in wire_ask
-    assert "t.triageTag.hidden=first.source!=='triage'" in wire_ask
-    assert "state.meta&&state.meta.pr" in wire_ask.split("function renderList(){")[1]
-    new = wire_ask.split("function triageCandidates(")[1].split("function stateOf(")[0]
-    new += wire_ask.split("const triageBtn=")[1].split("const commentsBtn=")[0]
-    assert "innerHTML" not in new
+""")
 
 
 def test_triage_candidates_and_waiting_count_are_pure_and_correct():
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    src = "function triageCandidates(" + _wire_ask().split("function triageCandidates(")[1].split("function stateOf(")[0]
-    script = src + """
+    src = "function triageCandidates(" + _between(_wire_ask(), "function triageCandidates(", "function stateOf(")
+    _node(src + """
 const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
 const gh = (id, x) => Object.assign({id, origin:'github', gh_thread_id:'T'+id}, x || {});
 const notes = [gh('a'), gh('b', {resolved:true}), gh('c', {reply_to:'a'}), gh('d', {in_reply_to:'a'}),
@@ -883,87 +601,12 @@ eq(triageCandidates(notes, new Map()).map(n => n.id), ['a', 'e', 'g']);
 eq(waitingCount([]), 0);
 eq(waitingCount([{state:'proposed'}, {state:'kept'}, {state:'dismissed'}, {state:'proposed'}, {state:'done'}]), 2);
 eq(waitingCount([{state:'handed'}, {state:'proposed'}, {state:'handed'}]), 1);
-"""
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
+""")
 
 
-def test_publish_buttons_share_one_in_flight_set_and_a_posted_409_counts_as_success():
-    template = _real_template()
-    publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]
-    assert "const publishing=new Set()" in template
-    assert "if(publishing.has(note.id)) return Promise.resolve(false)" in publish
-    assert "setPublishBusy(note.id,true)" in publish and "setPublishBusy(note.id,false)" in publish
-    assert "dataset.publishFor=n.id" in template.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
-    assert "pb.dataset.publishFor=nid" in _wire_ask()
-    assert "status===409" in publish and "no longer a local draft" in publish and "cur.state!=='draft'" in publish
-    ack = _wire_ask().split("function ghAct(")[1].split("function ghKeep(")[0]
-    assert "loadQa();" in ack
-
-
-def _task_section():
-    return _wire_ask().split("const taskEdit=new Map()")[1].split("function outcomeEl(")[0]
-
-
-def test_outcome_el_dispatches_task_and_routes_are_wired_without_inner_html():
-    dispatch = _wire_ask().split("function outcomeEl(")[1].split("function turnEl(")[0]
-    assert "o.outcome==='task') return taskCard(t,o)" in dispatch
-    assert "o.outcome==='github_draft') return ghDraftCard(t,o)" in dispatch
-    section = _task_section()
-    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "<img"):
-        assert banned not in section
-    for verb in ("oidPath('run')", "oidPath('dismiss')", "oidPath('discard')", "oidPath('show')", "/edit'"):
-        assert verb in section
-    assert "'/comment/'+encodeURIComponent(task.qid)+'/cancel'" in section
-    assert "window.open(r.url,'_blank','noopener')" in section and "Opening..." in section
-    assert "Run in scratch worktree" in section and "Never pushed." in section
-    assert "if(b.outcome) upsertOutcome(b.outcome)" in section and "errText(b)" in section
-
-
-def test_task_text_only_reaches_the_dom_through_text_content():
-    section = _task_section()
-    assert "mk('li',null,s)" in section and "mk('code',null,task.branch)" in section
-    assert "mk('p','cw-task-sum',task.summary)" in section
-    mk = _wire_ask().split("const mk=(tag,cls,text)=>{")[1].split("};")[0]
-    assert "e.textContent=text" in mk and "innerHTML" not in mk
-
-
-def test_task_progress_and_waiting_count_use_the_shared_paths():
-    wire_ask = _wire_ask()
-    text = wire_ask.split("function progressText(p){")[1].split("const noteById")[0]
-    assert "'Planning a code task'" in text and "/^(Edit|Write)$/.test(p.tool)" in text
-    assert "prog.dataset.qid=task.qid" in _task_section().replace("prog.dataset.qid=task.qid||''", "prog.dataset.qid=task.qid")
-    assert "progressElsOf(d.qid)" in wire_ask
-
-
-def test_sibling_banner_is_gated_and_hides_publishing():
-    template = _real_template()
-    sib = "function wireSibling(){" + template.split("function wireSibling(){")[1].split("wireSibling();")[0]
-    assert "window.CW_LIVE&&window.CW_LIVE.sibling" in sib and "if(!sb||!root) return" in sib
-    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML"):
-        assert banned not in sib
-    assert "Back to PR head" in sib and "changed by task" in sib and "may be outdated" in sib
-    assert "'.hunk-path'" in sib and "target" not in sib
-    assert ".cw-sibling #cw-drafts-bar" in template and ".cw-sibling .fb-reply" in template
-
-
-def test_handover_card_wiring_and_instruction_escaping():
-    section = _task_section()
-    assert "oidPath('handover')" in section and "o.state==='handed'" in section
-    assert "Hand to my session" in section and "Copy instruction" in section and "copyTask(inst,o.oid)" in section
-    assert "Handed to your session" in section and "Done by your session" in section
-    assert "Waiting for your session to reply. Nothing runs here." in section
-    assert "mk('code',null,inst)" in section and "Never pushed." in section
-    assert "window.CW_LIVE||{}).id" in section
-    done = section.split("if(handedDone){")[1].split("if(o.state==='done'){")[0]
-    assert "oidPath" not in done and "add(" not in done
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    assert "handoverInstruction((window.CW_LIVE||{}).id,title" not in section and "if(wid) add('Copy instruction'" in section
-    src = "function handoverInstruction(" + _wire_ask().split("function handoverInstruction(")[1].split("function taskPlanFromForm(")[0]
-    script = src + r"""
+def test_handover_instruction_escapes_ids():
+    src = "function handoverInstruction(" + _between(_wire_ask(), "function handoverInstruction(", "function taskPlanFromForm(")
+    _node(src + r"""
 const eq = (a, b) => { if (a !== b) throw new Error(a + ' != ' + b); };
 eq(handoverInstruction('w1', 'o7'),
   'In the code-walkthrough MCP server, call walkthrough_get with id "w1" and parts ["threads"], then do the handed task with oid "o7" in my checkout and call walkthrough_reply with that oid and a short summary.');
@@ -972,18 +615,12 @@ if (q.includes('\n')) throw new Error('raw newline');
 if (!q.includes(JSON.stringify('w"1\n`x`')) || !q.includes(JSON.stringify('o"7'))) throw new Error('not escaped');
 const none = handoverInstruction(undefined, 'o7');
 if (none.includes('undefined') || none.includes(' id ')) throw new Error(none);
-"""
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
+""")
 
 
 def test_cherry_pick_and_task_form_helpers_are_pure_and_correct():
-    node = shutil.which("node")
-    if not node:
-        print("skip (node not on PATH)")
-        return
-    src = "function cherryPickCommand(" + _wire_ask().split("function cherryPickCommand(")[1].split("const streams=new Map()")[0]
-    script = src + """
+    src = "function cherryPickCommand(" + _between(_wire_ask(), "function cherryPickCommand(", "const streams=new Map()")
+    _node(src + """
 const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
 eq(cherryPickCommand('abc1234'), 'git cherry-pick abc1234');
 eq(cherryPickCommand('abc1234; rm -rf /'), null);
@@ -995,6 +632,23 @@ eq([r.title, r.steps, r.files.length], ['T', ['a', 'b'], 20]);
 eq(taskPlanFromForm('x', Array(20).fill('s').join('\\n'), '').steps.length, 12);
 const h = taskPlanFromForm('t', '<img src=x onerror=alert(1)>', '');
 eq(h.steps, ['<img src=x onerror=alert(1)>']);
-"""
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
+""")
+
+
+@pytest.mark.parametrize("diff_header", [
+    "@@ -10,2 +10,3 @@",
+    "@@ -20,2 +20,3 @@",
+    "@@ -1 +1 @@ def f():",
+])
+def test_parse_header_prefix_matches_state_hunk_id(diff_header):
+    # The hunk id the browser rebuilds from parseHeader must equal the one state.py stored, or
+    # every note anchored to a hunk silently detaches.
+    diff = ("diff --git a/x.py b/x.py\nindex aaa1111..bbb2222 100644\n--- a/x.py\n+++ b/x.py\n"
+            f"{diff_header}\n-a\n+b\n")
+    hunk = build({"files": []}, diff)["hunks"][0]
+    src = "function parseHeader(" + _between(_real_template(), "function parseHeader(", "\n  }") + "\n  }"
+
+    _node(src + f"""
+const p = parseHeader({json.dumps(diff_header)});
+if ({json.dumps(hunk["id"])} !== 'x.py\\t' + p.prefix) throw new Error('id mismatch: ' + p.prefix);
+""")

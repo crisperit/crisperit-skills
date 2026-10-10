@@ -1,180 +1,23 @@
 #!/usr/bin/env python3
 """Self-check for extract.py. Pure-logic tests exercise symbol naming, path filtering and CLI
 argument parsing directly (no language server needed); the end-to-end test drives a real
-typescript-language-server against a two-file fixture and is skipped when the tool isn't on
-PATH, the same convention test_symdelta.py uses for its Go end-to-end test."""
+typescript-language-server against a two-file fixture and skips when it is missing or cannot
+load TypeScript."""
 
-import shutil
+import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import cw_testlib  # noqa: E402
 import extract  # noqa: E402
 from lsp_client import LSPClient, uri  # noqa: E402
 
 ROOT = "/repo"
-
-
-def test_symbol_name_qualifies_a_method_with_its_container():
-    item = {"kind": extract.KIND_METHOD, "name": "method", "detail": "MyClass"}
-    assert extract._symbol_name(item) == "MyClass.method"
-
-
-def test_symbol_name_leaves_a_free_function_bare():
-    item = {"kind": extract.KIND_FUNCTION, "name": "helper", "detail": ""}
-    assert extract._symbol_name(item) == "helper"
-
-
-def test_symbol_name_ignores_detail_on_a_non_method_kind():
-    # A Function item should never gain a container prefix even if `detail` is set to
-    # something unrelated (e.g. a module name some servers put there).
-    item = {"kind": extract.KIND_FUNCTION, "name": "helper", "detail": "some/module"}
-    assert extract._symbol_name(item) == "helper"
-
-
-def test_uri_to_relpath_resolves_inside_root():
-    assert extract._uri_to_relpath(f"file://{ROOT}/src/a.ts", ROOT) == "src/a.ts"
-
-
-def test_uri_to_relpath_rejects_outside_root():
-    assert extract._uri_to_relpath("file:///elsewhere/a.ts", ROOT) is None
-
-
-def test_uri_to_relpath_rejects_node_modules():
-    # A dependency's own .d.ts (TS lib internals like Array.push) is noise, not application
-    # call-graph, even though it lives inside root on disk.
-    assert extract._uri_to_relpath(f"file://{ROOT}/node_modules/typescript/lib/lib.es5.d.ts", ROOT) is None
-
-
-def test_decl_span_prefers_selection_range_for_start():
-    # selectionRange is the name token; range often starts earlier (e.g. a decorator) -- start
-    # must land on the name, not there.
-    item = {
-        "selectionRange": {"start": {"line": 4, "character": 9}, "end": {"line": 4, "character": 10}},
-        "range": {"start": {"line": 2, "character": 0}, "end": {"line": 6, "character": 1}},
-    }
-    assert extract._decl_span(item) == (5, 7)
-
-
-def test_decl_span_falls_back_to_range_start_when_selection_range_missing():
-    item = {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 6, "character": 1}}}
-    assert extract._decl_span(item) == (3, 7)
-
-
-def test_decl_span_end_falls_back_to_start_when_range_missing():
-    item = {"selectionRange": {"start": {"line": 4, "character": 9}, "end": {"line": 4, "character": 10}}}
-    assert extract._decl_span(item) == (5, 5)
-
-
-def test_decl_span_returns_none_when_neither_range_present():
-    assert extract._decl_span({}) == (None, None)
-
-
-def test_flatten_symbols_keeps_only_method_and_function_kinds_at_any_depth():
-    doc_syms = [
-        {
-            "name": "MyClass", "kind": 5,  # Class -- not queried directly
-            "children": [
-                {"name": "method", "kind": extract.KIND_METHOD, "children": []},
-                {"name": "prop", "kind": 7, "children": []},  # Property, e.g. an object-literal key
-            ],
-        },
-        {"name": "helper", "kind": extract.KIND_FUNCTION},
-    ]
-    flat = extract._flatten_symbols(doc_syms)
-    assert {s["name"] for s in flat} == {"method", "helper"}
-
-
-def test_parse_args_reads_a_files_list():
-    with tempfile.TemporaryDirectory() as tmp:
-        list_path = Path(tmp) / "files.txt"
-        list_path.write_text("a.ts\n\nb.ts\n")
-        root, rel_files = extract._parse_args(["/repo", "--files-list", str(list_path)])
-        assert root == "/repo"
-        assert rel_files == ["a.ts", "b.ts"]
-
-
-def test_parse_args_reads_positional_files():
-    root, rel_files = extract._parse_args(["/repo", "a.ts", "b.ts"])
-    assert root == "/repo"
-    assert rel_files == ["a.ts", "b.ts"]
-
-
-def test_parse_args_with_no_files_is_a_check_only_invocation():
-    root, rel_files = extract._parse_args(["/repo"])
-    assert root == "/repo" and rel_files == []
-
-
-def test_shutdown_kills_a_process_that_ignores_terminate():
-    # A process that traps and ignores SIGTERM must still be gone once shutdown() returns --
-    # proves the terminate()-then-wait()-then-kill() escalation actually reaps it, rather than
-    # leaving a hung tsserver orphaned once the caller's worktree is deleted out from under it.
-    script = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)\n"
-    client = LSPClient([sys.executable, "-c", script], cwd=".")
-    start = time.time()
-    client.shutdown()
-    elapsed = time.time() - start
-    assert client.proc.poll() is not None
-    assert elapsed < 25  # bounded by shutdown()'s own timeouts, not the process's 30s sleep
-
-
-def test_check_language_server_reports_path_trap_when_binary_found_but_off_path():
-    # A binary sitting in the known install dir but missing from PATH is a different failure
-    # than one that was never installed -- reinstalling would be a no-op, so the reason must
-    # name the directory instead of just saying "not found".
-    with tempfile.TemporaryDirectory() as tmp:
-        bin_dir = Path(tmp) / "bin"
-        bin_dir.mkdir()
-        (bin_dir / "typescript-language-server").write_text("#!/bin/sh\n")
-
-        original_which = extract.shutil.which
-        original_locate = extract.KNOWN_INSTALL_DIRS["typescript"]
-        extract.shutil.which = lambda tool: None
-        extract.KNOWN_INSTALL_DIRS["typescript"] = lambda: str(bin_dir)
-        try:
-            ok, reason = extract.check_language_server("/repo", "typescript")
-        finally:
-            extract.shutil.which = original_which
-            extract.KNOWN_INSTALL_DIRS["typescript"] = original_locate
-
-        assert not ok
-        assert str(bin_dir) in reason
-        assert "not on PATH" in reason
-
-
-def test_check_language_server_reports_plain_not_found_when_nothing_hits_the_known_dir():
-    # rust has no KNOWN_INSTALL_DIRS entry: rustup's own layout has no single well-known
-    # directory the way npm's global bin dir does, so it keeps the plain "not found" reason.
-    original_which = extract.shutil.which
-    extract.shutil.which = lambda tool: None
-    try:
-        ok, reason = extract.check_language_server("/repo", "rust")
-    finally:
-        extract.shutil.which = original_which
-
-    assert not ok
-    assert reason == "rust-analyzer not found on PATH"
-
-
-def test_check_language_server_explains_missing_node_modules_when_callhierarchy_missing():
-    # The reason must name node_modules, not just repeat "does not advertise
-    # callHierarchyProvider" -- that alone reads as a server bug and hides the real, fixable cause.
-    original_which = extract.shutil.which
-    original_client = extract.LSPClient
-    extract.shutil.which = lambda tool: f"/usr/local/bin/{tool}"
-    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({"initialize": {"capabilities": {}}})
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            ok, reason = extract.check_language_server(tmp, "typescript")
-    finally:
-        extract.shutil.which = original_which
-        extract.LSPClient = original_client
-
-    assert not ok
-    assert "does not advertise callHierarchyProvider" in reason
-    assert f"{tmp}/node_modules is missing or a broken link" in reason
 
 
 class _StubLSPClient:
@@ -199,15 +42,154 @@ class _StubLSPClient:
         pass
 
 
-def _patch_lsp_profile_for_fast_retries():
+@pytest.fixture
+def fast_retries(monkeypatch):
     """Shrinks typescript's retry budget and kills the inter-attempt sleep so the guard tests
-    below run in milliseconds instead of replaying extract_edges's real warmup/retry timings.
-    Returns the (first_file_retries, DOC_SYMBOL_RETRY_DELAY) originals to restore."""
-    original_retries = extract.LANGUAGES["typescript"]["first_file_retries"]
-    original_delay = extract.DOC_SYMBOL_RETRY_DELAY
-    extract.LANGUAGES["typescript"]["first_file_retries"] = 1
-    extract.DOC_SYMBOL_RETRY_DELAY = 0
-    return original_retries, original_delay
+    run in milliseconds instead of replaying extract_edges's real warmup/retry timings."""
+    monkeypatch.setitem(extract.LANGUAGES["typescript"], "first_file_retries", 1)
+    monkeypatch.setattr(extract, "DOC_SYMBOL_RETRY_DELAY", 0)
+
+
+def _stub_client(monkeypatch, responses):
+    monkeypatch.setattr(extract, "LSPClient", lambda cmd, cwd: _StubLSPClient(responses))
+
+
+def test_symbol_name():
+    rows = [
+        ({"kind": extract.KIND_METHOD, "name": "method", "detail": "MyClass"}, "MyClass.method"),
+        ({"kind": extract.KIND_FUNCTION, "name": "helper", "detail": ""}, "helper"),
+        # A Function item should never gain a container prefix even if `detail` is set to
+        # something unrelated (e.g. a module name some servers put there).
+        ({"kind": extract.KIND_FUNCTION, "name": "helper", "detail": "some/module"}, "helper"),
+    ]
+    for item, want in rows:
+        assert extract._symbol_name(item) == want, item
+
+
+def test_uri_to_relpath():
+    py_vendor = extract.LANGUAGES["python"]["vendor_dirs"]
+    rs_vendor = extract.LANGUAGES["rust"]["vendor_dirs"]
+    rows = [
+        ("inside root", f"file://{ROOT}/src/a.ts", (), "src/a.ts"),
+        ("outside root", "file:///elsewhere/a.ts", (), None),
+        # A dependency's own .d.ts (TS lib internals like Array.push) is noise, not application
+        # call-graph, even though it lives inside root on disk.
+        ("node_modules", f"file://{ROOT}/node_modules/typescript/lib/lib.es5.d.ts", (), None),
+        ("python .venv", f"file://{ROOT}/.venv/lib/x.py", (py_vendor,), None),
+        ("python source", f"file://{ROOT}/src/a.py", (py_vendor,), "src/a.py"),
+        ("rust target", f"file://{ROOT}/target/debug/build/x.rs", (rs_vendor,), None),
+        ("rust source", f"file://{ROOT}/src/main.rs", (rs_vendor,), "src/main.rs"),
+    ]
+    for label, file_uri, extra, want in rows:
+        assert extract._uri_to_relpath(file_uri, ROOT, *extra) == want, label
+
+
+def test_decl_span():
+    sel = {"start": {"line": 4, "character": 9}, "end": {"line": 4, "character": 10}}
+    rng = {"start": {"line": 2, "character": 0}, "end": {"line": 6, "character": 1}}
+    rows = [
+        # selectionRange is the name token; range often starts earlier (e.g. a decorator) -- start
+        # must land on the name, not there.
+        ("prefers selectionRange for start", {"selectionRange": sel, "range": rng}, (5, 7)),
+        ("range start when selectionRange missing", {"range": rng}, (3, 7)),
+        ("end falls back to start when range missing", {"selectionRange": sel}, (5, 5)),
+        ("neither present", {}, (None, None)),
+    ]
+    for label, item, want in rows:
+        assert extract._decl_span(item) == want, label
+
+
+def test_parse_args(tmp_path):
+    list_path = tmp_path / "files.txt"
+    list_path.write_text("a.ts\n\nb.ts\n")
+    rows = [
+        ("files list", ["/repo", "--files-list", str(list_path)], ["a.ts", "b.ts"]),
+        ("positional files", ["/repo", "a.ts", "b.ts"], ["a.ts", "b.ts"]),
+        ("no files is a check-only invocation", ["/repo"], []),
+    ]
+    for label, argv, want in rows:
+        root, rel_files = extract._parse_args(argv)
+        assert root == "/repo" and rel_files == want, label
+
+
+def test_shutdown_kills_a_process_that_ignores_terminate(monkeypatch, tmp_path):
+    # A process that traps and ignores SIGTERM must still be gone once shutdown() returns --
+    # proves the terminate()-then-wait()-then-kill() escalation actually reaps it, rather than
+    # leaving a hung tsserver orphaned once the caller's worktree is deleted out from under it.
+    # The child never reads stdin, so shutdown()'s "shutdown" request would wait its full 5s and
+    # the post-terminate wait another 5s; both are shortened here instead of in the product.
+    ready = tmp_path / "ready"
+    script = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(ready)!r}, 'w').close()\n"
+        "time.sleep(30)\n"
+    )
+    client = LSPClient([sys.executable, "-c", script], cwd=".")
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists(), "child never installed its SIGTERM handler"
+
+    real_wait = client.proc.wait
+    timed_out = []
+
+    def short_wait(timeout=None):
+        try:
+            return real_wait(timeout=min(timeout, 0.3))
+        except subprocess.TimeoutExpired:
+            timed_out.append(timeout)
+            raise
+
+    monkeypatch.setattr(client, "request", lambda *a, **kw: {})
+    monkeypatch.setattr(client.proc, "wait", short_wait)
+    start = time.monotonic()
+    client.shutdown()
+    elapsed = time.monotonic() - start
+    assert timed_out, "terminate alone reaped the child, so the kill escalation was never exercised"
+    assert client.proc.poll() is not None
+    assert elapsed < 5
+
+
+def test_check_language_server_reports_path_trap_when_binary_found_but_off_path(monkeypatch, tmp_path):
+    # A binary sitting in the known install dir but missing from PATH is a different failure
+    # than one that was never installed -- reinstalling would be a no-op, so the reason must
+    # name the directory instead of just saying "not found".
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "typescript-language-server").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(extract.shutil, "which", lambda tool: None)
+    monkeypatch.setitem(extract.KNOWN_INSTALL_DIRS, "typescript", lambda: str(bin_dir))
+
+    ok, reason = extract.check_language_server("/repo", "typescript")
+
+    assert not ok
+    assert str(bin_dir) in reason
+    assert "not on PATH" in reason
+
+
+def test_check_language_server_reports_plain_not_found_when_nothing_hits_the_known_dir(monkeypatch):
+    # rust has no KNOWN_INSTALL_DIRS entry: rustup's own layout has no single well-known
+    # directory the way npm's global bin dir does, so it keeps the plain "not found" reason.
+    monkeypatch.setattr(extract.shutil, "which", lambda tool: None)
+
+    ok, reason = extract.check_language_server("/repo", "rust")
+
+    assert not ok
+    assert reason == "rust-analyzer not found on PATH"
+
+
+def test_check_language_server_explains_missing_node_modules_when_callhierarchy_missing(monkeypatch, tmp_path):
+    # The reason must name node_modules, not just repeat "does not advertise
+    # callHierarchyProvider" -- that alone reads as a server bug and hides the real, fixable cause.
+    monkeypatch.setattr(extract.shutil, "which", lambda tool: f"/usr/local/bin/{tool}")
+    _stub_client(monkeypatch, {"initialize": {"capabilities": {}}})
+
+    ok, reason = extract.check_language_server(tmp_path, "typescript")
+
+    assert not ok
+    assert "does not advertise callHierarchyProvider" in reason
+    assert f"{tmp_path}/node_modules is missing or a broken link" in reason
 
 
 _FUNC_SYMBOL = {
@@ -226,131 +208,89 @@ _CALL_ITEM = {
 }
 
 
-def test_extract_edges_raises_when_no_file_yields_any_symbols():
+def test_extract_edges_raises_when_no_file_yields_any_symbols(monkeypatch, tmp_path, fast_retries):
     # The server answers every request but documentSymbol always comes back empty -- up but
     # indexing nothing (wrong root, missing tsconfig, never warmed).
-    original_client = extract.LSPClient
-    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
-    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({"textDocument/documentSymbol": None})
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "a.ts").write_text("export function a() {}\n")
-            (root / "b.ts").write_text("export function b() {}\n")
-            try:
-                extract.extract_edges(root, ["a.ts", "b.ts"])
-                assert False, "expected RuntimeError"
-            except RuntimeError as exc:
-                assert "typescript-language-server" in str(exc)
-                assert "2 file(s)" in str(exc)
-    finally:
-        extract.LSPClient = original_client
-        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
-        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+    _stub_client(monkeypatch, {"textDocument/documentSymbol": None})
+    (tmp_path / "a.ts").write_text("export function a() {}\n")
+    (tmp_path / "b.ts").write_text("export function b() {}\n")
+
+    with pytest.raises(RuntimeError) as exc:
+        extract.extract_edges(tmp_path, ["a.ts", "b.ts"])
+
+    assert "typescript-language-server" in str(exc.value)
+    assert "2 file(s)" in str(exc.value)
 
 
-def test_extract_edges_raises_when_every_call_hierarchy_lookup_comes_back_empty():
+def test_extract_edges_raises_when_every_call_hierarchy_lookup_comes_back_empty(monkeypatch, tmp_path, fast_retries):
     # documentSymbol resolves a real function in both files, but prepareCallHierarchy exhausts
     # its retry budget for every one of them -- the case the retries exist to survive, not this.
-    original_client = extract.LSPClient
-    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
-    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({
+    _stub_client(monkeypatch, {
         "textDocument/documentSymbol": [_FUNC_SYMBOL],
         "textDocument/prepareCallHierarchy": None,
     })
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "a.ts").write_text("export function f() {}\n")
-            (root / "b.ts").write_text("export function f() {}\n")
-            try:
-                extract.extract_edges(root, ["a.ts", "b.ts"])
-                assert False, "expected RuntimeError"
-            except RuntimeError as exc:
-                assert "2 symbol(s) tried" in str(exc)
-    finally:
-        extract.LSPClient = original_client
-        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
-        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+    (tmp_path / "a.ts").write_text("export function f() {}\n")
+    (tmp_path / "b.ts").write_text("export function f() {}\n")
+
+    with pytest.raises(RuntimeError) as exc:
+        extract.extract_edges(tmp_path, ["a.ts", "b.ts"])
+
+    assert "2 symbol(s) tried" in str(exc.value)
 
 
-def test_extract_edges_returns_empty_without_raising_when_calls_just_dont_resolve():
+def test_extract_edges_returns_empty_without_raising_when_calls_just_dont_resolve(monkeypatch, tmp_path, fast_retries):
     # Symbols and call hierarchy both resolve fine; the calls themselves are empty. A diff whose
     # changed symbols genuinely call nothing new is normal and must not be treated as a failure.
-    original_client = extract.LSPClient
-    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
-    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({
+    _stub_client(monkeypatch, {
         "textDocument/documentSymbol": [_FUNC_SYMBOL],
         "textDocument/prepareCallHierarchy": [_CALL_ITEM],
         "callHierarchy/outgoingCalls": [],
         "callHierarchy/incomingCalls": [],
     })
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "a.ts").write_text("export function f() {}\n")
-            edges = extract.extract_edges(root, ["a.ts"])
-            assert edges == []
-    finally:
-        extract.LSPClient = original_client
-        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
-        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+    (tmp_path / "a.ts").write_text("export function f() {}\n")
+
+    assert extract.extract_edges(tmp_path, ["a.ts"]) == []
 
 
-def test_extract_edges_returns_empty_without_raising_when_existing_is_empty():
+def test_extract_edges_returns_empty_without_raising_when_existing_is_empty(monkeypatch, tmp_path):
     # None of rel_files exist on disk at this ref -- the ordinary base side of an all-new diff.
-    original_client = extract.LSPClient
-    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({})
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            edges = extract.extract_edges(root, ["missing.ts"])
-            assert edges == []
-    finally:
-        extract.LSPClient = original_client
+    _stub_client(monkeypatch, {})
+
+    assert extract.extract_edges(tmp_path, ["missing.ts"]) == []
 
 
-def test_extract_edges_includes_start_end_positions_on_both_sides():
+def test_extract_edges_includes_start_end_positions_on_both_sides(monkeypatch, tmp_path, fast_retries):
     # Outgoing and incoming feed the same symbol's own span into opposite add_edge slots; giving
     # every item a distinct range catches a from/to swap that identical ranges would hide.
-    original_client = extract.LSPClient
-    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            sym = {
-                "name": "f",
-                "kind": extract.KIND_FUNCTION,
-                "selectionRange": {"start": {"line": 10, "character": 9}, "end": {"line": 10, "character": 10}},
-                "range": {"start": {"line": 10, "character": 0}, "end": {"line": 12, "character": 1}},
-            }
-            prepared_item = {
-                "name": "f", "kind": extract.KIND_FUNCTION, "uri": uri(str(root / "a.ts")),
-                "range": sym["range"], "selectionRange": sym["selectionRange"],
-            }
-            callee_item = {
-                "name": "callee", "kind": extract.KIND_FUNCTION, "uri": uri(str(root / "b.ts")),
-                "selectionRange": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 15}},
-                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 2, "character": 1}},
-            }
-            caller_item = {
-                "name": "caller", "kind": extract.KIND_FUNCTION, "uri": uri(str(root / "c.ts")),
-                "selectionRange": {"start": {"line": 20, "character": 9}, "end": {"line": 20, "character": 15}},
-                "range": {"start": {"line": 20, "character": 0}, "end": {"line": 22, "character": 1}},
-            }
-            extract.LSPClient = lambda cmd, cwd: _StubLSPClient({
-                "textDocument/documentSymbol": [sym],
-                "textDocument/prepareCallHierarchy": [prepared_item],
-                "callHierarchy/outgoingCalls": [{"to": callee_item}],
-                "callHierarchy/incomingCalls": [{"from": caller_item}],
-            })
-            (root / "a.ts").write_text("export function f() {}\n")
+    sym = {
+        "name": "f",
+        "kind": extract.KIND_FUNCTION,
+        "selectionRange": {"start": {"line": 10, "character": 9}, "end": {"line": 10, "character": 10}},
+        "range": {"start": {"line": 10, "character": 0}, "end": {"line": 12, "character": 1}},
+    }
+    prepared_item = {
+        "name": "f", "kind": extract.KIND_FUNCTION, "uri": uri(str(tmp_path / "a.ts")),
+        "range": sym["range"], "selectionRange": sym["selectionRange"],
+    }
+    callee_item = {
+        "name": "callee", "kind": extract.KIND_FUNCTION, "uri": uri(str(tmp_path / "b.ts")),
+        "selectionRange": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 15}},
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 2, "character": 1}},
+    }
+    caller_item = {
+        "name": "caller", "kind": extract.KIND_FUNCTION, "uri": uri(str(tmp_path / "c.ts")),
+        "selectionRange": {"start": {"line": 20, "character": 9}, "end": {"line": 20, "character": 15}},
+        "range": {"start": {"line": 20, "character": 0}, "end": {"line": 22, "character": 1}},
+    }
+    _stub_client(monkeypatch, {
+        "textDocument/documentSymbol": [sym],
+        "textDocument/prepareCallHierarchy": [prepared_item],
+        "callHierarchy/outgoingCalls": [{"to": callee_item}],
+        "callHierarchy/incomingCalls": [{"from": caller_item}],
+    })
+    (tmp_path / "a.ts").write_text("export function f() {}\n")
 
-            edges = extract.extract_edges(root, ["a.ts"])
-    finally:
-        extract.LSPClient = original_client
-        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
-        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+    edges = extract.extract_edges(tmp_path, ["a.ts"])
 
     outgoing = next(e for e in edges if e["ToSym"] == "callee")
     assert (outgoing["FromStart"], outgoing["FromEnd"]) == (11, 13)
@@ -361,13 +301,10 @@ def test_extract_edges_includes_start_end_positions_on_both_sides():
     assert (incoming["ToStart"], incoming["ToEnd"]) == (11, 13)
 
 
-def test_extract_edges_skips_a_symbol_whose_call_hierarchy_request_times_out():
+def test_extract_edges_skips_a_symbol_whose_call_hierarchy_request_times_out(monkeypatch, tmp_path, fast_retries):
     # A single symbol's outgoingCalls hanging past call_timeout (rust-analyzer's workspace-wide
     # search on a large crate graph, in practice) must skip that one symbol, not abort
     # extraction for every other symbol in the run.
-    original_client = extract.LSPClient
-    original_retries, original_delay = _patch_lsp_profile_for_fast_retries()
-
     def prepare_call_hierarchy(params):
         file_uri = params["textDocument"]["uri"]
         return [{**_CALL_ITEM, "uri": file_uri}]
@@ -377,78 +314,32 @@ def test_extract_edges_skips_a_symbol_whose_call_hierarchy_request_times_out():
             raise TimeoutError("callHierarchy/outgoingCalls timed out after 15s")
         return []
 
-    extract.LSPClient = lambda cmd, cwd: _StubLSPClient({
+    _stub_client(monkeypatch, {
         "textDocument/documentSymbol": [_FUNC_SYMBOL],
         "textDocument/prepareCallHierarchy": prepare_call_hierarchy,
         "callHierarchy/outgoingCalls": outgoing_calls,
         "callHierarchy/incomingCalls": [],
     })
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "a.ts").write_text("export function f() {}\n")
-            (root / "b.ts").write_text("export function f() {}\n")
-            # Must not raise: a.ts's symbol is skipped, b.ts's still resolves (to no edges).
-            edges = extract.extract_edges(root, ["a.ts", "b.ts"])
-            assert edges == []
-    finally:
-        extract.LSPClient = original_client
-        extract.LANGUAGES["typescript"]["first_file_retries"] = original_retries
-        extract.DOC_SYMBOL_RETRY_DELAY = original_delay
+    (tmp_path / "a.ts").write_text("export function f() {}\n")
+    (tmp_path / "b.ts").write_text("export function f() {}\n")
+
+    # Must not raise: a.ts's symbol is skipped, b.ts's still resolves (to no edges).
+    assert extract.extract_edges(tmp_path, ["a.ts", "b.ts"]) == []
 
 
-def test_end_to_end_cross_file_call_resolves():
-    if shutil.which("typescript-language-server") is None:
-        print("skip (no typescript-language-server on PATH): test_end_to_end_cross_file_call_resolves")
-        return
+def test_end_to_end_cross_file_call_resolves(tmp_path):
+    cw_testlib.require_ts_language_server()
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions": {"target": "es2020", "module": "commonjs"}}\n'
+    )
+    (tmp_path / "a.ts").write_text(
+        'import { callee } from "./b";\n\nexport function caller() {\n    return callee();\n}\n'
+    )
+    (tmp_path / "b.ts").write_text("export function callee() {\n    return 1;\n}\n")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        (root / "tsconfig.json").write_text(
-            '{"compilerOptions": {"target": "es2020", "module": "commonjs"}}\n'
-        )
-        (root / "a.ts").write_text(
-            'import { callee } from "./b";\n\nexport function caller() {\n    return callee();\n}\n'
-        )
-        (root / "b.ts").write_text("export function callee() {\n    return 1;\n}\n")
+    ok, reason = extract.check_language_server(tmp_path)
+    assert ok, reason
 
-        ok, reason = extract.check_language_server(root)
-        assert ok, reason
-
-        edges = extract.extract_edges(root, ["a.ts", "b.ts"])
-        identities = [{k: e[k] for k in ("FromFile", "FromSym", "ToFile", "ToSym")} for e in edges]
-        assert {"FromFile": "a.ts", "FromSym": "caller", "ToFile": "b.ts", "ToSym": "callee"} in identities
-
-
-if __name__ == "__main__":
-    tests = [
-        test_symbol_name_qualifies_a_method_with_its_container,
-        test_symbol_name_leaves_a_free_function_bare,
-        test_symbol_name_ignores_detail_on_a_non_method_kind,
-        test_uri_to_relpath_resolves_inside_root,
-        test_uri_to_relpath_rejects_outside_root,
-        test_uri_to_relpath_rejects_node_modules,
-        test_decl_span_prefers_selection_range_for_start,
-        test_decl_span_falls_back_to_range_start_when_selection_range_missing,
-        test_decl_span_end_falls_back_to_start_when_range_missing,
-        test_decl_span_returns_none_when_neither_range_present,
-        test_flatten_symbols_keeps_only_method_and_function_kinds_at_any_depth,
-        test_parse_args_reads_a_files_list,
-        test_parse_args_reads_positional_files,
-        test_parse_args_with_no_files_is_a_check_only_invocation,
-        test_shutdown_kills_a_process_that_ignores_terminate,
-        test_check_language_server_reports_path_trap_when_binary_found_but_off_path,
-        test_check_language_server_reports_plain_not_found_when_nothing_hits_the_known_dir,
-        test_check_language_server_explains_missing_node_modules_when_callhierarchy_missing,
-        test_extract_edges_raises_when_no_file_yields_any_symbols,
-        test_extract_edges_raises_when_every_call_hierarchy_lookup_comes_back_empty,
-        test_extract_edges_returns_empty_without_raising_when_calls_just_dont_resolve,
-        test_extract_edges_returns_empty_without_raising_when_existing_is_empty,
-        test_extract_edges_includes_start_end_positions_on_both_sides,
-        test_extract_edges_skips_a_symbol_whose_call_hierarchy_request_times_out,
-        test_end_to_end_cross_file_call_resolves,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
+    edges = extract.extract_edges(tmp_path, ["a.ts", "b.ts"])
+    identities = [{k: e[k] for k in ("FromFile", "FromSym", "ToFile", "ToSym")} for e in edges]
+    assert {"FromFile": "a.ts", "FromSym": "caller", "ToFile": "b.ts", "ToSym": "callee"} in identities

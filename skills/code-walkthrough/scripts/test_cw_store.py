@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-check for cw_store.py. Assert-based, no framework; also collected by pytest."""
+"""Self-check for cw_store.py. Assert-based; run with pytest."""
 
 import os
 import subprocess
@@ -13,8 +13,13 @@ import cw_testlib  # noqa: E402
 SCRIPTS_DIR = str(Path(__file__).parent)
 
 
-def test_walkthrough_dir_rejects_dotdot_and_bad_id():
+def test_walkthrough_dir_validates():
     with cw_testlib.temp_home():
+        d = cw_store.walkthrough_dir("myrepo-abcdef", "cmp-01234567", create=True)
+        assert d.is_dir()
+        assert d.name == "cmp-01234567"
+        assert cw_store.store_root().resolve() in d.parents
+
         bad = [("..", "cmp-01234567"), ("../x", "cmp-01234567"), ("myrepo-abcdef", "not-an-id")]
         for key, wid in bad:
             try:
@@ -22,14 +27,6 @@ def test_walkthrough_dir_rejects_dotdot_and_bad_id():
             except ValueError:
                 continue
             raise AssertionError(f"expected ValueError for {key!r}/{wid!r}")
-
-
-def test_walkthrough_dir_accepts_valid_ids():
-    with cw_testlib.temp_home():
-        d = cw_store.walkthrough_dir("myrepo-abcdef", "cmp-01234567", create=True)
-        assert d.is_dir()
-        assert d.name == "cmp-01234567"
-        assert cw_store.store_root().resolve() in d.parents
 
 
 def test_repo_key_sanitizes():
@@ -49,6 +46,7 @@ def test_write_json_mode():
 
 
 def test_acquire_daemon_lock_second_in_child_process_returns_none():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as home:
         held = cw_store.acquire_daemon_lock()
         assert held is not None
@@ -65,6 +63,7 @@ def test_acquire_daemon_lock_second_in_child_process_returns_none():
 
 
 def test_dead_pid_lock_file_with_no_flock_is_acquired():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home():
         proc = subprocess.Popen([sys.executable, "-c", "pass"])
         dead_pid = proc.pid
@@ -76,7 +75,7 @@ def test_dead_pid_lock_file_with_no_flock_is_acquired():
         f.close()
 
 
-def test_role_profile_escalate_falls_back_to_prose():
+def test_role_profile_fallbacks():
     config = {
         "profiles": {"p": {"base_url": "http://x", "model": "m"}},
         "roles": {"prose": "p"},
@@ -86,8 +85,6 @@ def test_role_profile_escalate_falls_back_to_prose():
     assert profile["base_url"] == "http://x"
     assert cw_store.role_profile(config, "analysis") is None
 
-
-def test_role_profile_thread_falls_back_to_ask():
     config = {
         "profiles": {"p": {"base_url": "http://x", "model": "m"}},
         "roles": {"ask": "p"},
@@ -131,20 +128,21 @@ def test_role_profile_unknown_kind_refused_with_remedy():
             raise AssertionError("expected CWError for unknown kind")
 
 
-if __name__ == "__main__":
-    tests = [
-        test_walkthrough_dir_rejects_dotdot_and_bad_id,
-        test_walkthrough_dir_accepts_valid_ids,
-        test_repo_key_sanitizes,
-        test_write_json_mode,
-        test_acquire_daemon_lock_second_in_child_process_returns_none,
-        test_dead_pid_lock_file_with_no_flock_is_acquired,
-        test_role_profile_escalate_falls_back_to_prose,
-        test_load_config_defaults,
-        test_role_profile_claude_code_without_base_url_passes,
-        test_role_profile_unknown_kind_refused_with_remedy,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
+def test_token_load_or_create():
+    with cw_testlib.temp_home():
+        path = cw_store.token_path()
+        first = cw_store.load_or_create_token()
+        assert cw_store.TOKEN_RE.fullmatch(first)
+        assert (path.stat().st_mode & 0o777) == 0o600
+        assert cw_store.load_or_create_token() == first
+
+        path.chmod(0o644)
+        assert cw_store.load_or_create_token() == first
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+        for corrupt in ("", "short"):
+            path.write_text(corrupt)
+            fresh = cw_store.load_or_create_token()
+            assert cw_store.TOKEN_RE.fullmatch(fresh)
+            assert path.read_text().strip() == fresh
+            assert (path.stat().st_mode & 0o777) == 0o600
