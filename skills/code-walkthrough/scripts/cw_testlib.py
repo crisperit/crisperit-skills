@@ -8,14 +8,19 @@ Stdlib only. The "network" here is the loopback stub this module starts itself, 
 is a `claude` binary on PATH, never a real process.
 """
 
+import functools
+import http.client
 import json
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import unittest
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +30,8 @@ GIT_ENV = {
     "GIT_AUTHOR_EMAIL": "cw-test@example.com",
     "GIT_COMMITTER_NAME": "CW Test",
     "GIT_COMMITTER_EMAIL": "cw-test@example.com",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
 }
 
 
@@ -40,6 +47,7 @@ def git(repo, *args, env=None):
 def make_repo(tmp, base_files, head_files):
     """init -b main, commit base_files, apply head_files (None entries delete), commit again.
     Returns (repo, base_sha, head_sha)."""
+    require_git()
     repo = Path(tmp) / "repo"
     repo.mkdir(exist_ok=True)
     git(repo, "init", "-q", "-b", "main")
@@ -225,7 +233,8 @@ class StubLLM:
         self._server.daemon_threads = True
         self._server.stub = self
         self.base_url = f"http://127.0.0.1:{self._server.server_port}/v1"
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self._thread.start()
 
     def _reply_for(self, model, n, body):
@@ -456,9 +465,8 @@ def _append_log(entry):
 argv = sys.argv[1:]
 
 if argv[:2] == ["auth", "status"]:
-    _append_log({"argv": argv, "cwd": os.getcwd(), "env_keys": sorted(os.environ.keys()),
-                 "stdin": "", "model": None, "start": time.time(), "end": time.time(),
-                 "child_pid": None})
+    _append_log({"argv": argv, "cwd": os.getcwd(), "stdin": "", "model": None,
+                 "start": time.time(), "end": time.time()})
     print(json.dumps(cfg["auth"]))
     sys.exit(0)
 
@@ -477,18 +485,17 @@ start = time.time()
 _append_log({"event": "start", "argv": argv, "pid": os.getpid(), "pgid": os.getpgrp(),
              "cwd": os.getcwd(), "model": model, "start": start})
 stdin_data = sys.stdin.read()
-child_pid = None
 
 while isinstance(entry, dict) and "_cw_delay" in entry:
     if entry.get("_cw_spawn_child"):
         devnull = open(os.devnull, "wb")
-        child_pid = subprocess.Popen(["sleep", "30"], stdout=devnull, stderr=devnull).pid
+        (root / "child.pid").write_text(
+            str(subprocess.Popen(["sleep", "30"], stdout=devnull, stderr=devnull).pid))
     time.sleep(entry["_cw_delay"])
     entry = entry["_cw_entry"]
 
 _END = {"event": "end", "pid": os.getpid(), "pgid": os.getpgrp(), "argv": argv,
-        "cwd": os.getcwd(), "env_keys": sorted(os.environ.keys()), "stdin": stdin_data,
-        "model": model, "start": start, "child_pid": child_pid}
+        "cwd": os.getcwd(), "stdin": stdin_data, "model": model, "start": start}
 stderr = entry.get("stderr", "")
 
 
@@ -585,11 +592,8 @@ signal.signal(signal.SIGTERM, _on_term)
 
 def _resolve_placeholders(value):
     if value == "$FIRST_RESOLVABLE":
-        try:
-            anchor = json.loads((Path(mcp.dir) / "turns" / (mcp.qid + ".anchor.json")).read_text())
-            return anchor["resolvable"][0]["id"]
-        except (OSError, ValueError, LookupError):
-            return "none-resolvable"
+        anchor = json.loads((Path(mcp.dir) / "turns" / (mcp.qid + ".anchor.json")).read_text())
+        return anchor["resolvable"][0]["id"]
     if isinstance(value, dict):
         return {k: _resolve_placeholders(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -620,7 +624,8 @@ if "stream" in entry:
             config_arg = argv[i + 1]
         elif a.startswith("--mcp-config="):
             config_arg = a.split("=", 1)[1]
-    connected = mcp.start(config_arg) if config_arg else None
+    if config_arg:
+        mcp.start(config_arg)
     for rel, content in (entry.get("writes") or {}).items():
         target = Path(os.getcwd()) / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -639,10 +644,6 @@ if "stream" in entry:
         if "_sleep" in item:
             time.sleep(item["_sleep"])
             continue
-        if connected is not None and item.get("subtype") == "init":
-            item = {**item, "mcp_servers": [
-                {**s, "status": "connected" if connected else "failed"} if s.get("name") == "cw" else s
-                for s in item.get("mcp_servers", [])]}
         _emit(item)
     _END["end"] = time.time()
     _append_log(_END)
@@ -680,7 +681,8 @@ def claude_raw(stdout, *, exit=1, stderr=""):
 
 def claude_delayed(seconds, entry, *, spawn_child=False):
     """Sleep `seconds` before resolving to `entry`; with spawn_child=True, start `sleep 30`
-    first and log its pid, to prove a timeout kills the whole process group."""
+    first and write its pid to child.pid in the fake's dir (fake_claude(...).child_pid()), to
+    prove a timeout kills the whole process group."""
     return {"_cw_delay": seconds, "_cw_entry": entry, "_cw_spawn_child": spawn_child}
 
 
@@ -750,6 +752,10 @@ class _FakeClaude:
 
     def count(self, model):
         return sum(1 for entry in self.log() if entry.get("model") == model)
+
+    def child_pid(self):
+        path = self._log_path.parent / "child.pid"
+        return int(path.read_text()) if path.exists() else None
 
 
 @contextmanager
@@ -827,3 +833,237 @@ def fake_gh(tmp, *, comments=(), threads=None, fail_ops=(), sleep=None, pending=
             os.environ.pop("CW_FAKE_GH_DIR", None)
         else:
             os.environ["CW_FAKE_GH_DIR"] = old_dir
+
+
+def skip(reason):
+    raise unittest.SkipTest(reason)
+
+
+@functools.lru_cache(maxsize=None)
+def _git_version():
+    if shutil.which("git") is None:
+        return None
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def require_git(min_version=(2, 28)):
+    """2.28 for `init -b`; pass (2, 31) for `rev-parse --path-format=absolute`."""
+    version = _git_version()
+    if version is None:
+        skip("git not installed")
+    if version < tuple(min_version):
+        skip("git >= %d.%d needed, found %d.%d" % (*min_version, *version))
+
+
+def require_node():
+    if shutil.which("node") is None:
+        skip("node not on PATH")
+
+
+def require_posix():
+    """Process groups (os.killpg, start_new_session) and fcntl."""
+    if os.name != "posix":
+        skip("needs POSIX process groups")
+
+
+def require_non_root():
+    if os.name == "posix" and os.geteuid() == 0:
+        skip("root ignores directory permission bits")
+
+
+def require_binary(name):
+    if shutil.which(name) is None:
+        skip(f"{name} not on PATH")
+
+
+def _import_product(*paths):
+    here = Path(__file__).parent
+    for rel in paths:
+        path = str(here / rel)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+@functools.lru_cache(maxsize=None)
+def _go_extractor_problem():
+    if shutil.which("go") is None:
+        return "go not on PATH"
+    _import_product("")
+    import symdelta
+    try:
+        symdelta.build_extractor()
+    except Exception as exc:
+        return f"go extractor not available: {exc}"
+    return None
+
+
+def require_go_extractor():
+    problem = _go_extractor_problem()
+    if problem:
+        skip(problem)
+
+
+@functools.lru_cache(maxsize=None)
+def _ts_language_server_problem():
+    if shutil.which("typescript-language-server") is None:
+        return "typescript-language-server not on PATH"
+    _import_product("", "extractors/lsp")
+    import extract
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "tsconfig.json").write_text("{}")
+        ok, reason = extract.check_language_server(tmp, "typescript")
+    return None if ok else f"typescript-language-server unusable here: {reason}"
+
+
+def require_ts_language_server():
+    """Cached probe through extract.check_language_server on a throwaway tsconfig project."""
+    problem = _ts_language_server_problem()
+    if problem:
+        skip(problem)
+
+
+def require_tree_sitter(lang):
+    """lang is "go" or "typescript"; Go needs the structure helper built, TypeScript a grammar."""
+    _import_product("")
+    import structure
+    if lang == "go":
+        if not structure._go_structure_available():
+            skip("go structure helper not buildable")
+    elif lang == "typescript":
+        if structure._get_ts_parser() is None:
+            skip("no tree-sitter TypeScript grammar (pip tree_sitter + tree_sitter_typescript, or graphify's venv)")
+    else:
+        raise ValueError(f"unknown language {lang!r}")
+
+
+@contextmanager
+def running_daemon(idle_s=None):
+    import cw_server
+    daemon = cw_server.Daemon(idle_s=idle_s, write_server_json=False)
+    daemon.start()
+    try:
+        yield daemon
+    finally:
+        daemon.stop()
+
+
+def request(daemon, method, path, *, host=None, origin=None, token=None, body=None, timeout=5):
+    conn = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=timeout)
+    try:
+        conn.putrequest(method, path, skip_host=True)
+        conn.putheader("Host", host or f"127.0.0.1:{daemon.port}")
+        if origin is not None:
+            conn.putheader("Origin", origin)
+        if token is not None:
+            conn.putheader("X-CW-Token", token)
+        data = body.encode() if isinstance(body, str) else body
+        if data is not None:
+            conn.putheader("Content-Length", str(len(data)))
+            conn.putheader("Content-Type", "application/json")
+        conn.endheaders(data)
+        resp = conn.getresponse()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+_UNSET = object()
+
+
+def rpc(daemon, tool, args, *, token=_UNSET):
+    status, data = request(daemon, "POST", "/api/rpc", token=daemon.token if token is _UNSET else token,
+                           body=json.dumps({"tool": tool, "args": args}))
+    return status, (json.loads(data) if data else None)
+
+
+def sse_connect(daemon, key, wid, timeout=5):
+    sock = socket.create_connection(("127.0.0.1", daemon.port), timeout=timeout)
+    req = (
+        f"GET /api/walkthrough/{key}/{wid}/events?k={daemon.token} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{daemon.port}\r\nConnection: keep-alive\r\n\r\n"
+    )
+    sock.sendall(req.encode())
+    return sock
+
+
+def sse_read_until(sock, needle, timeout=5):
+    sock.settimeout(timeout)
+    buf = b""
+    deadline = time.monotonic() + timeout
+    while needle not in buf and time.monotonic() < deadline:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def small_route_reply(body):
+    """StubLLM reply for the small-route analysis call: one note per hunk of the seed."""
+    seed = first_json_block(last_user_text(body))
+    analysis = {
+        "files": [{"path": f["path"], "role": "does a thing",
+                   "hunks": [{"header": h["header"], "note": "explains it"} for h in f["hunks"]]}
+                  for f in seed["files"]],
+        "overview": "o", "verdict": "v", "flow_mermaid": "",
+    }
+    return tool_call("submit_analysis", analysis)
+
+
+def write_route_config(home, stub, *, ask=True, **limits):
+    """analysis-m/prose-m profiles, plus ask-m when `ask` (test_cw_post's copy had no ask role)."""
+    profiles = {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")}
+    roles = {"analysis": "a", "prose": "p"}
+    if ask:
+        profiles["k"] = stub.profile("ask-m")
+        roles["ask"] = "k"
+    write_config(home, profiles, roles, **limits)
+
+
+def pr_repo(tmp, *, remote_tracking=True):
+    """One-line-change repo with a GitHub origin. remote_tracking adds refs/remotes/origin/feat
+    at head (what posting's head_pushed check needs); test_cw_pr's copy had no such ref."""
+    repo, base, head = make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+    git(repo, "remote", "add", "origin", "https://github.com/o/r.git")
+    if remote_tracking:
+        git(repo, "update-ref", "refs/remotes/origin/feat", head)
+    return repo, base, head
+
+
+def build_done(home, tmp, stub, **limits):
+    """A one-line-change repo, built end to end on the small route, with no PR."""
+    import cw_run
+    repo, base, head = make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+    write_route_config(home, stub, **limits)
+    d, _meta, _reused = cw_run.prepare_walkthrough(
+        {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t"})
+    status = cw_run.run(d, lambda ev, data: None)
+    assert status == "done", status
+    return d
+
+
+def init_repo(repo):
+    git(repo, "init", "-q", "-b", "main")
+
+
+def write_file(repo, rel_path, content):
+    path = Path(repo) / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def commit_all(repo, message):
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def orphan_baseline(repo):
+    """A parentless commit on git's empty tree: the "explain an existing feature" baseline,
+    sharing no history with any ref, so `git merge-base` fails against it."""
+    return git(repo, "commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "empty baseline").strip()
