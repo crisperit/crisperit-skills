@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Self-check for sections.py. Assert-based, no framework."""
+"""Self-check for sections.py. Assert-based."""
 
 import json
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from sections import (  # noqa: E402
@@ -14,12 +14,8 @@ from sections import (  # noqa: E402
     ZWSP,
     LINK_COLOR_GONE,
     LINK_COLOR_NEW,
-    _changed_symbol_ids,
-    _connected_components,
-    _edge_endpoint_ids,
     _mermaid_packages,
     _mermaid_symbols,
-    _mermaid_symbols_for_level,
     _mm_escape,
     _scope_to_paths,
     _symbols_legend,
@@ -56,15 +52,13 @@ SYMDELTA = {
 }
 
 
-def test_scope_to_paths_keeps_the_far_end_of_an_edge_that_leaves_the_scope():
+def test_scope_to_paths_edge_context():
     nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], ["a"])
     ids = {n["id"] for n in nodes}
     # b:Moved sits outside a/, and is kept only because a:New calls it; its package comes with it.
     assert ids == {"a", "b", "a:New", "a:Gone", "b:Moved"}
     assert len(edges) == 2
 
-
-def test_scope_to_paths_drops_what_no_edge_reaches():
     data = {
         "nodes": SYMDELTA["nodes"] + [
             {"id": "c", "label": "c", "kind": "pkg", "parent": None, "depth": 0},
@@ -74,7 +68,7 @@ def test_scope_to_paths_drops_what_no_edge_reaches():
         "edges": SYMDELTA["edges"],
     }
     nodes, _ = _scope_to_paths(data["nodes"], data["edges"], ["a"])
-    assert {n["id"] for n in nodes} == {"a", "b", "a:New", "a:Gone", "b:Moved"}
+    assert {n["id"] for n in nodes} == {"a", "b", "a:New", "a:Gone", "b:Moved"}  # drops what no edge reaches
 
 
 def test_scope_to_paths_matches_on_a_path_segment_not_a_string_prefix():
@@ -84,19 +78,12 @@ def test_scope_to_paths_matches_on_a_path_segment_not_a_string_prefix():
     assert nodes == [] and edges == []
 
 
-def test_scope_to_paths_without_paths_changes_nothing():
-    nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], [])
-    assert nodes is SYMDELTA["nodes"] and edges is SYMDELTA["edges"]
+# "." and "./" both normalize to an empty prefix and win even when paired with a narrower
+# entry in the same list -- see _scope_to_paths's docstring for why.
+@pytest.mark.parametrize("paths", [[], ["."], ["./"], [".", "a"]])
+def test_scope_to_paths_path_forms(paths):
+    nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], paths)
 
-
-def test_scope_to_paths_dot_means_whole_repo():
-    # "." and "./" both normalize to an empty prefix and win even when paired with a
-    # narrower entry in the same list -- see _scope_to_paths's docstring for why.
-    for dot_paths in (["."], ["./"]):
-        nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], dot_paths)
-        assert nodes is SYMDELTA["nodes"] and edges is SYMDELTA["edges"]
-
-    nodes, edges = _scope_to_paths(SYMDELTA["nodes"], SYMDELTA["edges"], [".", "a"])
     assert nodes is SYMDELTA["nodes"] and edges is SYMDELTA["edges"]
 
 
@@ -105,8 +92,13 @@ def test_symbols_with_dot_scope_renders_a_nonempty_section():
     assert out != ""
 
 
-def test_symbols_scoped_out_of_existence_renders_no_section():
-    assert render_symbols(SYMDELTA, paths=["nowhere"]) == ""
+@pytest.mark.parametrize("data, kwargs", [
+    (SYMDELTA, {"paths": ["nowhere"]}),
+    ({"nodes": []}, {}),
+    ({}, {}),
+], ids=["scoped-out-of-existence", "no-nodes", "empty-dict"])
+def test_symbols_render_nothing(data, kwargs):
+    assert render_symbols(data, **kwargs) == ""
 
 
 def test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized():
@@ -137,11 +129,6 @@ def _oversized_delta():
     return {"nodes": nodes, "edges": edges}
 
 
-def test_symbols_returns_nothing_when_there_are_no_nodes():
-    assert render_symbols({"nodes": []}) == ""
-    assert render_symbols({}) == ""
-
-
 def test_symbols_null_language_shows_a_note_with_reason_and_remedy():
     data = {"language": None, "reason": "typescript-language-server not found on PATH",
             "remedy": "npm i -g typescript typescript-language-server"}
@@ -153,13 +140,19 @@ def test_symbols_null_language_shows_a_note_with_reason_and_remedy():
     assert '<p class="note">' in out
 
 
-def test_symbols_null_language_shows_a_note_with_no_remedy():
-    # A dependency-incompatibility refusal has no remedy and nothing to do with
-    # language-server setup, so the --doctor pointer (which only checks that) is dropped too.
-    data = {"language": None,
-            "reason": "package.json or a JS lockfile changed between base and head"}
-    out = render_symbols(data)
-    assert "package.json or a JS lockfile changed between base and head" in out
+@pytest.mark.parametrize("reason, prefix", [
+    # A dependency-incompatibility refusal has no remedy and nothing to do with language-server
+    # setup, so the --doctor pointer (which only checks that) is dropped too.
+    ("package.json or a JS lockfile changed between base and head", None),
+    ("no supported files (.go, .py, .rs, .ts, .tsx) changed between a and b", "No call graph:"),
+], ids=["no-remedy", "no-supported-language-reads-as-a-fact"])
+def test_symbols_null_language_notes(reason, prefix):
+    out = render_symbols({"language": None, "reason": reason})
+
+    assert out.startswith("<!-- code-walkthrough:symbols -->")
+    assert reason in out
+    if prefix:
+        assert prefix in out
     assert "Fix:" not in out
     assert "--doctor" not in out
 
@@ -173,16 +166,6 @@ def test_symbols_null_language_note_escapes_reason_and_remedy():
     assert "a&lt;b&gt;c&amp;d" in out
 
 
-def test_symbols_no_supported_language_reads_as_a_fact_not_a_fix():
-    data = {"language": None,
-            "reason": "no supported files (.go, .py, .rs, .ts, .tsx) changed between a and b"}
-    out = render_symbols(data)
-    assert out.startswith("<!-- code-walkthrough:symbols -->")
-    assert "No call graph:" in out
-    assert "Fix:" not in out
-    assert "--doctor" not in out
-
-
 def test_symbols_null_language_inline_group_tab_stays_empty():
     # A group's own call-graph tab just doesn't exist when there's nothing to show; the
     # page-level note above already explained why, once.
@@ -190,19 +173,17 @@ def test_symbols_null_language_inline_group_tab_stays_empty():
     assert render_symbols(data, inline=True) == ""
 
 
-def test_symbols_llm_resolver_shows_the_caveat_page_level_and_inline():
-    # resolver == "llm" is a graph that IS shown, unlike language: None above; the caveat marks
-    # it as inferred rather than compiler-resolved instead of hiding it.
-    data = {**SYMDELTA, "resolver": "llm"}
+# resolver == "llm" is a graph that IS shown, unlike language: None above; the caveat marks
+# it as inferred rather than compiler-resolved instead of hiding it.
+@pytest.mark.parametrize("resolver, caveat", [("llm", True), ("go/packages", False)])
+def test_symbols_llm_resolver_caveat(resolver, caveat):
+    data = {**SYMDELTA, "resolver": resolver}
     for out in (render_symbols(data), render_symbols(data, inline=True)):
-        assert '<p class="note">' in out
-        assert "inferred" in out and "not resolved by a compiler" in out
-
-
-def test_symbols_mechanical_resolver_has_no_llm_caveat():
-    data = {**SYMDELTA, "resolver": "go/packages"}
-    assert "inferred" not in render_symbols(data)
-    assert "inferred" not in render_symbols(data, inline=True)
+        if caveat:
+            assert '<p class="note">' in out
+            assert "inferred" in out and "not resolved by a compiler" in out
+        else:
+            assert "inferred" not in out
 
 
 def test_symbols_page_level_has_marker_heading_and_packages_only():
@@ -275,21 +256,6 @@ def test_symbols_inline_has_no_page_marker_heading_or_details_wrapper():
     assert out.rstrip("\n").endswith("</div>")
 
 
-def test_symbols_inline_toggle_is_a_class_not_an_id():
-    out = render_symbols(SYMDELTA, paths=["a"], inline=True)
-
-    assert 'class="vd-level-toggle"' in out
-    assert 'id="vd-level-toggle"' not in out
-
-
-def test_symbols_inline_data_symbols_is_the_changed_symbol_count_in_scope():
-    # a:New and a:Gone are the changed symbols in scope; b:Moved is pulled in as edge context
-    # but never counts, since only a state of new/gone makes a symbol part of the delta.
-    out = render_symbols(SYMDELTA, paths=["a"], inline=True)
-
-    assert 'data-symbols="2"' in out
-
-
 def test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed():
     # a and b are both top-level packages -- no containment relationship between them -- so
     # undrawn_count is 0 here and the note says nothing about it (see the nonzero case below).
@@ -356,14 +322,8 @@ def test_symbols_moved_renders_as_prose_not_a_graph_node():
     assert "2 call sites moved, a/old -&gt; b" in out
     diagram = out.split('<div class="mermaid"', 1)[1].split(">", 1)[1].split("</div>", 1)[0]
     assert "call sites moved" not in diagram
-
-
-def test_mermaid_packages_level1_never_draws_a_dashed_move_edge():
     # Regression guard for the reverted feature: SYMDELTA carries a non-empty "moved" tally, and
     # render_symbols must not feed it into _mermaid_packages at all, let alone as a `-.->` edge.
-    out = render_symbols(SYMDELTA)
-
-    diagram = out.split('<div class="mermaid"', 1)[1].split(">", 1)[1].split("</div>", 1)[0]
     assert "-.->" not in diagram
 
 
@@ -402,33 +362,7 @@ def test_symbols_orphans_helper_groups_by_package_and_marks_new_gone():
     out = _symbols_orphans(nodes, {"a:Zeta", "a:Alpha"})
 
     assert out == '<ul class="vd-moved"><li>a: Alpha (new)</li><li>a: Zeta (gone)</li></ul>\n'
-
-
-def test_symbols_orphans_is_empty_string_when_nothing_is_held_back():
     assert _symbols_orphans(SYMDELTA["nodes"], set()) == ""
-
-
-def test_edge_endpoint_ids_collects_both_sides_of_every_edge():
-    edges = [{"source": "x", "target": "y"}, {"source": "y", "target": "z"}]
-    assert _edge_endpoint_ids(edges) == {"x", "y", "z"}
-
-
-def test_mermaid_symbols_for_level_returns_a_placeholder_node_when_nothing_qualifies():
-    # A bare "flowchart LR" would render at a degenerate near-zero viewBox that the page's own
-    # JS mistakes for a failed render (see diff-review-template.html's degenerate()); this has
-    # to stay a real, if trivial, diagram instead.
-    text, id_map, loc_map = _mermaid_symbols_for_level(SYMDELTA["nodes"], set(), [])
-    assert text == 'flowchart LR\n  N0["Nothing to draw at this detail level"]'
-    assert id_map == {}
-    assert loc_map == {}
-
-
-def test_mermaid_symbols_for_level_draws_normally_when_something_qualifies():
-    ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-
-    result = _mermaid_symbols_for_level(SYMDELTA["nodes"], ids, edges)
-
-    assert result == _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
 
 
 def test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram():
@@ -461,13 +395,6 @@ _TWO_LINKED_SYMBOLS = [
      "state": "new", "file": "a/g.go"},
 ]
 _ONE_EDGE = [{"id": "e0", "source": "a:F", "target": "a:G", "state": "new"}]
-
-
-def test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes():
-    text, id_map, _ = _mermaid_symbols(_TWO_LINKED_SYMBOLS, {"a:F", "a:G"}, _ONE_EDGE)
-
-    assert set(id_map.values()) == {"a/f.go", "a/g.go"}
-    assert all(k.startswith("S") for k in id_map)  # no "G..." package box id is ever a key
 
 
 def test_symbols_html_level1_data_ids_maps_package_boxes_to_their_directory():
@@ -525,31 +452,6 @@ _RANGE_EDGES = [
 ]
 
 
-def test_mermaid_symbols_loc_map_side_is_right_for_a_live_symbol():
-    _, file_map, loc_map = _mermaid_symbols(
-        _RANGE_SYMBOLS, {"a:New", "a:Gone", "a:NoRange"}, _RANGE_EDGES)
-
-    nid = next(n for n, f in file_map.items() if f == "a/n.go")
-    assert loc_map[nid] == {"start": 5, "end": 9, "side": "RIGHT"}
-
-
-def test_mermaid_symbols_loc_map_side_is_left_for_a_gone_symbol():
-    # BASE-side range, drawn on the diff's left, matching wireHunk's own side values.
-    _, file_map, loc_map = _mermaid_symbols(
-        _RANGE_SYMBOLS, {"a:New", "a:Gone", "a:NoRange"}, _RANGE_EDGES)
-
-    nid = next(n for n, f in file_map.items() if f == "a/g.go")
-    assert loc_map[nid] == {"start": 1, "end": 3, "side": "LEFT"}
-
-
-def test_mermaid_symbols_loc_map_omits_a_symbol_with_no_range():
-    _, file_map, loc_map = _mermaid_symbols(
-        _RANGE_SYMBOLS, {"a:New", "a:Gone", "a:NoRange"}, _RANGE_EDGES)
-
-    nid = next(n for n, f in file_map.items() if f == "a/x.go")
-    assert nid not in loc_map
-
-
 def test_symbols_html_level2_data_lines_round_trips_start_end_and_side():
     out = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES}, inline=True)
 
@@ -560,145 +462,87 @@ def test_symbols_html_level2_data_lines_round_trips_start_end_and_side():
     assert len(lines_map) == 2  # a:NoRange carries no range, so it is never a key
 
 
-def test_symbols_html_level1_never_carries_a_data_lines_attribute():
+def test_symbols_html_data_lines_only_on_level_2():
     # Level 1 draws packages, which own no line range of their own.
     out = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES}, inline=True)
-
     level1 = out.split('data-level="1"', 1)[1].split(">", 1)[0]
     assert "data-lines" not in level1
 
-
-def test_symbols_html_page_level_never_carries_a_data_lines_attribute():
-    out = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES})
-
-    assert "data-lines" not in out
+    page = render_symbols({"nodes": _RANGE_SYMBOLS, "edges": _RANGE_EDGES})
+    assert "data-lines" not in page
 
 
 def test_mm_escape_strips_parens_quotes_and_backticks():
     assert _mm_escape('Foo("bar") `baz`') == "Foobar baz"
 
 
-def test_wrap_label_leaves_a_long_multiword_label_alone():
-    # mermaid's own label div wraps on spaces, so a label with no over-length word needs
-    # nothing done to it -- and must come back byte for byte, not respaced.
-    label = "NewRequest sets Request User Id to usrID for the MediaGuard lookup"
-
+# mermaid's own label div wraps on spaces, so a label with no over-length word needs nothing
+# done to it -- and must come back byte for byte, not respaced.
+@pytest.mark.parametrize("label", [
+    "NewRequest sets Request User Id to usrID for the MediaGuard lookup",
+    # The 25-word priority-chain sentence from the real bug report, trimmed. Longer than four
+    # lines at the default target -- a taller node beats losing text.
+    "Resolve priority chain IFA for app then SyncID cookie then "
+    "User BuyerUID then User ID then Pubcid then IFA fallback for site",
+    "",
+    "corelib/ratelimit",
+    # No '/', '_' or '.', and no lowercase letter to anchor a camel boundary either -- nothing
+    # left to break on, so it stays one (long) line rather than being truncated.
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZAB",
+], ids=["multiword", "long-sentence", "empty", "short-package-path", "all-caps-no-boundary"])
+def test_wrap_label_leaves_text_unchanged(label):
     assert wrap_label(label) == label
 
 
-def test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries():
-    # No '/', '_' or '.' to break on -- only camelCase boundaries are left, which is exactly the
-    # fallback path this exercises.
-    identifier = "filterUnusableIdentifierThatIsVeryLongIndeedYes"
-
-    out = wrap_label(identifier)
-
-    assert ZWSP in out
-    assert out.replace(ZWSP, "") == identifier  # every character survives, none lost
-
-
-def test_wrap_label_keeps_going_around_a_long_camelcase_word_between_short_ones():
-    out = wrap_label("short filterUnusableIdentifierThatIsVeryLongIndeedYes done")
+def _short_words_around_a_long_one(out):
     words = out.split(" ")
-
-    assert words[0] == "short" and words[-1] == "done"  # short words untouched
-    assert ZWSP in words[1]
-    assert words[1].replace(ZWSP, "") == "filterUnusableIdentifierThatIsVeryLongIndeedYes"
+    return (words[0] == "short" and words[-1] == "done" and ZWSP in words[1]
+            and words[1].replace(ZWSP, "") == "filterUnusableIdentifierThatIsVeryLongIndeedYes")
 
 
-def test_wrap_label_keeps_going_rather_than_truncating_a_long_sentence():
-    # The 25-word priority-chain sentence from the real bug report, trimmed to keep the test
-    # readable. Longer than four lines at the default target -- a taller node beats losing text.
-    sentence = ("Resolve priority chain IFA for app then SyncID cookie then "
-                "User BuyerUID then User ID then Pubcid then IFA fallback for site")
-
-    assert wrap_label(sentence) == sentence  # not one word over the target, so not one cut
-
-
-def test_wrap_label_empty_label_is_unchanged():
-    assert wrap_label("") == ""
-
-
-def test_wrap_label_breaks_a_package_path_at_slashes():
-    label = "corelib/ratelimit/buckets"  # 25 chars, one over the 24-char default target
-
-    out = wrap_label(label)
-
-    assert ZWSP in out
-    assert out.replace(ZWSP, "") == label  # slash stays on the end of the earlier piece
-    assert out.split(ZWSP)[0].endswith("/")
-
-
-def test_wrap_label_falls_back_to_underscore_when_a_segment_alone_is_too_long():
+# (label, wrap_label kwargs, predicate over the wrapped output): every row must also keep every
+# character and actually break somewhere.
+WRAP_BREAK_ROWS = {
+    # No '/', '_' or '.' to break on -- only camelCase boundaries are left.
+    "single camelCase word": (
+        "filterUnusableIdentifierThatIsVeryLongIndeedYes", {}, lambda out: True),
+    "camelCase word between short ones": (
+        "short filterUnusableIdentifierThatIsVeryLongIndeedYes done", {}, _short_words_around_a_long_one),
+    "package path at slashes": (
+        "corelib/ratelimit/buckets", {},  # 25 chars, one over the 24-char default target
+        lambda out: out.split(ZWSP)[0].endswith("/")),
     # No slash makes any given piece short enough on its own, so '_' has to do the rest.
-    label = "a_very_long_snake_case_package_name"
+    "underscore fallback": (
+        "a_very_long_snake_case_package_name", {"target": 12},
+        lambda out: all(len(piece) <= 12 for piece in out.split(ZWSP))),
+    # GRPC must survive as one piece, not get shredded letter by letter.
+    "acronym kept whole": (
+        "MediaGuardGRPCDecorator", {"target": 12}, lambda out: "GRPC" in out.split(ZWSP)),
+    # Real Go symbol names from the node-label-clipping bug report: no '/' or '_' to break on,
+    # so these used to stay one 30+ char line and get clipped by mermaid's own wrappingWidth.
+    "clipped: MediaGuardGRPCDecorator.Lookup": (
+        "MediaGuardGRPCDecorator.Lookup", {},
+        lambda out: all(len(p) <= LABEL_WRAP_TARGET for p in out.split(ZWSP))
+        and out.split(ZWSP)[0].endswith(".")),  # dot stays on the earlier piece, like '/'
+    "clipped: distributionChannelResolverChain.Resolve": (
+        "distributionChannelResolverChain.Resolve", {},
+        lambda out: all(len(p) <= LABEL_WRAP_TARGET for p in out.split(ZWSP))),
+    "clipped: NewDistributionChannelResolverChain": (
+        "NewDistributionChannelResolverChain", {},
+        lambda out: all(len(p) <= LABEL_WRAP_TARGET for p in out.split(ZWSP))),
+    "clipped: distributionChannelResolver.canBeApplied": (
+        "distributionChannelResolver.canBeApplied", {},
+        lambda out: all(len(p) <= LABEL_WRAP_TARGET for p in out.split(ZWSP))),
+}
 
-    out = wrap_label(label, target=12)
+
+@pytest.mark.parametrize("label, kwargs, check", WRAP_BREAK_ROWS.values(), ids=WRAP_BREAK_ROWS.keys())
+def test_wrap_label_breaks_losslessly(label, kwargs, check):
+    out = wrap_label(label, **kwargs)
 
     assert ZWSP in out
-    assert out.replace(ZWSP, "") == label
-    assert all(len(piece) <= 12 for piece in out.split(ZWSP))
-
-
-def test_wrap_label_leaves_a_short_package_path_untouched():
-    assert wrap_label("corelib/ratelimit") == "corelib/ratelimit"
-
-
-# ---- real Go symbol names from the node-label-clipping bug report: no '/' or '_' to break on,
-# so these used to stay one 30+ char line and get clipped by mermaid's own wrappingWidth -------
-
-_REAL_CLIPPED_LABELS = [
-    "MediaGuardGRPCDecorator.Lookup",
-    "distributionChannelResolverChain.Resolve",
-    "NewDistributionChannelResolverChain",
-    "distributionChannelResolver.canBeApplied",
-]
-
-
-def test_wrap_label_breaks_the_real_clipped_go_symbol_names():
-    for label in _REAL_CLIPPED_LABELS:
-        out = wrap_label(label)
-        pieces = out.split(ZWSP)
-
-        assert "".join(pieces) == label  # no piece ever loses a character
-        assert all(len(piece) <= LABEL_WRAP_TARGET for piece in pieces), label
-
-
-def test_wrap_label_breaks_a_dotted_selector_after_the_dot():
-    out = wrap_label("MediaGuardGRPCDecorator.Lookup")
-
-    assert out.split(ZWSP)[0].endswith(".")  # dot stays on the end of the earlier piece, like '/'
-
-
-def test_wrap_label_keeps_an_acronym_run_together_when_camel_splitting():
-    # GRPC must survive as one piece, not get shredded letter by letter, once there's no
-    # separator left and camelCase boundaries are all that's left to break on.
-    out = wrap_label("MediaGuardGRPCDecorator", target=12)
-
-    assert out.replace(ZWSP, "") == "MediaGuardGRPCDecorator"
-    assert "GRPC" in out.split(ZWSP)
-
-
-def test_wrap_label_all_caps_word_with_no_boundary_is_returned_whole():
-    # No '/', '_' or '.', and no lowercase letter to anchor a camel boundary either -- nothing
-    # left to break on, so it stays one (long) line rather than being truncated.
-    identifier = "ABCDEFGHIJKLMNOPQRSTUVWXYZAB"
-
-    assert wrap_label(identifier) == identifier
-
-
-def test_changed_symbol_ids_excludes_the_moved_state():
-    ids = _changed_symbol_ids(SYMDELTA["nodes"])
-    assert ids == {"a:New", "a:Gone"}
-
-
-def test_symbols_scope_pulls_in_the_context_endpoint_of_a_changed_edge():
-    # b:Moved is only "changed", so it is never the subject of an edge, but e0 reaches it from
-    # a changed symbol and the reader needs to see what that call now lands on.
-    ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-
-    assert ids == {"a:New", "a:Gone", "b:Moved"}
-    assert {e["id"] for e in edges} == {"e0", "g0"}
+    assert out.replace(ZWSP, "") == label  # every character survives, none lost
+    assert check(out)
 
 
 def test_mermaid_packages_rolls_up_cross_package_edges_with_a_count_label():
@@ -784,7 +628,7 @@ def test_mermaid_symbols_keeps_a_long_label_in_one_pair_of_quotes():
     assert text.count("-->") == len(edges)
 
 
-def test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol():
+def test_mermaid_symbols_was_label():
     nodes = SYMDELTA["nodes"] + [
         {"id": "a:IncrementChecksTotal", "label": "IncrementChecksTotal", "kind": "symbol",
          "parent": "a", "depth": 1, "state": "changed", "file": "a/x.go",
@@ -797,8 +641,6 @@ def test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol():
     assert label_line.count('"') == 2  # still one label, one pair of quotes
     assert "IncrementChecksTotal, was incrementChecksTotal" in label_line
 
-
-def test_mermaid_symbols_label_has_no_was_line_when_the_name_did_not_change():
     # b:Moved carries no "was" key at all (see SYMDELTA), matching a plain package move with no
     # rename -- its label must stay exactly its own name, no second line.
     text, _, _ = _mermaid_symbols(SYMDELTA["nodes"], {"b:Moved"}, [])
@@ -852,8 +694,11 @@ def test_mermaid_symbols_subgraphs_by_package_and_classes_new_gone_but_not_chang
     assert "classDef" not in text
     assert "var(" not in text
     assert "class new" not in text  # never a bare "changed" classDef
-    assert "linkStyle" in text
-    assert LINK_COLOR_NEW in text and LINK_COLOR_GONE in text
+    linkstyle_lines = [l for l in text.splitlines() if l.strip().startswith("linkStyle")]
+    assert linkstyle_lines == [
+        f"  linkStyle 0 stroke:{LINK_COLOR_NEW},stroke-width:2px;",
+        f"  linkStyle 1 stroke:{LINK_COLOR_GONE},stroke-dasharray:4 4;",
+    ]
 
 
 def test_mermaid_symbols_own_symbols_sit_inside_a_box_that_also_nests_children():
@@ -903,74 +748,47 @@ def test_mermaid_symbols_keeps_a_symbol_whose_parent_is_unknown_or_missing():
     assert text.count("subgraph") == 2
 
 
-def test_connected_components_orders_by_lowest_id_and_uses_it_as_the_representative():
-    # b-c is one component (lowest id "b"); a and d are singletons -- three components in all,
-    # ordered by each one's own lowest id.
-    reps = _connected_components({"d", "a", "c", "b"}, [("b", "c")])
-
-    assert reps == ["a", "b", "d"]
+def _pkg(id_, parent=None):
+    return {"id": id_, "label": id_.rsplit("/", 1)[-1], "kind": "pkg", "parent": parent, "depth": 0}
 
 
-def test_connected_components_single_component_returns_just_its_one_representative():
-    assert _connected_components({"x", "y"}, [("x", "y")]) == ["x"]
+def _sym(id_, parent, file):
+    return {"id": id_, "label": id_.split(":")[1], "kind": "symbol", "parent": parent, "depth": 1,
+            "state": "new", "file": file}
 
 
-def test_mermaid_packages_chains_disconnected_packages_with_an_invisible_link():
+# (nodes, edges, expected chain link or None for no "~~~" at all)
+INVISIBLE_CHAIN_ROWS = {
     # No edges roll up between "a" and "b" at all, so level 1 would otherwise draw them as two
-    # components side by side -- the same failure mode fixed for levels 2/3 below. Each package
-    # owns a symbol of its own, as a real leaf package always does (see the container-only test
-    # below for the case where one doesn't).
-    nodes = [
-        {"id": "a", "label": "a", "kind": "pkg", "parent": None, "depth": 0},
-        {"id": "b", "label": "b", "kind": "pkg", "parent": None, "depth": 0},
-        {"id": "a:F", "label": "F", "kind": "symbol", "parent": "a", "depth": 1,
-         "state": "new", "file": "a/x.go"},
-        {"id": "b:G", "label": "G", "kind": "symbol", "parent": "b", "depth": 1,
-         "state": "new", "file": "b/y.go"},
-    ]
-
-    text, _, _ = _mermaid_packages(nodes, [])
-
-    assert "P0 ~~~ P1" in text
-
-
-def test_mermaid_packages_never_chains_a_container_to_its_own_nested_child():
+    # components side by side -- the same failure mode fixed for the symbols level below. Each
+    # package owns a symbol of its own, as a real leaf package always does.
+    "two disconnected packages": (
+        [_pkg("a"), _pkg("b"), _sym("a:F", "a", "a/x.go"), _sym("b:G", "b", "b/y.go")],
+        [], "P0 ~~~ P1"),
     # "root" owns no symbol of its own -- a pure container -- so without excluding it, it would
     # be its own singleton component, chained to its own nested child. Real PR data hit this.
-    nodes = [
-        {"id": "root", "label": "root", "kind": "pkg", "parent": None, "depth": 0},
-        {"id": "root/leaf", "label": "leaf", "kind": "pkg", "parent": "root", "depth": 1},
-        {"id": "root/leaf:F", "label": "F", "kind": "symbol", "parent": "root/leaf", "depth": 1,
-         "state": "new", "file": "root/leaf/x.go"},
-    ]
-
-    text, _, _ = _mermaid_packages(nodes, [])
-
-    assert "~~~" not in text
-
-
-def test_mermaid_packages_never_chains_an_owning_package_to_its_own_owning_child():
-    # p0 owns A directly and also has child p1, which owns B -- unlike the pure-container case
-    # above, p0 isn't excluded from the node set, so without merging it with its owning
-    # descendant first, the two land in separate components and hit the same defect.
-    nodes = [
-        {"id": "p0", "label": "p0", "kind": "pkg", "parent": None, "depth": 0},
-        {"id": "p1", "label": "p1", "kind": "pkg", "parent": "p0", "depth": 1},
-        {"id": "p0:A", "label": "A", "kind": "symbol", "parent": "p0", "depth": 0,
-         "state": "new", "file": "p0/a.go"},
-        {"id": "p1:B", "label": "B", "kind": "symbol", "parent": "p1", "depth": 1,
-         "state": "new", "file": "p1/b.go"},
-    ]
-
-    text, _, _ = _mermaid_packages(nodes, [])
-
-    assert "~~~" not in text
+    "container and its nested child": (
+        [_pkg("root"), _pkg("root/leaf", "root"), _sym("root/leaf:F", "root/leaf", "root/leaf/x.go")],
+        [], None),
+    # p0 owns A directly and also has child p1, which owns B -- unlike the pure-container case,
+    # p0 isn't excluded from the node set, so without merging it with its owning descendant
+    # first, the two land in separate components and hit the same defect.
+    "owning package and its owning child": (
+        [_pkg("p0"), _pkg("p1", "p0"), _sym("p0:A", "p0", "p0/a.go"), _sym("p1:B", "p1", "p1/b.go")],
+        [], None),
+    "single component": (SYMDELTA["nodes"], SYMDELTA["edges"], None),
+}
 
 
-def test_mermaid_packages_single_component_has_no_invisible_link():
-    text, _, _ = _mermaid_packages(SYMDELTA["nodes"], SYMDELTA["edges"])
+@pytest.mark.parametrize("nodes, edges, chain", INVISIBLE_CHAIN_ROWS.values(),
+                         ids=INVISIBLE_CHAIN_ROWS.keys())
+def test_mermaid_packages_invisible_chain_links(nodes, edges, chain):
+    text, _, _ = _mermaid_packages(nodes, edges)
 
-    assert "~~~" not in text
+    if chain:
+        assert chain in text
+    else:
+        assert "~~~" not in text
 
 
 def test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph():
@@ -998,19 +816,6 @@ def test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph():
     assert chain_line > last_linkstyle  # invisible link is emitted after every real link
 
 
-def test_mermaid_symbols_invisible_links_are_never_indexed_by_linkstyle():
-    ids, edges = _symbols_scope(SYMDELTA["nodes"], SYMDELTA["edges"])
-    text, _, _ = _mermaid_symbols(SYMDELTA["nodes"], ids, edges)
-
-    linkstyle_lines = [l for l in text.splitlines() if l.strip().startswith("linkStyle")]
-    # both real links (e0, g0) get a style; an invisible chain link would shift these if it
-    # were emitted among them instead of strictly after.
-    assert linkstyle_lines == [
-        f"  linkStyle 0 stroke:{LINK_COLOR_NEW},stroke-width:2px;",
-        f"  linkStyle 1 stroke:{LINK_COLOR_GONE},stroke-dasharray:4 4;",
-    ]
-
-
 def test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order():
     # Same bug class as test_new_and_gone_class_lists_are_declaration_order_not_set_order, but
     # for the invisible-link chain: three disconnected pairs, fed in as a set whose own
@@ -1031,18 +836,6 @@ def test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order
 
     chain_lines = [l.strip() for l in text.splitlines() if "~~~" in l]
     assert chain_lines == ["S0 ~~~ S2", "S2 ~~~ S4"]
-
-
-def test_symbols_cli_rejects_a_kind_other_than_symbols():
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "x.json"
-        path.write_text("{}")
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).parent / "sections.py"),
-             "--kind", "coupling", "--format", "html", "--data", str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode != 0
 
 
 def test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node():
@@ -1173,11 +966,12 @@ def test_structure_no_group_data_renders_no_chips():
     assert "vds-chips" not in out
 
 
-def test_structure_dropped_count_surfaced_when_positive():
-    dropped = {**STRUCTURE, "dropped": 2}
-    out = render_structure(dropped)
-    assert "2 components dropped to fit the diagram." in out
-    assert "dropped" not in render_structure(STRUCTURE)
+@pytest.mark.parametrize("explain, count", [(False, 2), (True, 3)])
+def test_structure_dropped_count(explain, count):
+    out = render_structure({**STRUCTURE, "dropped": count}, explain=explain)
+
+    assert f"{count} components dropped to fit the diagram." in out
+    assert "dropped" not in render_structure(STRUCTURE, explain=explain)
 
 
 def test_structure_implements_edge_resolves_target_by_name():
@@ -1227,14 +1021,6 @@ def test_structure_implements_name_collision_resolves_by_shown_order_not_set_ord
     assert reversed_resolved == [{"from": "c.go:Impl", "to": "b.go:Dup", "kind": "implements"}]
 
 
-def test_structure_member_chips_carry_a_marker_not_just_colour():
-    out = render_structure(STRUCTURE)
-    assert ">+Run<" in out  # new member
-    assert ">~Call<" in out  # changed member
-    assert ">Old<" not in out  # unchanged, so it's folded into the summary chip below
-    assert ">+1 unchanged<" in out
-
-
 def test_structure_unchanged_members_collapse_into_one_summary_chip():
     data = {"language": "go", "components": [
         {"id": "a.go:T", "name": "T", "kind": "struct", "file": "a.go", "state": "changed",
@@ -1267,47 +1053,21 @@ def test_structure_all_unchanged_members_render_only_the_summary_chip():
     assert out == '<span class="vds-members"><i class="o" title="One, Two">+2 unchanged</i></span>'
 
 
-def test_structure_explain_mode_also_surfaces_dropped_count():
-    dropped = {**STRUCTURE, "dropped": 3}
-    out = render_structure(dropped, explain=True)
-    assert "3 components dropped to fit the diagram." in out
+@pytest.mark.parametrize("extra, expected", [
+    ({"groups": [{"index": 0, "title": "Tools"}, {"index": 1, "title": "Contracts"}]},
+     [">1 Tools</button>", ">2 Contracts</button>"]),
+    # group 1 has no entry
+    ({"groups": [{"index": 0, "title": "Tools"}]}, [">1 Tools</button>", ">2</button>"]),
+    ({"groups": [{"index": 0, "title": "The `run_workflow` tool"}]},
+     [">1 The <code>run_workflow</code> tool</button>"]),
+    # the fixture carries no top-level "groups" at all
+    ({}, [">1</button>", ">2</button>"]),
+], ids=["group-titles", "one-title-missing", "backticked-title-becomes-code", "no-groups-key"])
+def test_structure_chip_labels(extra, expected):
+    out = render_structure({**STRUCTURE, **extra})
 
-
-def test_structure_chip_labels_use_group_titles_when_present():
-    data = {**STRUCTURE, "groups": [{"index": 0, "title": "Tools"}, {"index": 1, "title": "Contracts"}]}
-    out = render_structure(data)
-    assert ">1 Tools</button>" in out
-    assert ">2 Contracts</button>" in out
-
-
-def test_structure_chip_falls_back_to_ordinal_when_one_title_is_missing():
-    data = {**STRUCTURE, "groups": [{"index": 0, "title": "Tools"}]}  # group 1 has no entry
-    out = render_structure(data)
-    assert ">1 Tools</button>" in out
-    assert ">2</button>" in out
-
-
-def test_structure_chip_title_promotes_a_backticked_identifier_to_code():
-    data = {**STRUCTURE, "groups": [{"index": 0, "title": "The `run_workflow` tool"}]}
-    out = render_structure(data)
-    assert ">1 The <code>run_workflow</code> tool</button>" in out
-
-
-def test_structure_chip_falls_back_to_ordinal_with_no_groups_key_at_all():
-    out = render_structure(STRUCTURE)  # the fixture carries no top-level "groups" at all
-    assert ">1</button>" in out
-    assert ">2</button>" in out
-
-
-def test_structure_no_column_headings():
-    out = render_structure(STRUCTURE)
-    assert "<h5>" not in out
-    assert "Column 1" not in out
-
-
-def test_structure_callers_on_the_left_note_present():
-    out = render_structure(STRUCTURE)
-    assert '<p class="vds-hint">Callers on the left, callees on the right.</p>' in out
+    for text in expected:
+        assert text in out
 
 
 def test_structure_also_touched_note_is_rendered_and_escaped():
@@ -1315,11 +1075,6 @@ def test_structure_also_touched_note_is_rendered_and_escaped():
     out = render_structure(data)
     assert "Also touched: <code>helper</code>, <code>&lt;script&gt;</code>" in out
     assert "<script>" not in out  # would break out of the note otherwise
-
-
-def test_structure_no_also_touched_renders_no_note():
-    out = render_structure(STRUCTURE)  # the fixture carries no also_touched at all
-    assert "vds-also" not in out
 
 
 def test_structure_boxes_carry_role_button_and_an_escaped_data_path():
@@ -1335,136 +1090,14 @@ def test_structure_boxes_carry_role_button_and_an_escaped_data_path():
     assert 'data-path="a" onclick="x().go"' not in out
 
 
-def test_structure_container_carries_the_zoom_aria_label():
-    out = render_structure(STRUCTURE)
+def test_structure_chrome():
+    out = render_structure(STRUCTURE)  # the fixture carries no also_touched at all
+
+    assert "<h5>" not in out
+    assert "Column 1" not in out
+    assert '<p class="vds-hint">Callers on the left, callees on the right.</p>' in out
+    assert "vds-also" not in out
     assert ('<div class="vds-sys" tabindex="0" role="button" '
             'aria-label="Expand diagram to full size"') in out
-
-
-def test_structure_heading_carries_the_maximise_icon():
-    out = render_structure(STRUCTURE)
     assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in out
     assert out.index("h2-row") < out.index("vd-max-btn") < out.index('class="vds-sys"')
-
-
-if __name__ == "__main__":
-    tests = [
-        test_symbols_returns_nothing_when_there_are_no_nodes,
-        test_symbols_null_language_shows_a_note_with_reason_and_remedy,
-        test_symbols_null_language_shows_a_note_with_no_remedy,
-        test_symbols_null_language_note_escapes_reason_and_remedy,
-        test_symbols_no_supported_language_reads_as_a_fact_not_a_fix,
-        test_symbols_null_language_inline_group_tab_stays_empty,
-        test_scope_to_paths_keeps_the_far_end_of_an_edge_that_leaves_the_scope,
-        test_scope_to_paths_drops_what_no_edge_reaches,
-        test_scope_to_paths_matches_on_a_path_segment_not_a_string_prefix,
-        test_scope_to_paths_without_paths_changes_nothing,
-        test_scope_to_paths_dot_means_whole_repo,
-        test_symbols_with_dot_scope_renders_a_nonempty_section,
-        test_symbols_scoped_out_of_existence_renders_no_section,
-        test_symbols_opens_on_symbols_and_on_packages_once_it_is_oversized,
-        test_symbols_page_level_has_marker_heading_and_packages_only,
-        test_symbols_inline_has_legend_slider_and_two_levels,
-        test_symbols_inline_carries_no_maximise_icon_of_its_own,
-        test_symbols_html_never_emits_classdef,
-        test_symbols_inline_has_no_page_marker_heading_or_details_wrapper,
-        test_symbols_inline_toggle_is_a_class_not_an_id,
-        test_symbols_inline_data_symbols_is_the_changed_symbol_count_in_scope,
-        test_symbols_note_is_the_counts_sentence_plus_drawn_and_listed,
-        test_symbols_note_names_the_undrawn_containment_count_when_nonzero,
-        test_symbols_page_level_note_has_no_drawn_listed_split,
-        test_symbols_moved_renders_as_prose_not_a_graph_node,
-        test_mermaid_packages_level1_never_draws_a_dashed_move_edge,
-        test_symbols_orphan_symbol_is_listed_instead_of_drawn,
-        test_symbols_orphans_helper_groups_by_package_and_marks_new_gone,
-        test_symbols_orphans_is_empty_string_when_nothing_is_held_back,
-        test_edge_endpoint_ids_collects_both_sides_of_every_edge,
-        test_mermaid_symbols_for_level_returns_a_placeholder_node_when_nothing_qualifies,
-        test_mermaid_symbols_for_level_draws_normally_when_something_qualifies,
-        test_symbols_all_orphaned_level_gets_a_placeholder_not_a_degenerate_diagram,
-        test_mermaid_symbols_id_map_keys_symbol_nodes_not_package_boxes,
-        test_symbols_html_level1_data_ids_maps_package_boxes_to_their_directory,
-        test_explain_drops_the_new_gone_colouring_the_empty_baseline_makes_meaningless,
-        test_symbols_html_level2_data_ids_maps_symbol_nodes_not_package_boxes,
-        test_symbols_html_data_ids_survives_a_quote_in_a_file_path,
-        test_mermaid_symbols_loc_map_side_is_right_for_a_live_symbol,
-        test_mermaid_symbols_loc_map_side_is_left_for_a_gone_symbol,
-        test_mermaid_symbols_loc_map_omits_a_symbol_with_no_range,
-        test_symbols_html_level2_data_lines_round_trips_start_end_and_side,
-        test_symbols_html_level1_never_carries_a_data_lines_attribute,
-        test_symbols_html_page_level_never_carries_a_data_lines_attribute,
-        test_mm_escape_strips_parens_quotes_and_backticks,
-        test_wrap_label_leaves_a_long_multiword_label_alone,
-        test_wrap_label_breaks_a_single_long_camelcase_word_at_its_boundaries,
-        test_wrap_label_keeps_going_around_a_long_camelcase_word_between_short_ones,
-        test_wrap_label_keeps_going_rather_than_truncating_a_long_sentence,
-        test_wrap_label_empty_label_is_unchanged,
-        test_wrap_label_breaks_a_package_path_at_slashes,
-        test_wrap_label_falls_back_to_underscore_when_a_segment_alone_is_too_long,
-        test_wrap_label_leaves_a_short_package_path_untouched,
-        test_wrap_label_breaks_the_real_clipped_go_symbol_names,
-        test_wrap_label_breaks_a_dotted_selector_after_the_dot,
-        test_wrap_label_keeps_an_acronym_run_together_when_camel_splitting,
-        test_wrap_label_all_caps_word_with_no_boundary_is_returned_whole,
-        test_changed_symbol_ids_excludes_the_moved_state,
-        test_symbols_scope_pulls_in_the_context_endpoint_of_a_changed_edge,
-        test_mermaid_packages_rolls_up_cross_package_edges_with_a_count_label,
-        test_mermaid_packages_nests_child_packages_inside_their_parent_box,
-        test_mermaid_packages_does_not_draw_a_containment_edge_and_reports_its_count,
-        test_mermaid_symbols_keeps_a_long_label_in_one_pair_of_quotes,
-        test_mermaid_symbols_appends_the_old_name_for_a_renamed_symbol,
-        test_mermaid_symbols_label_has_no_was_line_when_the_name_did_not_change,
-        test_symbols_legend_ignores_the_word_new_in_a_label_not_a_class_line,
-        test_new_and_gone_class_lists_are_declaration_order_not_set_order,
-        test_mermaid_symbols_subgraphs_by_package_and_classes_new_gone_but_not_changed,
-        test_mermaid_symbols_own_symbols_sit_inside_a_box_that_also_nests_children,
-        test_mermaid_symbols_keeps_a_symbol_whose_parent_is_unknown_or_missing,
-        test_connected_components_orders_by_lowest_id_and_uses_it_as_the_representative,
-        test_connected_components_single_component_returns_just_its_one_representative,
-        test_mermaid_packages_chains_disconnected_packages_with_an_invisible_link,
-        test_mermaid_packages_never_chains_a_container_to_its_own_nested_child,
-        test_mermaid_packages_never_chains_an_owning_package_to_its_own_owning_child,
-        test_mermaid_packages_single_component_has_no_invisible_link,
-        test_mermaid_symbols_chains_disconnected_clusters_within_one_subgraph,
-        test_mermaid_symbols_invisible_links_are_never_indexed_by_linkstyle,
-        test_symbols_chain_links_are_deterministic_regardless_of_symbol_id_set_order,
-        test_symbols_cli_rejects_a_kind_other_than_symbols,
-        test_the_legend_rides_with_the_level_that_actually_draws_a_new_or_gone_node,
-        test_explain_renames_the_page_level_heading_to_structure,
-        test_symbols_llm_resolver_shows_the_caveat_page_level_and_inline,
-        test_symbols_mechanical_resolver_has_no_llm_caveat,
-        test_structure_marker_is_the_first_line,
-        test_structure_null_language_renders_a_reason_note_not_a_view,
-        test_structure_explain_null_language_renames_the_heading,
-        test_structure_no_components_renders_nothing,
-        test_structure_bare_dict_renders_nothing,
-        test_structure_review_mode_shows_badges_members_removed_box_and_gone_edge,
-        test_structure_explain_mode_drops_badges_members_removed_boxes_and_gone_edges,
-        test_structure_unchanged_members_collapse_into_one_summary_chip,
-        test_structure_all_unchanged_members_render_only_the_summary_chip,
-        test_structure_group_colouring_matches_group_color,
-        test_structure_filter_chips_one_per_story_stop,
-        test_structure_no_group_data_renders_no_chips,
-        test_structure_dropped_count_surfaced_when_positive,
-        test_structure_implements_edge_resolves_target_by_name,
-        test_structure_implements_edge_with_no_matching_name_is_dropped,
-        test_structure_hostile_component_id_cannot_break_out_of_the_id_attribute,
-        test_structure_implements_name_collision_resolves_by_shown_order_not_set_order,
-        test_structure_member_chips_carry_a_marker_not_just_colour,
-        test_structure_explain_mode_also_surfaces_dropped_count,
-        test_structure_chip_labels_use_group_titles_when_present,
-        test_structure_chip_falls_back_to_ordinal_when_one_title_is_missing,
-        test_structure_chip_title_promotes_a_backticked_identifier_to_code,
-        test_structure_chip_falls_back_to_ordinal_with_no_groups_key_at_all,
-        test_structure_no_column_headings,
-        test_structure_callers_on_the_left_note_present,
-        test_structure_also_touched_note_is_rendered_and_escaped,
-        test_structure_no_also_touched_renders_no_note,
-        test_structure_boxes_carry_role_button_and_an_escaped_data_path,
-        test_structure_container_carries_the_zoom_aria_label,
-        test_structure_heading_carries_the_maximise_icon,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

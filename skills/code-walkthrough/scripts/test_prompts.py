@@ -32,7 +32,7 @@ def _other_doc_files():
     return files
 
 
-def test_each_distinctive_sentence_lives_only_in_its_prompt_file():
+def test_each_distinctive_sentence_lives_in_exactly_one_place():
     for filename, sentence in DISTINCTIVE_SENTENCES.items():
         prompt_text = (PROMPTS_DIR / filename).read_text()
         assert sentence in prompt_text, f"{sentence!r} missing from prompts/{filename}"
@@ -41,24 +41,9 @@ def test_each_distinctive_sentence_lives_only_in_its_prompt_file():
             assert sentence not in other.read_text(), (
                 f"{sentence!r} (owned by prompts/{filename}) still appears in {other}"
             )
-
-
-def test_sentence_owned_by_one_file_does_not_leak_into_a_sibling_prompt_file():
-    for filename, sentence in DISTINCTIVE_SENTENCES.items():
         for sibling in PROMPTS_DIR.glob("*.md"):
             if sibling.name == filename:
                 continue
             assert sentence not in sibling.read_text(), (
                 f"{sentence!r} (owned by prompts/{filename}) leaked into {sibling}"
             )
-
-
-if __name__ == "__main__":
-    tests = [
-        test_each_distinctive_sentence_lives_only_in_its_prompt_file,
-        test_sentence_owned_by_one_file_does_not_leak_into_a_sibling_prompt_file,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")

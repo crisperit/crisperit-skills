@@ -1,8 +1,11 @@
 import pathlib
 import sys
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-import complexity
+import complexity  # noqa: E402
+import cw_testlib  # noqa: E402
 
 GO = """package x
 
@@ -146,96 +149,85 @@ def depth(counts):
     return {name: entry["depth"] for name, entry in counts.items()}
 
 
-def test_a_function_with_no_branches_is_one():
-    assert cc(complexity._cc_generic("x.go", GO))["Plain"] == 1
+def _need_grammar(path):
+    """complexity resolves its own parser (language pack, tree_sitter_<lang>, graphify's venv),
+    so skip on exactly that resolution rather than on structure.py's."""
+    if complexity.generic_parser_for(path) is None:
+        cw_testlib.skip(f"no tree-sitter grammar for {path}")
 
 
-def test_every_decision_point_counts_once():
-    # 1 + if + && + for + two non-default cases
-    assert cc(complexity._cc_generic("x.go", GO))["Branchy"] == 6
-
-
-def test_go_methods_sharing_a_name_are_kept_apart_by_receiver():
+def test_cc_go_counts():
+    _need_grammar("x.go")
     counts = cc(complexity._cc_generic("x.go", GO))
+
+    assert counts["Plain"] == 1
+    assert counts["Branchy"] == 6  # 1 + if + && + for + two non-default cases
     assert counts["A.Get"] == 2
     assert counts["B.Get"] == 2
     assert "Get" not in counts
 
 
 def test_default_arm_is_not_a_decision():
+    _need_grammar("x.go")
     without_default = GO.replace("\tdefault:\n\t\treturn 4\n", "")
     assert (cc(complexity._cc_generic("x.go", without_default))["Branchy"]
             == cc(complexity._cc_generic("x.go", GO))["Branchy"])
 
 
-def test_python_counts_boolop_loops_handlers_and_comprehension_guards():
-    # 1 + if + and + for + except + comprehension + its guard
-    assert cc(complexity._cc_python(PY))["branchy"] == 7
-
-
-def test_python_methods_are_qualified_by_class():
+def test_cc_python_counts():
     counts = cc(complexity._cc_python(PY))
+    depths = depth(complexity._cc_python(PY))
+
+    assert counts["branchy"] == 7  # 1 + if + and + for + except + comprehension + its guard
     assert counts["K.method"] == 2  # 1 + ternary
     assert "method" not in counts
-
-
-def test_a_closure_is_charged_for_its_own_branches_not_its_parent():
-    counts = cc(complexity._cc_python(PY))
     assert counts["K.outer"] == 1
     assert counts["K.outer.inner"] == 2  # 1 + while
+    assert depths["K.outer"] == 0
+    assert depths["K.outer.inner"] == 1
 
 
-def test_unparseable_python_is_unsupported_rather_than_zero():
+def test_unsupported_sources_return_none():
     assert complexity._cc_python("def (:::") is None
-
-
-def test_a_file_with_no_grammar_is_unsupported_rather_than_zero():
     assert complexity._cc_generic("notes.txt", "hello") is None
 
 
 def test_depth_is_zero_for_a_flat_function():
+    _need_grammar("x.go")
     assert depth(complexity._cc_generic("x.go", GO))["Plain"] == 0
     assert depth(complexity._cc_python(PY))["plain"] == 0
 
 
 def test_depth_is_counted_through_real_nesting():
+    _need_grammar("x.go")
     # for -> if -> if
     assert depth(complexity._cc_generic("x.go", GO_NESTED))["Nested"] == 3
     # if -> for -> except
     assert depth(complexity._cc_python(PY))["branchy"] == 3
 
 
-def test_a_switch_with_several_cases_is_one_level_not_one_per_case():
-    assert depth(complexity._cc_generic("x.go", GO))["Branchy"] == 1
-
-
-def test_bool_operators_do_not_add_depth():
+def test_a_switch_and_its_bool_operators_add_one_level_not_one_per_case():
+    _need_grammar("x.go")
     # Branchy's `a > 1 && b` sits inside a single if with nothing else nested.
     assert depth(complexity._cc_generic("x.go", GO))["Branchy"] == 1
 
 
-def test_an_else_if_chain_does_not_stack_in_the_generic_tier():
-    assert depth(complexity._cc_generic("x.go", GO_CHAINED))["Chained"] == 1
+# TS/JS wrap an else-if continuation in an `else_clause` node one layer deeper than Go's plain
+# nested if, so the TS rows exercise the extra unwrapping step.
+@pytest.mark.parametrize("path, source, name, expected", [
+    ("x.go", GO_CHAINED, "Chained", 1),
+    ("x.py", PY_CHAINED, "chained", 1),
+    ("x.ts", TS_CHAINED, "chained", 1),
+    ("x.ts", TS_UNRELATED_IF_IN_FINAL_ELSE, "f", 2),
+], ids=["go-else-if", "python-elif", "ts-else-clause", "ts-unrelated-if-in-final-else"])
+def test_depth_else_if_chains(path, source, name, expected):
+    if path.endswith(".py"):
+        counts = complexity._cc_python(source)
+    else:
+        _need_grammar(path)
+        counts = complexity._cc_generic(path, source)
 
-
-def test_an_elif_chain_does_not_stack_in_the_python_tier():
-    assert depth(complexity._cc_python(PY_CHAINED))["chained"] == 1
-
-
-def test_an_else_if_chain_does_not_stack_when_wrapped_in_an_else_clause():
-    # TS/JS nest the continuation inside an `else_clause` rather than putting it directly in
-    # the `alternative` field the way Go does, so this exercises the extra unwrapping step.
-    assert depth(complexity._cc_generic("x.ts", TS_CHAINED))["chained"] == 1
-
-
-def test_an_unrelated_if_inside_a_final_else_still_nests_normally():
-    assert depth(complexity._cc_generic("x.ts", TS_UNRELATED_IF_IN_FINAL_ELSE))["f"] == 2
-
-
-def test_a_closures_depth_is_not_charged_to_its_enclosing_function():
-    counts = depth(complexity._cc_python(PY))
-    assert counts["K.outer"] == 0
-    assert counts["K.outer.inner"] == 1
+    assert depth(counts)[name] == expected
 
 
 def _counts(**by_name):
@@ -337,41 +329,30 @@ def test_a_file_one_side_cannot_read_is_reported_not_silently_zero(monkeypatch):
     assert out["files"] == {} and out["unsupported"] == ["a.min.js"]
 
 
-def test_summary_line_leads_with_where_the_worst_function_stands(monkeypatch):
-    _stub(monkeypatch, {"a.go": _counts(Hairy=42)}, {"a.go": _counts(Hairy=43)})
-    out = complexity.analyse(".", "base", "head", ["a.go"])
-
-    assert complexity.summary_line(out) == "worst Hairy at 43 (+1 here)"
-
-
-def test_summary_line_says_so_when_the_worst_function_did_not_move(monkeypatch):
-    _stub(monkeypatch, {"a.go": _counts(Hairy=43)}, {"a.go": _counts(Hairy=43)})
-    out = complexity.analyse(".", "base", "head", ["a.go"])
-
-    assert complexity.summary_line(out) == "worst Hairy at 43 (unchanged here)"
-
-
-def test_summary_line_counts_the_files_it_could_not_read(monkeypatch):
-    _stub(monkeypatch, {"a.go": _counts(Hairy=42)}, {"a.go": _counts(Hairy=43)})
-    out = complexity.analyse(".", "base", "head", ["a.go"])
+def _unreadable(out):
     out["unsupported"] = ["x.min.js", "y.min.js"]
+    return out
 
-    assert complexity.summary_line(out).endswith("; 2 files not measured")
 
-
-def test_summary_line_stays_silent_below_the_noteworthy_depth(monkeypatch):
-    entry = {"Hairy": _entry(43, 3)}
-    _stub(monkeypatch, {"a.go": entry}, {"a.go": entry})
+@pytest.mark.parametrize("before, after, tweak, check", [
+    (_counts(Hairy=42), _counts(Hairy=43), None,
+     lambda s: s == "worst Hairy at 43 (+1 here)"),
+    (_counts(Hairy=43), _counts(Hairy=43), None,
+     lambda s: s == "worst Hairy at 43 (unchanged here)"),
+    (_counts(Hairy=42), _counts(Hairy=43), _unreadable,
+     lambda s: s.endswith("; 2 files not measured")),
+    ({"Hairy": _entry(43, 3)}, {"Hairy": _entry(43, 3)}, None,
+     lambda s: "nested" not in s),
+    ({"Hairy": _entry(42, 4)}, {"Hairy": _entry(43, 4)}, None,
+     lambda s: s == "worst Hairy at 43 (+1 here), nested 4 deep"),
+], ids=["leads-with-worst", "unchanged-worst", "unreadable-files", "silent-below-depth", "depth-at-threshold"])
+def test_summary_line(monkeypatch, before, after, tweak, check):
+    _stub(monkeypatch, {"a.go": before}, {"a.go": after})
     out = complexity.analyse(".", "base", "head", ["a.go"])
+    if tweak:
+        out = tweak(out)
 
-    assert "nested" not in complexity.summary_line(out)
-
-
-def test_summary_line_reports_depth_at_the_noteworthy_threshold(monkeypatch):
-    _stub(monkeypatch, {"a.go": {"Hairy": _entry(42, 4)}}, {"a.go": {"Hairy": _entry(43, 4)}})
-    out = complexity.analyse(".", "base", "head", ["a.go"])
-
-    assert complexity.summary_line(out) == "worst Hairy at 43 (+1 here), nested 4 deep"
+    assert check(complexity.summary_line(out))
 
 
 def test_summary_line_is_empty_when_nothing_was_measured():
@@ -399,40 +380,26 @@ def test_a_renamed_files_grown_function_reports_its_true_delta(monkeypatch):
     assert entry["jump"]["delta"] == 2
 
 
-def test_a_genuinely_deleted_function_is_marked_removed(monkeypatch):
-    _stub(monkeypatch, {"a.go": _counts(Gone=4)}, {"a.go": {}})
-    entry = complexity.analyse(".", "base", "head", ["a.go"])["files"]["a.go"]
+@pytest.mark.parametrize("before, after, expected", [
+    ({"a.go": _counts(Gone=4)}, {"a.go": {}},
+     {"name": "Gone", "existed": True, "removed": True}),
+    ({"a.go": {}}, {"a.go": _counts(Fresh=3)},
+     {"existed": False, "removed": False}),
+    ({"a.go": _counts(Gone=4), "b.go": _counts(Unrelated=1)},
+     {"a.go": {}, "b.go": _counts(Unrelated=1)},
+     {"name": "Gone", "removed": True, "delta": -4}),
+    # A.String going missing must not be masked as "moved" because a different receiver's
+    # same-named method exists in b.go: matching on the bare name would hide a real deletion.
+    ({"a.go": _counts(**{"A.String": 3}), "b.go": _counts(**{"B.String": 2})},
+     {"a.go": {}, "b.go": _counts(**{"B.String": 2})},
+     {"name": "A.String", "removed": True}),
+], ids=["deleted", "new", "absent-everywhere", "look-alike-receiver"])
+def test_removed_vs_new_function_flags(monkeypatch, before, after, expected):
+    _stub(monkeypatch, before, after)
+    entry = complexity.analyse(".", "base", "head", list(before))["files"]["a.go"]
     symbol = entry["symbols"][0]
 
-    assert symbol["name"] == "Gone"
-    assert symbol["existed"] is True
-    assert symbol["removed"] is True
-
-
-def test_a_new_function_is_not_marked_removed(monkeypatch):
-    _stub(monkeypatch, {"a.go": {}}, {"a.go": _counts(Fresh=3)})
-    entry = complexity.analyse(".", "base", "head", ["a.go"])["files"]["a.go"]
-    symbol = entry["symbols"][0]
-
-    assert symbol["existed"] is False
-    assert symbol["removed"] is False
-
-
-def test_moved_elsewhere_finds_the_name_in_another_touched_file():
-    owners = {"Observe": {"a.go", "b.go"}}
-    assert complexity._moved_elsewhere("Observe", "b.go", owners) == ["a.go"]
-
-
-def test_moved_elsewhere_is_empty_when_no_other_file_has_the_name():
-    owners = {"Observe": {"b.go"}}
-    assert complexity._moved_elsewhere("Observe", "b.go", owners) == []
-
-
-def test_moved_elsewhere_does_not_cross_match_a_different_receivers_same_named_method():
-    # A.String and B.String are distinct qualified names; B.String existing elsewhere must
-    # not paper over A.String's own disappearance.
-    owners = {"B.String": {"b.go"}}
-    assert complexity._moved_elsewhere("A.String", "a.go", owners) == []
+    assert {key: symbol[key] for key in expected} == expected
 
 
 def test_a_split_functions_move_is_detected_without_a_rename_header(monkeypatch):
@@ -448,32 +415,6 @@ def test_a_split_functions_move_is_detected_without_a_rename_header(monkeypatch)
     assert entry["symbols"] == []
     assert entry["jump"] is None
     assert entry["peak"] is None
-
-
-def test_a_function_absent_everywhere_stays_removed_when_other_files_are_in_scope(monkeypatch):
-    _stub(monkeypatch,
-          {"a.go": _counts(Gone=4), "b.go": _counts(Unrelated=1)},
-          {"a.go": {}, "b.go": _counts(Unrelated=1)})
-    entry = complexity.analyse(".", "base", "head", ["a.go", "b.go"])["files"]["a.go"]
-    symbol = entry["symbols"][0]
-
-    assert symbol["name"] == "Gone"
-    assert symbol["removed"] is True
-    assert symbol["delta"] == -4
-
-
-def test_same_named_methods_on_different_receivers_do_not_cross_match(monkeypatch):
-    # A.String going missing from a.go must not be masked as "moved" just because a
-    # different receiver's same-named method (B.String) exists in b.go: cross-matching on
-    # the bare name would hide a real deletion behind a look-alike.
-    _stub(monkeypatch,
-          {"a.go": _counts(**{"A.String": 3}), "b.go": _counts(**{"B.String": 2})},
-          {"a.go": {}, "b.go": _counts(**{"B.String": 2})})
-    entry = complexity.analyse(".", "base", "head", ["a.go", "b.go"])["files"]["a.go"]
-    symbol = entry["symbols"][0]
-
-    assert symbol["name"] == "A.String"
-    assert symbol["removed"] is True
 
 
 def test_missing_diff_text_falls_back_to_same_path_and_reads_a_move_as_new(monkeypatch):
