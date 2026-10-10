@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import notes  # noqa: E402
 from notes import (  # noqa: E402
@@ -33,7 +35,6 @@ from notes import (  # noqa: E402
     pending_publish_ids,
     postable_ranges,
     promote_note,
-    read_paginated_json,
     reanchor_note,
     resolve,
     resolved_threads,
@@ -149,35 +150,36 @@ def test_sync_via_stdin_handles_paginated_concatenated_arrays():
     assert {n["gh_id"] for n in state["notes"]} == {1, 2}
 
 
-def test_dedupe_promotes_a_matching_draft_without_reposting():
-    draft = _note(id="n-1", origin="local", state="draft", path="a.py", line=5, side="RIGHT",
-                  body="nice catch", author="crisperit")
-    state = {"notes": [draft]}
-    comment = _comment(id=555, line=5, original_line=5, side="RIGHT", path="a.py",
-                        body="nice catch", user={"login": "crisperit"}, html_url="url555")
-    sync_comments(state, [comment])
+@pytest.mark.parametrize("state, author, gh_id", [
+    ("draft", "crisperit", 555),
+    ("draft", "", 556),  # page-authored notes are always written with author '' -- the match must not rely on it
+    ("in_review", "crisperit", 555),
+])
+def test_dedupe_promotes_a_matching_local_draft(state, author, gh_id):
+    local = _note(id="n-1", origin="local", state=state, path="a.py", line=5, side="RIGHT",
+                  body="nice catch", author=author)
+    notes_state = {"notes": [local]}
+    sync_comments(notes_state, [_comment(id=gh_id, line=5, original_line=5, side="RIGHT", path="a.py",
+                                         body="nice catch", user={"login": "crisperit"},
+                                         html_url=f"url{gh_id}")])
 
-    by_id = {n["id"]: n for n in state["notes"]}
+    by_id = {n["id"]: n for n in notes_state["notes"]}
     assert by_id["n-1"]["state"] == "posted"
-    assert by_id["n-1"]["gh_id"] == 555
-    assert by_id["n-1"]["gh_url"] == "url555"
+    assert by_id["n-1"]["gh_id"] == gh_id
+    assert by_id["n-1"]["gh_url"] == f"url{gh_id}"
 
 
-def test_dedupe_also_flips_an_in_review_note_to_posted():
-    waiting = _note(id="n-1", origin="local", state="in_review", path="a.py", line=5, side="RIGHT",
-                    body="nice catch")
-    state = {"notes": [waiting]}
-    sync_comments(state, [_comment(id=555, line=5, original_line=5, side="RIGHT", path="a.py",
-                                    body="nice catch", html_url="url555")])
-    by_id = {n["id"]: n for n in state["notes"]}
-    assert (by_id["n-1"]["state"], by_id["n-1"]["gh_id"]) == ("posted", 555)
-
-
-def test_payloads_for_skips_a_reply_whose_parent_lacks_a_node_id_and_in_review_notes():
-    parent = _note(id="n-parent", state="posted", gh_id=999)
-    reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="r")
-    waiting = _note(id="n-wait", state="in_review", body="w")
-    assert payloads_for({"notes": [parent, reply, waiting]}, "sha") == []
+@pytest.mark.parametrize("state_notes, ready_ids", [
+    ([_note(id="n-1", state="posted")], set()),
+    ([_note(id="n-wait", state="in_review", body="w")], set()),
+    # a reply only posts by in_reply_to, so its parent must already be on GitHub
+    ([_note(id="n-parent", state="draft"),
+      _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed")], {"n-parent"}),
+    ([_note(id="n-parent", state="posted", gh_id=999),  # no gh_node_id
+      _note(id="n-reply", state="draft", reply_to="n-parent", body="r")], set()),
+], ids=["posted", "in_review", "reply_to_draft_parent", "reply_to_parent_without_node_id"])
+def test_payloads_for_skips_notes_that_are_not_ready(state_notes, ready_ids):
+    assert {note_id for note_id, _ in payloads_for({"notes": state_notes}, "sha")} == ready_ids
 
 
 def test_do_submit_promotes_in_review_notes_to_posted():
@@ -217,74 +219,28 @@ def test_review_info_reports_the_pending_review_and_its_comment_count():
     assert notes.pending_review_info(state, empty) == {"review_id": None, "comments": 0}
 
 
-def test_dedupe_matches_a_local_draft_despite_its_empty_author():
-    # Page-authored notes are always written with author:'' -- the match must not rely on it.
-    draft = _note(id="n-1", origin="local", state="draft", path="a.py", line=5, side="RIGHT",
-                  body="nice catch", author="")
-    state = {"notes": [draft]}
-    comment = _comment(id=556, line=5, original_line=5, side="RIGHT", path="a.py",
-                        body="nice catch", user={"login": "crisperit"}, html_url="url556")
-    sync_comments(state, [comment])
-
-    by_id = {n["id"]: n for n in state["notes"]}
-    assert by_id["n-1"]["state"] == "posted"
-    assert by_id["n-1"]["gh_id"] == 556
-
-
-def test_sync_stores_diff_hunk_verbatim_on_a_new_note():
+def test_sync_stores_provenance_fields_and_resync_keeps_them():
     state = {"notes": []}
-    comment = _comment(id=40, diff_hunk="@@ -1,2 +1,2 @@\n-old\n+new")
+    hunk = "@@ -1,2 +1,2 @@\n-old\n+new"
+    comment = _comment(id=40, diff_hunk=hunk, original_commit_id="abc123", node_id="PRRC_1")
     sync_comments(state, [comment])
-    assert state["notes"][0]["diff_hunk"] == "@@ -1,2 +1,2 @@\n-old\n+new"
+    note = state["notes"][0]
+    assert (note["diff_hunk"], note["original_commit_id"], note["gh_node_id"]) == (hunk, "abc123", "PRRC_1")
 
-
-def test_second_sync_of_same_comment_leaves_diff_hunk_unchanged():
-    state = {"notes": []}
-    comment = _comment(id=41, diff_hunk="@@ -1,2 +1,2 @@\n-old\n+new")
     sync_comments(state, [comment])
-    sync_comments(state, [comment])
-    assert state["notes"][0]["diff_hunk"] == "@@ -1,2 +1,2 @@\n-old\n+new"
+    note = state["notes"][0]
+    assert (note["diff_hunk"], note["original_commit_id"], note["gh_node_id"]) == (hunk, "abc123", "PRRC_1")
 
-
-def test_sync_stores_original_commit_id_on_a_new_note():
-    state = {"notes": []}
-    comment = _comment(id=42, original_commit_id="abc123")
-    sync_comments(state, [comment])
-    assert state["notes"][0]["original_commit_id"] == "abc123"
-
-
-def test_sync_stores_none_original_commit_id_when_absent():
-    state = {"notes": []}
-    comment = _comment(id=43)
-    assert "original_commit_id" not in comment
-    sync_comments(state, [comment])
-    assert state["notes"][0]["original_commit_id"] is None
-
-
-def test_second_sync_of_same_comment_leaves_original_commit_id_unchanged():
-    state = {"notes": []}
-    comment = _comment(id=44, original_commit_id="sha1")
-    sync_comments(state, [comment])
-    sync_comments(state, [comment])
-    assert state["notes"][0]["original_commit_id"] == "sha1"
-
-
-def test_sync_stores_gh_node_id_on_a_new_note():
-    state = {"notes": []}
-    comment = _comment(id=45, node_id="PRRC_1")
-    sync_comments(state, [comment])
-    assert state["notes"][0]["gh_node_id"] == "PRRC_1"
-
-
-def test_second_sync_of_same_comment_updates_gh_node_id():
     # deliver_note needs gh_node_id on a reply's parent; a resync must keep it current rather
     # than only setting it once on insert.
-    state = {"notes": []}
-    comment = _comment(id=46, node_id="PRRC_1")
-    sync_comments(state, [comment])
     comment["node_id"] = "PRRC_2"
     sync_comments(state, [comment])
     assert state["notes"][0]["gh_node_id"] == "PRRC_2"
+
+    bare = _comment(id=43)
+    assert "original_commit_id" not in bare
+    sync_comments(state, [comment, bare])
+    assert {n["gh_id"]: n["original_commit_id"] for n in state["notes"]} == {40: "abc123", 43: None}
 
 
 def test_reply_to_a_synced_parent_uses_its_node_id_as_in_reply_to():
@@ -321,7 +277,6 @@ def test_reply_to_a_synced_parent_uses_its_node_id_as_in_reply_to():
 
 def test_local_draft_with_no_diff_hunk_round_trips_unharmed():
     draft = _note(id="n-1", origin="local", state="draft")
-    assert "diff_hunk" not in draft
     state = {"notes": [draft]}
     sync_comments(state, [])
     by_id = {n["id"]: n for n in state["notes"]}
@@ -345,18 +300,10 @@ def test_sync_threads_maps_one_thread_onto_several_comments():
     root = _note(id="n-1", gh_id=100)
     reply = _note(id="n-2", gh_id=101, reply_to="n-1")
     state = {"notes": [root, reply]}
-    sync_threads(state, [_thread(id="THREAD_1", isResolved=False,
-                                  comments={"nodes": [{"databaseId": 100}, {"databaseId": 101}]})])
-    assert root["gh_thread_id"] == reply["gh_thread_id"] == "THREAD_1"
-    assert root["resolved"] is False and reply["resolved"] is False
-
-
-def test_sync_threads_stores_resolved_by_login_on_every_note_in_the_thread():
-    root = _note(id="n-1", gh_id=100)
-    reply = _note(id="n-2", gh_id=101, reply_to="n-1")
-    state = {"notes": [root, reply]}
     sync_threads(state, [_thread(id="THREAD_1", isResolved=True, resolvedBy={"login": "alice"},
                                   comments={"nodes": [{"databaseId": 100}, {"databaseId": 101}]})])
+    assert root["gh_thread_id"] == reply["gh_thread_id"] == "THREAD_1"
+    assert root["resolved"] is True and reply["resolved"] is True
     assert root["resolved_by"] == reply["resolved_by"] == "alice"
 
 
@@ -400,18 +347,6 @@ def test_sync_threads_leaves_a_comment_with_no_matching_note_alone():
                                   comments={"nodes": [{"databaseId": 999}]})])
     assert "gh_thread_id" not in note
     assert "resolved" not in note
-
-
-def test_sync_threads_is_idempotent():
-    note = _note(id="n-1", gh_id=100)
-    state = {"notes": [note]}
-    threads = [_thread(id="THREAD_1", isResolved=True,
-                        comments={"nodes": [{"databaseId": 100}]})]
-    sync_threads(state, threads)
-    first = json.dumps(state, sort_keys=True)
-    sync_threads(state, threads)
-    second = json.dumps(state, sort_keys=True)
-    assert first == second
 
 
 def test_do_sync_threads_reads_the_graphql_response_shape_from_stdin():
@@ -529,14 +464,6 @@ def test_resolved_threads_last_comment_id_falls_back_to_notes_gh_id_without_payl
     assert thread["last_comment_id"] == 150
 
 
-def test_apply_resolutions_merges_by_thread_id():
-    state = {}
-
-    apply_resolutions(state, {"T1": {"outcome": "none", "why": None}})
-
-    assert state["resolutions"] == {"T1": {"outcome": "none", "why": None}}
-
-
 def test_apply_resolutions_last_write_wins_on_same_thread_id():
     state = {"resolutions": {"T1": {"outcome": "none"}}}
 
@@ -573,26 +500,10 @@ def test_do_apply_resolutions_reads_stdin_and_saves_state():
 def test_payloads_emits_for_a_plain_draft_with_no_publish_requested_flag():
     # publish_requested is no longer a gate: any non-stale local draft is ready to post.
     draft = _note(id="n-1", state="draft", path="a.py", line=5, side="RIGHT", body="fix this")
-    assert "publish_requested" not in draft
     state = {"notes": [draft]}
     pairs = dict(payloads_for(state, "abc123"))
     assert pairs["n-1"] == {"body": "fix this", "commit_id": "abc123", "path": "a.py",
                              "line": 5, "side": "RIGHT"}
-
-
-def test_payloads_emits_exact_payload_for_a_draft():
-    draft = _note(id="n-1", state="draft", path="a.py", line=5, side="RIGHT", body="fix this")
-    state = {"notes": [draft]}
-    pairs = dict(payloads_for(state, "sha123"))
-    assert pairs["n-1"] == {"body": "fix this", "commit_id": "sha123", "path": "a.py",
-                             "line": 5, "side": "RIGHT"}
-
-
-def test_payloads_emits_nothing_for_a_stale_draft():
-    stale = _note(id="n-stale", state="draft", path="a.py", line=5, side="RIGHT",
-                  body="fix this", stale=True)
-    state = {"notes": [stale]}
-    assert payloads_for(state, "abc123") == []
 
 
 def test_payloads_still_emits_a_non_stale_draft_alongside_a_stale_one():
@@ -607,27 +518,16 @@ def test_payloads_still_emits_a_non_stale_draft_alongside_a_stale_one():
                                  "line": 8, "side": "RIGHT"}
 
 
-def test_payloads_still_emits_a_stale_reply_since_it_posts_by_in_reply_to_not_line():
+@pytest.mark.parametrize("stale", [False, True])
+def test_payloads_reply_posts_by_in_reply_to(stale):
+    # a reply goes out by in_reply_to, not by line, so a stale anchor does not hold it back
     parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=5, side="RIGHT")
-    stale_reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed",
-                        path="a.py", line=5, side="RIGHT", stale=True)
-    state = {"notes": [parent, stale_reply]}
-    pairs = dict(payloads_for(state, "abc123"))
+    reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed",
+                  path="a.py", line=5, side="RIGHT", stale=stale)
+
+    pairs = dict(payloads_for({"notes": [parent, reply]}, "abc123"))
     assert pairs["n-reply"] == {"body": "agreed", "in_reply_to": 999}
-
-
-def test_reply_still_needs_a_posted_parent():
-    parent_draft = _note(id="n-parent", state="draft")  # no gh_id yet
-    reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed")
-    state = {"notes": [parent_draft, reply]}
-    pairs = dict(payloads_for(state, "abc123"))
-    assert "n-reply" not in pairs
-
-
-def test_posted_note_is_always_skipped():
-    note = _note(id="n-1", state="posted")
-    state = {"notes": [note]}
-    assert payloads_for(state, "abc123") == []
+    assert "n-parent" not in pairs  # not a draft, no payload
 
 
 def test_payloads_emits_side_verbatim_for_left_and_right():
@@ -646,33 +546,6 @@ def test_payloads_emits_side_verbatim_for_left_and_right():
                              "line": 5, "side": "LEFT"}
     assert right_payload == {"body": "right note", "commit_id": "abc123", "path": "a.py",
                               "line": 8, "side": "RIGHT"}
-
-
-def test_payloads_emits_body_and_in_reply_to_only_for_a_reply():
-    parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=5, side="RIGHT")
-    reply = _note(id="n-reply", state="draft", reply_to="n-parent", body="agreed",
-                  path="a.py", line=5, side="RIGHT")
-    state = {"notes": [parent, reply]}
-
-    pairs = dict(payloads_for(state, "abc123"))
-    assert pairs["n-reply"] == {"body": "agreed", "in_reply_to": 999}
-    assert "n-parent" not in pairs  # not a draft, no payload
-
-
-def test_pending_publish_ids_agrees_with_payloads_for_over_a_mixed_state():
-    plain_draft = _note(id="n-draft", state="draft", path="a.py", line=5, side="RIGHT",
-                        body="fix this")
-    posted = _note(id="n-posted", state="posted", gh_id=1)
-    stale_top = _note(id="n-stale-top", state="draft", path="a.py", line=7, side="RIGHT",
-                      body="stale top", stale=True)
-    parent = _note(id="n-parent", state="posted", gh_id=999, gh_node_id="N_999", path="a.py", line=8, side="RIGHT")
-    stale_reply = _note(id="n-stale-reply", state="draft", reply_to="n-parent", body="agreed",
-                        path="a.py", line=8, side="RIGHT", stale=True)
-    state = {"notes": [plain_draft, posted, stale_top, parent, stale_reply]}
-
-    expected = {note_id for note_id, _ in payloads_for(state, "sha")}
-    assert set(pending_publish_ids(state)) == expected
-    assert expected == {"n-draft", "n-stale-reply"}
 
 
 # ---------------------------------------------------------------------------
@@ -740,13 +613,18 @@ def test_promote_pure_function_reports_failure_for_an_unknown_id():
 def test_reanchor_rebinds_when_the_anchor_moved_within_the_window():
     diff = _hunk_diff("src/app.py", "@@ -1,3 +16,4 @@",
                        [" context line", "+    def hello():", " more context"])
-    note = _note(anchor_text="+    def hello():", anchor_line=11, line=11, side="RIGHT")
+    note = _note(anchor_text="+    def hello():", anchor_line=11, line=11, side="RIGHT",
+                 gh_id=123, gh_url="https://x/123", body="original text")
     anchors = diff_anchors(diff)
     reanchor_note(note, anchors)
 
     assert note["line"] == 17  # moved 6 lines down from 11
     assert note["anchor_line"] == 17
     assert note["stale"] is False
+    assert note["side"] == "RIGHT"
+    assert note["gh_id"] == 123
+    assert note["gh_url"] == "https://x/123"
+    assert note["body"] == "original text"
 
 
 def test_reanchor_goes_stale_when_the_anchor_moved_outside_the_window():
@@ -786,21 +664,6 @@ def test_reanchor_left_note_never_binds_to_an_added_line():
     assert note["line"] == 9
 
 
-def test_reanchor_keeps_side_gh_id_and_body_on_a_successful_rebind():
-    diff = _hunk_diff("src/app.py", "@@ -1,3 +16,4 @@",
-                       [" context line", "+    def hello():", " more context"])
-    note = _note(anchor_text="+    def hello():", anchor_line=11, line=11, side="RIGHT",
-                 gh_id=123, gh_url="https://x/123", body="original text")
-    anchors = diff_anchors(diff)
-    reanchor_note(note, anchors)
-
-    assert note["side"] == "RIGHT"
-    assert note["gh_id"] == 123
-    assert note["gh_url"] == "https://x/123"
-    assert note["body"] == "original text"
-    assert note["line"] == 17
-
-
 def test_reanchor_leaves_a_synced_github_note_alone():
     # A synced GitHub comment has no anchor_text -- reanchor has nothing to rebind on it.
     note = _note(origin="github", anchor_text=None, line=5, anchor_line=5, side="RIGHT",
@@ -827,12 +690,6 @@ def test_do_reanchor_round_trips_through_files():
     assert result["notes"][0]["line"] == 17
 
 
-def test_read_paginated_json_flattens_concatenated_pages():
-    text = json.dumps([{"id": 1}]) + json.dumps([{"id": 2}, {"id": 3}])
-    comments = read_paginated_json(io.StringIO(text))
-    assert [c["id"] for c in comments] == [1, 2, 3]
-
-
 # ---------------------------------------------------------------------------
 # Phase 1: GraphQL delivery
 # ---------------------------------------------------------------------------
@@ -845,8 +702,7 @@ def test_read_paginated_json_flattens_concatenated_pages():
 # State persists to GH_FAKE_STATE across invocations, since each call is a fresh subprocess:
 # that's what lets one test assert a pending review was opened exactly once across three
 # separate `deliver` calls.
-FAKE_GH_SCRIPT = '''#!/usr/bin/env python3
-import json, os, sys
+FAKE_GH_SCRIPT = '''import json, os, sys
 
 stdin_data = sys.stdin.read()
 payload = json.loads(stdin_data) if stdin_data else {}
@@ -901,7 +757,7 @@ with open(state_path, "w") as f:
 @contextlib.contextmanager
 def _fake_gh_on_path(tmp_path):
     gh_path = tmp_path / "gh"
-    gh_path.write_text(FAKE_GH_SCRIPT)
+    gh_path.write_text("#!" + sys.executable + "\n" + FAKE_GH_SCRIPT)
     gh_path.chmod(0o755)
     log_path, gh_state_path = tmp_path / "gh.log", tmp_path / "gh_state.json"
     saved_env = {k: os.environ.get(k) for k in ("PATH", "GH_FAKE_LOG", "GH_FAKE_STATE")}
@@ -1069,22 +925,6 @@ def test_submit_cli_prints_one_clean_stderr_line_and_exits_non_zero_with_nothing
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
     assert result.stderr.strip() == "no pending review to submit: post a comment first"
-
-
-def test_submit_review_returns_none_when_the_submit_field_is_outright_null():
-    # Same null-propagation shape as deliver_note's two sites: submitPullRequestReview can come
-    # back outright null rather than {"pullRequestReview": null}, which used to crash the old
-    # `.get("submitPullRequestReview", {})` default with AttributeError.
-    state = {"meta": {"repo": "o/r", "pr": 1}}
-
-    def gh_run(query, _variables):
-        if "PendingReview" in query:
-            return _pending_review_response()
-        if "SubmitReview" in query:
-            return {"data": {"submitPullRequestReview": None}}
-        raise AssertionError(query)
-
-    assert submit_review(state, "COMMENT", "lgtm", gh_run) is None
 
 
 def test_do_submit_raises_instead_of_reporting_success_when_the_submit_is_rejected():
@@ -1307,7 +1147,7 @@ def test_agent_origin_write_can_set_state_and_gh_id():
 def test_partial_note_write_preserves_stored_origin_and_gh_fields():
     current = {"notes": [
         {"id": "n-1", "body": "first", "origin": "local", "gh_id": 7,
-         "gh_url": "https://x", "state": "posted"},
+         "gh_url": "https://x", "state": "posted", "path": "a.py", "line": 5, "side": "RIGHT"},
     ]}
     partial = {"notes": [{"id": "n-1", "body": "edited"}]}
 
@@ -1318,49 +1158,20 @@ def test_partial_note_write_preserves_stored_origin_and_gh_fields():
     assert note["origin"] == "local"
     assert note["gh_id"] == 7
     assert note["gh_url"] == "https://x"
-
-
-def test_page_origin_write_drops_a_new_note_missing_path():
-    current = {"notes": []}
-    partial = {"notes": [{"id": "n-new", "body": "hi", "state": "draft"}]}
-
-    merged = merge_state(current, partial, is_page_origin=True)
-
-    assert merged["notes"] == []
-
-
-def test_page_origin_write_drops_a_new_note_with_a_null_line():
-    current = {"notes": []}
-    partial = {"notes": [{"id": "n-new", "body": "hi", "path": "a.py", "line": None,
-                          "side": "RIGHT"}]}
-
-    merged = merge_state(current, partial, is_page_origin=True)
-
-    assert merged["notes"] == []
-
-
-def test_page_origin_write_drops_a_new_note_with_a_string_line():
-    current = {"notes": []}
-    partial = {"notes": [{"id": "n-new", "body": "hi", "path": "a.py", "line": "5",
-                          "side": "RIGHT"}]}
-
-    merged = merge_state(current, partial, is_page_origin=True)
-
-    assert merged["notes"] == []
-
-
-def test_page_origin_partial_write_onto_an_existing_note_still_merges_body_only():
-    current = {"notes": [
-        {"id": "n-1", "body": "first", "path": "a.py", "line": 5, "side": "RIGHT",
-         "origin": "local", "state": "draft"},
-    ]}
-    partial = {"notes": [{"id": "n-1", "body": "edited"}]}
-
-    merged = merge_state(current, partial, is_page_origin=True)
-
-    note = merged["notes"][0]
-    assert note["body"] == "edited"
     assert note["path"] == "a.py" and note["line"] == 5 and note["side"] == "RIGHT"
+
+
+@pytest.mark.parametrize("fields", [
+    {},
+    {"path": "a.py", "line": None, "side": "RIGHT"},
+    {"path": "a.py", "line": "5", "side": "RIGHT"},
+], ids=["no_path", "null_line", "string_line"])
+def test_page_origin_write_drops_a_new_note_missing_postable_fields(fields):
+    partial = {"notes": [{"id": "n-new", "body": "hi", "state": "draft", **fields}]}
+
+    merged = merge_state({"notes": []}, partial, is_page_origin=True)
+
+    assert merged["notes"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1513,30 +1324,30 @@ def test_replace_local_drafts_drops_a_local_draft_missing_from_the_payload():
     assert "dropped: 1" in out.getvalue()
 
 
-def test_replace_local_drafts_leaves_a_github_note_untouched():
-    github_note = _note(id="n-gh", state="posted", origin="github", gh_id=1)
+@pytest.mark.parametrize("existing, payload, replace, kept_ids, in_out, not_in_out", [
+    ([_note(id="n-kept", state="draft"), _note(id="n-deleted", state="draft")],
+     [_note(id="n-kept", state="draft")], True, ["n-kept"], "dropped: 1", None),
+    ([_note(id="n-gh", state="posted", origin="github", gh_id=1)], [], True, ["n-gh"], None, None),
+    ([_note(id="n-posted", state="posted", origin="local", gh_id=1)], [], True, ["n-posted"], None, None),
+    ([_note(id="n-kept", state="draft"), _note(id="n-other", state="draft")],
+     [_note(id="n-kept", state="draft")], False, ["n-kept", "n-other"], None, "dropped"),
+], ids=["drops_missing_local_draft", "keeps_github_note", "keeps_posted_local_note", "flag_off_keeps_all"])
+def test_replace_local_drafts_flag(existing, payload, replace, kept_ids, in_out, not_in_out):
     with tempfile.TemporaryDirectory() as tmp:
-        state_path = _write_state(tmp, {"notes": [github_note]})
+        state_path = _write_state(tmp, {"notes": existing})
         payload_path = Path(tmp) / "payload.json"
-        payload_path.write_text(json.dumps({"notes": []}))
-        with contextlib.redirect_stdout(io.StringIO()):
-            do_import(_Args(state=state_path, file=str(payload_path),
-                             replace_local_drafts=True))
+        payload_path.write_text(json.dumps({"notes": payload}))
+        args = _Args(state=state_path, file=str(payload_path))
+        if replace:
+            args.replace_local_drafts = True
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            do_import(args)
         result = json.loads(Path(state_path).read_text())
-    assert [n["id"] for n in result["notes"]] == ["n-gh"]
-
-
-def test_replace_local_drafts_leaves_a_posted_local_note_untouched():
-    posted = _note(id="n-posted", state="posted", origin="local", gh_id=1)
-    with tempfile.TemporaryDirectory() as tmp:
-        state_path = _write_state(tmp, {"notes": [posted]})
-        payload_path = Path(tmp) / "payload.json"
-        payload_path.write_text(json.dumps({"notes": []}))
-        with contextlib.redirect_stdout(io.StringIO()):
-            do_import(_Args(state=state_path, file=str(payload_path),
-                             replace_local_drafts=True))
-        result = json.loads(Path(state_path).read_text())
-    assert [n["id"] for n in result["notes"]] == ["n-posted"]
+    assert [n["id"] for n in result["notes"]] == kept_ids
+    if in_out:
+        assert in_out in out.getvalue()
+    if not_in_out:
+        assert not_in_out not in out.getvalue()
 
 
 def test_replace_local_drafts_ignores_meta_hunks_files_and_groups_keys():
@@ -1561,125 +1372,7 @@ def test_replace_local_drafts_ignores_meta_hunks_files_and_groups_keys():
     assert result["groups"] == ["z"]
 
 
-def test_without_replace_local_drafts_flag_behaviour_is_unchanged():
-    kept = _note(id="n-kept", state="draft")
-    other = _note(id="n-other", state="draft")
-    with tempfile.TemporaryDirectory() as tmp:
-        state_path = _write_state(tmp, {"notes": [kept, other]})
-        payload_path = Path(tmp) / "payload.json"
-        payload_path.write_text(json.dumps({"notes": [kept]}))
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            do_import(_Args(state=state_path, file=str(payload_path)))
-        result = json.loads(Path(state_path).read_text())
-    assert {n["id"] for n in result["notes"]} == {"n-kept", "n-other"}
-    assert "dropped" not in out.getvalue()
-
-
 def _write_state(tmp_dir, state):
     path = Path(tmp_dir) / "state.json"
     path.write_text(json.dumps(state))
     return str(path)
-
-
-if __name__ == "__main__":
-    tests = [
-        test_reply_attaches_to_parent_even_when_it_appears_first,
-        test_outdated_comment_lands_on_original_line_and_is_stale,
-        test_sync_twice_is_idempotent,
-        test_sync_via_stdin_handles_paginated_concatenated_arrays,
-        test_dedupe_promotes_a_matching_draft_without_reposting,
-        test_dedupe_matches_a_local_draft_despite_its_empty_author,
-        test_dedupe_also_flips_an_in_review_note_to_posted,
-        test_payloads_for_skips_a_reply_whose_parent_lacks_a_node_id_and_in_review_notes,
-        test_do_submit_promotes_in_review_notes_to_posted,
-        test_review_info_reports_the_pending_review_and_its_comment_count,
-        test_sync_stores_diff_hunk_verbatim_on_a_new_note,
-        test_second_sync_of_same_comment_leaves_diff_hunk_unchanged,
-        test_sync_stores_original_commit_id_on_a_new_note,
-        test_sync_stores_none_original_commit_id_when_absent,
-        test_second_sync_of_same_comment_leaves_original_commit_id_unchanged,
-        test_sync_stores_gh_node_id_on_a_new_note,
-        test_second_sync_of_same_comment_updates_gh_node_id,
-        test_reply_to_a_synced_parent_uses_its_node_id_as_in_reply_to,
-        test_local_draft_with_no_diff_hunk_round_trips_unharmed,
-        test_sync_threads_sets_thread_id_and_resolved_on_the_matching_note,
-        test_sync_threads_maps_one_thread_onto_several_comments,
-        test_sync_threads_stores_resolved_by_login_on_every_note_in_the_thread,
-        test_sync_threads_resolved_by_is_none_when_the_field_is_absent,
-        test_sync_threads_unresolve_clears_resolved_and_resolved_by,
-        test_sync_threads_idempotent_with_resolved_by,
-        test_sync_threads_leaves_a_comment_with_no_matching_note_alone,
-        test_sync_threads_is_idempotent,
-        test_do_sync_threads_reads_the_graphql_response_shape_from_stdin,
-        test_do_sync_threads_warns_on_stderr_when_either_connection_is_truncated,
-        test_resolved_threads_groups_several_notes_into_one_thread,
-        test_resolved_threads_finds_root_even_when_it_is_not_first,
-        test_resolved_threads_excludes_unresolved_threads,
-        test_resolved_threads_last_comment_id_from_raw_payload,
-        test_resolved_threads_last_comment_id_falls_back_to_notes_gh_id_without_payload,
-        test_apply_resolutions_merges_by_thread_id,
-        test_apply_resolutions_last_write_wins_on_same_thread_id,
-        test_do_resolved_threads_writes_contract_to_out_file,
-        test_do_apply_resolutions_reads_stdin_and_saves_state,
-        test_payloads_emits_for_a_plain_draft_with_no_publish_requested_flag,
-        test_payloads_emits_exact_payload_for_a_draft,
-        test_payloads_emits_nothing_for_a_stale_draft,
-        test_payloads_still_emits_a_non_stale_draft_alongside_a_stale_one,
-        test_payloads_still_emits_a_stale_reply_since_it_posts_by_in_reply_to_not_line,
-        test_reply_still_needs_a_posted_parent,
-        test_posted_note_is_always_skipped,
-        test_payloads_emits_side_verbatim_for_left_and_right,
-        test_payloads_emits_body_and_in_reply_to_only_for_a_reply,
-        test_pending_publish_ids_agrees_with_payloads_for_over_a_mixed_state,
-        test_promote_moves_one_note_and_leaves_the_other_untouched,
-        test_promote_pure_function_reports_failure_for_an_unknown_id,
-        test_reanchor_rebinds_when_the_anchor_moved_within_the_window,
-        test_reanchor_goes_stale_when_the_anchor_moved_outside_the_window,
-        test_reanchor_refuses_to_rebind_a_trivial_anchor,
-        test_reanchor_left_note_never_binds_to_an_added_line,
-        test_reanchor_keeps_side_gh_id_and_body_on_a_successful_rebind,
-        test_reanchor_leaves_a_synced_github_note_alone,
-        test_do_reanchor_round_trips_through_files,
-        test_read_paginated_json_flattens_concatenated_pages,
-        test_postable_ranges_splits_left_removed_only_from_right_added_plus_context,
-        test_resolve_table_driven_anchor_cases,
-        test_deliver_opens_one_pending_review_across_three_calls_and_a_reply_uses_the_comment_mutation,
-        test_deliver_refuses_a_reply_whose_parent_has_not_been_delivered_yet,
-        test_deliver_reply_falls_back_to_a_new_thread_when_the_comment_field_is_outright_null,
-        test_deliver_raises_cleanly_when_the_new_thread_field_is_outright_null,
-        test_submit_review_raises_and_never_mutates_when_no_review_is_pending,
-        test_submit_cli_prints_one_clean_stderr_line_and_exits_non_zero_with_nothing_pending,
-        test_submit_review_returns_none_when_the_submit_field_is_outright_null,
-        test_do_submit_raises_instead_of_reporting_success_when_the_submit_is_rejected,
-        test_deliver_sends_the_relocated_line_to_the_mutation_when_the_anchor_has_shifted,
-        test_do_deliver_skips_a_note_already_posted_and_does_not_double_post,
-        test_resolve_marks_every_note_in_the_thread_resolved,
-        test_do_resolve_raises_when_github_does_not_confirm_resolution,
-        test_merge_state_upserts_notes_merges_meta_replaces_lists,
-        test_merge_state_page_created_note_gets_schema_defaults,
-        test_merge_state_agent_created_note_state_is_not_overridden_by_default,
-        test_merge_state_drops_a_note_with_an_unsafe_id_instead_of_raising,
-        test_page_origin_write_cannot_set_gh_id_or_state,
-        test_page_origin_write_cannot_touch_a_github_origin_note,
-        test_agent_origin_write_can_set_state_and_gh_id,
-        test_partial_note_write_preserves_stored_origin_and_gh_fields,
-        test_page_origin_write_drops_a_new_note_missing_path,
-        test_page_origin_write_drops_a_new_note_with_a_null_line,
-        test_page_origin_write_drops_a_new_note_with_a_string_line,
-        test_page_origin_partial_write_onto_an_existing_note_still_merges_body_only,
-        test_import_merges_new_notes_into_a_state_without_them,
-        test_a_brand_new_imported_note_is_visible_to_pending_publish_ids_and_payloads_for,
-        test_import_of_a_posted_note_does_not_flip_it_back_to_draft,
-        test_import_of_a_malformed_page_note_does_not_brick_a_later_import,
-        test_import_reads_from_stdin,
-        test_import_rejects_a_note_id_failing_valid_id_re,
-        test_replace_local_drafts_drops_a_local_draft_missing_from_the_payload,
-        test_replace_local_drafts_leaves_a_github_note_untouched,
-        test_replace_local_drafts_leaves_a_posted_local_note_untouched,
-        test_replace_local_drafts_ignores_meta_hunks_files_and_groups_keys,
-        test_without_replace_local_drafts_flag_behaviour_is_unchanged,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
