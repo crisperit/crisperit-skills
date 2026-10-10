@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Self-check for cw_llm.py. Assert-based, no framework; also collected by pytest. Uses the
-loopback StubLLM from cw_testlib, never a real network. BACKOFF_S is zeroed so the retry tests
-stay fast."""
+"""Self-check for cw_llm.py. Assert-based; run with pytest. Uses the loopback StubLLM from
+cw_testlib, never a real network. conftest.py zeroes BACKOFF_S so the retry tests stay fast."""
 
 import json
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -15,8 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_llm  # noqa: E402
 import cw_testlib  # noqa: E402
-
-cw_llm.BACKOFF_S = [0, 0]
 
 PING_TOOLS = [{"type": "function", "function": {"name": "ping", "parameters": {"type": "object", "properties": {}}}}]
 
@@ -37,33 +33,26 @@ def test_server_error_retries_three_times_then_fails():
         assert stub.count("m") == 3
 
 
-def test_context_length_400_does_not_retry():
-    with cw_testlib.StubLLM({"m": [cw_testlib.http_error(400, body="context_length_exceeded: too long")]}) as stub:
-        profile = stub.profile("m")
-        error = _expect_llm_error(lambda: cw_llm.chat(profile, [{"role": "user", "content": "hi"}], PING_TOOLS))
-        assert error.kind == "context"
-        assert "m" in error.remedy
-        assert stub.count("m") == 1
-
-
-def test_401_remedy_names_env_var():
-    with cw_testlib.StubLLM({"m": [cw_testlib.http_error(401)]}) as stub:
-        profile = stub.profile("m", api_key_env="MY_KEY")
-        os.environ["MY_KEY"] = "secret"
-        try:
+def test_http_error_kinds(monkeypatch):
+    script = {
+        "ctx": [cw_testlib.http_error(400, body="context_length_exceeded: too long")],
+        "auth": [cw_testlib.http_error(401)],
+        "nf": [cw_testlib.http_error(404)],
+    }
+    monkeypatch.setenv("MY_KEY", "secret")
+    rows = [
+        ("ctx", {}, "context", "ctx", 1),
+        ("auth", {"api_key_env": "MY_KEY"}, "auth", "MY_KEY", None),
+        ("nf", {"name": "prof-nf"}, "notfound", "prof-nf", None),
+    ]
+    with cw_testlib.StubLLM(script) as stub:
+        for model, extra, kind, remedy_part, count in rows:
+            profile = stub.profile(model, **extra)
             error = _expect_llm_error(lambda: cw_llm.chat(profile, [{"role": "user", "content": "hi"}], PING_TOOLS))
-        finally:
-            del os.environ["MY_KEY"]
-        assert error.kind == "auth"
-        assert "MY_KEY" in error.remedy
-
-
-def test_404_remedy_names_profile():
-    with cw_testlib.StubLLM({"m": [cw_testlib.http_error(404)]}) as stub:
-        profile = stub.profile("m", name="m")
-        error = _expect_llm_error(lambda: cw_llm.chat(profile, [{"role": "user", "content": "hi"}], PING_TOOLS))
-        assert error.kind == "notfound"
-        assert "m" in error.remedy
+            assert error.kind == kind, model
+            assert remedy_part in error.remedy, (model, error.remedy)
+            if count is not None:
+                assert stub.count(model) == count
 
 
 def test_closed_port_gives_connect():
@@ -111,7 +100,8 @@ def test_rounds_cap_raises():
         assert error.kind == "rounds"
 
 
-def test_retry_after_sleep_holds_no_semaphore_slot():
+def test_retry_after_sleep_holds_no_semaphore_slot(monkeypatch):
+    monkeypatch.setattr(cw_llm, "RETRY_AFTER_MAX_S", 0.5)
     cw_llm.configure(1)
     try:
         script = {
@@ -134,8 +124,8 @@ def test_retry_after_sleep_holds_no_semaphore_slot():
             ta.join(timeout=10)
             tb.join(timeout=10)
 
-            assert results["b"] < 1.5, results
-            assert results["a"] >= 2.0, results
+            assert results["a"] >= 0.5, results
+            assert results["b"] < results["a"], results
     finally:
         cw_llm.configure(4)
 
@@ -143,7 +133,7 @@ def test_retry_after_sleep_holds_no_semaphore_slot():
 def test_peak_in_flight_matches_configured_concurrency():
     cw_llm.configure(2)
     try:
-        with cw_testlib.StubLLM({"m": [cw_testlib.tool_call("ping", {})]}, delay=0.2) as stub:
+        with cw_testlib.StubLLM({"m": [cw_testlib.tool_call("ping", {})]}, delay=0.1) as stub:
             threads = [
                 threading.Thread(target=cw_llm.chat, args=(stub.profile("m"), [{"role": "user", "content": "hi"}], PING_TOOLS))
                 for _ in range(6)
@@ -231,25 +221,6 @@ def test_check_raises_no_tools_on_text_reply():
 # --- claude-code backend (section 2A) ---------------------------------------
 
 
-def test_claude_call_argv_no_positional_stdin_and_cwd():
-    with cw_testlib.temp_home() as tmp:
-        script = {"sonnet": [cw_testlib.claude_result(result="hi")]}
-        with cw_testlib.fake_claude(tmp, script) as fc:
-            cwd_dir = Path(tmp) / "work"
-            cwd_dir.mkdir()
-            cw_llm.claude_call({"model": "sonnet"}, "sys prompt", "the prompt",
-                                cwd=cwd_dir, tools="Read,Grep")
-            entry = fc.log()[-1]
-            assert entry["cwd"] == str(cwd_dir)
-            assert entry["stdin"] == "the prompt"
-            argv = entry["argv"]
-            assert "--tools=Read,Grep" in argv
-            assert "--model=sonnet" in argv
-            assert "--system-prompt=sys prompt" in argv
-            assert "--output-format" in argv and "json" in argv
-            assert "the prompt" not in argv  # prompt travels on stdin, never as a positional
-
-
 def test_claude_env_drops_session_vars_keeps_anthropic_and_home():
     os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"
     os.environ["ANTHROPIC_API_KEY"] = "key"
@@ -264,6 +235,7 @@ def test_claude_env_drops_session_vars_keeps_anthropic_and_home():
 
 
 def test_claude_call_large_prompt_survives_stdin():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         script = {"sonnet": [cw_testlib.claude_result(result="ok")]}
         with cw_testlib.fake_claude(tmp, script) as fc:
@@ -272,16 +244,8 @@ def test_claude_call_large_prompt_survives_stdin():
             assert fc.log()[-1]["stdin"] == big
 
 
-def test_claude_call_text_mode_has_no_schema_flag():
-    with cw_testlib.temp_home() as tmp:
-        script = {"sonnet": [cw_testlib.claude_result(result="the answer")]}
-        with cw_testlib.fake_claude(tmp, script) as fc:
-            out, _usage = cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp), tools="")
-            assert out["result"] == "the answer"
-            assert not any(a.startswith("--json-schema") for a in fc.log()[-1]["argv"])
-
-
 def test_run_claude_tools_feedback_then_done_runs_two_processes():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         script = {"sonnet": [
             cw_testlib.claude_result(structured={"text": "draft"}),
@@ -311,6 +275,7 @@ def test_run_claude_tools_feedback_then_done_runs_two_processes():
 
 
 def test_claude_call_usage_mapping_and_cost_none():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         usage = {"input_tokens": 10, "output_tokens": 5,
                   "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3}
@@ -322,56 +287,34 @@ def test_claude_call_usage_mapping_and_cost_none():
             assert cw_llm.cost_usd(profile, got) is None
 
 
-def test_claude_call_error_kind_auth_401():
+def test_claude_call_error_kinds():
+    cw_testlib.require_posix()
+    not_found = cw_testlib.claude_result(is_error=True, result="bad model")
+    not_found["stderr"] = "[claude-code:unrecognized_model] {}"
+    script = {
+        "auth": [cw_testlib.claude_result(is_error=True, result="no", api_error_status=401)],
+        "rate": [cw_testlib.claude_result(is_error=True, result="rate limit hit", api_error_status=429)],
+        "ctx": [cw_testlib.claude_result(is_error=True, result="Prompt is too long")],
+        "nf": [not_found],
+        "raw": [cw_testlib.claude_raw("not json", exit=1, stderr="boom")],
+        "long": [cw_testlib.claude_result(is_error=True, result="z" * 500)],
+    }
     with cw_testlib.temp_home() as tmp:
-        script = {"sonnet": [cw_testlib.claude_result(is_error=True, result="no",
-                                                         api_error_status=401)]}
         with cw_testlib.fake_claude(tmp, script):
-            error = _expect_llm_error(
-                lambda: cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp), tools=""))
-            assert error.kind == "auth"
+            def failure(model, **extra):
+                return _expect_llm_error(lambda: cw_llm.claude_call(
+                    {"model": model, **extra}, "sys", "go", cwd=Path(tmp), tools=""))
 
-
-def test_claude_call_error_kind_rate_429():
-    with cw_testlib.temp_home() as tmp:
-        script = {"sonnet": [cw_testlib.claude_result(is_error=True, result="rate limit hit",
-                                                         api_error_status=429)]}
-        with cw_testlib.fake_claude(tmp, script):
-            error = _expect_llm_error(
-                lambda: cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp), tools=""))
-            assert error.kind == "rate"
-            assert error.remedy is not None
-
-
-def test_claude_call_error_kind_context_prompt_too_long():
-    with cw_testlib.temp_home() as tmp:
-        script = {"sonnet": [cw_testlib.claude_result(is_error=True, result="Prompt is too long")]}
-        with cw_testlib.fake_claude(tmp, script):
-            error = _expect_llm_error(
-                lambda: cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp), tools=""))
-            assert error.kind == "context"
-            assert error.remedy is not None and "sonnet" in error.remedy
-
-
-def test_claude_call_error_kind_notfound_from_stderr_marker():
-    with cw_testlib.temp_home() as tmp:
-        entry = cw_testlib.claude_result(is_error=True, result="bad model")
-        entry["stderr"] = "[claude-code:unrecognized_model] {}"
-        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}):
-            error = _expect_llm_error(
-                lambda: cw_llm.claude_call({"model": "sonnet", "name": "r"}, "sys", "go",
-                                            cwd=Path(tmp), tools=""))
-            assert error.kind == "notfound"
-            assert "r" in error.remedy
-
-
-def test_claude_call_non_json_stdout_is_protocol():
-    with cw_testlib.temp_home() as tmp:
-        script = {"sonnet": [cw_testlib.claude_raw("not json", exit=1, stderr="boom")]}
-        with cw_testlib.fake_claude(tmp, script):
-            error = _expect_llm_error(
-                lambda: cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp), tools=""))
-            assert error.kind == "protocol"
+            assert failure("auth").kind == "auth"
+            error = failure("rate")
+            assert error.kind == "rate" and error.remedy is not None
+            error = failure("ctx")
+            assert error.kind == "context" and "ctx" in error.remedy
+            error = failure("nf", name="prof-nf")
+            assert error.kind == "notfound" and "prof-nf" in error.remedy
+            assert failure("raw").kind == "protocol"
+            error = failure("long")
+            assert error.kind == "error" and len(str(error)) == 300
 
 
 def test_claude_call_missing_binary_is_config():
@@ -391,59 +334,31 @@ def test_claude_call_missing_cwd_is_config():
     assert error.kind == "config"
 
 
-def test_claude_call_unknown_error_message_truncated_to_300():
-    with cw_testlib.temp_home() as tmp:
-        long_text = "z" * 500
-        script = {"sonnet": [cw_testlib.claude_result(is_error=True, result=long_text)]}
-        with cw_testlib.fake_claude(tmp, script):
-            error = _expect_llm_error(
-                lambda: cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp), tools=""))
-            assert error.kind == "error"
-            assert len(str(error)) == 300
-
-
 def test_claude_call_timeout_kills_the_process_group():
-    # The fake claude writes its log entry only after its own delay elapses, so a child killed
-    # mid-delay never lands in fc.log(); watch for the spawned "sleep 30" by pid instead.
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         script = {"sonnet": [cw_testlib.claude_delayed(
             2, cw_testlib.claude_result(result="late"), spawn_child=True)]}
-        with cw_testlib.fake_claude(tmp, script):
-            seen = {}
-
-            def watch():
-                deadline = time.time() + 2
-                while time.time() < deadline and "pid" not in seen:
-                    out = subprocess.run(["pgrep", "-f", "^sleep 30$"], capture_output=True, text=True)
-                    pids = [p for p in out.stdout.split() if p]
-                    if pids:
-                        seen["pid"] = pids[-1]
-                        return
-                    time.sleep(0.02)
-
-            watcher = threading.Thread(target=watch)
-            watcher.start()
+        with cw_testlib.fake_claude(tmp, script) as fc:
             start = time.time()
             error = _expect_llm_error(
                 lambda: cw_llm.claude_call({"model": "sonnet"}, "sys", "go", cwd=Path(tmp),
-                                            tools="", timeout=0.3))
-            elapsed = time.time() - start
-            watcher.join(timeout=2)
+                                            tools="", timeout=0.5))
             assert error.kind == "timeout"
-            assert elapsed < 5
-            assert "pid" in seen, "never observed the spawned child"
-            time.sleep(0.2)
-            result = subprocess.run(["kill", "-0", seen["pid"]])
-            assert result.returncode != 0  # child died with the group
+            assert time.time() - start < 5
+            pid = fc.child_pid()
+            assert pid, "the fake never spawned its child"
+            _assert_dies(pid)
 
 
 def test_claude_call_concurrency_configure_one_serializes_calls():
+    cw_testlib.require_posix()
     cw_llm.configure(1)
     try:
         with cw_testlib.temp_home() as tmp:
             script = {
-                "a": [cw_testlib.claude_delayed(0.3, cw_testlib.claude_result(result="a"))],
-                "b": [cw_testlib.claude_delayed(0.3, cw_testlib.claude_result(result="b"))],
+                "a": [cw_testlib.claude_delayed(0.15, cw_testlib.claude_result(result="a"))],
+                "b": [cw_testlib.claude_delayed(0.15, cw_testlib.claude_result(result="b"))],
             }
             with cw_testlib.fake_claude(tmp, script) as fc:
                 def run(model):
@@ -466,6 +381,7 @@ def test_claude_call_concurrency_configure_one_serializes_calls():
 
 
 def test_check_claude_code_ok():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         script = {"sonnet": [cw_testlib.claude_result(structured={"ok": True})]}
         with cw_testlib.fake_claude(tmp, script):
@@ -473,6 +389,7 @@ def test_check_claude_code_ok():
 
 
 def test_check_claude_code_not_logged_in():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         with cw_testlib.fake_claude(tmp, {}, auth={"loggedIn": False, "authMethod": None,
                                                      "apiProvider": None}):
@@ -482,55 +399,13 @@ def test_check_claude_code_not_logged_in():
 
 
 def test_check_claude_code_null_structured_output():
+    cw_testlib.require_posix()
     with cw_testlib.temp_home() as tmp:
         script = {"sonnet": [cw_testlib.claude_result(structured=None)]}
         with cw_testlib.fake_claude(tmp, script):
             error = _expect_llm_error(
                 lambda: cw_llm.check({"kind": "claude-code", "model": "sonnet"}))
             assert error.kind == "no_tools"
-
-
-if __name__ == "__main__":
-    tests = [
-        test_server_error_retries_three_times_then_fails,
-        test_context_length_400_does_not_retry,
-        test_401_remedy_names_env_var,
-        test_404_remedy_names_profile,
-        test_closed_port_gives_connect,
-        test_header_env_expansion_and_refusal_when_unset,
-        test_token_cap_raises_on_second_round,
-        test_rounds_cap_raises,
-        test_retry_after_sleep_holds_no_semaphore_slot,
-        test_peak_in_flight_matches_configured_concurrency,
-        test_missing_usage_gives_estimated,
-        test_run_tools_unknown_tool_then_bad_json_then_done,
-        test_run_tools_nudges_until_a_tool_call_arrives,
-        test_run_tools_nudge_none_returns_text,
-        test_check_raises_no_tools_on_text_reply,
-        test_claude_call_argv_no_positional_stdin_and_cwd,
-        test_claude_env_drops_session_vars_keeps_anthropic_and_home,
-        test_claude_call_large_prompt_survives_stdin,
-        test_claude_call_text_mode_has_no_schema_flag,
-        test_run_claude_tools_feedback_then_done_runs_two_processes,
-        test_claude_call_usage_mapping_and_cost_none,
-        test_claude_call_error_kind_auth_401,
-        test_claude_call_error_kind_rate_429,
-        test_claude_call_error_kind_context_prompt_too_long,
-        test_claude_call_error_kind_notfound_from_stderr_marker,
-        test_claude_call_non_json_stdout_is_protocol,
-        test_claude_call_missing_binary_is_config,
-        test_claude_call_missing_cwd_is_config,
-        test_claude_call_unknown_error_message_truncated_to_300,
-        test_claude_call_timeout_kills_the_process_group,
-        test_claude_call_concurrency_configure_one_serializes_calls,
-        test_check_claude_code_ok,
-        test_check_claude_code_not_logged_in,
-        test_check_claude_code_null_structured_output,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
 
 
 # --- thread turns -----------------------------------------------------------
@@ -555,6 +430,7 @@ def test_thread_argv_first_turn_and_follow_up():
 
 
 def test_claude_call_argv_is_pinned():
+    cw_testlib.require_posix()
     base = ["-p", "--safe-mode", "--restricted", "--tools=Read", "--strict-mcp-config",
             "--no-session-persistence", "--permission-prompts", "none", "--model=sonnet",
             "--output-format", "json", "--system-prompt=sys"]
@@ -565,8 +441,19 @@ def test_claude_call_argv_is_pinned():
             cw_llm.claude_call({"model": "sonnet"}, "sys", "p", cwd=Path(tmp), tools="Read")
             cw_llm.claude_call({"model": "sonnet"}, "sys", "p", cwd=Path(tmp), tools="Read", schema=schema)
             log = fc.log()
+            assert log[-2]["cwd"] == str(tmp) and log[-2]["stdin"] == "p"
             assert log[-2]["argv"] == base
             assert log[-1]["argv"] == base + [f"--json-schema={json.dumps(schema)}"]
+
+
+def _assert_dies(pid):
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    raise AssertionError("child survived the group kill")
 
 
 def _script(tmp_path, body):
@@ -577,6 +464,7 @@ def _script(tmp_path, body):
 
 
 def test_claude_stream_incremental_ordered_skips_non_json_and_calls_on_spawn(tmp_path):
+    cw_testlib.require_posix()
     argv = _script(tmp_path, """
 sys.stdin.read()
 for i in range(3):
@@ -584,7 +472,7 @@ for i in range(3):
     print("not json", flush=True)
     print("5", flush=True)
     print('"str"', flush=True)
-    time.sleep(0.3)
+    time.sleep(0.15)
 """)
     got, spawned = [], []
     rc, _err = cw_llm.claude_stream(
@@ -593,11 +481,12 @@ for i in range(3):
     )
     assert rc == 0
     assert [i for i, _ in got] == [0, 1, 2]
-    assert got[1][1] - got[0][1] > 0.15 and got[2][1] - got[1][1] > 0.15
+    assert got[1][1] - got[0][1] > 0.07 and got[2][1] - got[1][1] > 0.07
     assert len(spawned) == 1 and spawned[0].pid > 0
 
 
 def test_claude_stream_timeout_kills_whole_group(tmp_path):
+    cw_testlib.require_posix()
     pidfile = tmp_path / "child.pid"
     argv = _script(tmp_path, f"""
 child = subprocess.Popen(["sleep", "60"])
@@ -606,14 +495,11 @@ print(json.dumps({{"up": 1}}), flush=True)
 time.sleep(60)
 """)
     error = _expect_llm_error(lambda: cw_llm.claude_stream(
-        argv, "", cwd=tmp_path, timeout=1.5, on_line=lambda o: None))
+        argv, "", cwd=tmp_path, timeout=0.6, on_line=lambda o: None))
     assert error.kind == "timeout"
-    pid = int(pidfile.read_text())
-    for _ in range(50):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.1)
-    else:
-        raise AssertionError("child survived the group kill")
+    _assert_dies(int(pidfile.read_text()))
+
+
+def test_reply_is_not_an_allowed_tool_of_a_turn():
+    argv = cw_llm.thread_argv({"model": "sonnet"}, "SYS", mcp_config={"mcpServers": {}}, add_dir="/d", session_id="u")
+    assert not any("walkthrough_reply" in a for a in argv)

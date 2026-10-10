@@ -1,54 +1,29 @@
 #!/usr/bin/env python3
-"""Self-check for pipeline.py. Assert-based, no framework. Uses a tiny temp git repo (the
-_git helper pattern from test_links.py) and runs each subcommand for real, since pipeline.py's
-whole job is driving the other scripts as subprocesses."""
+"""Self-check for pipeline.py. Assert-based; run with pytest. Uses a tiny temp git repo and
+runs each subcommand for real, since pipeline.py's whole job is driving the other scripts as
+subprocesses."""
 
 import hashlib
 import json
-import os
 import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_testlib  # noqa: E402
 import pipeline  # noqa: E402
 
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Pipeline Test",
-    "GIT_AUTHOR_EMAIL": "pipeline-test@example.com",
-    "GIT_COMMITTER_NAME": "Pipeline Test",
-    "GIT_COMMITTER_EMAIL": "pipeline-test@example.com",
-}
-
 HUNK_HEADER = re.compile(r"^(@@ .* @@)", re.M)
-
-
-def _git(repo, *args):
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, env={**os.environ, **GIT_ENV},
-    )
-    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
-    return result.stdout
 
 
 def _repo(tmp):
     """A repo with one commit adding foo.py, one changing it -- no remote, so links_ok is
     always false here unless a test adds one."""
-    repo = Path(tmp) / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    (repo / "foo.py").write_text("one\ntwo\nthree\n")
-    _git(repo, "add", "foo.py")
-    _git(repo, "commit", "-q", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD").strip()
-    (repo / "foo.py").write_text("one\ntwo\nthree\nwidget_helper\n")
-    _git(repo, "add", "foo.py")
-    _git(repo, "commit", "-q", "-m", "head")
-    head = _git(repo, "rev-parse", "HEAD").strip()
-    return repo, base, head
+    return cw_testlib.make_repo(
+        tmp, {"foo.py": "one\ntwo\nthree\n"}, {"foo.py": "one\ntwo\nthree\nwidget_helper\n"})
 
 
 def _scratch(tmp, repo, base, head, verdict=""):
@@ -56,7 +31,7 @@ def _scratch(tmp, repo, base, head, verdict=""):
     leave them before invoking the driver."""
     d = Path(tmp) / "work"
     d.mkdir()
-    diff_text = _git(repo, "diff", f"{base}...{head}")
+    diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
     header = HUNK_HEADER.search(diff_text).group(1)
     (d / "raw.diff").write_text(diff_text)
     analysis = {
@@ -123,13 +98,14 @@ def test_a_failing_analysis_exits_1_and_writes_nothing_downstream():
         assert not (d / "test.html").exists()
 
 
-def test_dir_inside_the_repo_is_refused():
+@pytest.mark.parametrize("command, extra", [("prepare", []), ("partial", ["--target", "t"])])
+def test_dir_inside_the_repo_is_refused(command, extra):
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
         inside = repo / "scratch"
 
-        rc = pipeline.main(["prepare", "--dir", str(inside), "--repo", str(repo), "--base", base,
-                             "--head", head])
+        rc = pipeline.main([command, "--dir", str(inside), "--repo", str(repo), "--base", base,
+                             "--head", head, *extra])
 
         assert rc != 0
         assert not inside.exists()
@@ -213,29 +189,20 @@ def test_render_with_no_pipeline_json_exits_non_zero():
 HOSTILE = '<img src=x onerror=alert(1)> </script><script>evil()</script> javascript:alert(1)'
 
 
-def _render_with_text(tmp, payload):
+def _hostile_repo(tmp):
+    return cw_testlib.make_repo(
+        tmp, {"foo.py": "one\ntwo\nthree\n", "bar.py": "one\ntwo\nthree\n"},
+        {"foo.py": "one\ntwo\nthree\nfoo_helper\n", "bar.py": "one\ntwo\nthree\nbar_helper\n"})
+
+
+def _render_with_text(repo, base, head, d, payload):
     """Two files, two groups, so verdict, overview, top-level and group flow_mermaid, group
     title/why/hop, role and note are all exercised, each carrying `payload` -- wrapped in just
     enough scaffolding (a real identifier for note/hop, a flowchart header for group
     flow_mermaid) to pass validate_analysis.py's content gate regardless of what `payload` is.
     Returns the rendered page."""
-    repo = Path(tmp) / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    (repo / "foo.py").write_text("one\ntwo\nthree\n")
-    (repo / "bar.py").write_text("one\ntwo\nthree\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD").strip()
-    (repo / "foo.py").write_text("one\ntwo\nthree\nfoo_helper\n")
-    (repo / "bar.py").write_text("one\ntwo\nthree\nbar_helper\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "head")
-    head = _git(repo, "rev-parse", "HEAD").strip()
-
-    d = Path(tmp) / "work"
     d.mkdir()
-    diff_text = _git(repo, "diff", f"{base}...{head}")
+    diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
     headers = HUNK_HEADER.findall(diff_text)
     (d / "raw.diff").write_text(diff_text)
     analysis = {
@@ -299,10 +266,10 @@ def test_hostile_strings_in_every_model_written_field_render_inert():
     # hljs payloads are spliced in with their own "<script" substrings mangled (splice_assets'
     # SCRIPT_TAG_RE), so every "<script" left in either page is a real tag, not noise from the
     # vendored assets -- a hostile render smuggling in a new one would raise this count.
-    with tempfile.TemporaryDirectory() as clean_tmp:
-        clean = _render_with_text(clean_tmp, "a safe description")
-    with tempfile.TemporaryDirectory() as hostile_tmp:
-        hostile = _render_with_text(hostile_tmp, HOSTILE)
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _hostile_repo(tmp)
+        clean = _render_with_text(repo, base, head, Path(tmp) / "clean", "a safe description")
+        hostile = _render_with_text(repo, base, head, Path(tmp) / "hostile", HOSTILE)
 
     # Not a blanket "<img" check: the vendored mermaid bundle carries its own KaTeX fallback
     # that builds "<img src=\"...\"" as a JS string literal, legitimately in the page already.
@@ -326,7 +293,7 @@ def test_partial_builds_a_page_with_the_right_meta_id_and_touches_no_final_artif
         repo, base, head = _repo(tmp)
         d = Path(tmp) / "work"
         d.mkdir()
-        diff_text = _git(repo, "diff", f"{base}...{head}")
+        diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
         header = HUNK_HEADER.search(diff_text).group(1)
         (d / "raw.diff").write_text(diff_text)
         _batch_seed(d, header)
@@ -351,7 +318,7 @@ def test_partial_with_no_fragments_yet_still_builds_a_skeleton_page():
         repo, base, head = _repo(tmp)
         d = Path(tmp) / "work"
         d.mkdir()
-        diff_text = _git(repo, "diff", f"{base}...{head}")
+        diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
         (d / "raw.diff").write_text(diff_text)
         target = f"{base}...{head}"
 
@@ -367,7 +334,7 @@ def test_partial_prefers_a_passed_fragment_over_its_seed():
         repo, base, head = _repo(tmp)
         d = Path(tmp) / "work"
         d.mkdir()
-        diff_text = _git(repo, "diff", f"{base}...{head}")
+        diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
         header = HUNK_HEADER.search(diff_text).group(1)
         (d / "raw.diff").write_text(diff_text)
         _batch_seed(d, header, note="")
@@ -384,24 +351,12 @@ def test_partial_prefers_a_passed_fragment_over_its_seed():
         assert analysis["files"][0]["hunks"][0]["note"] == "the real note"
 
 
-def test_partial_dir_inside_the_repo_is_refused():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo, base, head = _repo(tmp)
-        inside = repo / "scratch"
-
-        rc = pipeline.main(["partial", "--dir", str(inside), "--repo", str(repo), "--base", base,
-                             "--head", head, "--target", f"{base}...{head}"])
-
-        assert rc != 0
-        assert not inside.exists()
-
-
 def test_partial_imports_page_notes_and_drops_a_deleted_draft():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
         d = Path(tmp) / "work"
         d.mkdir()
-        diff_text = _git(repo, "diff", f"{base}...{head}")
+        diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
         header = HUNK_HEADER.search(diff_text).group(1)
         (d / "raw.diff").write_text(diff_text)
         _batch_seed(d, header)
@@ -417,27 +372,3 @@ def test_partial_imports_page_notes_and_drops_a_deleted_draft():
         assert rc == 0
         state = json.loads((d / "partial" / "state.json").read_text())
         assert [n["id"] for n in state["notes"]] == ["n-keep"]
-
-
-if __name__ == "__main__":
-    tests = [
-        test_all_on_a_valid_analysis_writes_a_page_and_exits_0,
-        test_a_failing_analysis_exits_1_and_writes_nothing_downstream,
-        test_dir_inside_the_repo_is_refused,
-        test_a_stale_section_is_removed_when_symdelta_is_missing,
-        test_no_remote_gives_links_ok_false_and_render_drops_links,
-        test_explain_recorded_by_prepare_reaches_render_via_pipeline_json,
-        test_links_cached_leaves_a_pre_placed_links_json_untouched,
-        test_render_with_no_pipeline_json_exits_non_zero,
-        test_page_notes_import_drops_a_deleted_draft_and_leaves_a_github_note_on_render,
-        test_hostile_strings_in_every_model_written_field_render_inert,
-        test_partial_builds_a_page_with_the_right_meta_id_and_touches_no_final_artifact,
-        test_partial_with_no_fragments_yet_still_builds_a_skeleton_page,
-        test_partial_prefers_a_passed_fragment_over_its_seed,
-        test_partial_dir_inside_the_repo_is_refused,
-        test_partial_imports_page_notes_and_drops_a_deleted_draft,
-    ]
-    for test in tests:
-        test()
-        print(f"ok  {test.__name__}")
-    print(f"\n{len(tests)} passed")
