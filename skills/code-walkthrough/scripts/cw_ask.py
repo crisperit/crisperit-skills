@@ -87,7 +87,13 @@ def validate_anchor(anchor):
             raise cw_store.CWError("bad anchor: section must be a string")
         return {"kind": "block", "block": block, "section": section, "quote": quote}
 
-    raise cw_store.CWError("bad anchor: kind must be line, section or block")
+    if kind == "thread":
+        note_id = anchor.get("note_id")
+        if not isinstance(note_id, str) or not BLOCK_RE.fullmatch(note_id):
+            raise cw_store.CWError("bad anchor: note_id invalid")
+        return {"kind": "thread", "note_id": note_id, "quote": quote}
+
+    raise cw_store.CWError("bad anchor: kind must be line, section, block or thread")
 
 
 def _find_hunk(entry, anchor):
@@ -205,6 +211,7 @@ def read_qa(d, limit=None):
     for r in folded.values():
         r = dict(r)
         r.setdefault("thread_id", r["qid"])
+        r.setdefault("source", "user")
         r.setdefault("comment", r.get("question"))
         r.setdefault("question", r["comment"])
         turns.append(r)
@@ -239,28 +246,43 @@ def _state_notes(d):
     return [n for n in st.get("notes", []) if isinstance(n, dict)]
 
 
-def _resolvable(d, anchor):
-    if anchor.get("kind") != "line":
+def is_root_thread(n):
+    return bool(n.get("origin") == "github" and n.get("gh_thread_id")
+                and not (n.get("reply_to") or n.get("in_reply_to")))
+
+
+def _thread_row(n):
+    return {"id": n["id"], "path": n.get("path"), "line": n.get("line"),
+            "author": n.get("author"), "body": (n.get("body") or "")[:500]}
+
+
+def _root_threads(d, anchor, include_resolved):
+    if anchor.get("kind") == "thread":
+        roots = [n for n in _state_notes(d) if n.get("id") == anchor["note_id"] and is_root_thread(n)]
+    elif anchor.get("kind") == "line":
+        first = anchor["line"]
+        last = anchor.get("end_line") or first
+        roots = [n for n in _state_notes(d)
+                 if is_root_thread(n) and n.get("path") == anchor["path"]
+                 and isinstance(n.get("line"), int) and first <= n["line"] <= last]
+    else:
         return []
-    first = anchor["line"]
-    last = anchor.get("end_line") or first
-    found = []
-    for n in _state_notes(d):
-        line = n.get("line")
-        if (n.get("reply_to") or n.get("in_reply_to") or n.get("origin") != "github"
-                or not n.get("gh_thread_id") or n.get("resolved") or n.get("path") != anchor["path"]
-                or not isinstance(line, int) or not first <= line <= last):
-            continue
-        found.append({"id": n["id"], "path": n["path"], "line": line,
-                      "author": n.get("author"), "body": (n.get("body") or "")[:500]})
-    return found
+    return [_thread_row(n) for n in roots if include_resolved or not n.get("resolved")]
 
 
-def write_turn_anchor(d, qid, thread_id, anchor):
+def _resolvable(d, anchor):
+    return _root_threads(d, anchor, include_resolved=False)
+
+
+def _replyable(d, anchor):
+    return _root_threads(d, anchor, include_resolved=True)
+
+
+def write_turn_anchor(d, qid, thread_id, anchor, comment=None):
     path = Path(d) / "turns" / f"{qid}.anchor.json"
     path.parent.mkdir(exist_ok=True)
-    cw_store.write_json(path, {"qid": qid, "thread_id": thread_id, "anchor": anchor,
-                               "resolvable": _resolvable(d, anchor)})
+    cw_store.write_json(path, {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment,
+                               "resolvable": _resolvable(d, anchor), "replyable": _replyable(d, anchor)})
 
 
 def _folded_outcome(r):
@@ -294,15 +316,17 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
     for line in lines:
         try:
             rec = json.loads(line)
-            oid, args = rec["oid"], rec["arguments"]
-            payload = {"thread": args["thread"], "why": args["why"]}
+            oid, kind = rec["oid"], cw_mcp.OUTCOME_KINDS[rec["name"]]
+            payload = rec["arguments"]
+            if not isinstance(payload, dict):
+                continue
         except (ValueError, KeyError, TypeError):
             continue
         if oid in known:
             continue
         known.add(oid)
         record = {"type": "outcome", "oid": oid, "qid": qid, "thread_id": thread_id,
-                  "outcome": "resolve", "payload": payload, "state": "proposed",
+                  "outcome": kind["outcome"], "payload": payload, "state": kind["state"],
                   "at": cw_store.now_iso()}
         _append_qa(d, record)
         if on_event:
@@ -317,30 +341,112 @@ def outcome_action(d, oid, action, payload=None, on_event=None):
         return _outcome_action(d, oid, action, payload, on_event)
 
 
+_TRANSITIONS = {
+    ("resolve", "dismiss"): ("proposed", "dismissed"),
+    ("resolve", "edit"): ("proposed", "proposed"),
+    ("github_draft", "dismiss"): ("proposed", "dismissed"),
+    ("github_draft", "edit"): ("proposed", "proposed"),
+    ("github_draft", "keep"): ("proposed", "kept"),
+    ("github_draft", "verbatim"): ("proposed", "proposed"),
+    ("page_edit", "revert"): ("applied", "reverted"),
+    ("page_edit", "reapply"): ("reverted", "applied"),
+    ("task", "dismiss"): (("proposed", "handed"), "dismissed"),
+    ("task", "edit"): ("proposed", "proposed"),
+    ("task", "handover"): ("proposed", "handed"),
+}
+
+
 def _outcome_action(d, oid, action, payload, on_event):
     d = Path(d)
     outcomes = read_outcomes(d)
     current = next((o for o in outcomes if o["oid"] == oid), None)
     if current is None:
         raise OutcomeError("outcome not found", "not_found")
-    if current["state"] != "proposed":
-        raise OutcomeError("outcome is not open", "conflict")
-    event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso()}
-    if action == "dismiss":
-        event["state"] = "dismissed"
+    transition = _TRANSITIONS.get((current["outcome"], action))
+    if transition is None:
+        raise OutcomeError(f"unknown action {action!r}", "invalid")
+    from_states, to_state = transition
+    if isinstance(from_states, str):
+        from_states = (from_states,)
+    if current["state"] not in from_states:
+        raise OutcomeError("outcome is not open" if from_states == ("proposed",) else
+                           f"outcome is {current['state']}, not {' or '.join(from_states)}", "conflict")
+    event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": to_state}
+    if current["outcome"] == "github_draft" and action in ("edit", "keep", "verbatim"):
+        event["payload"] = _github_draft_payload(current["payload"], action, payload)
+    elif current["outcome"] == "task" and action == "edit":
+        error = cw_mcp.task_plan_error(payload)
+        if error:
+            raise OutcomeError(error, "invalid", remedy="fix the plan and try again")
+        event["payload"] = {**cw_mcp._task_payload(payload), "edited": True}
     elif action == "edit":
         anchor_doc = cw_store.read_json(d / "turns" / f"{current['qid']}.anchor.json") or {}
-        already = {o["payload"]["thread"] for o in outcomes
-                   if o["qid"] == current["qid"] and o["oid"] != oid}
+        already = {f"resolve:{o['payload']['thread']}" for o in outcomes
+                   if o["outcome"] == "resolve" and o["qid"] == current["qid"] and o["oid"] != oid}
         error = cw_mcp.check_outcome(anchor_doc, "propose_resolve", payload, already)
         if error:
             raise OutcomeError(error, "invalid", remedy="fix the suggestion and try again")
-        event.update(state="proposed", payload={"thread": payload["thread"], "why": payload["why"].strip()})
-    else:
-        raise OutcomeError(f"unknown action {action!r}", "invalid")
+        event["payload"] = {"thread": payload["thread"], "why": payload["why"].strip()}
     _append_qa(d, event)
     folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
     if on_event:
+        on_event("outcome", folded)
+    return folded
+
+
+def _github_draft_payload(current, action, payload):
+    if action == "edit":
+        body = (payload or {}).get("body")
+        if not isinstance(body, str) or not body.strip() or len(body) > cw_mcp.GITHUB_DRAFT_CAP:
+            raise OutcomeError(f"body must be 1-{cw_mcp.GITHUB_DRAFT_CAP} characters", "invalid",
+                               remedy="fix the draft and try again")
+        return {**current, "body": body, "edited": True, "verbatim": False}
+    if action == "keep":
+        note_id = (payload or {}).get("note_id")
+        if not isinstance(note_id, str) or not notes.VALID_ID_RE.fullmatch(note_id):
+            raise OutcomeError("note_id must be a note id", "invalid", remedy="send {note_id}")
+        return {**current, "note_id": note_id}
+    return {**current, "body": current.get("original") or current["body"], "verbatim": True, "edited": False}
+
+
+def mark_outcome(d, oid, state, on_event=None, payload=None, expect=None):
+    """Writes a state event that no /outcomes action owns (publish-one's published and done,
+    a code task's running and after). `expect` is the states the outcome must be in, checked
+    under the same lock so two clicks cannot both win."""
+    with _OUTCOME_LOCK:
+        if expect is not None:
+            current = next((o for o in read_outcomes(d) if o["oid"] == oid), None)
+            if current is None:
+                raise OutcomeError("outcome not found", "not_found")
+            if current["state"] not in expect:
+                raise OutcomeError(f"outcome is {current['state']}", "conflict")
+        event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": state}
+        if payload is not None:
+            event["payload"] = payload
+        _append_qa(d, event)
+        folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
+    if on_event:
+        on_event("outcome", folded)
+    return folded
+
+
+def complete_handed(d, oid, thread_id, record, summary, on_event=None):
+    """Appends the session's reply turn and flips the handed task to done under one lock, so a
+    concurrent dismiss or a second reply leaves neither a stray turn nor two."""
+    with _OUTCOME_LOCK:
+        current = next((o for o in read_outcomes(d) if o["oid"] == oid and o["thread_id"] == thread_id), None)
+        if current is None or current["outcome"] != "task":
+            raise OutcomeError("oid is not a task on this thread", "invalid",
+                               remedy='walkthrough_get with parts ["threads"] lists the handed tasks')
+        if current["state"] != "handed":
+            raise OutcomeError(f"task is {current['state']}; reply without oid to post your result", "conflict")
+        _append_qa(d, record)
+        payload = {**(current["payload"] or {}), "task": {"handed": True, "summary": summary}}
+        _append_qa(d, {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(),
+                       "state": "done", "payload": payload})
+        folded = next(o for o in read_outcomes(d) if o["oid"] == oid)
+    if on_event:
+        on_event("thread", {"kind": "turn", "record": record})
         on_event("outcome", folded)
     return folded
 
@@ -364,8 +470,31 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
         o = by_oid.get(r.get("oid"))
         if r["type"] != "state" or o is None:
             continue
-        verb = "dismissed" if r.get("state") == "dismissed" else "edited"
         payload = r.get("payload") or o["payload"]
+        if o["outcome"] == "page_edit":
+            verb = "undid" if r.get("state") == "reverted" else "redid"
+            where = "after block" if payload["op"] == "insert_after" else "of block"
+            lines.append(f"The user {verb} your page edit ({payload['op']} {where} {payload['target']})")
+            continue
+        if o["outcome"] == "task":
+            if r.get("state") == "dismissed":
+                lines.append(f"The user dismissed your proposed code task: {payload['title']}")
+            elif r.get("state") == "proposed":
+                lines.append(f"The user edited your proposed code task to: {payload['title']}")
+            continue
+        if o["outcome"] == "github_draft":
+            where = f"{payload['target'].get('path')}:{payload['target'].get('line')}"
+            if r.get("state") == "dismissed":
+                lines.append(f"The user dismissed your draft GitHub comment on {where}")
+            elif payload.get("verbatim"):
+                lines.append(f"The user replaced your draft GitHub comment on {where} with their own words, "
+                             "unchanged")
+            elif r.get("state") == "proposed":
+                lines.append(f"The user edited your draft GitHub comment on {where} to: {payload['body']}")
+            continue
+        if r.get("state") not in ("dismissed", "proposed"):
+            continue
+        verb = "dismissed" if r.get("state") == "dismissed" else "edited"
         lines.append(f"The user {verb} your suggestion to resolve "
                      f"{_note_loc(d, payload['thread'])}: {payload['why']}")
     return "\n".join(lines)
@@ -377,6 +506,47 @@ def _candidates_text(d, anchor):
         return ""
     rows = [f"- {c['id']}, {c['path']}:{c['line']}, {c['author']}: {c['body'][:300]}" for c in found]
     return "Review threads on these lines you may propose to resolve:\n" + "\n".join(rows)
+
+
+def _reply_targets_text(d, anchor):
+    if anchor.get("kind") != "line":
+        return ""
+    found = _replyable(d, anchor)
+    if not found:
+        return ""
+    rows = [f"- {c['id']}, {c['path']}:{c['line']}, {c['author']}: {c['body'][:300]}" for c in found]
+    return "Review threads on these lines you may reply to with propose_github_draft:\n" + "\n".join(rows)
+
+
+THREAD_TEXT_CAP = 8000
+THREAD_COMMENT_CAP = 2000
+
+
+def _thread_text(d, anchor):
+    if anchor.get("kind") != "thread":
+        return ""
+    state_notes = _state_notes(d)
+    root = next((n for n in state_notes if n["id"] == anchor["note_id"]), None)
+    if root is None:
+        return ""
+    by_id = {n["id"]: n for n in state_notes}
+
+    def root_id(n):
+        seen = set()
+        while (n.get("reply_to") or n.get("in_reply_to")) in by_id and n["id"] not in seen:
+            seen.add(n["id"])
+            n = by_id[n.get("reply_to") or n.get("in_reply_to")]
+        return n["id"]
+
+    comments = sorted((n for n in state_notes if root_id(n) == root["id"] and n.get("state") != "draft"),
+                      key=lambda n: n.get("created_at") or "")
+    lines = [f"Review thread {root['id']} on {root.get('path')}:{root.get('line')}"
+             f"{' (resolved)' if root.get('resolved') else ''}"]
+    if root.get("diff_hunk"):
+        lines.append("Diff hunk:\n" + root["diff_hunk"][:THREAD_COMMENT_CAP])
+    lines.append("Comments, oldest first:")
+    lines += [f"{n.get('author') or 'unknown'}: {(n.get('body') or '')[:THREAD_COMMENT_CAP]}" for n in comments]
+    return "\n".join(lines)[:THREAD_TEXT_CAP]
 
 
 def _ensure_ctx(d):
@@ -414,14 +584,18 @@ def _thread_session(d, thread_id):
 
 def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     d = Path(d)
+    block_key = f"Block key: {anchor[anchor['kind']]}" if anchor["kind"] in ("section", "block") else ""
     if resumed:
-        extras = [_candidates_text(d, anchor), _outcome_updates_text(d, thread_id)]
+        extras = [block_key, _candidates_text(d, anchor), _reply_targets_text(d, anchor),
+                  _outcome_updates_text(d, thread_id)]
         return "\n\n".join([f"Question:\n{question}", *filter(None, extras)])
     quote = anchor["quote"]
+    part1 = f"Question:\n{question}"
     if anchor["kind"] in ("section", "block") and anchor.get("section"):
-        part1 = f"Question:\n{question}\n\nSection: {anchor['section']}\n\nSelected text:\n{quote}"
-    else:
-        part1 = f"Question:\n{question}\n\nSelected text:\n{quote}"
+        part1 += f"\n\nSection: {anchor['section']}"
+    if block_key:
+        part1 += f"\n\n{block_key}"
+    part1 += f"\n\nSelected text:\n{quote}"
 
     hunk = None
     part2 = ""
@@ -451,9 +625,15 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     overview_verdict = _overview_verdict(d)
     if overview_verdict:
         parts.append(overview_verdict)
+    thread_text = _thread_text(d, anchor)
+    if thread_text:
+        parts.append(thread_text)
     candidates = _candidates_text(d, anchor)
     if candidates:
         parts.append(candidates)
+    reply_targets = _reply_targets_text(d, anchor)
+    if reply_targets:
+        parts.append(reply_targets)
     qa_text = _qa_pairs_text(d, thread_id)
     if qa_text:
         parts.append(qa_text)
@@ -465,11 +645,12 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     return "\n\n".join(parts)[:PROMPT_CAP]
 
 
-def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None):
+def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user"):
     """Persist the comment as a pending record before any model work, so it survives a crash
     and shows up in GET /qa while the turn is queued."""
     record = {"qid": qid, "thread_id": thread_id or qid, "anchor": anchor, "comment": comment,
-              "question": comment, "started_at": cw_store.now_iso(), "status": "pending"}
+              "question": comment, "started_at": cw_store.now_iso(), "status": "pending",
+              "source": source}
     _append_qa(d, record)
     if on_event:
         on_event("thread", {"kind": "turn", "record": record})
@@ -490,11 +671,21 @@ def finalise_stale(d, in_flight):
         if r.get("status") == "pending" and r["qid"] not in in_flight:
             _append_qa(d, {
                 "qid": r["qid"], "thread_id": r["thread_id"], "anchor": r.get("anchor"),
-                "comment": r["comment"], "question": r["question"],
+                "comment": r["comment"], "question": r["question"], "source": r["source"],
                 "started_at": r.get("started_at"), "finished_at": cw_store.now_iso(),
                 "status": "error", "error": "turn was interrupted",
                 "remedy": "send the comment again"})
             sweep_outcomes(d, r["qid"], r["thread_id"])
+    fail_interrupted_tasks(d, in_flight)
+
+
+def fail_interrupted_tasks(d, in_flight):
+    """A running code task whose turn is gone (daemon restart): failed, worktree kept for Discard."""
+    for o in read_outcomes(d):
+        task = (o["payload"] or {}).get("task") if o["outcome"] == "task" else None
+        if o["state"] == "running" and task and task.get("qid") not in in_flight:
+            mark_outcome(d, o["oid"], "failed", expect=("running",),
+                         payload={**o["payload"], "task": {**task, "error": "interrupted"}})
 
 
 def _server_log(message):
@@ -527,7 +718,8 @@ def _emit_progress(live, on_event, qid, thread_id, tool, detail):
         on_event("progress", progress)
 
 
-def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None):
+def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None, plain=False):
+    """plain: a turn with no outcome server (code task): no cw connection check, no text deltas."""
     st = {"init": False, "session_id": None, "texts": [], "result": None, "bad_mcp": False,
           "buf": "", "last": 0.0, "sep": False, "mcp_ids": set()}
 
@@ -554,12 +746,12 @@ def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, 
         if kind == "system" and obj.get("subtype") == "init":
             st["init"] = True
             st["session_id"] = obj.get("session_id")
-            if not any(s.get("name") == "cw" and s.get("status") == "connected"
+            if not plain and not any(s.get("name") == "cw" and s.get("status") == "connected"
                        for s in obj.get("mcp_servers") or [] if isinstance(s, dict)):
                 st["bad_mcp"] = True
                 if live.get("proc"):
                     _kill(live["proc"])
-        elif kind == "stream_event":
+        elif kind == "stream_event" and not plain:
             event = obj.get("event") or {}
             etype = event.get("type")
             if etype == "content_block_start" and (event.get("content_block") or {}).get("type") == "text":
@@ -607,7 +799,7 @@ def _claude_turn(d, record, profile, config, anchor, question, on_event, live, o
     system = _system_prompt(ctx)
     mcp_config = cw_mcp.outcome_mcp_config(d, qid)
     prior = _thread_session(d, thread_id)
-    write_turn_anchor(d, qid, thread_id, anchor)
+    write_turn_anchor(d, qid, thread_id, anchor, question)
 
     def run(session_id=None, resume=None):
         argv = cw_llm.thread_argv(
@@ -679,21 +871,23 @@ def _openai_tools(d, qid, thread_id, on_event, live):
 
     handlers = {name: wrap(_READ_TOOL_NAMES.get(name, name), fn) for name, fn in handlers.items()}
 
-    def propose_resolve(args):
-        _check_cancelled(live)
-        _emit_progress(live, on_event, qid, thread_id, "propose_resolve", "")
-        _ok, text = cw_mcp.accept_outcome(d, qid, "propose_resolve", args)
-        sweep_outcomes(d, qid, thread_id, on_event)
-        return text
+    def outcome_handler(name):
+        def run(args):
+            _check_cancelled(live)
+            _emit_progress(live, on_event, qid, thread_id, name, "")
+            _ok, text = cw_mcp.accept_outcome(d, qid, name, args)
+            sweep_outcomes(d, qid, thread_id, on_event)
+            return text
+        return run
 
-    spec = cw_mcp.OUTCOME_TOOLS[0]
-    tools.append({"type": "function", "function": {
-        "name": spec["name"], "description": spec["description"], "parameters": spec["inputSchema"]}})
-    handlers["propose_resolve"] = propose_resolve
+    for spec in cw_mcp.OUTCOME_TOOLS:
+        tools.append({"type": "function", "function": {
+            "name": spec["name"], "description": spec["description"], "parameters": spec["inputSchema"]}})
+        handlers[spec["name"]] = outcome_handler(spec["name"])
     return tools, handlers
 
 
-def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None):
+def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, source="user"):
     """Never raises: everything that can fail, including loading config and resolving the
     thread profile, runs inside the try below so a misconfigured role lands as an ordinary
     status: "error" record instead of killing the daemon's background thread silently.
@@ -702,7 +896,7 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None):
     live = live if live is not None else {}
     record = {
         "qid": qid, "thread_id": thread_id or qid, "started_at": cw_store.now_iso(),
-        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "status": "ok", "answer": None,
+        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "source": source, "status": "ok", "answer": None,
         "error": None, "remedy": None, "profile": None, "model": None, "session_id": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None},
     }
@@ -730,7 +924,7 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None):
             if profile.get("kind") == "claude-code":
                 _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage)
             else:
-                write_turn_anchor(d, qid, record["thread_id"], anchor)
+                write_turn_anchor(d, qid, record["thread_id"], anchor, question)
                 prompt = build_prompt(d, anchor, question, record["thread_id"])
                 messages = [
                     {"role": "system", "content": _system_prompt()},

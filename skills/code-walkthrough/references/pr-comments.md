@@ -35,6 +35,12 @@ agent is unaffected either way.
 `notes.py import`, `deliver` and `submit` (hand-fed notes JSON, one GraphQL pending review) still
 work for a state.json-driven posting flow; neither button feeds them.
 
+In live mode a comment can also be published on its own, outside any review: a local draft's
+Publish now button sends one `POST repos/<o>/<r>/pulls/<n>/comments` (or, for a reply, `.../comments/<root_id>/replies`,
+always addressed at the thread's top-level comment) and the draft becomes posted at once. GitHub
+refuses it while the viewer has a pending review, so the daemon refuses first and points at Submit
+review. `notes.py publish` is the CLI for that step.
+
 ## Syncing in comments already on the PR
 
 Before posting anything new, or whenever the page should show threads that already exist, pull

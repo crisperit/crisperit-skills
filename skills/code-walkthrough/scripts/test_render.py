@@ -697,3 +697,304 @@ def test_the_caret_blinks_only_when_motion_is_allowed():
     assert "animation:cw-caret" in "".join(m.split("\n  }")[0] for m in motion[1:])
     assert "animation:cw-caret" not in motion[0]
     assert ".cw-outcome{display:flex;flex-wrap:wrap" in template
+
+
+def test_page_edit_code_never_uses_html_injection_and_is_excluded_from_block_logic():
+    template = _real_template()
+    wire_ask = template.split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    edit = wire_ask.split("const pageEdits=new Map()")[1].split("function outcomeEl(")[0]
+    split = "function splitBackticks(" + template.split("function splitBackticks(")[1].split("function wireAsk(){")[0]
+
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
+        assert banned not in edit
+        assert banned not in split
+    assert "insertAdjacentElement" in edit
+
+    in_live_ui = wire_ask.split("const inLiveUi=")[1].split("\n")[0]
+    text_of = wire_ask.split("function textOf(el){")[1].split("function blockOf(")[0]
+    block_index = wire_ask.split("function blockIndex(){")[1].split("function buildAskAnchor(")[0]
+    for part in (in_live_ui, text_of, block_index):
+        assert ".cw-thread,.cw-compose,.cw-pageedit" in part
+    assert text_of.count(".cw-pageedit") == 2
+
+    assert "'/outcomes/'+encodeURIComponent(oid)+'/'+verb" in edit
+    assert "'revert'" in edit and "'reapply'" in edit
+    assert "propose_page_edit" in wire_ask
+
+
+def test_split_backticks_turns_code_spans_into_nodes_and_never_parses_markup():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function splitBackticks(" + _real_template().split("function splitBackticks(")[1].split("function wireAsk(){")[0]
+    script = src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(splitBackticks('plain text'), [{code:false,text:'plain text'}]);
+eq(splitBackticks('use `foo()` now'), [{code:false,text:'use '},{code:true,text:'foo()'},{code:false,text:' now'}]);
+const un = splitBackticks('open ` never closed');
+if (un.some(p => p.code) || un.map(p => p.text).join('') !== 'open ` never closed') throw new Error('unbalanced backtick changed');
+const evil = '<img src=x onerror=alert(1)>';
+eq(splitBackticks(evil), [{code:false,text:evil}]);
+eq(splitBackticks('`' + evil + '`'), [{code:true,text:evil}]);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_page_edit_review_fixes_are_wired():
+    wire_ask = _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+    edit = wire_ask.split("const pageEdits=new Map()")[1].split("function outcomeEl(")[0]
+
+    assert "a.kind==='section'&&target===a.section" in edit
+    assert "hiddenBy" in edit and "if(!s.size)" in edit
+    assert "loadQa();" in edit.split("function pageEditAct(")[1].split("function openThreadOf(")[0]
+    assert "document.getElementById('d'+id)" in edit and edit.count("cleanup();") >= 2
+    card = edit.split("function pageEditCard(")[1]
+    assert "o.state==='applied'" in card.split("Show it")[0].rsplit("\n", 3)[-3] + card.split("Show it")[0]
+    assert "pageEdits.get(o.oid)" in card.split("Show it")[1]
+
+
+def _wire_ask():
+    return _real_template().split("function wireAsk()")[1].split("\n  document.querySelectorAll('pre.diff')")[0]
+
+
+def test_outcome_el_dispatches_github_draft_and_cards_never_use_inner_html():
+    wire_ask = _wire_ask()
+    dispatch = wire_ask.split("function outcomeEl(")[1].split("function turnEl(")[0]
+    assert "o.outcome==='github_draft') return ghDraftCard(t,o)" in dispatch
+    assert "o.outcome==='page_edit') return pageEditCard(t,o)" in dispatch
+
+    section = wire_ask.split("const ghKept=new Map()")[1].split("function turnEl(")[0]
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
+        assert banned not in section
+    # model-authored text only ever reaches the DOM through mk(..., text) / textContent
+    assert "mk('p','cw-ghdraft-body',txt)" in section and "mk('p','cw-ghdraft-body',body)" in section
+    assert "cols.append(col('Original (your words)',orig),col('Drafted',body))" in section
+    assert "GitHub draft, not published" in section and "Kept as a draft" in section
+    assert "ta.value=ghEdit.get(o.oid)" in section
+    assert "/^https:\\/\\//.test(url)" in section
+
+
+def test_github_draft_card_routes_and_publish_one_are_wired():
+    wire_ask = _wire_ask()
+    section = wire_ask.split("const ghKept=new Map()")[1].split("function turnEl(")[0]
+    for verb in ("'keep',{note_id:note.id}", "'verbatim',{}", "'edit',{payload:{body:ta.value}}", "'dismiss',{}"):
+        assert "ghAct(o," + verb in section
+    assert "'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb" in section
+    assert "upsertOutcome(b.outcome)" in section
+    assert "Keep as draft" in section and "Use my words" in section and "orig!==body" in section
+    assert "publishNote(note,o.oid" in section
+    assert "postJson('/publish-one',{resolve:id,oid:o.oid})" in section and "Resolve now" in section
+    assert "state:'done'" in section
+
+    template = _real_template()
+    publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]
+    assert "/publish-one" in publish and "body_sha" in publish and "putNotesNow(false)" in publish
+    assert "__cwOnPosted" in publish and "remedy" in publish
+    assert "Publish now" in template.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
+    assert "if(oid) req.oid=oid" in publish
+    assert "Drafting a GitHub comment" in wire_ask
+
+
+def test_threads_pill_folds_in_the_comments_panel_only_when_live():
+    template = _real_template()
+    wire_ask = _wire_ask()
+    assert "commentsBtn.hidden=true" in wire_ask
+    assert "Copy for agent" in wire_ask and "notesForAgent()" in wire_ask and "agentFeedbackText(notes)" in wire_ask
+    # wireAsk itself only runs behind window.CW_LIVE, so a static page keeps the Comments panel
+    assert "if(window.CW_LIVE) wireAsk();" in template
+    panel = template.split("function wireCommentsPanel(){")[1].split("function wireResolutionDialog(")[0]
+    assert "hr-comments-btn" not in panel.replace("$('hr-comments-btn')", "") and "btn.hidden" not in panel
+    assert "'Comments ('+notes.length+')'" in panel
+
+
+def test_thread_anchor_shape_and_follow_up_keep_the_stored_anchor():
+    wire_ask = _wire_ask()
+    assert "{kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)}" in wire_ask
+    assert "Ask the agent" in _real_template().split("function buildReplyRow(root){")[1].split("function wireReplyBox(")[0]
+    place = wire_ask.split("function placementFor(anchor){")[1].split("function insertAfterThreads(")[0]
+    assert "anchor.kind==='thread'" in place and "rowById.get(n.id)" in place
+    assert "makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null)" in wire_ask
+
+
+def test_bodysha_and_draft_target_mapper_are_pure_and_correct():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    template = _real_template()
+    src = "function bodySha(" + template.split("function bodySha(")[1].split("function publishNote(")[0]
+    script = src + """
+if (typeof crypto === 'undefined' || !crypto.subtle) { console.log('skip'); process.exit(0); }
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(ghDraftFields({kind:'new',path:'a.py',line:3,side:'RIGHT',end_line:5,hunk_id:'h1'}, null),
+   {path:'a.py',line:3,side:'RIGHT',end_line:5,hunk_id:'h1'});
+eq(ghDraftFields({kind:'new',path:'a.py',line:3,side:'RIGHT'}, null).end_line, null);
+const root = {id:'n-1',path:'a.py',line:3,side:'RIGHT',hunk_id:'h1',anchor_text:'x',anchor_line:3};
+const r = ghDraftFields({kind:'reply',note_id:'n-1'}, root);
+eq([r.reply_to, r.in_reply_to, r.path, r.line], ['n-1','n-1','a.py',3]);
+eq(ghDraftFields({kind:'reply',note_id:'gone'}, undefined), null);
+eq(ghDraftFields({kind:'other'}, root), null);
+bodySha('hello').then(h => {
+  eq(h, '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+  return bodySha('h\\u00e9');
+}).then(h => { eq(h.length, 64); });
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_hostile_draft_body_is_only_assigned_through_text_content():
+    section = _wire_ask().split("function ghDraftCard(")[1].split("function outcomeEl(")[0]
+    mk = _wire_ask().split("const mk=(tag,cls,text)=>{")[1].split("};")[0]
+    assert "e.textContent=text" in mk and "innerHTML" not in mk
+    assert "innerHTML" not in section and "<img" not in section
+
+
+def test_triage_button_and_wait_count_are_wired_live_only_without_inner_html():
+    template = _real_template()
+    wire_ask = _wire_ask()
+    assert "postJson('/triage',{})" in wire_ask and "/triage" not in template.split("function wireAsk()")[0]
+    assert "if(window.CW_LIVE) wireAsk();" in template
+    assert "cw-threads-triage" in wire_ask and "wait for you" in wire_ask
+    assert "t.triageTag.hidden=first.source!=='triage'" in wire_ask
+    assert "state.meta&&state.meta.pr" in wire_ask.split("function renderList(){")[1]
+    new = wire_ask.split("function triageCandidates(")[1].split("function stateOf(")[0]
+    new += wire_ask.split("const triageBtn=")[1].split("const commentsBtn=")[0]
+    assert "innerHTML" not in new
+
+
+def test_triage_candidates_and_waiting_count_are_pure_and_correct():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function triageCandidates(" + _wire_ask().split("function triageCandidates(")[1].split("function stateOf(")[0]
+    script = src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+const gh = (id, x) => Object.assign({id, origin:'github', gh_thread_id:'T'+id}, x || {});
+const notes = [gh('a'), gh('b', {resolved:true}), gh('c', {reply_to:'a'}), gh('d', {in_reply_to:'a'}),
+  gh('e'), {id:'f', origin:'local'}, gh('g'), gh('h', {gh_thread_id:null})];
+const turns = new Map([['e', [{source:'triage', status:'done'}]], ['g', [{source:'user', status:'pending'}]],
+  ['a', [{source:'user', status:'done'}]]]);
+eq(triageCandidates(notes, turns).map(n => n.id), ['a']);
+eq(triageCandidates(notes, new Map()).map(n => n.id), ['a', 'e', 'g']);
+eq(waitingCount([]), 0);
+eq(waitingCount([{state:'proposed'}, {state:'kept'}, {state:'dismissed'}, {state:'proposed'}, {state:'done'}]), 2);
+eq(waitingCount([{state:'handed'}, {state:'proposed'}, {state:'handed'}]), 1);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_publish_buttons_share_one_in_flight_set_and_a_posted_409_counts_as_success():
+    template = _real_template()
+    publish = "function publishNote(" + template.split("function publishNote(")[1].split("function noteSig(")[0]
+    assert "const publishing=new Set()" in template
+    assert "if(publishing.has(note.id)) return Promise.resolve(false)" in publish
+    assert "setPublishBusy(note.id,true)" in publish and "setPublishBusy(note.id,false)" in publish
+    assert "dataset.publishFor=n.id" in template.split("function buildItem(n){")[1].split("function wireDraftAutosave(")[0]
+    assert "pb.dataset.publishFor=nid" in _wire_ask()
+    assert "status===409" in publish and "no longer a local draft" in publish and "cur.state!=='draft'" in publish
+    ack = _wire_ask().split("function ghAct(")[1].split("function ghKeep(")[0]
+    assert "loadQa();" in ack
+
+
+def _task_section():
+    return _wire_ask().split("const taskEdit=new Map()")[1].split("function outcomeEl(")[0]
+
+
+def test_outcome_el_dispatches_task_and_routes_are_wired_without_inner_html():
+    dispatch = _wire_ask().split("function outcomeEl(")[1].split("function turnEl(")[0]
+    assert "o.outcome==='task') return taskCard(t,o)" in dispatch
+    assert "o.outcome==='github_draft') return ghDraftCard(t,o)" in dispatch
+    section = _task_section()
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "<img"):
+        assert banned not in section
+    for verb in ("oidPath('run')", "oidPath('dismiss')", "oidPath('discard')", "oidPath('show')", "/edit'"):
+        assert verb in section
+    assert "'/comment/'+encodeURIComponent(task.qid)+'/cancel'" in section
+    assert "window.open(r.url,'_blank','noopener')" in section and "Opening..." in section
+    assert "Run in scratch worktree" in section and "Never pushed." in section
+    assert "if(b.outcome) upsertOutcome(b.outcome)" in section and "errText(b)" in section
+
+
+def test_task_text_only_reaches_the_dom_through_text_content():
+    section = _task_section()
+    assert "mk('li',null,s)" in section and "mk('code',null,task.branch)" in section
+    assert "mk('p','cw-task-sum',task.summary)" in section
+    mk = _wire_ask().split("const mk=(tag,cls,text)=>{")[1].split("};")[0]
+    assert "e.textContent=text" in mk and "innerHTML" not in mk
+
+
+def test_task_progress_and_waiting_count_use_the_shared_paths():
+    wire_ask = _wire_ask()
+    text = wire_ask.split("function progressText(p){")[1].split("const noteById")[0]
+    assert "'Planning a code task'" in text and "/^(Edit|Write)$/.test(p.tool)" in text
+    assert "prog.dataset.qid=task.qid" in _task_section().replace("prog.dataset.qid=task.qid||''", "prog.dataset.qid=task.qid")
+    assert "progressElsOf(d.qid)" in wire_ask
+
+
+def test_sibling_banner_is_gated_and_hides_publishing():
+    template = _real_template()
+    sib = "function wireSibling(){" + template.split("function wireSibling(){")[1].split("wireSibling();")[0]
+    assert "window.CW_LIVE&&window.CW_LIVE.sibling" in sib and "if(!sb||!root) return" in sib
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML"):
+        assert banned not in sib
+    assert "Back to PR head" in sib and "changed by task" in sib and "may be outdated" in sib
+    assert "'.hunk-path'" in sib and "target" not in sib
+    assert ".cw-sibling #cw-drafts-bar" in template and ".cw-sibling .fb-reply" in template
+
+
+def test_handover_card_wiring_and_instruction_escaping():
+    section = _task_section()
+    assert "oidPath('handover')" in section and "o.state==='handed'" in section
+    assert "Hand to my session" in section and "Copy instruction" in section and "copyTask(inst,o.oid)" in section
+    assert "Handed to your session" in section and "Done by your session" in section
+    assert "Waiting for your session to reply. Nothing runs here." in section
+    assert "mk('code',null,inst)" in section and "Never pushed." in section
+    assert "window.CW_LIVE||{}).id" in section
+    done = section.split("if(handedDone){")[1].split("if(o.state==='done'){")[0]
+    assert "oidPath" not in done and "add(" not in done
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    assert "handoverInstruction((window.CW_LIVE||{}).id,title" not in section and "if(wid) add('Copy instruction'" in section
+    src = "function handoverInstruction(" + _wire_ask().split("function handoverInstruction(")[1].split("function taskPlanFromForm(")[0]
+    script = src + r"""
+const eq = (a, b) => { if (a !== b) throw new Error(a + ' != ' + b); };
+eq(handoverInstruction('w1', 'o7'),
+  'In the code-walkthrough MCP server, call walkthrough_get with id "w1" and parts ["threads"], then do the handed task with oid "o7" in my checkout and call walkthrough_reply with that oid and a short summary.');
+const q = handoverInstruction('w"1\n`x`', 'o"7');
+if (q.includes('\n')) throw new Error('raw newline');
+if (!q.includes(JSON.stringify('w"1\n`x`')) || !q.includes(JSON.stringify('o"7'))) throw new Error('not escaped');
+const none = handoverInstruction(undefined, 'o7');
+if (none.includes('undefined') || none.includes(' id ')) throw new Error(none);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_cherry_pick_and_task_form_helpers_are_pure_and_correct():
+    node = shutil.which("node")
+    if not node:
+        print("skip (node not on PATH)")
+        return
+    src = "function cherryPickCommand(" + _wire_ask().split("function cherryPickCommand(")[1].split("const streams=new Map()")[0]
+    script = src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(cherryPickCommand('abc1234'), 'git cherry-pick abc1234');
+eq(cherryPickCommand('abc1234; rm -rf /'), null);
+eq(cherryPickCommand('xyz'), null);
+eq(cherryPickCommand(undefined), null);
+const many = Array.from({length: 30}, (_, i) => 'f' + i).join('\\n');
+const r = taskPlanFromForm('  T  ', ' a \\n\\n  \\n b', many);
+eq([r.title, r.steps, r.files.length], ['T', ['a', 'b'], 20]);
+eq(taskPlanFromForm('x', Array(20).fill('s').join('\\n'), '').steps.length, 12);
+const h = taskPlanFromForm('t', '<img src=x onerror=alert(1)>', '');
+eq(h.steps, ['<img src=x onerror=alert(1)>']);
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr

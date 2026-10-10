@@ -56,7 +56,7 @@ TOOLS = [
             "type": "object", "required": ["id"],
             "properties": {
                 "id": {"type": "string"}, "key": {"type": "string"},
-                "parts": {"type": "array", "items": {"enum": ["meta", "summary", "qa", "files", "notes"]}},
+                "parts": {"type": "array", "items": {"enum": ["meta", "summary", "qa", "files", "notes", "threads"]}},
                 "wait_s": {"type": "integer", "minimum": 0, "maximum": 600},
             },
         },
@@ -67,6 +67,22 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {"repo": {"type": "string"}, "limit": {"type": "integer", "default": 20}},
+        },
+    },
+    {
+        "name": "walkthrough_reply",
+        "description": ("Post the result of work you did in your own session into a walkthrough thread, "
+                        "optionally completing a task the user handed to you. It only adds a reply; "
+                        "nothing is published. The text is stored in the thread, shown on the page and "
+                        "included in later thread prompts sent to the configured model backend, so it "
+                        "must not contain secrets."),
+        "inputSchema": {
+            "type": "object", "required": ["id", "thread_id", "text"],
+            "properties": {
+                "id": {"type": "string"}, "key": {"type": "string"}, "thread_id": {"type": "string"},
+                "oid": {"type": "string", "description": "a handed task's oid, to mark it done"},
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+            },
         },
     },
 ]
@@ -176,10 +192,109 @@ OUTCOME_TOOLS = [
 ]
 
 
-def check_outcome(anchor_doc, name, args, already=()):
-    if name != "propose_resolve":
-        return f"unknown tool {name}"
-    args = args if isinstance(args, dict) else {}
+PAGE_EDIT_OPS = ("insert_after", "replace")
+PAGE_EDIT_CAPS = {"prose": 4000, "list": 4000, "mermaid": 6000}
+
+OUTCOME_TOOLS.append({
+    "name": "propose_page_edit",
+    "description": ("Change what the page shows next to the commented block: insert a new block after it or "
+                    "replace it. The edit applies at once and the user can undo it. Prose and list blocks are "
+                    "markdown-ish text, mermaid blocks are flowchart or sequence diagram source; never HTML."),
+    "inputSchema": {
+        "type": "object", "required": ["op", "target", "block"],
+        "properties": {
+            "op": {"enum": list(PAGE_EDIT_OPS)},
+            "target": {"type": "string", "description": "the Block key from the message"},
+            "block": {
+                "type": "object", "required": ["type", "text"],
+                "properties": {"type": {"enum": list(PAGE_EDIT_CAPS)}, "text": {"type": "string"}},
+            },
+        },
+    },
+})
+
+
+GITHUB_DRAFT_CAP = 4000
+
+OUTCOME_TOOLS.append({
+    "name": "propose_github_draft",
+    "description": ("Draft a GitHub review comment for the user: a new comment on the diff line they commented "
+                    "on, or a reply in a review thread listed in the message. A draft is only a proposal; the "
+                    "user keeps it as a local draft, edits it, or dismisses it, and nothing reaches GitHub "
+                    "from this call. Set verbatim when the user asked to post their own words as they wrote "
+                    "them."),
+    "inputSchema": {
+        "type": "object", "required": ["body", "target"],
+        "properties": {
+            "body": {"type": "string", "maxLength": GITHUB_DRAFT_CAP},
+            "target": {
+                "type": "object", "required": ["kind"],
+                "properties": {"kind": {"enum": ["new", "reply"]},
+                               "note_id": {"type": "string", "description": "the thread id, for kind reply"}},
+            },
+            "verbatim": {"type": "boolean"},
+        },
+    },
+})
+
+
+TASK_LIMITS = {"title": 120, "steps": 12, "step": 300, "files": 20}
+
+OUTCOME_TOOLS.append({
+    "name": "propose_task",
+    "description": ("Record a plan for a code change the comment asks for. Nothing runs from this call: the "
+                    "user reviews the plan and presses Run, and only then a separate agent makes the change "
+                    "on a local branch that is never pushed. Do not paste code or patches."),
+    "inputSchema": {
+        "type": "object", "required": ["title", "steps"],
+        "properties": {
+            "title": {"type": "string", "maxLength": TASK_LIMITS["title"]},
+            "steps": {"type": "array", "minItems": 1, "maxItems": TASK_LIMITS["steps"],
+                      "items": {"type": "string", "maxLength": TASK_LIMITS["step"]}},
+            "files": {"type": "array", "maxItems": TASK_LIMITS["files"],
+                      "items": {"type": "string"}, "description": "repo-relative paths the change touches"},
+        },
+    },
+})
+
+
+def task_plan_error(args):
+    """Validates a code-task plan; shared by propose_task and the user's edit of a proposal."""
+    title = args.get("title")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= TASK_LIMITS["title"]:
+        return f"title must be 1 to {TASK_LIMITS['title']} characters"
+    steps = args.get("steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= TASK_LIMITS["steps"]:
+        return f"steps must be a list of 1 to {TASK_LIMITS['steps']} strings"
+    if any(not isinstance(s, str) or not 1 <= len(s.strip()) <= TASK_LIMITS["step"] for s in steps):
+        return f"each step must be 1 to {TASK_LIMITS['step']} characters"
+    files = args.get("files", [])
+    if not isinstance(files, list) or len(files) > TASK_LIMITS["files"]:
+        return f"files must be a list of at most {TASK_LIMITS['files']} paths"
+    for f in files:
+        if (not isinstance(f, str) or not f or "\x00" in f or f.startswith("/")
+                or ".." in f.split("/")):
+            return f"file {f!r} must be a repo-relative path without .."
+    return None
+
+
+def _check_task(anchor_doc, args, already):
+    if (anchor_doc.get("anchor") or {}).get("kind") not in ("line", "thread"):
+        return "code tasks attach to diff lines or review threads; reply in prose instead"
+    error = task_plan_error(args)
+    if error:
+        return error
+    if "task" in already:
+        return "already proposed a code task in this turn"
+    return None
+
+
+def _task_payload(args, anchor_doc=None):
+    return {"title": args["title"].strip(), "steps": [s.strip() for s in args["steps"]],
+            "files": list(args.get("files") or [])}
+
+
+def _check_resolve(anchor_doc, args, already):
     why = args.get("why")
     if not isinstance(why, str) or not why.strip():
         return "why is required"
@@ -190,9 +305,117 @@ def check_outcome(anchor_doc, name, args, already=()):
         return "thread must be a string"
     if thread not in {t["id"] for t in anchor_doc.get("resolvable") or []}:
         return f"thread {thread} is not a review thread on this comment's lines; reply instead"
-    if thread in already:
+    if f"resolve:{thread}" in already:
         return "already suggested in this turn"
     return None
+
+
+def _check_page_edit(anchor_doc, args, already):
+    anchor = anchor_doc.get("anchor") or {}
+    kind = anchor.get("kind")
+    if kind not in ("block", "section"):
+        return "page edits attach to prose blocks, not diff lines; reply instead"
+    expected = anchor.get(kind)
+    if args.get("op") not in PAGE_EDIT_OPS:
+        return "op must be insert_after or replace"
+    block = args.get("block")
+    if not isinstance(block, dict):
+        return "block must be an object with type and text"
+    cap = PAGE_EDIT_CAPS.get(block.get("type"))
+    if cap is None:
+        return "block.type must be prose, list or mermaid"
+    text = block.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return "block.text is required"
+    if len(text.strip()) > cap:
+        return f"block.text must be at most {cap} characters for {block['type']}"
+    if args.get("target") != expected:
+        return f"target must be {expected}, this comment's block key"
+    if "page_edit" in already:
+        return "already proposed a page edit in this turn"
+    return None
+
+
+def _check_github_draft(anchor_doc, args, already):
+    anchor = anchor_doc.get("anchor") or {}
+    anchor_kind = anchor.get("kind")
+    if anchor_kind not in ("line", "thread"):
+        return ("this comment is on the page text, not on a diff line or a review thread, so no GitHub "
+                "comment can be drafted; reply instead")
+    body = args.get("body")
+    if not isinstance(body, str) or not body.strip():
+        return "body is required"
+    if len(body.strip()) > GITHUB_DRAFT_CAP:
+        return f"body must be at most {GITHUB_DRAFT_CAP} characters"
+    if "verbatim" in args and not isinstance(args["verbatim"], bool):
+        return "verbatim must be a boolean"
+    target = args.get("target")
+    target_kind = target.get("kind") if isinstance(target, dict) else None
+    if target_kind == "new":
+        if anchor_kind != "line":
+            return ("this comment is not on a diff line, so a new review comment cannot be drafted; "
+                    "reply in the thread or reply to an existing review thread")
+    elif target_kind == "reply":
+        note_id = target.get("note_id")
+        if not isinstance(note_id, str) or note_id not in {r["id"] for r in anchor_doc.get("replyable") or []}:
+            return f"note_id {note_id!r} is not a review thread this comment may reply to; reply in prose instead"
+    else:
+        return "target.kind must be new or reply"
+    if "github_draft" in already:
+        return "already drafted a GitHub comment in this turn"
+    return None
+
+
+def _resolve_payload(args, anchor_doc=None):
+    return {"thread": args["thread"], "why": args["why"].strip()}
+
+
+def _github_draft_payload(args, anchor_doc):
+    original = anchor_doc.get("comment") or ""
+    verbatim = args.get("verbatim") is True and bool(original)
+    anchor = anchor_doc.get("anchor") or {}
+    if args["target"]["kind"] == "new":
+        target = {"kind": "new", **{k: anchor.get(k) for k in ("path", "line", "side", "end_line", "hunk_id")}}
+    else:
+        row = next(r for r in anchor_doc["replyable"] if r["id"] == args["target"]["note_id"])
+        target = {"kind": "reply", "note_id": row["id"], "path": row["path"], "line": row["line"]}
+    return {"body": original if verbatim else args["body"].strip(), "original": original,
+            "verbatim": verbatim, "target": target}
+
+
+def _page_edit_payload(args, anchor_doc=None):
+    block = args["block"]
+    return {"op": args["op"], "target": args["target"],
+            "block": {"type": block["type"], "text": block["text"].strip()}}
+
+
+OUTCOME_KINDS = {
+    "propose_task": {
+        "outcome": "task", "state": "proposed", "check": _check_task, "payload": _task_payload,
+        "key": lambda payload: "task",
+        "accepted": "recorded as a plan; nothing runs until the user presses Run",
+    },
+    "propose_resolve": {
+        "outcome": "resolve", "state": "proposed", "check": _check_resolve, "payload": _resolve_payload,
+        "key": lambda payload: f"resolve:{payload['thread']}", "accepted": "recorded as a suggestion; the user decides",
+    },
+    "propose_github_draft": {
+        "outcome": "github_draft", "state": "proposed", "check": _check_github_draft,
+        "payload": _github_draft_payload, "key": lambda payload: "github_draft",
+        "accepted": "drafted for the user, who keeps or dismisses it; nothing was posted to GitHub",
+    },
+    "propose_page_edit": {
+        "outcome": "page_edit", "state": "applied", "check": _check_page_edit, "payload": _page_edit_payload,
+        "key": lambda payload: "page_edit", "accepted": "applied to the page; the user can undo it",
+    },
+}
+
+
+def check_outcome(anchor_doc, name, args, already=()):
+    kind = OUTCOME_KINDS.get(name)
+    if kind is None:
+        return f"unknown tool {name}"
+    return kind["check"](anchor_doc, args if isinstance(args, dict) else {}, already)
 
 
 def accept_outcome(d, qid, name, args):
@@ -205,7 +428,8 @@ def accept_outcome(d, qid, name, args):
     try:
         for line in path.read_text().splitlines():
             try:
-                already.add(json.loads(line)["arguments"]["thread"])
+                rec = json.loads(line)
+                already.add(OUTCOME_KINDS[rec["name"]]["key"](rec["arguments"]))
             except (ValueError, KeyError, TypeError):
                 pass
     except OSError:
@@ -213,14 +437,15 @@ def accept_outcome(d, qid, name, args):
     error = check_outcome(anchor_doc, name, args, already)
     if error:
         return False, error
+    kind = OUTCOME_KINDS[name]
     record = {"oid": "o-" + uuid.uuid4().hex[:8], "name": name,
-              "arguments": {"thread": args["thread"], "why": args["why"].strip()}, "at": cw_store.now_iso()}
+              "arguments": kind["payload"](args, anchor_doc), "at": cw_store.now_iso()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(record) + "\n")
         f.flush()
         os.fsync(f.fileno())
-    return True, "recorded as a suggestion; the user decides"
+    return True, kind["accepted"]
 
 
 def outcome_mcp_config(d, qid):

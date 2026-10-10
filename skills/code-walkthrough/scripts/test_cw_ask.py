@@ -1104,6 +1104,205 @@ def test_outcome_action_states_and_done_folding():
         assert [o["state"] for o in cw_ask.read_outcomes(d)] == ["dismissed", "done"]
 
 
+def _page_edit_call(at=1, **over):
+    args = {"op": "insert_after", "target": "overview:p1", "block": {"type": "prose", "text": " A note. "}, **over}
+    return [{"at": at, "name": "propose_page_edit", "arguments": args}]
+
+
+def test_page_edit_applies_at_creation_and_revert_reapply_fold():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        entry = cw_testlib.claude_stream_entry(["added a note"], mcp_calls=_page_edit_call())
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc:
+            record, events = _cturn(d, "q1", "add a note", anchor=ANCHOR_BLOCK)
+        assert "Block key: overview:p1" in fc.log()[-1]["stdin"]
+        kinds = [k for k, _ in events]
+        assert kinds.index("outcome") < kinds.index("thread")
+        outcome = dict(events)["outcome"]
+        assert outcome["outcome"] == "page_edit" and outcome["state"] == "applied"
+        assert outcome["payload"] == {"op": "insert_after", "target": "overview:p1",
+                                      "block": {"type": "prose", "text": "A note."}}
+        oid = outcome["oid"]
+        seen = []
+        on_event = lambda kind, data: seen.append(data["state"])
+
+        def refused(action):
+            try:
+                cw_ask.outcome_action(d, oid, action)
+            except cw_ask.OutcomeError as e:
+                return e.kind
+            raise AssertionError("not refused")
+
+        assert refused("reapply") == "conflict"
+        assert refused("dismiss") == "invalid" and refused("edit") == "invalid"
+        assert cw_ask.outcome_action(d, oid, "revert", on_event=on_event)["state"] == "reverted"
+        assert refused("revert") == "conflict"
+        assert cw_ask.outcome_action(d, oid, "reapply", on_event=on_event)["state"] == "applied"
+        assert seen == ["reverted", "applied"]
+        assert cw_ask.read_threads(d)["q1"]["outcomes"][0]["state"] == "applied"
+
+
+def test_page_edit_undo_and_redo_reach_the_next_prompt():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        d = _claude_done(home, tmp)
+        script = {"sonnet": [cw_testlib.claude_stream_entry(["one"], mcp_calls=_page_edit_call()),
+                             cw_testlib.claude_stream_entry(["two"]),
+                             cw_testlib.claude_stream_entry(["three"])]}
+        with cw_testlib.fake_claude(tmp, script) as fc:
+            _cturn(d, "q1", "add", anchor=ANCHOR_BLOCK)
+            oid = cw_ask.read_outcomes(d)[0]["oid"]
+            cw_ask.outcome_action(d, oid, "revert")
+            _cturn(d, "q2", "again?", thread_id="q1", anchor=ANCHOR_BLOCK)
+            cw_ask.outcome_action(d, oid, "reapply")
+            _cturn(d, "q3", "ok", thread_id="q1", anchor=ANCHOR_BLOCK)
+        second, third = fc.log()[1]["stdin"], fc.log()[2]["stdin"]
+        assert "The user undid your page edit (insert_after after block overview:p1)" in second
+        assert "Block key: overview:p1" in second
+        assert "The user redid your page edit" in third and "undid" not in third
+
+
+def test_page_edit_on_a_line_anchor_is_refused_and_openai_path_registers_the_tool():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        def ask_handler(body, n):
+            if n == 0:
+                return cw_testlib.tool_call("propose_page_edit", {
+                    "op": "replace", "target": "overview:p1", "block": {"type": "list", "text": "- x"}})
+            return cw_testlib.text("done")
+
+        with cw_testlib.StubLLM(_combined_script(ask_handler)) as stub:
+            d = _build_done(home, tmp, stub)
+            record, events = _cturn(d, "q1", "list it", anchor=ANCHOR_BLOCK)
+            names = [t["function"]["name"] for t in
+                     [r for r in stub.requests if r.get("model") == "ask-m"][-1]["tools"]]
+            line_record, line_events = _cturn(d, "q2", "x", anchor=ANCHOR_LINE)
+        assert {"propose_resolve", "propose_page_edit", "propose_github_draft"} <= set(names)
+        assert record["status"] == "ok" and [o["state"] for o in cw_ask.read_outcomes(d)] == ["applied"]
+        assert "outcome" in [k for k, _ in events]
+        assert "outcome" not in [k for k, _ in line_events]
+
+
+ANCHOR_THREAD = {"kind": "thread", "note_id": "gh-501", "quote": "please fix"}
+DRAFT_COMMENT = "  you should guard this\n```py\nx = 1\n```\n<b>now</b> \U0001F680\n"
+
+
+def _thread_state(d):
+    root = {"id": "gh-501", "origin": "github", "gh_thread_id": "T1", "path": "foo.py", "line": 2,
+            "author": "rev", "body": "please fix", "state": "posted", "created_at": "2026-01-01T00:00:01Z",
+            "diff_hunk": "@@ -1,3 +1,3 @@\n a\n-b\n+X"}
+    other = {**root, "id": "gh-600", "gh_thread_id": "T2", "line": 3, "resolved": True, "body": "old nit"}
+    reply = {**root, "id": "gh-502", "reply_to": "gh-501", "author": "me", "body": "done in abc",
+             "created_at": "2026-01-01T00:00:02Z", "diff_hunk": None}
+    draft = {**reply, "id": "n-draft", "origin": "local", "state": "draft", "body": "SECRET DRAFT"}
+    cw_store.write_json(Path(d) / "state.json", {"notes": [reply, root, other, draft]})
+
+
+def test_thread_anchor_validation_and_turn_anchor_doc():
+    assert cw_ask.validate_anchor(dict(ANCHOR_THREAD)) == ANCHOR_THREAD
+    for bad in ({"kind": "thread", "quote": "q"}, {"kind": "thread", "note_id": 5, "quote": "q"},
+                {"kind": "thread", "note_id": "a b", "quote": "q"}, {"kind": "thread", "note_id": "gh-1"}):
+        try:
+            cw_ask.validate_anchor(bad)
+        except cw_store.CWError:
+            continue
+        raise AssertionError(bad)
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _thread_state(d)
+
+        def doc(anchor):
+            cw_ask.write_turn_anchor(d, "q1", "q1", anchor, DRAFT_COMMENT)
+            return cw_store.read_json(d / "turns" / "q1.anchor.json")
+
+        thread = doc(ANCHOR_THREAD)
+        assert thread["comment"] == DRAFT_COMMENT
+        assert [r["id"] for r in thread["replyable"]] == ["gh-501"] == [r["id"] for r in thread["resolvable"]]
+        assert thread["replyable"][0].keys() == {"id", "path", "line", "author", "body"}
+        assert doc({**ANCHOR_THREAD, "note_id": "gh-600"})["resolvable"] == []
+        assert [r["id"] for r in doc({**ANCHOR_THREAD, "note_id": "gh-600"})["replyable"]] == ["gh-600"]
+        assert doc({**ANCHOR_THREAD, "note_id": "gh-502"})["replyable"] == []
+        line = doc({**ANCHOR_LINE, "end_line": 3})
+        assert sorted(r["id"] for r in line["replyable"]) == ["gh-501", "gh-600"]
+        assert [r["id"] for r in line["resolvable"]] == ["gh-501"]
+        assert doc(ANCHOR_BLOCK)["replyable"] == [] and doc(ANCHOR_SECTION)["replyable"] == []
+
+
+def test_thread_anchor_prompt_carries_the_thread_in_order_and_its_hunk_but_no_drafts():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _thread_state(d)
+        prompt = cw_ask.build_prompt(d, dict(ANCHOR_THREAD), "is this fixed?", "q1")
+        assert "gh-501" in prompt and "@@ -1,3 +1,3 @@\n a\n-b\n+X" in prompt
+        assert prompt.index("rev: please fix") < prompt.index("me: done in abc")
+        assert "SECRET DRAFT" not in prompt and "old nit" not in prompt
+
+
+def _draft_turn(d, qid, anchor, comment, args, thread_id=None):
+    cw_ask.write_turn_anchor(d, qid, thread_id or qid, anchor, comment)
+    ok, text = cw_mcp.accept_outcome(d, qid, "propose_github_draft", args)
+    assert ok, text
+    cw_ask.sweep_outcomes(d, qid, thread_id or qid)
+    return next(o for o in cw_ask.read_outcomes(d) if o["qid"] == qid)
+
+
+def test_github_draft_outcome_states_and_guards():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _thread_state(d)
+        outcome = _draft_turn(d, "q1", ANCHOR_LINE, DRAFT_COMMENT, {"body": "reworded", "target": {"kind": "new"}})
+        oid = outcome["oid"]
+        assert outcome["outcome"] == "github_draft" and outcome["state"] == "proposed"
+        assert outcome["payload"]["original"] == DRAFT_COMMENT and outcome["payload"]["verbatim"] is False
+        assert outcome["payload"]["target"]["path"] == "foo.py"
+
+        def refused(action, payload=None, target=oid):
+            try:
+                cw_ask.outcome_action(d, target, action, payload)
+            except cw_ask.OutcomeError as e:
+                return e.kind
+            raise AssertionError("not refused")
+
+        assert refused("revert") == "invalid" and refused("reapply") == "invalid"
+        for bad in (None, {}, {"body": "  "}, {"body": 5}, {"body": "x" * 4001}):
+            assert refused("edit", bad) == "invalid"
+        for bad in (None, {}, {"note_id": 5}, {"note_id": "a b"}):
+            assert refused("keep", bad) == "invalid"
+        edited = cw_ask.outcome_action(d, oid, "edit", {"body": "  my edit \n"})
+        assert edited["state"] == "proposed" and edited["payload"]["body"] == "  my edit \n"
+        assert edited["payload"]["edited"] is True and edited["payload"]["verbatim"] is False
+        back = cw_ask.outcome_action(d, oid, "verbatim", {})
+        assert back["payload"]["body"] == DRAFT_COMMENT and back["payload"]["verbatim"] is True
+        assert back["payload"]["edited"] is False
+        kept = cw_ask.outcome_action(d, oid, "keep", {"note_id": "n-77"})
+        assert kept["state"] == "kept" and kept["payload"]["note_id"] == "n-77"
+        assert kept["payload"]["body"] == DRAFT_COMMENT
+        for action, payload in (("dismiss", None), ("edit", {"body": "x"}), ("keep", {"note_id": "n-8"}),
+                                ("verbatim", {})):
+            assert refused(action, payload) == "conflict"
+        published = cw_ask.mark_outcome(d, oid, "published")
+        assert published["state"] == "published" and published["payload"] == kept["payload"]
+
+        second = _draft_turn(d, "q2", ANCHOR_THREAD, "c", {"body": "b", "target": {"kind": "reply", "note_id": "gh-501"}})
+        assert second["payload"]["target"] == {"kind": "reply", "note_id": "gh-501", "path": "foo.py", "line": 2}
+        assert cw_ask.outcome_action(d, second["oid"], "dismiss")["state"] == "dismissed"
+        assert refused("keep", {"note_id": "n-9"}, target=second["oid"]) == "conflict"
+
+
+def test_github_draft_dismissal_and_edit_reach_the_next_prompt():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _thread_state(d)
+        one = _draft_turn(d, "q1", ANCHOR_LINE, "c", {"body": "first", "target": {"kind": "new"}}, "q1")
+        cw_ask.outcome_action(d, one["oid"], "edit", {"body": "my words"})
+        text = cw_ask.build_prompt(d, dict(ANCHOR_LINE), "next", "q1", resumed=True)
+        assert "edited your draft GitHub comment on foo.py:2 to: my words" in text
+        assert "Review threads on these lines you may reply to with propose_github_draft:" in text
+        cw_ask.outcome_action(d, one["oid"], "dismiss")
+        text = cw_ask.build_prompt(d, dict(ANCHOR_LINE), "next", "q1", resumed=True)
+        assert "dismissed your draft GitHub comment on foo.py:2" in text
+        cw_ask.mark_outcome(d, one["oid"], "published")
+        assert "published" not in cw_ask.build_prompt(d, dict(ANCHOR_LINE), "next", "q1", resumed=True)
+
+
 if __name__ == "__main__":
     tests = [
         test_ask_gives_qa_record_and_sse_answer,
@@ -1142,6 +1341,13 @@ if __name__ == "__main__":
         test_reseeded_prompt_lists_earlier_dismissed_suggestion,
         test_finalise_stale_keeps_outcomes_accepted_before_the_kill,
         test_outcome_action_states_and_done_folding,
+        test_page_edit_applies_at_creation_and_revert_reapply_fold,
+        test_page_edit_undo_and_redo_reach_the_next_prompt,
+        test_page_edit_on_a_line_anchor_is_refused_and_openai_path_registers_the_tool,
+        test_thread_anchor_validation_and_turn_anchor_doc,
+        test_thread_anchor_prompt_carries_the_thread_in_order_and_its_hunk_but_no_drafts,
+        test_github_draft_outcome_states_and_guards,
+        test_github_draft_dismissal_and_edit_reach_the_next_prompt,
     ]
     for test in tests:
         test()

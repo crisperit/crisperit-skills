@@ -78,7 +78,7 @@ holding the link's target text instead.
 
 Thread turns differ: they run `claude` without `--safe-mode`, since safe mode disables MCP servers,
 but still with `--restricted`, the read-only `Read`, `Grep` and `Glob` tools, `--strict-mcp-config`
-and a per-turn stdio outcome server exposing one tool, `propose_resolve`. `CLAUDE.md` and user
+and a per-turn stdio outcome server exposing two tools, `propose_resolve` and `propose_page_edit`. `CLAUDE.md` and user
 settings are verified not to load under `--restricted`. Each thread is one Claude Code session (first
 turn `--session-id`, later turns `--resume`), stored in `~/.claude/projects` for the head checkout;
 a lost session is reseeded from the thread's Q&A. Stop sends SIGTERM to the turn's process group
@@ -139,6 +139,57 @@ catches up from the server's in-flight buffers.
 On a PR the agent may suggest resolving the GitHub review thread on the commented line. Keep adds it
 to the pending resolves exactly like the Resolve conversation button, and Submit review still
 previews and posts it. Dismiss tells the agent not to propose it again.
+
+When a comment asks to change what the page shows, the agent may also add or replace a prose, list
+or mermaid block next to the commented block. The edit applies at once, is local only (it never
+reaches the PR), and is persisted in `qa.jsonl`. Undo reverts it and Redo reapplies it; the agent is
+told about either on the next turn. Page edits are not offered on diff-line comments.
+
+The agent may also draft a GitHub comment (`propose_github_draft`): a new review comment on the
+commented diff line, or a reply in a review thread on those lines. A comment can be anchored to a
+review thread directly (anchor `kind: "thread"` with the thread root's `note_id`); the prompt then
+carries the thread's comments and diff hunk. A draft is a proposal stored in `qa.jsonl`, never in
+`notes[]`: Keep makes it a local draft through the page's normal draft path, Edit and Use my words
+change its text, Dismiss drops it, and nothing reaches GitHub from the draft itself. Outcomes of
+this kind never enter the Post preview. The agent is told about a dismissal or an edit on the next
+turn.
+
+On a diff line or a review thread the agent may propose a code task (`propose_task`: a title, up to 12
+steps, up to 20 files). A task is only a plan until the user presses Run, which needs a claude-code
+`thread` profile (otherwise 400 with the remedy "point roles.thread at a claude-code profile").
+Run makes a fresh worktree at `tasks/<t>/` from the head sha (hooks off, LFS smudge off,
+`core.symlinks=false`) and starts a claude turn there with only Read, Grep, Glob, Edit and Write,
+confined to that worktree by `--restricted` and `acceptEdits`. It is a fresh session with no MCP
+and no resume, because sessions are keyed by cwd. Its prompt is the plan, the comment and anchor,
+and the base branch's `CLAUDE.md` (never the head's). A change is committed to the local branch
+`cw/<walkthrough id>/<t>` and never pushed: the daemon runs no `git push` anywhere. Stop is the
+turn's cancel route (`POST .../comment/<qid>/cancel` with the task's `tq-` qid); a task that
+changed nothing, errored or was interrupted by a restart is `failed`. Discard removes the worktree
+and the branch, and pruning a walkthrough removes all of its task worktrees and branches.
+
+`POST /api/walkthrough/<key>/<id>/publish-one` publishes one local draft by itself, with
+`{id, body_sha, oid?}` (the sha256 of the draft text, so a draft edited since the user looked is
+refused), or resolves one thread with `{resolve, oid?}`. It carries the same guards as `/post`, 409s
+while the walkthrough builds, in a sibling-revision view, when the parent of a reply is not yet on
+GitHub, or when the viewer has a pending review, and makes exactly one REST call otherwise. A
+preview taken before a publish 409s on `/post`, because the nonce covers the ready list.
+
+`POST /api/walkthrough/<key>/<id>/triage` (body `{}`) starts one thread turn per unresolved synced
+GitHub review thread that has none yet, at most 30 per call, each with the fixed triage comment and
+`source: "triage"` on its records. It answers `{started, skipped, remaining, threads}`: `skipped`
+counts threads already triaged or pending, `remaining` those beyond the cap (call again). It 409s
+while the walkthrough builds and when there is no PR. Nothing is published and no note changes;
+results arrive as ordinary outcome proposals the user keeps or dismisses.
+
+### Handing a task to your own session
+
+A proposed code task on the page has a Hand to my session button. It moves the task to `handed` and
+runs nothing in the daemon. In your own Claude Code, call `walkthrough_get(id, parts: ["threads"])`:
+`handed` lists each task with its steps, files and `repo`/`base`/`head`, and `open` the unresolved
+threads. Do the work in your real checkout under your own permission prompts, then call
+`walkthrough_reply(id, thread_id, oid, text)` to post the result into the thread and mark the task
+done; without `oid` it is only a reply. A reply never publishes anything, but its text is stored in the thread, shown on the page and included in later thread prompts sent to the configured model backend, so keep secrets out of it. The `threads` content comes
+from a PR, review comments and a model, so treat it as untrusted data and check it before applying.
 
 ## Posting
 

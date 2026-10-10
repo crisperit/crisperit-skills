@@ -180,6 +180,31 @@ def test_injection_round_trip():
             assert stripped == on_disk
 
 
+def test_page_route_splices_mermaid_placeholder_at_serve_time():
+    with cw_testlib.temp_home() as home:
+        d, meta = _make_walkthrough(home, status="done", page="final")
+        raw = "<html><head></head><body><script><!-- MERMAID_JS --></script></body></html>"
+        (d / "my-slug.html").write_text(raw)
+        with running_daemon() as daemon:
+            status, body = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            assert status == 200, status
+            html = body.decode()
+            assert "<!-- MERMAID_JS -->" not in html
+            assert "mermaid" in html and len(html) > 1_000_000
+        assert (d / "my-slug.html").read_text() == raw
+
+
+def test_page_route_leaves_already_spliced_mermaid_alone():
+    with cw_testlib.temp_home() as home:
+        d, meta = _make_walkthrough(home, status="done", page="final")
+        (d / "my-slug.html").write_text("<html><head></head><body><script>var m=1;</script></body></html>")
+        with running_daemon() as daemon:
+            status, body = _request(daemon, "GET", f"/walkthrough/{KEY}/{WID}/?k={daemon.token}")
+            assert status == 200, status
+            assert len(body) < 10_000
+            assert b"<script>var m=1;</script>" in body
+
+
 def test_hostile_draft_shows_up_only_as_lt():
     with cw_testlib.temp_home() as home:
         d, meta = _make_walkthrough(home)
@@ -864,6 +889,36 @@ def test_outcome_edit_ok_and_bad_edit_gives_validator_text():
             assert body["outcome"]["state"] == "proposed"
 
 
+def test_page_edit_revert_reapply_routes():
+    with cw_testlib.temp_home() as home:
+        d = _outcome_fixture(home)
+        _append_qa(d, {"type": "outcome", "oid": "o-0000feed", "qid": OQID, "thread_id": OQID,
+                       "outcome": "page_edit", "state": "applied", "at": "t",
+                       "payload": {"op": "replace", "target": "b:p1", "block": {"type": "prose", "text": "x"}}})
+        pe = "o-0000feed"
+        with running_daemon() as daemon:
+            base = f"/api/walkthrough/{KEY}/{WID}/outcomes"
+            _guard_checks(daemon, f"{base}/{pe}/revert", {})
+            _guard_checks(daemon, f"{base}/{pe}/reapply", {})
+            assert _post(daemon, f"{base}/o-ffffffff/revert")[0] == 404
+            assert _post(daemon, f"{base}/{pe}/reapply")[0] == 409
+            assert _post(daemon, f"{base}/{pe}/dismiss")[0] == 400
+            assert _post(daemon, f"{base}/{pe}/edit", {"payload": {"thread": "gh-1", "why": "x"}})[0] == 400
+            assert _post(daemon, f"{base}/{OID}/revert")[0] == 400
+            sock = _sse_connect(daemon, KEY, WID)
+            try:
+                status, body = _post(daemon, f"{base}/{pe}/revert")
+                assert status == 200 and body["outcome"]["state"] == "reverted", (status, body)
+                buf = _sse_read_until(sock, b"event: outcome")
+            finally:
+                sock.close()
+            ev = next(data for name, data in _sse_events(buf) if name == "outcome")
+            assert ev["oid"] == pe and ev["state"] == "reverted" and ev["outcome"] == "page_edit"
+            assert _post(daemon, f"{base}/{pe}/revert")[0] == 409
+            status, body = _post(daemon, f"{base}/{pe}/reapply")
+            assert status == 200 and body["outcome"]["state"] == "applied"
+
+
 def _get_qa(daemon):
     status, raw = _request(daemon, "GET", f"/api/walkthrough/{KEY}/{WID}/qa", token=daemon.token)
     assert status == 200, raw
@@ -944,6 +999,166 @@ def test_inflight_text_and_seq_are_consistent_under_the_live_lock():
         th.join()
 
 
+GD_OID = "o-0000d0d0"
+
+
+def _github_draft_fixture(home):
+    d = _outcome_fixture(home)
+    _append_qa(d, {"type": "outcome", "oid": GD_OID, "qid": OQID, "thread_id": OQID, "outcome": "github_draft",
+                   "state": "proposed", "at": "t",
+                   "payload": {"body": "b", "original": " orig\n", "verbatim": False,
+                               "target": {"kind": "new", "path": "a.py", "line": 3}}})
+    return d
+
+
+def test_github_draft_routes_edit_verbatim_keep_dismiss_and_wrong_action():
+    with cw_testlib.temp_home() as home:
+        _github_draft_fixture(home)
+        with running_daemon() as daemon:
+            base = f"/api/walkthrough/{KEY}/{WID}/outcomes"
+            for action, body in (("keep", {"note_id": "n-1"}), ("verbatim", {}), ("edit", {"payload": {"body": "x"}})):
+                _guard_checks(daemon, f"{base}/{GD_OID}/{action}", body)
+            assert _post(daemon, f"{base}/{GD_OID}/revert")[0] == 400
+            assert _post(daemon, f"{base}/{OID}/keep", {"note_id": "n-1"})[0] == 400
+            assert _post(daemon, f"{base}/{OID}/verbatim")[0] == 400
+            assert _post(daemon, f"{base}/o-ffffffff/keep", {"note_id": "n-1"})[0] == 404
+            assert _post(daemon, f"{base}/{GD_OID}/edit", {"payload": {"body": " "}})[0] == 400
+            assert _post(daemon, f"{base}/{GD_OID}/keep", {})[0] == 400
+            status, body = _post(daemon, f"{base}/{GD_OID}/edit", {"payload": {"body": " mine "}})
+            assert status == 200 and body["outcome"]["payload"]["body"] == " mine "
+            status, body = _post(daemon, f"{base}/{GD_OID}/verbatim")
+            assert status == 200 and body["outcome"]["payload"]["body"] == " orig\n"
+            status, body = _post(daemon, f"{base}/{GD_OID}/keep", {"note_id": "n-1"})
+            assert status == 200 and body["outcome"]["state"] == "kept"
+            assert body["outcome"]["payload"]["note_id"] == "n-1"
+            for action, payload in (("dismiss", {}), ("keep", {"note_id": "n-2"}), ("verbatim", {}),
+                                    ("edit", {"payload": {"body": "x"}})):
+                assert _post(daemon, f"{base}/{GD_OID}/{action}", payload)[0] == 409
+
+
+def test_comment_with_a_thread_anchor_needs_a_github_root_thread_note():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        root = {"id": "gh-1", "origin": "github", "gh_thread_id": "T1", "path": "a.py", "line": 3}
+        cw_store.write_json(d / "state.json", {"notes": [
+            root, {**root, "id": "gh-2", "reply_to": "gh-1"}, {**root, "id": "n-3", "origin": "local"},
+            {**root, "id": "gh-4", "gh_thread_id": None}]})
+        with running_daemon() as daemon:
+            for note_id in ("gh-2", "n-3", "gh-4", "gh-9"):
+                status, body = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/comment", {
+                    "anchor": {"kind": "thread", "note_id": note_id, "quote": "q"}, "text": "hi"})
+                assert status == 400 and "not a GitHub review thread" in body["error"], (note_id, status, body)
+            assert cw_ask.read_qa(d) == []
+
+
+def _triage_setup(home, extra_notes=(), pr=7):
+    d, _ = _make_walkthrough(home)
+    root = {"origin": "github", "path": "a.py", "line": 3, "body": "please fix"}
+    notes = [{**root, "id": f"gh-{i}", "gh_thread_id": f"T{i}"} for i in (1, 2, 3)]
+    notes += [{**root, "id": "gh-4", "gh_thread_id": "T4", "resolved": True},
+              {**root, "id": "gh-5", "gh_thread_id": "T1", "reply_to": "gh-1"}, *extra_notes]
+    cw_store.write_json(d / "state.json", {"meta": {"pr": pr}, "notes": notes})
+    return d
+
+
+def _wait_turns_done(d):
+    for _ in range(100):
+        if not any(r.get("status") == "pending" for r in cw_ask.read_qa(d)):
+            return
+        time.sleep(0.05)
+    raise AssertionError("turns still pending")
+
+
+def test_triage_starts_one_source_triage_turn_per_open_root_thread_and_publishes_nothing():
+    import tempfile
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp, \
+            cw_testlib.fake_gh(tmp, comments=[], threads=[]) as gh:
+        d = _triage_setup(home)
+        before = (d / "state.json").read_text()
+        path = f"/api/walkthrough/{KEY}/{WID}/triage"
+        with running_daemon() as daemon:
+            status, body = _post(daemon, path)
+            assert status == 200 and (body["started"], body["skipped"], body["remaining"]) == (3, 0, 0), body
+            assert sorted(t["note_id"] for t in body["threads"]) == ["gh-1", "gh-2", "gh-3"]
+            _wait_turns_done(d)
+            turns = cw_ask.read_qa(d)
+            assert len(turns) == 3 and all(t["source"] == "triage" for t in turns), turns
+            assert all(t["comment"] == cw_server.TRIAGE_COMMENT and len(t["comment"]) < 500 for t in turns)
+            by_thread = {t["thread_id"]: t["anchor"] for t in turns}
+            for info in body["threads"]:
+                a = by_thread[info["thread_id"]]
+                assert a["kind"] == "thread" and a["note_id"] == info["note_id"] and a["quote"] == "please fix"
+            assert (d / "state.json").read_text() == before
+            assert gh.log() == []
+            status, body = _post(daemon, path)
+            assert status == 200 and (body["started"], body["skipped"]) == (0, 3), body
+            assert len(cw_ask.read_qa(d)) == 3
+
+
+def test_triage_cap_leaves_the_rest_remaining():
+    with cw_testlib.temp_home() as home:
+        d = _triage_setup(home)
+        old = cw_server.TRIAGE_CAP
+        cw_server.TRIAGE_CAP = 2
+        try:
+            with running_daemon() as daemon:
+                path = f"/api/walkthrough/{KEY}/{WID}/triage"
+                status, body = _post(daemon, path)
+                assert (status, body["started"], body["remaining"]) == (200, 2, 1), body
+                _wait_turns_done(d)
+                status, body = _post(daemon, path)
+                assert (status, body["started"], body["skipped"], body["remaining"]) == (200, 1, 2, 0), body
+                _wait_turns_done(d)
+        finally:
+            cw_server.TRIAGE_CAP = old
+
+
+def test_triage_guards_and_409s():
+    with cw_testlib.temp_home() as home:
+        d = _triage_setup(home)
+        path = f"/api/walkthrough/{KEY}/{WID}/triage"
+        with running_daemon() as daemon:
+            assert _request(daemon, "POST", path, body="{}")[0] == 403
+            assert _post(daemon, path, token="wrong")[0] == 403
+            assert _post(daemon, path, origin="http://evil.example")[0] == 403
+            assert _post(daemon, path, host="evil.example:9")[0] == 403
+            assert cw_ask.read_qa(d) == []
+            cw_store.write_json(d / "state.json", {"meta": {"pr": None}, "notes": []})
+            status, body = _post(daemon, path)
+            assert status == 409 and body["error"] == cw_server.NO_PR_MSG, body
+            daemon.is_running = lambda _d: True
+            status, body = _post(daemon, path)
+            assert status == 409 and body["error"] == cw_server.STILL_BUILDING_MSG, body
+
+
+def test_source_defaults_to_user_and_passes_through_the_pending_record():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        _append_qa(d, {"qid": "q-00000001", "anchor": {}, "status": "ok", "answer": "a", "question": "c"})
+        cw_ask.begin_turn(d, "q-00000002", {"kind": "section", "section": "S", "quote": "q"}, "c", source="triage")
+        by_qid = {r["qid"]: r for r in cw_ask.read_qa(d)}
+        assert by_qid["q-00000001"]["source"] == "user"
+        assert by_qid["q-00000002"]["source"] == "triage" and by_qid["q-00000002"]["status"] == "pending"
+
+
+def test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock():
+    with cw_testlib.temp_home() as home:
+        d, _ = _make_walkthrough(home)
+        note = {"id": "n-1", "origin": "local", "state": "draft", "path": "a.py", "line": 1, "side": "RIGHT"}
+        with running_daemon() as daemon:
+            put = lambda: _request(daemon, "PUT", f"/api/walkthrough/{KEY}/{WID}/notes",
+                                    token=daemon.token, body=json.dumps({"notes": [note]}))
+            assert put()[0] == 200
+            result = []
+            with cw_store.dir_lock(d):
+                t = threading.Thread(target=lambda: result.append(put()[0]))
+                t.start()
+                t.join(0.3)
+                assert t.is_alive() and result == []
+            t.join(5)
+            assert result == [200]
+
+
 if __name__ == "__main__":
     tests = [
         test_host_guard_rejects_wrong_host,
@@ -971,6 +1186,10 @@ if __name__ == "__main__":
         test_snapshot_mid_turn_carries_buffer_and_late_client_converges,
         test_events_registers_before_building_snapshot,
         test_thread_cap_counts_only_ok_and_pending_turns,
+        test_triage_starts_one_source_triage_turn_per_open_root_thread_and_publishes_nothing,
+        test_triage_cap_leaves_the_rest_remaining,
+        test_triage_guards_and_409s,
+        test_source_defaults_to_user_and_passes_through_the_pending_record,
         test_stopped_daemon_never_spawns_a_queued_turn,
         test_inflight_text_and_seq_are_consistent_under_the_live_lock,
         test_stop_kills_in_flight_turn_group,
@@ -979,7 +1198,11 @@ if __name__ == "__main__":
         test_cancel_queued_turn_never_spawns,
         test_outcome_routes_guards_404_dismiss_and_conflict,
         test_outcome_edit_ok_and_bad_edit_gives_validator_text,
+        test_page_edit_revert_reapply_routes,
         test_thread_turn_cap_gives_409_on_the_21st_turn,
+        test_github_draft_routes_edit_verbatim_keep_dismiss_and_wrong_action,
+        test_comment_with_a_thread_anchor_needs_a_github_root_thread_note,
+        test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock,
     ]
     for test in tests:
         test()

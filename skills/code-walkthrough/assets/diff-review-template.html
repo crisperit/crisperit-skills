@@ -992,6 +992,8 @@
     font-size:var(--fs-xs)}
   .cw-th-resolve{margin-left:auto}
   .cw-th-badge{color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
+  .cw-th-triage{border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--muted);font-size:var(--fs-xs)}
+  #cw-threads-triage-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
   .cw-th-summary{min-width:0;flex:1 1 12em;color:var(--muted);font-style:italic}
   .cw-turn{margin:8px 0}
   .cw-turn-q{margin:0;color:var(--muted);font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap}
@@ -1007,6 +1009,22 @@
   }
   @keyframes cw-dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
   .cw-caret{display:inline-block;width:2px;height:1em;margin-left:1px;vertical-align:text-bottom;background:var(--purple)}
+  .cw-pageedit{display:block;box-sizing:border-box;max-width:100%;margin:8px 0;padding:8px 10px;
+    border-left:3px solid var(--purple);background:color-mix(in srgb,var(--purple) 6%,transparent);
+    white-space:normal;overflow-wrap:anywhere}
+  .cw-pageedit-label{margin:0 0 4px;color:var(--muted);font:var(--fs-xs)/1.4 system-ui,sans-serif}
+  .cw-pageedit-chip{margin-left:8px;padding:0 6px;border:1px solid var(--border);border-radius:10px}
+  .cw-pageedit-body>:first-child{margin-top:0}
+  .cw-pageedit pre{max-width:100%;overflow-x:auto}
+  .cw-pageedit-err{color:var(--red);font-size:var(--fs-xs)}
+  .cw-pageedit details{margin:6px 0;color:var(--muted);font-size:var(--fs-sm)}
+  .cw-pageedit-orig{white-space:pre-wrap}
+  .cw-pageedit-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+  .cw-pageedit-actions button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);
+    color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:var(--fs-xs)}
+  .cw-pageedit button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-pageedit-msg{font-size:var(--fs-xs);color:var(--muted)}
+  .cw-pageedit-hidden{display:none!important}
   .cw-working button{margin-left:8px}
   .cw-progress{display:block;margin-top:2px;font-size:var(--fs-xs);color:var(--muted)}
   .cw-stopped{margin-left:6px;color:var(--muted)}
@@ -1015,6 +1033,78 @@
   .cw-outcome-text{min-width:0;flex:1 1 14em;overflow-wrap:anywhere}
   .cw-outcome-why{display:block;color:var(--muted)}
   .cw-outcome-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .cw-ghdraft{display:block;border-color:var(--yellow);border-left:3px dashed var(--yellow);
+    background:color-mix(in srgb,var(--yellow) 8%,transparent);white-space:normal;overflow-wrap:anywhere}
+  .cw-ghdraft[data-state="published"]{border-color:var(--green);border-left:3px solid var(--green);
+    background:color-mix(in srgb,var(--green) 8%,transparent)}
+  .cw-ghdraft[data-state="dismissed"]{border-color:var(--border);border-left:3px solid var(--border);
+    background:var(--panel2);color:var(--muted)}
+  .cw-ghdraft-badge{margin:0;color:var(--yellow);font-weight:600;font-size:var(--fs-xs)}
+  .cw-ghdraft[data-state="published"] .cw-ghdraft-badge{color:var(--green)}
+  .cw-ghdraft[data-state="dismissed"] .cw-ghdraft-badge{color:var(--muted)}
+  .cw-ghdraft-target{margin:2px 0 6px;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-ghdraft-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin:0 0 6px}
+  .cw-ghdraft-col{min-width:0}
+  .cw-ghdraft-col h4{margin:0 0 2px;color:var(--muted);font:600 var(--fs-xs) system-ui}
+  .cw-ghdraft-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-ghdraft textarea{display:block;width:100%;min-height:64px;box-sizing:border-box;margin:0 0 6px;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:8px;font:inherit;font-size:var(--fs-sm)}
+  .cw-ghdraft-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .cw-ghdraft-actions button,.fb-publish-one{cursor:pointer;border:1px solid var(--border);
+    background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;
+    font-size:var(--fs-xs)}
+  .cw-ghdraft-actions .cw-gh-publish,.fb-item .fb-publish-one{border-color:var(--yellow);color:var(--yellow)}
+  .cw-ghdraft button:focus-visible,.fb-publish-one:focus-visible,.cw-ghdraft textarea:focus-visible,
+  .cw-threads-top button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-ghdraft-msg,.fb-publish-msg{margin:4px 0 0;font-size:var(--fs-xs);color:var(--red)}
+  .cw-ghdraft-msg:empty,.fb-publish-msg:empty{display:none}
+  .cw-threads-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 10px}
+  .cw-threads-top #cw-threads-submit{margin:0}
+  .cw-threads-top .cw-th-copy-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-reply-ask{margin:6px 0 0}
+  .cw-task{display:block;border-color:var(--purple);border-left:3px solid var(--purple);
+    background:color-mix(in srgb,var(--purple) 7%,transparent);white-space:normal;overflow-wrap:anywhere}
+  .cw-task[data-state="done"]{border-color:var(--green);background:color-mix(in srgb,var(--green) 7%,transparent)}
+  .cw-task[data-state="failed"]{border-color:var(--red);background:color-mix(in srgb,var(--red) 7%,transparent)}
+  .cw-task[data-state="dismissed"],.cw-task[data-state="discarded"],.cw-task[data-state="stopped"]{
+    border-color:var(--border);background:var(--panel2);color:var(--muted)}
+  .cw-task-badge{margin:0;color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
+  .cw-task[data-state="done"] .cw-task-badge{color:var(--green)}
+  .cw-task[data-state="failed"] .cw-task-badge{color:var(--red)}
+  .cw-task[data-state="stopped"] .cw-task-badge{color:var(--muted)}
+  .cw-task-title{margin:2px 0 4px;font-weight:600}
+  .cw-task-handover{margin:0 0 6px;padding:6px 8px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:6px;font-size:var(--fs-xs);white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-task-handover code{background:none;padding:0}
+  .cw-task ol,.cw-task ul{margin:0 0 6px;padding-left:1.4em}
+  .cw-task-files,.cw-task-note,.cw-task-sum,.cw-task-stat{margin:0 0 6px;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-task-sum{color:var(--text);font-size:var(--fs-sm);white-space:pre-wrap}
+  .cw-task .cw-task-add{color:var(--green)} .cw-task .cw-task-del{color:var(--red)}
+  .cw-task code{overflow-wrap:anywhere}
+  .cw-task label{display:block;margin:0 0 2px;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-task input[type=text],.cw-task textarea{display:block;width:100%;box-sizing:border-box;margin:0 0 6px;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:6px 8px;font:inherit;font-size:var(--fs-sm)}
+  .cw-task textarea{min-height:64px}
+  .cw-task-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px}
+  .cw-task-actions button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);
+    color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:var(--fs-xs)}
+  .cw-task-actions .cw-task-run{border-color:var(--purple);color:var(--purple)}
+  .cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
+  #cw-sibling a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-task-msg{margin:0;font-size:var(--fs-xs);color:var(--red)}
+  .cw-task-msg:empty{display:none}
+  #cw-sibling{margin:0 0 12px;padding:10px 12px;border:1px solid var(--purple);border-left-width:3px;
+    border-radius:6px;background:color-mix(in srgb,var(--purple) 8%,transparent);overflow-wrap:anywhere}
+  #cw-sibling p{margin:0 0 4px}
+  #cw-sibling .cw-sibling-note{color:var(--muted);font-size:var(--fs-xs)}
+  .cw-sibling-chip{margin-left:6px;padding:0 6px;border:1px solid var(--purple);border-radius:999px;
+    color:var(--purple);font-size:var(--fs-xs);white-space:nowrap}
+  .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-drafts-bar,
+  .cw-sibling #cw-threads-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
+  .cw-sibling .fb-reply{display:none!important}
+  @media (max-width:728px){.cw-ghdraft-cols{grid-template-columns:minmax(0,1fr)}}
   @media (prefers-reduced-motion:no-preference){
     .cw-caret{animation:cw-caret 1s steps(1) infinite}
   }
@@ -1079,7 +1169,7 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button,#hr-comments-actions button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button{min-height:44px}
+    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button,.fb-publish-one,.cw-threads-top button{min-height:44px}
     #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     #cw-drafts-bar button,#cw-threads-submit,#cw-post-confirm button{min-height:44px}
@@ -2291,6 +2381,8 @@
 
   // set by wireAsk on a live page; a static page has no daemon, so wireLine falls back to the plain draft row
   let openLineComposer=null;
+  let openThreadAsk=null;
+  const outcomeHooks={oidFor:()=>null,published:()=>{}};
 
   function wireLine(span,meta){
     meta.text=span.textContent; // capture verbatim (incl. leading +/-/space) before the badge/button change it -- this is anchor_text
@@ -2509,6 +2601,23 @@
       ta.setAttribute('aria-label','Comment body');
       wireDraftAutosave(ta,n.id);
       d.appendChild(ta);
+      if(window.CW_LIVE){
+        const pub=document.createElement('button'); pub.type='button'; pub.className='fb-publish-one fb-ghost';
+        pub.textContent='Publish now'; pub.dataset.publishFor=n.id; pub.disabled=publishing.has(n.id);
+        pub.setAttribute('aria-label','Publish this comment to GitHub now');
+        const msg=document.createElement('p'); msg.className='fb-publish-msg'; msg.setAttribute('role','status');
+        if(!(window.crypto&&window.crypto.subtle)){
+          pub.hidden=true; pub.title='Publishing needs a secure (https or localhost) page';
+        }
+        pub.addEventListener('click',()=>{
+          const cur=state.notes.find(x=>x.id===n.id);
+          if(!cur) return;
+          if(!ta.value.trim()){ msg.textContent='Type a comment first.'; return; }
+          cur.body=ta.value; saveNote(cur);
+          publishNote(cur,outcomeHooks.oidFor(cur.id),t=>{ msg.textContent=t; });
+        });
+        d.append(pub,msg);
+      }
     } else {
       d.appendChild(document.createTextNode(n.body));
     }
@@ -2539,6 +2648,71 @@
   }
 
   const rowById=new Map(); // noteId -> {el,sig}
+
+  const publishing=new Set();
+  function setPublishBusy(noteId,busy){
+    if(busy) publishing.add(noteId); else publishing.delete(noteId);
+    document.querySelectorAll('[data-publish-for]').forEach(b=>{ if(b.dataset.publishFor===noteId) b.disabled=busy; });
+  }
+
+  function bodySha(text){
+    return crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))
+      .then(buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join(''));
+  }
+
+  function ghDraftFields(target,root){
+    if(!target) return null;
+    if(target.kind==='reply'){
+      if(!root) return null;
+      return {path:root.path,line:root.line,side:root.side,hunk_id:root.hunk_id,
+        anchor_text:root.anchor_text,anchor_line:root.anchor_line,reply_to:root.id,in_reply_to:root.id};
+    }
+    if(target.kind==='new'){
+      return {path:target.path,line:target.line,side:target.side,
+        end_line:target.end_line||null,hunk_id:target.hunk_id||null};
+    }
+    return null;
+  }
+
+  function publishNote(note,oid,setMsg){
+    if(!(window.crypto&&window.crypto.subtle)){
+      setMsg('Publishing needs a secure (https or localhost) page.');
+      return Promise.resolve(false);
+    }
+    setMsg('Publishing…');
+    if(publishing.has(note.id)) return Promise.resolve(false);
+    setPublishBusy(note.id,true);
+    const req={id:note.id};
+    return putNotesNow(false)
+      .then(()=>bodySha(note.body))
+      .then(sha=>{
+        req.body_sha=sha;
+        if(oid) req.oid=oid;
+        return fetch(window.CW_LIVE.api+'/publish-one',{method:'POST',
+          headers:{'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'},
+          body:JSON.stringify(req)});
+      })
+      .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,status:r.status,body})))
+      .then(({ok,status,body})=>{
+        const cur=state.notes.find(x=>x.id===note.id);
+        const already=status===409&&/no longer a local draft/i.test(body.error||'')&&cur&&cur.state!=='draft';
+        if(already){
+          setMsg('');
+          if(oid) outcomeHooks.published(oid,cur.gh_url||null);
+          renderNotes();
+          return true;
+        }
+        if(!ok){ setMsg((body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':'')); return false; }
+        setMsg('');
+        if(typeof window.__cwOnPosted==='function') window.__cwOnPosted({kind:'note',ok:true,id:note.id});
+        const mine=state.notes.find(x=>x.id===note.id);
+        if(mine&&body.gh_url){ mine.gh_url=body.gh_url; renderNotes(); }
+        if(oid) outcomeHooks.published(oid,body.gh_url||null);
+        return true;
+      })
+      .catch(()=>{ setMsg('Request failed -- check the daemon is still running.'); return false; })
+      .then(ok=>{ setPublishBusy(note.id,false); return ok; });
+  }
 
   // JSON.stringify, not join(' '): a plain-space join collides when a field's own value
   // contains a space or matches an adjacent field's text, so two genuinely different notes
@@ -2599,6 +2773,13 @@
     btn.textContent='Reply on GitHub';
     const col=document.createElement('div'); col.className='fb-reply-col';
     col.append(input,btn);
+    if(window.CW_LIVE){
+      const ask=document.createElement('button'); ask.type='button'; ask.className='fb-ghost cw-reply-ask';
+      ask.textContent='Ask the agent';
+      ask.addEventListener('mousedown',e=>e.preventDefault());
+      ask.addEventListener('click',()=>{ if(openThreadAsk) openThreadAsk(root,col,input); });
+      col.append(ask);
+    }
     d.append(av,col);
     wireReplyBox(input,root,btn);
     return d;
@@ -3627,6 +3808,20 @@
     return (slug+'|'+h.toString(16).padStart(8,'0')).slice(0,200);
   }
 
+  function splitBackticks(text){
+    const s=String(text), out=[];
+    let i=0;
+    while(i<s.length){
+      const a=s.indexOf('`',i);
+      const b=a<0?-1:s.indexOf('`',a+1);
+      if(b<0){ out.push({code:false,text:s.slice(i)}); break; }
+      if(a>i) out.push({code:false,text:s.slice(i,a)});
+      out.push({code:true,text:s.slice(a+1,b)});
+      i=b+1;
+    }
+    return out;
+  }
+
   function wireAsk(){
     const planEl=$('plan-content');
     if(!planEl) return;
@@ -3643,12 +3838,12 @@
     const firstLine=s=>String(s||'').split('\n')[0].slice(0,100);
     const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
     const asEl=node=>node&&(node.nodeType===1?node:node.parentElement);
-    const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose')); };
+    const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose,.cw-pageedit')); };
 
     function textOf(el){
-      if(!el.querySelector('.cw-thread,.cw-compose')) return el.textContent;
+      if(!el.querySelector('.cw-thread,.cw-compose,.cw-pageedit')) return el.textContent;
       const c=el.cloneNode(true);
-      c.querySelectorAll('.cw-thread,.cw-compose').forEach(n=>n.remove());
+      c.querySelectorAll('.cw-thread,.cw-compose,.cw-pageedit').forEach(n=>n.remove());
       return c.textContent;
     }
 
@@ -3684,7 +3879,7 @@
       if(blockIdx) return blockIdx;
       blockIdx={list:[],byKey:new Map()};
       planEl.querySelectorAll(BLOCK_SEL).forEach(el=>{
-        if(el.closest('.cw-thread,.cw-compose')) return;
+        if(el.closest('.cw-thread,.cw-compose,.cw-pageedit')) return;
         const k=blockKey(el);
         blockIdx.list.push({el,text:norm(textOf(el))});
         if(!blockIdx.byKey.has(k)) blockIdx.byKey.set(k,el);
@@ -3707,6 +3902,17 @@
     }
 
     function placementFor(anchor){
+      if(anchor.kind==='thread'){
+        const root=noteById(anchor.note_id);
+        if(!root) return null;
+        let last=null, lastOrder=-1;
+        for(const n of state.notes){
+          if(n.id!==root.id&&n.reply_to!==root.id) continue;
+          const rec=rowById.get(n.id);
+          if(rec&&rec.el.isConnected&&(n.order||0)>=lastOrder){ last=rec.el; lastOrder=n.order||0; }
+        }
+        return last&&!last.closest('.hr-lo,.hr-thread-resolved')?last:null;
+      }
       if(anchor.kind==='line'){
         const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+(anchor.end_line||anchor.line));
         return rec&&rec.span;
@@ -3800,11 +4006,37 @@
       }catch(e){}
       renderThread(t);
     }
+    function triageCandidates(notes,turnsByNote){
+      return notes.filter(n=>{
+        if(n.origin!=='github'||!n.gh_thread_id||n.reply_to||n.in_reply_to||n.resolved) return false;
+        const turns=(turnsByNote&&turnsByNote.get(n.id))||[];
+        return !turns.some(r=>r.source==='triage'||r.status==='pending');
+      });
+    }
+    function waitingCount(outcomes){
+      let c=0;
+      for(const o of outcomes) if(o&&o.state==='proposed') c++;
+      return c;
+    }
     function stateOf(t){
       if(t.resolved) return 'resolved';
       if(t.turns.some(r=>r.status==='pending')) return 'working';
       const last=t.turns[t.turns.length-1];
       return last&&last.status==='error'?'error':'answered';
+    }
+
+    function cherryPickCommand(sha){
+      const s=String(sha||'');
+      return /^[0-9a-f]{7,40}$/i.test(s)?'git cherry-pick '+s:null;
+    }
+    function handoverInstruction(id,oid){
+      const idPart=id?' with id '+JSON.stringify(String(id))+' and':' with';
+      return 'In the code-walkthrough MCP server, call walkthrough_get'+idPart+' parts ["threads"], then do the handed task with oid '+
+        JSON.stringify(String(oid))+' in my checkout and call walkthrough_reply with that oid and a short summary.';
+    }
+    function taskPlanFromForm(title,steps,files){
+      const lines=(s,n)=>String(s||'').split('\n').map(x=>x.trim()).filter(Boolean).slice(0,n);
+      return {title:String(title||'').trim(),steps:lines(steps,12),files:lines(files,20)};
     }
 
     const streams=new Map();         // qid -> {seq,text,progress}
@@ -3816,9 +4048,13 @@
       if(typeof p==='string') return p;
       const d=p.detail||'';
       if(p.tool==='Read') return 'Reading '+d;
+      if(/^(Edit|Write)$/.test(p.tool)) return 'Editing '+d;
+      if(p.tool==='propose_task') return 'Planning a code task';
       if(p.tool==='Grep') return 'Searching for '+d;
       if(p.tool==='Glob') return 'Listing files';
       if(p.tool==='propose_resolve') return 'Suggesting a resolve';
+      if(p.tool==='propose_page_edit') return 'Editing the page';
+      if(p.tool==='propose_github_draft') return 'Drafting a GitHub comment';
       return p.tool||'';
     }
     const noteById=id=>state.notes.find(n=>n.id===id);
@@ -3850,7 +4086,474 @@
       return b;
     }
 
+    const pageEdits=new Map();   // oid -> {node, orig, sig}
+    const hiddenBy=new WeakMap();   // original element -> Set of applied replace oids hiding it
+    let peSeq=0;
+    const richEl=(tag,text)=>{
+      const e=document.createElement(tag);
+      for(const p of splitBackticks(text)) e.append(p.code?mk('code',null,p.text):document.createTextNode(p.text));
+      return e;
+    };
+
+    function renderMermaidEdit(pre,src){
+      const id='cw-pe-'+(peSeq++);
+      const cleanup=()=>{ const d=document.getElementById('d'+id); if(d) d.remove(); };
+      const fail=()=>{
+        cleanup();
+        pre.classList.remove('mermaid');
+        pre.after(mk('p','cw-pageedit-err','The diagram failed to render; showing its source.'));
+      };
+      if(!window.mermaid){ fail(); return; }
+      window.mermaid.render(id,src).then(({svg})=>{
+        cleanup();
+        const doc=new DOMParser().parseFromString(svg,'image/svg+xml');
+        if(doc.querySelector('parsererror')) throw new Error('bad svg');
+        pre.replaceChildren(document.importNode(doc.documentElement,true));
+      }).catch(fail);
+    }
+
+    function pageEditContent(b){
+      const text=String((b&&b.text)||'');
+      const box=mk('div','cw-pageedit-body');
+      if(b&&b.type==='list'){
+        const ul=document.createElement('ul');
+        for(const l of text.split('\n')){
+          const s=l.trim().replace(/^[-*]\s+/,'');
+          if(s) ul.append(richEl('li',s));
+        }
+        box.append(ul);
+      } else if(b&&b.type==='mermaid'){
+        box.append(mk('pre','mermaid',text));
+      } else {
+        for(const para of text.split(/\n\s*\n/)) if(para.trim()) box.append(richEl('p',para.trim()));
+      }
+      return box;
+    }
+
+    function pageEditTarget(o){
+      const t=threads.get(o.thread_id);
+      const a=(t&&t.turns[0]&&t.turns[0].anchor)||{};
+      const target=o.payload&&o.payload.target;
+      const heading=a.section&&[...planEl.querySelectorAll('h1,h2,h3,h4')].find(x=>x.textContent.trim()===a.section);
+      if(a.kind==='section'&&target===a.section) return {el:heading||null,outdated:!heading};
+      const el=target&&blockIndex().byKey.get(target);
+      if(el) return {el,outdated:false};
+      return {el:heading||null,outdated:true};
+    }
+
+    function pageEditAct(oid,verb,btn,msg){
+      btn.disabled=true; msg.textContent='';
+      postJson('/outcomes/'+encodeURIComponent(oid)+'/'+verb,{})
+        .then(({ok,body})=>{
+          if(!ok||!body.outcome){ btn.disabled=false; msg.textContent=(body&&body.error)||'Request failed'; loadQa(); return; }
+          upsertOutcome(body.outcome);
+        })
+        .catch(()=>{ btn.disabled=false; msg.textContent='Request failed -- check the daemon is still running.'; });
+    }
+
+    function openThreadOf(t){
+      setFold(t,false);
+      if(!t.placed){ renderList(); dlg.showModal(); return; }
+      t.el.scrollIntoView({block:'center'});
+      t.foldBtn.focus();
+    }
+
+    function removePageEdit(oid){
+      const cur=pageEdits.get(oid);
+      if(!cur) return;
+      cur.node.remove();
+      if(cur.orig){
+        const s=hiddenBy.get(cur.orig);
+        if(s){ s.delete(oid); if(!s.size){ hiddenBy.delete(cur.orig); cur.orig.classList.remove('cw-pageedit-hidden'); } }
+      }
+      pageEdits.delete(oid);
+    }
+
+    function syncPageEdit(o){
+      const p=o.payload||{};
+      const sig=JSON.stringify(p);
+      const cur=pageEdits.get(o.oid);
+      if(cur&&cur.sig===sig&&o.state==='applied') return;
+      removePageEdit(o.oid);
+      const t=threads.get(o.thread_id);
+      if(o.state!=='applied'||!t) return;
+      const dest=pageEditTarget(o);
+      const n=mk('div','cw-pageedit'); n.dataset.oid=o.oid;
+      const label=mk('p','cw-pageedit-label','added by agent from your comment');
+      if(dest.outdated) label.append(mk('span','cw-pageedit-chip','outdated'));
+      const msg=mk('span','cw-pageedit-msg'); msg.setAttribute('role','status');
+      const undo=mkBtn('Undo','fb-ghost');
+      undo.addEventListener('click',()=>pageEditAct(o.oid,'revert',undo,msg));
+      const open=mkBtn('Open thread','fb-ghost');
+      open.addEventListener('click',()=>openThreadOf(t));
+      const acts=mk('div','cw-pageedit-actions'); acts.append(undo,open,msg);
+      n.append(label,pageEditContent(p.block));
+      let orig=null;
+      if(p.op==='replace'&&dest.el&&!dest.outdated){
+        orig=dest.el;
+        const det=document.createElement('details');
+        det.append(mk('summary',null,'original'),mk('p','cw-pageedit-orig',textOf(orig)));
+        n.append(det);
+        if(!hiddenBy.has(orig)) hiddenBy.set(orig,new Set());
+        hiddenBy.get(orig).add(o.oid);
+        orig.classList.add('cw-pageedit-hidden');
+      }
+      n.append(acts);
+      if(dest.el) dest.el.insertAdjacentElement('afterend',n);
+      else { unplacedBox.appendChild(n); unplacedWrap.hidden=false; }
+      pageEdits.set(o.oid,{node:n,orig,sig});
+      n.querySelectorAll('pre.mermaid').forEach(pre=>renderMermaidEdit(pre,pre.textContent));
+    }
+
+    function syncThreadEdits(tid){
+      for(const m of outcomesByQid.values())
+        for(const o of m.values()) if(o.thread_id===tid&&o.outcome==='page_edit') syncPageEdit(o);
+    }
+
+    function pageEditCard(t,o){
+      const p=o.payload||{}, b=p.block||{};
+      const type=['prose','list','mermaid'].includes(b.type)?b.type:'block';
+      const what=p.op==='replace'?'replaced this block with a '+type:'inserted a '+type+' after this block';
+      const d=mk('div','cw-outcome'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      d.append(mk('span','cw-outcome-text','Page edit: '+what+' ('+o.state+')'));
+      const acts=mk('div','cw-outcome-actions');
+      const verb=o.state==='applied'?'revert':'reapply';
+      if(o.state==='applied'||o.state==='reverted'){
+        const b1=mkBtn(o.state==='applied'?'Undo':'Redo','fb-ghost');
+        b1.addEventListener('click',()=>pageEditAct(o.oid,verb,b1,t.msg));
+        acts.append(b1);
+      }
+      if(o.state==='applied'){
+        const show=mkBtn('Show it','fb-ghost');
+        show.addEventListener('click',()=>{
+          const cur=pageEdits.get(o.oid);
+          if(cur) cur.node.scrollIntoView({block:'center'});
+        });
+        acts.append(show);
+      }
+      d.append(acts);
+      return d;
+    }
+
+    const ghKept=new Map();
+    const ghEdit=new Map();
+    const ghMsg=new Map();
+    const errText=b=>((b&&b.error)||'Request failed')+(b&&b.remedy?' ('+b.remedy+')':'');
+    const NET_ERR='Request failed -- check the daemon is still running.';
+
+    function findOutcome(oid){
+      for(const m of outcomesByQid.values()) if(m.has(oid)) return m.get(oid);
+      return null;
+    }
+
+    function setGhMsg(oid,text){
+      ghMsg.set(oid,text);
+      document.querySelectorAll('.cw-ghdraft-msg').forEach(e=>{ if(e.dataset.oid===oid) e.textContent=text; });
+    }
+
+    outcomeHooks.oidFor=noteId=>{
+      for(const [oid,nid] of ghKept) if(nid===noteId) return oid;
+      for(const m of outcomesByQid.values())
+        for(const o of m.values())
+          if(o.outcome==='github_draft'&&o.payload&&o.payload.note_id===noteId
+            &&o.state!=='published'&&o.state!=='dismissed') return o.oid;
+      return null;
+    };
+    outcomeHooks.published=(oid,url)=>{
+      const rec=findOutcome(oid);
+      if(!rec) return;
+      upsertOutcome(Object.assign({},rec,{state:'published',
+        payload:Object.assign({},rec.payload,url?{gh_url:url}:{})}));
+    };
+
+    function createGhDraft(p){
+      const tg=p.target||{};
+      const f=ghDraftFields(tg,tg.kind==='reply'?noteById(tg.note_id):null);
+      if(!f) return null;
+      const order=Math.max(0,...state.notes.map(x=>x.order||0))+1;
+      let extra={order};
+      if(tg.kind==='new'){
+        const rec=spanByLineKey.get(f.path+'\t'+f.side+'\t'+f.line);
+        const m=rec?rec.meta:{};
+        extra={hunk_id:f.hunk_id||m.hunkId||null,anchor_text:m.text||'',anchor_line:f.line,
+          order:m.order!=null?m.order:order};
+      }
+      const note=newDraft(Object.assign({},f,extra));
+      note.body=p.body;
+      saveNote(note);
+      renderNotes();
+      return note;
+    }
+
+    function ghAct(o,verb,body,btns,beforeUpsert){
+      btns.forEach(b=>{ b.disabled=true; });
+      setGhMsg(o.oid,'');
+      return postJson('/outcomes/'+encodeURIComponent(o.oid)+'/'+verb,body)
+        .then(({ok,body:b})=>{
+          if(!ok||!b.outcome){ btns.forEach(x=>{ x.disabled=false; }); setGhMsg(o.oid,errText(b)); loadQa(); return false; }
+          if(beforeUpsert) beforeUpsert();
+          upsertOutcome(b.outcome);
+          return true;
+        })
+        .catch(()=>{ btns.forEach(x=>{ x.disabled=false; }); setGhMsg(o.oid,NET_ERR); return false; });
+    }
+
+    function ghKeep(o,btns){
+      const p=o.payload||{};
+      const have=p.note_id||ghKept.get(o.oid);
+      const existing=have&&noteById(have);
+      if(existing) return Promise.resolve(existing);
+      const note=createGhDraft(p);
+      if(!note){ setGhMsg(o.oid,'This comment points at a thread that is no longer on the page.'); return Promise.resolve(null); }
+      ghKept.set(o.oid,note.id);
+      return ghAct(o,'keep',{note_id:note.id},btns).then(ok=>ok?note:null);
+    }
+
+    function ghPublish(o,btns){
+      btns.forEach(b=>{ b.disabled=true; });
+      ghKeep(o,btns).then(note=>{
+        if(!note){ btns.forEach(b=>{ b.disabled=false; }); return; }
+        btns.forEach(b=>{ b.disabled=true; });
+        return publishNote(note,o.oid,txt=>setGhMsg(o.oid,txt)).then(ok=>{
+          if(!ok) btns.forEach(b=>{ b.disabled=false; });
+        });
+      });
+    }
+
+    function ghTargetText(tg){
+      const loc=(tg.path||'')+(tg.line!=null?':'+tg.line:'');
+      if(tg.kind==='reply'){
+        const root=noteById(tg.note_id);
+        return 'reply to '+((root&&root.author)||'the reviewer')+' at '+loc;
+      }
+      return 'new review comment, '+loc+(tg.side?' '+tg.side:'');
+    }
+
+    function ghDraftCard(t,o){
+      const p=o.payload||{}, tg=p.target||{};
+      const body=String(p.body||''), orig=typeof p.original==='string'?p.original:body;
+      const d=mk('div','cw-outcome cw-ghdraft'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      const badge={proposed:'GitHub draft, not published',kept:'Kept as a draft',
+        published:'Published',dismissed:'Dismissed'}[o.state]||'GitHub draft, not published';
+      d.append(mk('p','cw-ghdraft-badge',badge),mk('p','cw-ghdraft-target',ghTargetText(tg)));
+      const msg=mk('p','cw-ghdraft-msg',ghMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+      const acts=mk('div','cw-ghdraft-actions');
+      if(o.state==='proposed'&&ghEdit.has(o.oid)){
+        const ta=mk('textarea'); ta.value=ghEdit.get(o.oid); ta.setAttribute('aria-label','Edit the drafted comment');
+        const save=mkBtn('Save','fb-ghost'), cancel=mkBtn('Cancel','fb-ghost');
+        const cancelEdit=()=>{ ghEdit.delete(o.oid); renderThread(t); };
+        ta.addEventListener('input',()=>ghEdit.set(o.oid,ta.value));
+        const doSave=()=>{
+          if(!ta.value.trim()){ setGhMsg(o.oid,'Type a comment first.'); return; }
+          ghAct(o,'edit',{payload:{body:ta.value}},[save,cancel],()=>ghEdit.delete(o.oid));
+        };
+        save.addEventListener('click',doSave);
+        cancel.addEventListener('click',cancelEdit);
+        ta.addEventListener('keydown',e=>{
+          if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); doSave(); }
+          else if(e.key==='Escape'){ e.preventDefault(); cancelEdit(); }
+        });
+        acts.append(save,cancel);
+        d.append(ta,acts,msg);
+        return d;
+      }
+      if(orig!==body){
+        const cols=mk('div','cw-ghdraft-cols');
+        const col=(h,txt)=>{ const c=mk('div','cw-ghdraft-col'); c.append(mk('h4',null,h),mk('p','cw-ghdraft-body',txt)); return c; };
+        cols.append(col('Original (your words)',orig),col('Drafted',body));
+        d.append(cols);
+      } else d.append(mk('p','cw-ghdraft-body',body));
+      if(o.state==='proposed'||o.state==='kept'){
+        const btns=[];
+        const add=(text,cls,fn)=>{ const b=mkBtn(text,cls); b.addEventListener('click',fn); btns.push(b); acts.append(b); return b; };
+        if(o.state==='proposed') add('Keep as draft','cw-gh-keep fb-ghost',()=>{ ghKeep(o,btns); });
+        else add('Jump','cw-gh-jump fb-ghost',()=>{
+          const rec=rowById.get(p.note_id||ghKept.get(o.oid));
+          if(rec){ openAncestorDetails(rec.el); rec.el.scrollIntoView({block:'center'}); rec.el.focus(); }
+        });
+        if(window.crypto&&window.crypto.subtle){
+          const pb=add('Publish now','cw-gh-publish fb-ghost',()=>ghPublish(o,btns));
+          const nid=p.note_id||ghKept.get(o.oid);
+          if(nid){ pb.dataset.publishFor=nid; pb.disabled=publishing.has(nid); }
+        }
+        if(o.state==='proposed'){
+          if(orig!==body) add('Use my words','cw-gh-verbatim fb-ghost',()=>{ ghAct(o,'verbatim',{},btns); });
+          add('Edit','cw-gh-edit fb-ghost',()=>{ ghEdit.set(o.oid,body); renderThread(t); });
+          add('Dismiss','cw-gh-dismiss fb-ghost',()=>{ ghAct(o,'dismiss',{},btns); });
+        }
+      } else if(o.state==='published'){
+        const url=p.gh_url||o.gh_url;
+        if(typeof url==='string'&&/^https:\/\//.test(url)){
+          const a=mk('a','cw-gh-link','View on GitHub'); a.href=url; a.target='_blank'; a.rel='noopener noreferrer';
+          acts.append(a);
+        }
+      }
+      d.append(acts,msg);
+      return d;
+    }
+
+    const taskEdit=new Map();
+    const taskMsg=new Map();
+    function setTaskMsg(oid,text){
+      taskMsg.set(oid,text);
+      document.querySelectorAll('.cw-task-msg').forEach(e=>{ if(e.dataset.oid===oid) e.textContent=text; });
+    }
+
+    function taskAct(o,path,body,btns,beforeUpsert){
+      btns.forEach(b=>{ b.disabled=true; });
+      setTaskMsg(o.oid,'');
+      return postJson(path,body)
+        .then(({ok,body:b})=>{
+          if(!ok||(b&&b.error)){ btns.forEach(x=>{ x.disabled=false; }); setTaskMsg(o.oid,errText(b)); return null; }
+          if(beforeUpsert) beforeUpsert();
+          if(b.outcome) upsertOutcome(b.outcome);
+          return b;
+        })
+        .catch(()=>{ btns.forEach(x=>{ x.disabled=false; }); setTaskMsg(o.oid,NET_ERR); return null; });
+    }
+
+    function copyTask(text,msgOid){
+      const ok=()=>setTaskMsg(msgOid,'Copied.');
+      const fb=()=>{ if(legacyCopy(text)) ok(); else setTaskMsg(msgOid,'Copy failed in this browser.'); };
+      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok).catch(fb);
+      else fb();
+    }
+
+    function taskEditForm(t,o,d,msg){
+      const draft=taskEdit.get(o.oid);
+      const f=el=>{ el.dataset.oid=o.oid; return el; };
+      const field=(label,el)=>{ const l=mk('label',null,label); l.append(el); return l; };
+      const title=f(mk('input')); title.type='text'; title.value=draft.title; title.className='cw-task-in-title';
+      const steps=f(mk('textarea')); steps.value=draft.steps; steps.rows=5; steps.className='cw-task-in-steps';
+      const files=f(mk('textarea')); files.value=draft.files; files.rows=3; files.className='cw-task-in-files';
+      const sync=()=>taskEdit.set(o.oid,{title:title.value,steps:steps.value,files:files.value});
+      [title,steps,files].forEach(el=>el.addEventListener('input',sync));
+      const save=mkBtn('Save','fb-ghost'), cancel=mkBtn('Cancel','fb-ghost');
+      const cancelEdit=()=>{ taskEdit.delete(o.oid); renderThread(t); };
+      const doSave=()=>{
+        const plan=taskPlanFromForm(title.value,steps.value,files.value);
+        if(!plan.title||!plan.steps.length){ setTaskMsg(o.oid,'Add a title and at least one step.'); return; }
+        taskAct(o,'/outcomes/'+encodeURIComponent(o.oid)+'/edit',{payload:plan},[save,cancel],()=>taskEdit.delete(o.oid));
+      };
+      save.addEventListener('click',doSave);
+      cancel.addEventListener('click',cancelEdit);
+      d.addEventListener('keydown',e=>{
+        if(e.key==='Escape'){ e.preventDefault(); cancelEdit(); }
+        else if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); doSave(); }
+      });
+      const acts=mk('div','cw-task-actions'); acts.append(save,cancel);
+      d.append(field('Title',title),field('Steps, one per line (up to 12)',steps),
+        field('Files, one per line (up to 20)',files),acts,msg);
+    }
+
+    function taskCard(t,o){
+      const p=o.payload||{}, task=p.task||{};
+      const d=mk('div','cw-outcome cw-task'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      const msg=mk('p','cw-task-msg',taskMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+      const title=String(p.title||'');
+      if(o.state==='dismissed'||o.state==='discarded'){
+        d.append(mk('p','cw-task-badge','Code task '+o.state+': '+title));
+        return d;
+      }
+      const handedDone=o.state==='done'&&task.handed===true;
+      const badge={proposed:'Code task, waits for you',handed:'Handed to your session',running:'Code task, running',
+        done:handedDone?'Done by your session':'Done',failed:'Code task failed',stopped:'Stopped'}[o.state]||'Code task';
+      const bd=mk('p','cw-task-badge',badge);
+      if(o.state==='proposed'&&p.edited) bd.append(mk('span',null,' (edited by you)'));
+      d.append(bd);
+      if(o.state==='proposed'&&taskEdit.has(o.oid)){ taskEditForm(t,o,d,msg); return d; }
+      d.append(mk('p','cw-task-title',title));
+      const acts=mk('div','cw-task-actions');
+      const btns=[];
+      const add=(text,cls,fn)=>{ const b=mkBtn(text,cls||'fb-ghost'); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); return b; };
+      const oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
+      if(o.state==='proposed'||o.state==='handed'){
+        const ol=document.createElement('ol');
+        for(const s of (p.steps||[])) ol.append(mk('li',null,s));
+        d.append(ol);
+        if((p.files||[]).length) d.append(mk('p','cw-task-files','Files: '+p.files.join(', ')));
+      }
+      if(o.state==='handed'){
+        const wid=(window.CW_LIVE||{}).id;
+        const inst=handoverInstruction(wid,o.oid);
+        const pre=mk('pre','cw-task-handover'); pre.append(mk('code',null,inst)); pre.tabIndex=0;
+        d.append(pre);
+        if(wid) add('Copy instruction',null,()=>copyTask(inst,o.oid));
+        add('Dismiss',null,()=>taskAct(o,oidPath('dismiss'),{},btns));
+        d.append(acts,mk('p','cw-task-note','Waiting for your session to reply. Nothing runs here.'),msg);
+        return d;
+      }
+      if(o.state==='proposed'){
+        add('Run in scratch worktree','cw-task-run',()=>taskAct(o,oidPath('run'),{},btns));
+        add('Hand to my session','cw-task-hand',()=>taskAct(o,oidPath('handover'),{},btns));
+        add('Edit plan',null,()=>{
+          taskEdit.set(o.oid,{title,steps:(p.steps||[]).join('\n'),files:(p.files||[]).join('\n')});
+          renderThread(t);
+          const first=[...document.querySelectorAll('.cw-task-in-title')].find(e=>e.dataset.oid===o.oid);
+          if(first) first.focus();
+        });
+        add('Dismiss',null,()=>taskAct(o,oidPath('dismiss'),{},btns));
+        d.append(acts,mk('p','cw-task-note','Writes to a separate worktree and a local branch. Never pushed. Or hand it to your own Claude Code session, which edits your real checkout with your permission prompts.'),msg);
+        return d;
+      }
+      if(o.state==='running'){
+        const dots=mk('span','cw-dots'); dots.setAttribute('aria-hidden','true');
+        for(let i=0;i<3;i++) dots.appendChild(document.createElement('i'));
+        const prog=mk('span','cw-progress',progressText((streams.get(task.qid)||{}).progress));
+        prog.dataset.qid=task.qid||'';
+        const w=mk('p','cw-working'); w.append(dots,mk('span',null,'Working in a scratch worktree'),prog);
+        d.append(w);
+        if(task.qid) add('Stop',null,()=>taskAct(o,'/comment/'+encodeURIComponent(task.qid)+'/cancel',{},btns));
+        d.append(acts,msg);
+        return d;
+      }
+      if(handedDone){
+        if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
+        d.append(msg);
+        return d;
+      }
+      if(o.state==='done'){
+        if(task.stat) d.append(mk('p','cw-task-stat',task.stat));
+        const fl=Array.isArray(task.files)?task.files:[];
+        if(fl.length){
+          const ul=document.createElement('ul');
+          for(const f of fl){
+            const li=mk('li',null,String(f.path||'')+' ');
+            li.append(mk('span','cw-task-add','+'+(f.add||0)),document.createTextNode(' '),mk('span','cw-task-del','-'+(f.del||0)));
+            ul.append(li);
+          }
+          d.append(ul);
+        }
+        if(task.branch){ const bp=mk('p','cw-task-files','Branch: '); bp.append(mk('code',null,task.branch)); d.append(bp); }
+        if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
+        add('Show with this change',null,b=>{
+          const label=b.textContent;
+          b.textContent='Opening...';
+          taskAct(o,oidPath('show'),{},btns).then(r=>{
+            b.textContent=label;
+            if(!r) return;
+            if(typeof r.url==='string'&&/^(https?:\/\/|\/[^\/])/.test(r.url)){
+              if(!window.open(r.url,'_blank','noopener')) setTaskMsg(o.oid,'The browser blocked the new tab. Allow pop-ups, then press the button again.');
+            } else setTaskMsg(o.oid,'No page to open.');
+            btns.forEach(x=>{ x.disabled=false; });
+          });
+        });
+        const cp=cherryPickCommand(task.sha);
+        if(cp) add('Copy cherry-pick command',null,()=>copyTask(cp,o.oid));
+        add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
+        d.append(acts,msg);
+        return d;
+      }
+      d.append(mk('p','cw-task-sum',o.state==='failed'?(task.error||'The task failed.'):'The task was stopped before it finished.'));
+      add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
+      d.append(acts,msg);
+      return d;
+    }
+
     function outcomeEl(t,o){
+      if(o.outcome==='task') return taskCard(t,o);
+      if(o.outcome==='page_edit') return pageEditCard(t,o);
+      if(o.outcome==='github_draft') return ghDraftCard(t,o);
       const id=o.payload&&o.payload.thread;
       const note=noteById(id);
       const where=note?(note.path+':'+(note.line!=null?note.line:'')+(note.author?' by '+note.author:'')):id;
@@ -3866,6 +4569,19 @@
           keep.addEventListener('click',()=>{ markPendingResolve(id); renderNotes(); renderThread(t); });
           acts.append(keep);
         }
+        const now=mkBtn('Resolve now','cw-resolve-now fb-ghost');
+        now.addEventListener('click',()=>{
+          now.disabled=true; t.msg.textContent='';
+          postJson('/publish-one',{resolve:id,oid:o.oid})
+            .then(({ok,body})=>{
+              if(!ok){ now.disabled=false; t.msg.textContent=errText(body); return; }
+              clearPendingResolve(id);
+              upsertOutcome(Object.assign({},o,{state:'done'}));
+              renderNotes();
+            })
+            .catch(()=>{ now.disabled=false; t.msg.textContent=NET_ERR; });
+        });
+        acts.append(now);
         const dis=mkBtn('Dismiss','cw-dismiss fb-ghost');
         dis.addEventListener('click',()=>{
           dis.disabled=true; t.msg.textContent='';
@@ -3916,8 +4632,10 @@
       let m=outcomesByQid.get(o.qid);
       if(!m){ m=new Map(); outcomesByQid.set(o.qid,m); }
       m.set(o.oid,o);
+      if(o.outcome==='page_edit') syncPageEdit(o);
       const t=threads.get(o.thread_id);
       if(t) renderThread(t);
+      renderList();
     }
 
     function buildThread(t){
@@ -3925,9 +4643,10 @@
       const head=mk('div','cw-thread-head');
       t.foldBtn=mkBtn('Fold','cw-th-fold');
       t.badge=mk('span','cw-th-badge','Resolved');
+      t.triageTag=mk('span','cw-th-triage','triage'); t.triageTag.hidden=true;
       t.summary=mk('span','cw-th-summary');
       t.resolveBtn=mkBtn('Resolve','cw-th-resolve');
-      head.append(t.foldBtn,t.badge,t.summary,t.resolveBtn);
+      head.append(t.foldBtn,t.badge,t.triageTag,t.summary,t.resolveBtn);
       t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
       t.body=mk('div','cw-thread-body');
       t.turnsEl=mk('div','cw-turns');
@@ -3960,6 +4679,7 @@
       t.foldBtn.setAttribute('aria-expanded',String(!collapsed));
       t.resolveBtn.textContent=t.resolved?'Reopen':'Resolve';
       t.badge.hidden=!t.resolved;
+      t.triageTag.hidden=first.source!=='triage';
       t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
       t.summary.hidden=!collapsed;
       t.body.hidden=collapsed;
@@ -3980,6 +4700,8 @@
       if(isNew){
         const ref=placementFor(t.turns[0].anchor||{});
         if(ref){ insertAfterThreads(ref,t.el); t.placed=true; }
+        syncThreadEdits(t.id);
+        renderThread(t);
       }
       renderList();
     }
@@ -4037,7 +4759,8 @@
     dlg.id='cw-threads'; dlg.setAttribute('aria-label','Threads');
     const dlgHead=mk('div'); dlgHead.id='cw-threads-head';
     const dlgClose=mkBtn('✕'); dlgClose.id='cw-threads-close'; dlgClose.setAttribute('aria-label','Close');
-    dlgHead.append(mk('span',null,'Threads'),dlgClose);
+    const dlgTitle=mk('span',null,'Threads');
+    dlgHead.append(dlgTitle,dlgClose);
     const dlgBody=mk('div'); dlgBody.id='cw-threads-body';
     const listEl=mk('ul'); listEl.id='cw-threads-list';
     const unplacedWrap=mk('section'); unplacedWrap.id='cw-threads-unplaced';
@@ -4045,14 +4768,53 @@
     unplacedWrap.append(mk('h3',null,'Unplaced'),unplacedBox);
     const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-threads-submit'; thSubmit.hidden=true;
     thSubmit.addEventListener('click',()=>{ dlg.close(); openSubmitReview(); });
-    dlgBody.append(thSubmit,listEl,unplacedWrap);
+    const thCopy=mkBtn('Copy for agent','fb-ghost'); thCopy.id='cw-threads-copy';
+    const thCopyMsg=mk('p','cw-th-copy-msg'); thCopyMsg.setAttribute('role','status');
+    thCopy.addEventListener('click',()=>{
+      const notes=notesForAgent();
+      if(!notes.length){ thCopyMsg.textContent='No comments ready to copy yet.'; return; }
+      const text=agentFeedbackText(notes);
+      const done=()=>{ thCopyMsg.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.'; };
+      const fallback=()=>{ if(legacyCopy(text)) done(); else thCopyMsg.textContent='Copy failed in this browser.'; };
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      } else fallback();
+    });
+    const triageBtn=mkBtn('Triage','fb-ghost'); triageBtn.id='cw-threads-triage'; triageBtn.hidden=true;
+    const triageMsg=mk('p'); triageMsg.id='cw-threads-triage-msg'; triageMsg.setAttribute('role','status');
+    const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+    triageBtn.addEventListener('click',()=>{
+      triageBtn.disabled=true; triageMsg.textContent='Starting…';
+      postJson('/triage',{})
+        .then(({ok,body})=>{
+          triageBtn.disabled=false;
+          if(!ok||body.error){ triageMsg.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
+          triageMsg.textContent='Started '+(body.started||0)+', skipped '+(body.skipped||0)+(body.remaining>0?' ('+body.remaining+' more not started)':'');
+          loadQa();
+        })
+        .catch(()=>{ triageBtn.disabled=false; triageMsg.textContent='Request failed -- check the daemon is still running.'; });
+    });
+    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,thSubmit,triageBtn,thCopyMsg,triageMsg);
+    const commentsBtn=$('hr-comments-btn');
+    if(commentsBtn) commentsBtn.hidden=true;
+    dlgBody.append(thTop,listEl,unplacedWrap);
     refreshDraftsBar();
     dlg.append(dlgHead,dlgBody);
     document.body.appendChild(dlg);
 
     function renderList(){
       const all=[...threads.values()];
-      threadsBtn.textContent='Threads ('+all.filter(t=>!t.resolved).length+')';
+      const waiting=waitingCount([...outcomesByQid.values()].flatMap(m=>[...m.values()]));
+      const label='Threads ('+all.filter(t=>!t.resolved).length+')'+(waiting?' \u00b7 '+waiting+' wait for you':'');
+      threadsBtn.textContent=label; dlgTitle.textContent=label;
+      const turnsByNote=new Map();
+      for(const t of all){
+        const a=(t.turns[0]||{}).anchor;
+        if(a&&a.kind==='thread') turnsByNote.set(a.note_id,(turnsByNote.get(a.note_id)||[]).concat(t.turns));
+      }
+      const cand=(state.meta&&state.meta.pr)?triageCandidates(state.notes,turnsByNote).length:0;
+      triageBtn.hidden=!cand;
+      triageBtn.textContent='Triage '+plural(cand,'open thread');
       const rows=[];
       for(const t of all.filter(t=>t.placed)){
         const li=document.createElement('li');
@@ -4073,7 +4835,7 @@
       }
       listEl.replaceChildren(...rows);
       const unplaced=all.filter(t=>!t.placed);
-      unplacedWrap.hidden=!unplaced.length;
+      unplacedWrap.hidden=!unplaced.length&&!unplacedBox.querySelector('.cw-pageedit');
       for(const t of unplaced) if(t.el.parentElement!==unplacedBox) unplacedBox.appendChild(t.el);
     }
 
@@ -4116,6 +4878,17 @@
       c.ta.focus();
     });
 
+    openThreadAsk=(root,host,input)=>{
+      closeBox();
+      const anchor={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
+      const c=makeComposer('Ask the agent about this thread',text=>({anchor,text}),closeBox,closeBox,
+        text=>createGhDraft({body:text,target:{kind:'reply',note_id:root.id}}));
+      if(input&&input.value){ c.ta.value=input.value; input.value=''; }
+      openBox=c.box;
+      host.append(c.box);
+      c.ta.focus();
+    };
+
     openLineComposer=meta=>{
       const anchor={kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,
         hunk_id:meta.hunkId||null,quote:meta.text};
@@ -4146,6 +4919,34 @@
   wireCommentsPanel();
   wireResolutionDialog();
   if(window.CW_LIVE) wireAsk();
+
+  function wireSibling(){
+    const sb=window.CW_LIVE&&window.CW_LIVE.sibling;
+    const root=$('plan-content');
+    if(!sb||!root) return;
+    document.documentElement.classList.add('cw-sibling');
+    const box=document.createElement('aside'); box.id='cw-sibling'; box.setAttribute('aria-label','Task revision');
+    const line=document.createElement('p');
+    line.textContent='Showing PR head with task '+(sb.title||'')+' (branch '+(sb.branch||'')+') ';
+    box.append(line);
+    if(typeof sb.parent_url==='string'&&/^(https?:\/\/|\/[^\/])/.test(sb.parent_url)){
+      const a=document.createElement('a'); a.href=sb.parent_url; a.textContent='Back to PR head';
+      line.append(a);
+    }
+    if(sb.prose_carried){
+      const n=document.createElement('p'); n.className='cw-sibling-note';
+      n.textContent='Overview and story are from the PR head and may be outdated.';
+      box.append(n);
+    }
+    root.parentNode.insertBefore(box,root);
+    const changed=new Set(Array.isArray(sb.changed_files)?sb.changed_files:[]);
+    document.querySelectorAll('.hunk-path').forEach(el=>{
+      if(!changed.has(el.textContent.trim())) return;
+      const chip=document.createElement('span'); chip.className='cw-sibling-chip'; chip.textContent='changed by task';
+      el.insertAdjacentElement('afterend',chip);
+    });
+  }
+  wireSibling();
   wireViewedCheckboxes();
   render();
 })();

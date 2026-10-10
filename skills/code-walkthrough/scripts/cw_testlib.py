@@ -300,6 +300,31 @@ if argv[:2] == ["api", "user"]:
 if argv[:2] == ["pr", "view"]:
     _reply("pr-author", argv, None, {"author": {"login": cfg.get("pr_author", "me")}})
 
+REST_POST_RE = re.compile(r"^repos/[^/]+/[^/]+/pulls/\\d+/comments(/(\\d+)/replies)?$")
+if len(argv) >= 2 and argv[0] == "api" and "POST" in argv and REST_POST_RE.match(argv[1]):
+    body = json.loads(sys.stdin.read())
+    reply_to = REST_POST_RE.match(argv[1]).group(2)
+    op = "rest-post-reply" if reply_to else "rest-post-comment"
+    state = _load("state.json", {})
+    if state.get("review_opened") and not reply_to:
+        _log(op, argv, {"path": argv[1], "body": body})
+        sys.stderr.write("fake gh: 422 User can only have one pending review per pull request\\n")
+        sys.exit(1)
+    state["rest_n"] = state.get("rest_n", 0) + 1
+    _save("state.json", state)
+    n = 2000 + state["rest_n"]
+    comments = _load("comments.json", [])
+    parent = next((c for c in comments if c["id"] == int(reply_to)), {}) if reply_to else {}
+    if op in cfg.get("fail_ops", []):
+        _reply(op, argv, {"path": argv[1], "body": body}, {})
+    comments.append({"id": n, "node_id": "RC_%d" % n, "path": parent.get("path", body.get("path")),
+                      "line": parent.get("line", body.get("line")), "side": parent.get("side", body.get("side")),
+                      "body": body.get("body"), "user": {"login": "fake"}, "created_at": "2000-01-01T00:00:00Z",
+                      "html_url": "https://github.com/o/r/pull/7#discussion_r%d" % n,
+                      "in_reply_to_id": int(reply_to) if reply_to else None})
+    _save("comments.json", comments)
+    _reply(op, argv, {"path": argv[1], "body": body}, comments[-1])
+
 if len(argv) >= 2 and argv[0] == "api" and re.match(r"^repos/[^/]+/[^/]+/pulls/\\d+/comments$", argv[1]):
     _reply("rest-comments", argv, None, _load("comments.json", []))
 
@@ -596,6 +621,10 @@ if "stream" in entry:
         elif a.startswith("--mcp-config="):
             config_arg = a.split("=", 1)[1]
     connected = mcp.start(config_arg) if config_arg else None
+    for rel, content in (entry.get("writes") or {}).items():
+        target = Path(os.getcwd()) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
     if stderr:
         sys.stderr.write(stderr)
     calls = list(entry.get("mcp_calls", []))
@@ -662,7 +691,7 @@ def claude_stream_entry(chunks, *, session_id="s-1", result=None, usage=None, mc
     _sleep items count)."""
     stream = [{"type": "system", "subtype": "init", "session_id": session_id,
                "mcp_servers": [{"name": "cw", "status": "connected"}] if init_cw else [],
-               "tools": ["mcp__cw__propose_resolve"] if init_cw else []}]
+               "tools": ["mcp__cw__propose_resolve", "mcp__cw__propose_page_edit"] if init_cw else []}]
     for i, chunk in enumerate(chunks):
         if i == 0:
             stream.append({"type": "stream_event", "event": {
@@ -679,6 +708,25 @@ def claude_stream_entry(chunks, *, session_id="s-1", result=None, usage=None, mc
                    "usage": usage or {"input_tokens": 10, "output_tokens": 5,
                                       "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}})
     return {"stream": stream, "exit": 0, "stderr": "", "mcp_calls": list(mcp_calls)}
+
+
+def claude_task_entry(summary, writes=None, *, tools=("Edit",), delay=0, exit=0):
+    """A code-task turn: `writes` ({relative path: content}) are written into the fake's cwd at
+    start, each name in `tools` shows as a tool use, then `summary` is the final text. With
+    `delay`, the turn sleeps after the tool uses, long enough to be cancelled."""
+    stream = [{"type": "system", "subtype": "init", "session_id": "s-task", "mcp_servers": []}]
+    for name in tools:
+        stream.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_" + name, "name": name,
+             "input": {"file_path": next(iter(writes or {"x": 0}))}}]}})
+    if delay:
+        stream.append({"_sleep": delay})
+    stream.append({"type": "assistant", "message": {"content": [{"type": "text", "text": summary}]}})
+    stream.append({"type": "result", "subtype": "success", "is_error": False, "result": summary,
+                   "session_id": "s-task", "permission_denials": [],
+                   "usage": {"input_tokens": 10, "output_tokens": 5,
+                             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}})
+    return {"stream": stream, "exit": exit, "stderr": "", "mcp_calls": [], "writes": writes or {}}
 
 
 class _FakeClaude:

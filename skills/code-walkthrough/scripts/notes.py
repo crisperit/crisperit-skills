@@ -800,6 +800,21 @@ def _gh_graphql(query, variables):
     return json.loads(result.stdout)
 
 
+def _gh_rest(path, payload):
+    """One REST POST through `gh api`, the JSON body as the entire stdin -- never on argv, same
+    reason as _gh_graphql."""
+    try:
+        result = subprocess.run(
+            ["gh", "api", path, "--method", "POST", "--input", "-"],
+            input=json.dumps(payload), capture_output=True, text=True, timeout=GH_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("gh api timed out")
+    if result.returncode != 0:
+        raise RuntimeError(f"gh api failed: {result.stderr.strip()}")
+    return json.loads(result.stdout)
+
+
 def _repo_owner_name(state):
     repo = (state.get("meta") or {}).get("repo") or ""
     if "/" not in repo:
@@ -882,6 +897,61 @@ def deliver_note(state, note, diff_text, gh_run):
         note["anchor_status"] = anchor_status
 
     note["state"] = "in_review"
+    return note
+
+
+def thread_root(by_id, note):
+    """The top-level note of note's reply chain, or None when a link in the chain is missing.
+    GitHub flattens a reply to a reply onto the root, so REST replies are always addressed there."""
+    seen = set()
+    while note.get("reply_to") or note.get("in_reply_to"):
+        if note["id"] in seen:
+            return None
+        seen.add(note["id"])
+        note = by_id.get(note.get("reply_to") or note.get("in_reply_to"))
+        if note is None:
+            return None
+    return note
+
+
+def publish_note(state, note, diff_text, gh_rest):
+    """Post one local draft straight to GitHub as its own COMMENTED review (REST), bypassing the
+    pending review, and mark it posted in place. Raises before any call when the draft cannot
+    land: a reply whose thread root is not on GitHub, or a top-level draft whose line went stale."""
+    notes = state.get("notes", [])
+    owner, name = _repo_owner_name(state)
+    base = f"repos/{owner}/{name}/pulls/{(state.get('meta') or {}).get('pr')}/comments"
+    if note.get("reply_to") or note.get("in_reply_to"):
+        root = thread_root(_index_by_id(notes), note)
+        if root is None or root.get("gh_id") is None or root.get("state") != "posted":
+            raise RuntimeError("the comment this replies to is not on GitHub yet: publish the parent first")
+        resp = gh_rest(f"{base}/{root['gh_id']}/replies", {"body": note["body"]})
+        note["gh_thread_id"] = root.get("gh_thread_id")
+        note["anchor_status"] = root.get("anchor_status", "anchored")
+    else:
+        head = (state.get("meta") or {}).get("head_sha")
+        if note.get("stale") or not head:
+            raise RuntimeError("this draft's line no longer matches the diff" if note.get("stale")
+                               else "state.json meta has no head_sha")
+        if not diff_text.strip():
+            raise RuntimeError("raw.diff is missing or empty: cannot place the comment on a diff line")
+        ranges = postable_ranges(diff_text)
+        line, side, anchor_status, suffix = resolve(note["path"], note["line"], note["side"], ranges)
+        payload = {"body": note["body"] + suffix, "commit_id": head, "path": note["path"]}
+        if line is None:
+            payload["subject_type"] = "file"
+        else:
+            end_line = note.get("end_line")
+            if anchor_status == "anchored" and isinstance(end_line, int) and end_line > line:
+                payload.update(start_line=line, start_side=side, line=end_line, side=side)
+            else:
+                payload.update(line=line, side=side)
+        resp = gh_rest(base, payload)
+        note["anchor_status"] = anchor_status
+    if not isinstance(resp, dict) or resp.get("id") is None:
+        raise RuntimeError("GitHub accepted the comment but returned no id")
+    promote_note(notes, note["id"], resp["id"], resp.get("html_url"))
+    note["gh_node_id"] = resp.get("node_id")
     return note
 
 
@@ -1081,6 +1151,23 @@ def do_deliver(args):
     return 0
 
 
+def do_publish(args):
+    state = _load_state(args.state)
+    note = _index_by_id(state.get("notes", [])).get(args.id)
+    if note is None:
+        print(f"no note with id {args.id}", file=sys.stderr)
+        return 1
+    if note.get("state") != "draft":
+        print(f"{args.id} is {note.get('state')}, not a draft", file=sys.stderr)
+        return 1
+    diff_path = Path(args.diff) if args.diff else Path(args.state).parent / "raw.diff"
+    diff_text = diff_path.read_text(errors="replace") if diff_path.exists() else ""
+    publish_note(state, note, diff_text, _gh_rest)
+    _save_state(args.state, state)
+    print(json.dumps({"id": note["id"], "gh_id": note["gh_id"], "gh_url": note["gh_url"]}))
+    return 0
+
+
 def do_resolve(args):
     """Resolve one review thread (the Resolve-conversation action), via the same
     _gh_graphql/RESOLVE_THREAD_MUTATION the template's own JS sends -- see that constant's
@@ -1179,6 +1266,12 @@ def main():
         "--diff", help="defaults to raw.diff beside --state, the scratchpad convention"
     )
     deliver_parser.set_defaults(func=do_deliver)
+
+    publish_parser = sub.add_parser("publish")
+    publish_parser.add_argument("--state", required=True)
+    publish_parser.add_argument("--id", required=True)
+    publish_parser.add_argument("--diff", help="defaults to raw.diff beside --state")
+    publish_parser.set_defaults(func=do_publish)
 
     resolve_parser = sub.add_parser("resolve")
     resolve_parser.add_argument("--state", required=True)
