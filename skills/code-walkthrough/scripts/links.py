@@ -93,10 +93,10 @@ def file_anchor(path):
     return "diff-" + hashlib.sha256(path.encode()).hexdigest()
 
 
-def build(repo, diff_text, head, pr):
+def build(repo, diff_text, head, pr, pushed_override=False):
     base_url = repo_web_url(repo)
     sha = run_git(repo, ["rev-parse", head]).stdout.strip()
-    pushed = bool(run_git(repo, ["branch", "-r", "--contains", sha]).stdout.strip())
+    pushed = pushed_override or bool(run_git(repo, ["branch", "-r", "--contains", sha]).stdout.strip())
     order, hunks = parse_diff(diff_text)
 
     files = []
@@ -135,10 +135,11 @@ def main():
     parser.add_argument("--diff", required=True)
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--pr")
+    parser.add_argument("--head-on-github", action="store_true")
     args = parser.parse_args()
 
     diff_text = Path(args.diff).read_text(errors="replace")
-    print(json.dumps(build(args.repo, diff_text, args.head, args.pr), indent=2))
+    print(json.dumps(build(args.repo, diff_text, args.head, args.pr, args.head_on_github), indent=2))
     return 0
 
 

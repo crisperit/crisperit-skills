@@ -174,6 +174,8 @@ def cmd_prepare(args):
         links_cmd = ["--repo", args.repo, "--diff", str(raw_diff), "--head", args.head]
         if args.pr:
             links_cmd += ["--pr", args.pr]
+        if args.head_on_github:
+            links_cmd.append("--head-on-github")
         if not _run_to_file("links.py", links_cmd, links_path):
             return 1
     elif not links_path.exists():
@@ -196,7 +198,7 @@ def cmd_prepare(args):
 
     state_path = d / "state.json"
     state_cmd = ["--analysis", str(analysis_path), "--diff", str(raw_diff), "--out", str(state_path)]
-    if links_ok:
+    if links_data.get("repo_url"):
         state_cmd += ["--links", str(links_path)]
     if args.prior and state_path.exists():
         state_cmd += ["--prior", str(state_path)]
@@ -394,6 +396,7 @@ def build_parser():
         sp.add_argument("--explain", action="store_true")
         sp.add_argument("--prior", action="store_true")
         sp.add_argument("--links-cached", action="store_true")
+        sp.add_argument("--head-on-github", action="store_true")
 
     def add_render_args(sp):
         sp.add_argument("--slug", required=True)

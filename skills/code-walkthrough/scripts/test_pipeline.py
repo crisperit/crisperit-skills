@@ -372,3 +372,20 @@ def test_partial_imports_page_notes_and_drops_a_deleted_draft():
         assert rc == 0
         state = json.loads((d / "partial" / "state.json").read_text())
         assert [n["id"] for n in state["notes"]] == ["n-keep"]
+
+
+def test_unpushed_head_still_gives_state_its_repo_and_pr_identity():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head)
+        cached = {"repo_url": "https://github.com/o/r", "pr_url": "https://github.com/o/r/pull/7",
+                   "head_sha": head, "head_pushed": False, "files": []}
+        (d / "links.json").write_text(json.dumps(cached))
+
+        rc = pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
+                             "--head", head, "--links-cached"])
+
+        assert rc == 0
+        meta = json.loads((d / "state.json").read_text())["meta"]
+        assert (meta["repo"], meta["pr"], meta["head_pushed"]) == ("o/r", 7, False)
+        assert json.loads((d / "pipeline.json").read_text())["links_ok"] is False
