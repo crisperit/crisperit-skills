@@ -566,6 +566,38 @@ eq(splitBackticks('`' + evil + '`'), [{code:true,text:evil}]);
 """)
 
 
+def test_page_edit_label_uses_correct_grammar_for_every_block_type_and_op():
+    src = "function pageEditWhat(" + _between(_real_template(), "function pageEditWhat(", "function pageEditCard(")
+    _node(src + """
+const cases = [
+  ['prose', 'added prose after this block', 'replaced this block with prose'],
+  ['list', 'added a list after this block', 'replaced this block with a list'],
+  ['mermaid', 'added a diagram after this block', 'replaced this block with a diagram'],
+  ['other', 'added a block after this block', 'replaced this block with a block'],
+];
+for (const [type, ins, rep] of cases) {
+  const a = pageEditWhat({op: 'insert_after', block: {type}}), b = pageEditWhat({op: 'replace', block: {type}});
+  if (a !== ins || b !== rep) throw new Error(type + ': ' + a + ' / ' + b);
+}
+""")
+
+
+def test_page_edit_prose_parses_gfm_tables_and_leaves_everything_else_a_paragraph():
+    src = "function parsePageEditBlocks(" + _between(_real_template(), "function parsePageEditBlocks(", "function pageEditTable(")
+    _node(src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq(parsePageEditBlocks('| a | b | c | d |\\n| --- | :--- | :---: | ---: |\\n| 1 | 2 | 3 | 4 |'),
+   [{kind:'table',head:['a','b','c','d'],align:['','left','center','right'],rows:[['1','2','3','4']]}]);
+eq(parsePageEditBlocks('x | y\\n-|-\\na\\\\|b | c').map(b => b.rows), [[['a|b', 'c']]]);
+eq(parsePageEditBlocks('| a | b |\\n|---|---|\\n| 1 |\\n| 1 | 2 | 3 |').map(b => b.rows), [[['1', ''], ['1', '2']]]);
+eq(parsePageEditBlocks('intro line\\n| a |\\n|---|\\n| 1 |\\n\\nafter'),
+   [{kind:'p',text:'intro line'},{kind:'table',head:['a'],align:[''],rows:[['1']]},{kind:'p',text:'after'}]);
+eq(parsePageEditBlocks('a | b\\nnot a delimiter\\n\\nx'), [{kind:'p',text:'a | b\\nnot a delimiter'},{kind:'p',text:'x'}]);
+const evil = '<img src=x onerror=alert(1)>';
+eq(parsePageEditBlocks('| ' + evil + ' |\\n|---|\\n| `c` |')[0].head, [evil]);
+""")
+
+
 def test_bodysha_and_draft_target_mapper_are_pure_and_correct():
     src = "function bodySha(" + _between(_real_template(), "function bodySha(", "function publishNote(")
     # exit 3 = no crypto.subtle on this node; _node turns that into a skip

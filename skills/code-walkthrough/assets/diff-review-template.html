@@ -1015,7 +1015,7 @@
   .cw-pageedit-label{margin:0 0 4px;color:var(--muted);font:var(--fs-xs)/1.4 system-ui,sans-serif}
   .cw-pageedit-chip{margin-left:8px;padding:0 6px;border:1px solid var(--border);border-radius:10px}
   .cw-pageedit-body>:first-child{margin-top:0}
-  .cw-pageedit pre{max-width:100%;overflow-x:auto}
+  .cw-pageedit pre,.cw-pageedit-table{max-width:100%;overflow-x:auto}
   .cw-pageedit-err{color:var(--red);font-size:var(--fs-xs)}
   .cw-pageedit details{margin:6px 0;color:var(--muted);font-size:var(--fs-sm)}
   .cw-pageedit-orig{white-space:pre-wrap}
@@ -4112,6 +4112,56 @@
       }).catch(fail);
     }
 
+    function parsePageEditBlocks(text){
+      const cells=l=>{
+        let s=l.trim();
+        if(s.startsWith('|')) s=s.slice(1);
+        if(/(^|[^\\])\|$/.test(s)) s=s.slice(0,-1);
+        return s.split(/(?<!\\)\|/).map(c=>c.trim().replace(/\\\|/g,'|'));
+      };
+      const lines=String(text).split('\n'), out=[];
+      let para=[];
+      const flush=()=>{ if(para.length) out.push({kind:'p',text:para.join('\n').trim()}); para=[]; };
+      for(let i=0;i<lines.length;i++){
+        const line=lines[i];
+        if(!line.trim()){ flush(); continue; }
+        if(line.includes('|')&&i+1<lines.length){
+          const head=cells(line), d=cells(lines[i+1]);
+          if(d.length===head.length&&d.every(c=>/^:?-+:?$/.test(c))){
+            flush();
+            const align=d.map(c=>c.endsWith(':')?(c.startsWith(':')?'center':'right'):(c.startsWith(':')?'left':''));
+            const rows=[];
+            for(i+=2;i<lines.length&&lines[i].trim()&&lines[i].includes('|');i++){
+              const r=cells(lines[i]).slice(0,head.length);
+              while(r.length<head.length) r.push('');
+              rows.push(r);
+            }
+            i--;
+            out.push({kind:'table',head,align,rows});
+            continue;
+          }
+        }
+        para.push(line);
+      }
+      flush();
+      return out;
+    }
+
+    function pageEditTable(t){
+      const row=(tag,cs)=>{
+        const tr=document.createElement('tr');
+        cs.forEach((c,i)=>{ const e=richEl(tag,c); if(t.align[i]) e.style.textAlign=t.align[i]; tr.append(e); });
+        return tr;
+      };
+      const tbl=document.createElement('table'), thead=document.createElement('thead'), tbody=document.createElement('tbody');
+      thead.append(row('th',t.head));
+      for(const r of t.rows) tbody.append(row('td',r));
+      tbl.append(thead,tbody);
+      const wrap=mk('div','cw-pageedit-table');
+      wrap.append(tbl);
+      return wrap;
+    }
+
     function pageEditContent(b){
       const text=String((b&&b.text)||'');
       const box=mk('div','cw-pageedit-body');
@@ -4125,7 +4175,7 @@
       } else if(b&&b.type==='mermaid'){
         box.append(mk('pre','mermaid',text));
       } else {
-        for(const para of text.split(/\n\s*\n/)) if(para.trim()) box.append(richEl('p',para.trim()));
+        for(const blk of parsePageEditBlocks(text)) box.append(blk.kind==='table'?pageEditTable(blk):richEl('p',blk.text));
       }
       return box;
     }
@@ -4210,10 +4260,14 @@
         for(const o of m.values()) if(o.thread_id===tid&&o.outcome==='page_edit') syncPageEdit(o);
     }
 
+    function pageEditWhat(p){
+      const noun={prose:'prose',list:'a list',mermaid:'a diagram'}[(p.block||{}).type]||'a block';
+      return p.op==='replace'?'replaced this block with '+noun:'added '+noun+' after this block';
+    }
+
     function pageEditCard(t,o){
-      const p=o.payload||{}, b=p.block||{};
-      const type=['prose','list','mermaid'].includes(b.type)?b.type:'block';
-      const what=p.op==='replace'?'replaced this block with a '+type:'inserted a '+type+' after this block';
+      const p=o.payload||{};
+      const what=pageEditWhat(p);
       const d=mk('div','cw-outcome'); d.dataset.oid=o.oid; d.dataset.state=o.state;
       d.append(mk('span','cw-outcome-text','Page edit: '+what+' ('+o.state+')'));
       const acts=mk('div','cw-outcome-actions');
