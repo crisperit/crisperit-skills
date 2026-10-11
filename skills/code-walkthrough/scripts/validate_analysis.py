@@ -195,7 +195,7 @@ def parse_hunks(text):
         if current is not None and not in_hunk:
             match = INDEX_LINE.match(line)
             if match:
-                files[current]["blob"] = match.group(1)
+                files[current]["blob"] = match.group(1)[:7]
                 prev = line
                 continue
 

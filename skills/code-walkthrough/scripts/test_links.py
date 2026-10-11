@@ -101,6 +101,7 @@ def test_unpushed_head_is_flagged_so_dead_links_can_be_skipped():
         repo = _repo(tmp, "git@github.com:o/r.git")
 
         assert build(str(repo), DIFF, "HEAD", "19")["head_pushed"] is False
+        assert build(str(repo), DIFF, "HEAD", "19", True)["head_pushed"] is True
 
 
 def test_no_remote_means_no_links_at_all():

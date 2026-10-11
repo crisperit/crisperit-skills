@@ -1266,6 +1266,17 @@ def _resolve_threads(d, meta, config, on_event=None):
     _emit_step(d, on_event, "threads", "ok")
 
 
+def _head_on_github(meta):
+    if not meta.get("pr") or not meta.get("gh_repo"):
+        return False
+    try:
+        r = _gh(meta, ["pr", "view", str(meta["pr"]), "--repo", meta["gh_repo"],
+                       "--json", "headRefOid", "-q", ".headRefOid"])
+    except Exception:
+        return False
+    return r.returncode == 0 and r.stdout.strip() == meta["head"]
+
+
 def _final_build(d, meta, config, on_event):
     remedy = "re-run /code-walkthrough on the same target; passing fragments are reused"
 
@@ -1280,6 +1291,8 @@ def _final_build(d, meta, config, on_event):
             args.append("--explain")
         if (d / "state.json").exists():
             args.append("--prior")
+        if _head_on_github(meta):
+            args.append("--head-on-github")
         result = subprocess.run([sys.executable, str(SCRIPTS_DIR / "pipeline.py"), *args],
                                  capture_output=True, text=True)
         if result.returncode != 0:

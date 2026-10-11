@@ -159,8 +159,14 @@ steps, up to 20 files). A task is only a plan until the user presses Run, which 
 `thread` profile (otherwise 400 with the remedy "point roles.thread at a claude-code profile").
 Run makes a fresh worktree at `tasks/<t>/` from the head sha (hooks off, LFS smudge off,
 `core.symlinks=false`) and starts a claude turn there with only Read, Grep, Glob, Edit and Write,
-confined to that worktree by `--restricted` and `acceptEdits`. It is a fresh session with no MCP
-and no resume, because sessions are keyed by cwd. Its prompt is the plan, the comment and anchor,
+confined to that worktree by `--restricted` and `acceptEdits`, plus one MCP tool, `run_check`
+(`cw_mcp.py runner`, up to 20 calls). `run_check` takes one allowlisted test, build or lint command
+(`go test|build|vet`, `cargo test|build|check`, `npm|pnpm|yarn test` or `run test|build|lint|typecheck`,
+`pytest`, `make test|build|check|lint`), never through a shell and never git, and runs it under
+`bwrap` with no network, a read-only filesystem, `$HOME` hidden, and only the worktree and a scratch
+dir writable, `/run` empty, no IPC namespace sharing, files capped at 256 MiB (without bwrap the command is refused). Cargo checks only work for dependency-free or vendored projects (no registry offline). Each call is
+recorded in `turns/<qid>.checks.jsonl` and the result lands in the task outcome as `checks`. It is a
+fresh session with no resume, because sessions are keyed by cwd. Its prompt is the plan, the comment and anchor,
 and the base branch's `CLAUDE.md` (never the head's). A change is committed to the local branch
 `cw/<walkthrough id>/<t>` and never pushed: the daemon runs no `git push` anywhere. Stop is the
 turn's cancel route (`POST .../comment/<qid>/cancel` with the task's `tq-` qid); a task that

@@ -331,12 +331,13 @@ def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume
     return argv + (["--resume", resume] if resume else ["--session-id", session_id])
 
 
-def task_argv(profile, system):
-    # Fresh session, no MCP: sessions are keyed by cwd, and a task runs in its own worktree.
-    # --safe-mode with --strict-mcp-config keeps a PR's .mcp.json, .claude settings and the
-    # user's own MCP servers out of the turn.
+def task_argv(profile, system, *, mcp_config):
+    # Fresh session: sessions are keyed by cwd, and a task runs in its own worktree. Without
+    # --safe-mode (it disables MCP), --restricted ignores the PR's .claude settings and hooks and
+    # --strict-mcp-config its .mcp.json and the user's own servers; only run_check is allowed.
     return [
-        "claude", "-p", "--safe-mode", "--strict-mcp-config", "--restricted",
+        "claude", "-p", "--strict-mcp-config", "--restricted",
+        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__run_check",
         "--tools=Read,Grep,Glob,Edit,Write",
         "--permission-mode", "acceptEdits", "--permission-prompts", "none",
         f"--model={profile['model']}", "--output-format", "stream-json", "--verbose",

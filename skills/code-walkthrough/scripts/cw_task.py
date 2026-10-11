@@ -15,7 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_ask  # noqa: E402
+import cw_check  # noqa: E402
 import cw_llm  # noqa: E402
+import cw_mcp  # noqa: E402
 import cw_run  # noqa: E402
 import cw_store  # noqa: E402
 from cw_ask import OutcomeError  # noqa: E402
@@ -24,6 +26,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 SUMMARY_CAP = 1500
 CONVENTIONS_CAP = 8000
 TASK_ID_RE = re.compile(r"t-[0-9a-f]{6}")
+CHECK_TIMEOUT_S = 300
 REMEDY = "point roles.thread at a claude-code profile"
 
 # Same hardening as head/: no hooks, symlinks as plain files so a checked-out link cannot
@@ -215,11 +218,15 @@ def run_turn(d, meta, current, task, live, on_event, config, profile):
     wt = task_dir(d, t)
 
     def finish(state, **fields):
+        checks = cw_check.read_checks(cw_mcp.checks_path(d, qid))
+        if checks:
+            fields["checks"] = checks
         cw_ask.mark_outcome(d, oid, state, on_event, payload={**plan, "task": {**task, **fields}})
 
     try:
         link = (wt / ".git").read_text()
-        argv = cw_llm.task_argv(profile, (SKILL_DIR / "prompts" / "task.md").read_text())
+        argv = cw_llm.task_argv(profile, (SKILL_DIR / "prompts" / "task.md").read_text(),
+                                mcp_config=cw_mcp.runner_mcp_config(d, qid, wt, CHECK_TIMEOUT_S))
         st = cw_ask._stream_once(
             argv, build_prompt(d, meta, current), cwd=wt, timeout=config["timeout_s"], qid=qid,
             thread_id=thread_id, on_event=on_event, live=live, plain=True)
@@ -242,3 +249,5 @@ def run_turn(d, meta, current, task, live, on_event, config, profile):
         finish("stopped") if live.get("cancelled") else finish("failed", error=str(e))
     except Exception as e:
         finish("failed", error=str(e))
+    finally:
+        shutil.rmtree(Path(d) / "turns" / f"{qid}.scratch", ignore_errors=True)

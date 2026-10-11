@@ -476,3 +476,9 @@ def test_reuse_keeps_a_passing_fragment_at_the_same_sig_a_new_head_clears_it():
         d3, _meta3, _reused3 = cw_run.prepare_walkthrough(params)
         assert d3 == d
         assert not (d3 / "batches" / "fragment-1.json").exists()
+
+
+@pytest.mark.parametrize("out,rc,expected", [("abc\n", 0, True), ("zzz\n", 0, False), ("abc\n", 1, False)])
+def test_head_on_github_needs_gh_to_confirm_the_head_oid(monkeypatch, out, rc, expected):
+    monkeypatch.setattr(cw_run, "_gh", lambda meta, args, **kw: types.SimpleNamespace(returncode=rc, stdout=out))
+    assert cw_run._head_on_github({"pr": 5, "gh_repo": "o/r", "head": "abc"}) is expected

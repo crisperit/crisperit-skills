@@ -11,6 +11,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
@@ -124,14 +126,15 @@ def test_openai_backend_offers_propose_task():
 
 def test_argv_shapes():
     profile = {"model": "sonnet"}
-    argv = cw_llm.task_argv(profile, "SYS")
+    mcp = {"mcpServers": {"cw": {"args": ["cw_mcp.py", "runner"]}}}
+    argv = cw_llm.task_argv(profile, "SYS", mcp_config=mcp)
     assert argv == [
-        "claude", "-p", "--safe-mode", "--strict-mcp-config", "--restricted",
-        "--tools=Read,Grep,Glob,Edit,Write", "--permission-mode",
+        "claude", "-p", "--strict-mcp-config", "--restricted", "--mcp-config=" + json.dumps(mcp),
+        "--allowedTools=mcp__cw__run_check", "--tools=Read,Grep,Glob,Edit,Write", "--permission-mode",
         "acceptEdits", "--permission-prompts", "none", "--model=sonnet", "--output-format",
         "stream-json", "--verbose", "--include-partial-messages", "--no-session-persistence",
         "--system-prompt=SYS"]
-    assert not any(a.startswith(("--add-dir", "--mcp-config")) for a in argv)
+    assert "--safe-mode" not in argv and not any(a.startswith("--add-dir") for a in argv)
     thread = cw_llm.thread_argv(profile, "SYS", mcp_config={"mcpServers": {}}, add_dir="/d/ctx", session_id="u")
     assert "--tools=Read,Grep,Glob" in thread and "--permission-mode" not in thread
     assert ("--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,"
@@ -254,7 +257,8 @@ def test_run_commits_to_a_local_branch_and_never_pushes():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         d, repo, head, oid = _setup(tmp, home)
         main_before = cw_testlib.git(repo, "rev-parse", "main").strip()
-        entry = cw_testlib.claude_task_entry(SUMMARY, WRITES, tools=("Read", "Edit"))
+        refused = [{"at": 1, "name": "run_check", "arguments": {"command": "git push"}}]
+        entry = cw_testlib.claude_task_entry(SUMMARY, WRITES, tools=("Read", "Edit"), mcp_calls=refused)
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, srv.running_daemon() as daemon, \
                 _record_subprocess() as calls:
             sock = srv._sse_connect(daemon, srv.KEY, srv.WID)
@@ -292,14 +296,34 @@ def test_run_commits_to_a_local_branch_and_never_pushes():
         assert Path(log["cwd"]).resolve() == (d / "tasks" / t).resolve()
         argv = log["argv"]
         assert "--restricted" in argv and "acceptEdits" in argv and "--no-session-persistence" in argv
-        assert "--safe-mode" in argv and "--strict-mcp-config" in argv
-        assert not any(a.startswith(("--mcp-config", "--add-dir")) or a in ("--resume", "--session-id")
-                       for a in argv)
+        assert "--safe-mode" not in argv and "--strict-mcp-config" in argv
+        assert any(a.startswith("--mcp-config=") for a in argv)
+        assert not any(a.startswith("--add-dir") or a in ("--resume", "--session-id") for a in argv)
+        (check,) = result["checks"]
+        assert check["command"] == "git push" and check["ok"] is False and "refused" in check["tail"]
         assert "Make x three" in log["stdin"] and COMMENT in log["stdin"] and "a.py:1" in log["stdin"]
         assert "base rules" in log["stdin"] and "head rules" not in log["stdin"]
 
         assert calls and any("commit" in c for c in calls if isinstance(c, list))
         assert not [c for c in calls if any("push" in str(a) for a in (c if isinstance(c, list) else [c]))]
+
+
+@pytest.mark.parametrize("command,allowed", [
+    ("go test ./...", True), ("go vet ./pkg", True), ("cargo build --release", True),
+    ("npm test", True), ("pnpm run lint", True), ("yarn run typecheck", True),
+    ("pytest -k 'a b'", True), ("python3 -m pytest -q x.py", True), ("make test", True),
+    ("go test ./... ; rm -rf x", False), ("go test && ls", False), ("go test | cat", False),
+    ("go test $(id)", False), ("go test `id`", False), ("go test\nls", False), ("go test > f", False),
+    ("git push", False), ("git status", False), ("go run main.go", False), ("npm install", False),
+    ("npm run deploy", False), ("make install", False), ("python3 x.py", False), ("pytest 'unclosed", False),
+    ("", False)])
+def test_run_check_validation(command, allowed):
+    import cw_check
+    if allowed:
+        assert cw_check.validate(command)
+    else:
+        with pytest.raises(ValueError):
+            cw_check.validate(command)
 
 
 def test_git_refuses_push_and_anything_off_the_allowlist():
@@ -463,6 +487,19 @@ def test_daemon_start_and_qa_read_fail_interrupted_tasks():
 
 def test_task_prompt_asset_exists_and_names_the_limits():
     text = (Path(__file__).parent.parent / "prompts" / "task.md").read_text()
-    assert "no shell" in text and "push" not in text
+    assert "run_check" in text and "push" not in text
     comment = " ".join((Path(__file__).parent.parent / "prompts" / "comment.md").read_text().split())
     assert "`propose_task`" in comment and "nothing runs until the user presses Run" in comment
+
+
+def test_check_sandbox_hides_run_and_network(tmp_path):
+    import cw_check
+    if not cw_check._isolation():
+        pytest.skip("bwrap not available")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    code, out = cw_check.run(["sh", "-c", "ls -A /run | wc -l"], wt, tmp_path / "s", 20)
+    assert code == 0 and out.split()[0] == "0"
+    code, _ = cw_check.run(["python3", "-c", "import socket; socket.create_connection(('1.1.1.1', 53), 2)"],
+                           wt, tmp_path / "s", 20)
+    assert code != 0

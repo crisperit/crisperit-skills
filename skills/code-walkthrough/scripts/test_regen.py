@@ -118,6 +118,14 @@ def test_no_index_line_falls_back_to_body_only_and_is_always_stale():
     assert normal_plan[normal_record["id"]]["carry"] is True
 
 
+def test_hash_ignores_blob_abbreviation_length_but_not_content():
+    def h(index):
+        return regen.hunk_records(_diff("f.py", index, "@@ -1,2 +1,3 @@", BODY))[0]["hash"]
+
+    assert h("index 46266e4b..039b9dd7 100644") == h("index 46266e4..039b9dd 100644")
+    assert h("index 46266e4..039b9dd 100644") != h("index 46266e4..a0860d7 100644")
+
+
 def test_two_identical_hunks_in_one_file_resolve_first_unmatched_wins():
     # Same body text at two different line ranges in the same file: different ids (the
     # header differs) but the same hash (body and blob are what the hash is over), the

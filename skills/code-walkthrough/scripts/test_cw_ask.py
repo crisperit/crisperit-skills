@@ -1089,6 +1089,10 @@ def test_github_draft_outcome_states_and_guards():
         assert cw_ask.outcome_action(d, second["oid"], "dismiss")["state"] == "dismissed"
         assert refused("keep", {"note_id": "n-9"}, target=second["oid"]) == "conflict"
 
+        cw_ask._append_qa(d, {"qid": "q3", "source": "triage", "thread_id": "q3", "comment": "Triage this"})
+        legacy = _draft_turn(d, "q3", ANCHOR_LINE, "Triage this", {"body": "b", "target": {"kind": "new"}})
+        assert refused("verbatim", {}, target=legacy["oid"]) == "invalid"
+
 
 def test_github_draft_dismissal_and_edit_reach_the_next_prompt():
     with tempfile.TemporaryDirectory() as tmp:
