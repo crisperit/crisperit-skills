@@ -712,7 +712,7 @@ def claude_stream_entry(chunks, *, session_id="s-1", result=None, usage=None, mc
     return {"stream": stream, "exit": 0, "stderr": "", "mcp_calls": list(mcp_calls)}
 
 
-def claude_task_entry(summary, writes=None, *, tools=("Edit",), delay=0, exit=0):
+def claude_task_entry(summary, writes=None, *, tools=("Edit",), delay=0, exit=0, mcp_calls=()):
     """A code-task turn: `writes` ({relative path: content}) are written into the fake's cwd at
     start, each name in `tools` shows as a tool use, then `summary` is the final text. With
     `delay`, the turn sleeps after the tool uses, long enough to be cancelled."""
@@ -728,7 +728,7 @@ def claude_task_entry(summary, writes=None, *, tools=("Edit",), delay=0, exit=0)
                    "session_id": "s-task", "permission_denials": [],
                    "usage": {"input_tokens": 10, "output_tokens": 5,
                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}})
-    return {"stream": stream, "exit": exit, "stderr": "", "mcp_calls": [], "writes": writes or {}}
+    return {"stream": stream, "exit": exit, "stderr": "", "mcp_calls": list(mcp_calls), "writes": writes or {}}
 
 
 class _FakeClaude:

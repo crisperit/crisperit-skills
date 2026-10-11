@@ -4025,6 +4025,11 @@
       return last&&last.status==='error'?'error':'answered';
     }
 
+    function checkLine(c){
+      const cmd=String(c&&c.command||'');
+      if(c&&c.ok===true) return cmd+' passed';
+      return cmd+(c&&typeof c.exit==='number'?' failed (exit '+c.exit+')':' did not run');
+    }
     function cherryPickCommand(sha){
       const s=String(sha||'');
       return /^[0-9a-f]{7,40}$/i.test(s)?'git cherry-pick '+s:null;
@@ -4500,6 +4505,23 @@
         field('Files, one per line (up to 20)',files),acts,msg);
     }
 
+    function checksEl(task){
+      const cs=Array.isArray(task.checks)?task.checks:[];
+      if(!cs.length) return null;
+      const box=mk('div','cw-task-files','Checks');
+      const ul=document.createElement('ul');
+      for(const c of cs){
+        const li=document.createElement('li');
+        if(c.tail){
+          const dt=document.createElement('details'); dt.append(mk('summary',null,checkLine(c)));
+          const pre=document.createElement('pre'); pre.textContent=String(c.tail); dt.append(pre); li.append(dt);
+        } else li.textContent=checkLine(c);
+        ul.append(li);
+      }
+      box.append(ul);
+      return box;
+    }
+
     function taskCard(t,o){
       const p=o.payload||{}, task=p.task||{};
       const d=mk('div','cw-outcome cw-task'); d.dataset.oid=o.oid; d.dataset.state=o.state;
@@ -4580,6 +4602,7 @@
         }
         if(task.branch){ const bp=mk('p','cw-task-files','Branch: '); bp.append(mk('code',null,task.branch)); d.append(bp); }
         if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
+        { const ce=checksEl(task); if(ce) d.append(ce); }
         add('Show with this change',null,b=>{
           const label=b.textContent;
           b.textContent='Opening...';
@@ -4599,6 +4622,7 @@
         return d;
       }
       d.append(mk('p','cw-task-sum',o.state==='failed'?(task.error||'The task failed.'):'The task was stopped before it finished.'));
+      { const ce=checksEl(task); if(ce) d.append(ce); }
       add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
       d.append(acts,msg);
       return d;

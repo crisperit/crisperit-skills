@@ -6,6 +6,7 @@ Usage:
   cw_mcp.py mcp                       run the stdio MCP server (default when no args)
   cw_mcp.py setup [--agent claude|print]
   cw_mcp.py outcomes --dir D --qid Q  per-turn outcome server (spawned by the daemon)
+  cw_mcp.py runner --dir D --qid Q --worktree W --timeout S  code task run_check server
   cw_mcp.py check
   cw_mcp.py stop
 
@@ -27,6 +28,7 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_check  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_store  # noqa: E402
 
@@ -453,6 +455,24 @@ def outcome_mcp_config(d, qid):
         str(Path(__file__).resolve()), "outcomes", "--dir", str(d), "--qid", qid]}}}
 
 
+RUNNER_TOOLS = [{
+    "name": "run_check",
+    "description": ("Run one test, build or lint command (go test, cargo test, npm test, pytest, make test ...) "
+                    "in the checkout, offline and without a shell. No git, no network, nothing outside the checkout."),
+    "inputSchema": {"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}},
+}]
+
+
+def runner_mcp_config(d, qid, worktree, timeout):
+    return {"mcpServers": {"cw": {"type": "stdio", "command": sys.executable, "args": [
+        str(Path(__file__).resolve()), "runner", "--dir", str(d), "--qid", qid,
+        "--worktree", str(worktree), "--timeout", str(timeout)]}}}
+
+
+def checks_path(d, qid):
+    return Path(d) / "turns" / f"{qid}.checks.jsonl"
+
+
 def _write_response(obj):
     with _STDOUT_LOCK:
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -534,7 +554,7 @@ def _log_file(message):
         _log(message)
 
 
-def _outcomes_dispatch(d, qid, req):
+def _outcomes_dispatch(d, qid, req, tools=None, call=None):
     req_id = req.get("id")
     if req_id is None:
         return None
@@ -542,12 +562,13 @@ def _outcomes_dispatch(d, qid, req):
     if method == "initialize":
         result = _handle_initialize(req)
     elif method == "tools/list":
-        result = {"tools": OUTCOME_TOOLS}
+        result = {"tools": tools or OUTCOME_TOOLS}
     elif method == "ping":
         result = {}
     elif method == "tools/call":
         params = req.get("params") or {}
-        ok, text = accept_outcome(d, qid, params.get("name"), params.get("arguments") or {})
+        ok, text = (call or (lambda name, args: accept_outcome(d, qid, name, args)))(
+            params.get("name"), params.get("arguments") or {})
         result = {"content": [{"type": "text", "text": text}], "isError": not ok}
     else:
         return {"jsonrpc": "2.0", "id": req_id,
@@ -566,7 +587,7 @@ def _answer_failure(req):
     return {"jsonrpc": "2.0", "id": req_id, **resp}
 
 
-def cmd_outcomes(d, qid):
+def cmd_outcomes(d, qid, tools=None, call=None):
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -576,7 +597,7 @@ def cmd_outcomes(d, qid):
             req = json.loads(line)
             if not isinstance(req, dict):
                 raise ValueError("not an object")
-            resp = _outcomes_dispatch(d, qid, req)
+            resp = _outcomes_dispatch(d, qid, req, tools, call)
         except Exception as e:
             _log_file(f"{type(e).__name__}: {e}")
             resp = _answer_failure(req)
@@ -586,6 +607,17 @@ def cmd_outcomes(d, qid):
             except Exception as e:
                 _log_file(f"write failed: {type(e).__name__}: {e}")
     return 0
+
+
+def cmd_runner(d, qid, worktree, timeout):
+    scratch = Path(d) / "turns" / f"{qid}.scratch"
+
+    def call(name, args):
+        if name != "run_check":
+            return False, f"unknown tool {name}"
+        return cw_check.run_check(args.get("command"), worktree, scratch, checks_path(d, qid), timeout)
+
+    return cmd_outcomes(d, qid, RUNNER_TOOLS, call)
 
 
 _CONFIG_TEMPLATE = {
@@ -689,6 +721,11 @@ def main(argv=None):
     outcomes_parser = sub.add_parser("outcomes")
     outcomes_parser.add_argument("--dir", required=True)
     outcomes_parser.add_argument("--qid", required=True)
+    runner_parser = sub.add_parser("runner")
+    runner_parser.add_argument("--dir", required=True)
+    runner_parser.add_argument("--qid", required=True)
+    runner_parser.add_argument("--worktree", required=True)
+    runner_parser.add_argument("--timeout", type=int, default=300)
     sub.add_parser("check")
     sub.add_parser("stop")
     args = parser.parse_args(argv)
@@ -697,6 +734,8 @@ def main(argv=None):
         return cmd_mcp()
     if args.cmd == "outcomes":
         return cmd_outcomes(args.dir, args.qid)
+    if args.cmd == "runner":
+        return cmd_runner(args.dir, args.qid, args.worktree, args.timeout)
     if args.cmd == "setup":
         return cmd_setup(args.agent)
     if args.cmd == "check":

@@ -667,6 +667,15 @@ eq(h.steps, ['<img src=x onerror=alert(1)>']);
 """)
 
 
+def test_check_line_reports_pass_fail_and_not_run():
+    _node("function checkLine(" + _between(_wire_ask(), "function checkLine(", "function cherryPickCommand(") + """
+const eq = (a, b) => { if (a !== b) throw new Error(a + ' != ' + b); };
+eq(checkLine({command: 'go test ./a/', exit: 0, ok: true}), 'go test ./a/ passed');
+eq(checkLine({command: 'go test ./a/', exit: 1, ok: false}), 'go test ./a/ failed (exit 1)');
+eq(checkLine({command: 'go test ./a/', exit: null, ok: false}), 'go test ./a/ did not run');
+""")
+
+
 @pytest.mark.parametrize("diff_header", [
     "@@ -10,2 +10,3 @@",
     "@@ -20,2 +20,3 @@",
