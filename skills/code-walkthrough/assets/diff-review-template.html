@@ -4037,7 +4037,7 @@
     function handoverInstruction(id,oid){
       const idPart=id?' with id '+JSON.stringify(String(id))+' and':' with';
       return 'In the code-walkthrough MCP server, call walkthrough_get'+idPart+' parts ["threads"], then do the handed task with oid '+
-        JSON.stringify(String(oid))+' in my checkout and call walkthrough_reply with that oid and a short summary.';
+        JSON.stringify(String(oid))+' in my checkout and call walkthrough_reply with thread_id from that task, that oid and a short summary as text.';
     }
     function taskPlanFromForm(title,steps,files){
       const lines=(s,n)=>String(s||'').split('\n').map(x=>x.trim()).filter(Boolean).slice(0,n);
@@ -4416,7 +4416,7 @@
         d.append(ta,acts,msg);
         return d;
       }
-      if(orig!==body){
+      if(orig&&orig!==body){
         const cols=mk('div','cw-ghdraft-cols');
         const col=(h,txt)=>{ const c=mk('div','cw-ghdraft-col'); c.append(mk('h4',null,h),mk('p','cw-ghdraft-body',txt)); return c; };
         cols.append(col('Original (your words)',orig),col('Drafted',body));
@@ -4436,7 +4436,7 @@
           if(nid){ pb.dataset.publishFor=nid; pb.disabled=publishing.has(nid); }
         }
         if(o.state==='proposed'){
-          if(orig!==body) add('Use my words','cw-gh-verbatim fb-ghost',()=>{ ghAct(o,'verbatim',{},btns); });
+          if(orig&&orig!==body) add('Use my words','cw-gh-verbatim fb-ghost',()=>{ ghAct(o,'verbatim',{},btns); });
           add('Edit','cw-gh-edit fb-ghost',()=>{ ghEdit.set(o.oid,body); renderThread(t); });
           add('Dismiss','cw-gh-dismiss fb-ghost',()=>{ ghAct(o,'dismiss',{},btns); });
         }

@@ -641,7 +641,7 @@ def test_handover_instruction_escapes_ids():
     _node(src + r"""
 const eq = (a, b) => { if (a !== b) throw new Error(a + ' != ' + b); };
 eq(handoverInstruction('w1', 'o7'),
-  'In the code-walkthrough MCP server, call walkthrough_get with id "w1" and parts ["threads"], then do the handed task with oid "o7" in my checkout and call walkthrough_reply with that oid and a short summary.');
+  'In the code-walkthrough MCP server, call walkthrough_get with id "w1" and parts ["threads"], then do the handed task with oid "o7" in my checkout and call walkthrough_reply with thread_id from that task, that oid and a short summary as text.');
 const q = handoverInstruction('w"1\n`x`', 'o"7');
 if (q.includes('\n')) throw new Error('raw newline');
 if (!q.includes(JSON.stringify('w"1\n`x`')) || !q.includes(JSON.stringify('o"7'))) throw new Error('not escaped');

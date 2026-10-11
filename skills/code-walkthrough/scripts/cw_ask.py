@@ -278,10 +278,10 @@ def _replyable(d, anchor):
     return _root_threads(d, anchor, include_resolved=True)
 
 
-def write_turn_anchor(d, qid, thread_id, anchor, comment=None):
+def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user"):
     path = Path(d) / "turns" / f"{qid}.anchor.json"
     path.parent.mkdir(exist_ok=True)
-    cw_store.write_json(path, {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment,
+    cw_store.write_json(path, {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment, "source": source,
                                "resolvable": _resolvable(d, anchor), "replyable": _replyable(d, anchor)})
 
 
@@ -373,7 +373,7 @@ def _outcome_action(d, oid, action, payload, on_event):
                            f"outcome is {current['state']}, not {' or '.join(from_states)}", "conflict")
     event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": to_state}
     if current["outcome"] == "github_draft" and action in ("edit", "keep", "verbatim"):
-        event["payload"] = _github_draft_payload(current["payload"], action, payload)
+        event["payload"] = _github_draft_payload(current["payload"], action, payload, d, current["qid"])
     elif current["outcome"] == "task" and action == "edit":
         error = cw_mcp.task_plan_error(payload)
         if error:
@@ -394,7 +394,7 @@ def _outcome_action(d, oid, action, payload, on_event):
     return folded
 
 
-def _github_draft_payload(current, action, payload):
+def _github_draft_payload(current, action, payload, d, qid):
     if action == "edit":
         body = (payload or {}).get("body")
         if not isinstance(body, str) or not body.strip() or len(body) > cw_mcp.GITHUB_DRAFT_CAP:
@@ -406,7 +406,10 @@ def _github_draft_payload(current, action, payload):
         if not isinstance(note_id, str) or not notes.VALID_ID_RE.fullmatch(note_id):
             raise OutcomeError("note_id must be a note id", "invalid", remedy="send {note_id}")
         return {**current, "note_id": note_id}
-    return {**current, "body": current.get("original") or current["body"], "verbatim": True, "edited": False}
+    turn = next((t for t in read_qa(d) if t["qid"] == qid), {})
+    if not current.get("original") or turn.get("source") == "triage":
+        raise OutcomeError("there are no words of yours to use", "invalid")
+    return {**current, "body": current["original"], "verbatim": True, "edited": False}
 
 
 def mark_outcome(d, oid, state, on_event=None, payload=None, expect=None):
@@ -799,7 +802,7 @@ def _claude_turn(d, record, profile, config, anchor, question, on_event, live, o
     system = _system_prompt(ctx)
     mcp_config = cw_mcp.outcome_mcp_config(d, qid)
     prior = _thread_session(d, thread_id)
-    write_turn_anchor(d, qid, thread_id, anchor, question)
+    write_turn_anchor(d, qid, thread_id, anchor, question, record["source"])
 
     def run(session_id=None, resume=None):
         argv = cw_llm.thread_argv(
@@ -924,7 +927,7 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, s
             if profile.get("kind") == "claude-code":
                 _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage)
             else:
-                write_turn_anchor(d, qid, record["thread_id"], anchor, question)
+                write_turn_anchor(d, qid, record["thread_id"], anchor, question, source)
                 prompt = build_prompt(d, anchor, question, record["thread_id"])
                 messages = [
                     {"role": "system", "content": _system_prompt()},

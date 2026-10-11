@@ -373,7 +373,7 @@ def _resolve_payload(args, anchor_doc=None):
 
 
 def _github_draft_payload(args, anchor_doc):
-    original = anchor_doc.get("comment") or ""
+    original = "" if anchor_doc.get("source") == "triage" else anchor_doc.get("comment") or ""
     verbatim = args.get("verbatim") is True and bool(original)
     anchor = anchor_doc.get("anchor") or {}
     if args["target"]["kind"] == "new":

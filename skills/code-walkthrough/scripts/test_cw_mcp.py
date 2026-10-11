@@ -352,6 +352,8 @@ def test_github_draft_payload_copies_target_and_verbatim_is_byte_for_byte():
                                   "end_line": None, "hunk_id": "h"}}
         verbatim = accept("q2", _draft_doc(), {"body": "something else entirely", "target": NEW, "verbatim": True})
         assert verbatim["body"] == COMMENT == verbatim["original"] and verbatim["verbatim"] is True
+        triage = accept("q4", {**_draft_doc(), "source": "triage"}, {"body": "b", "target": NEW, "verbatim": True})
+        assert triage["original"] == "" and triage["verbatim"] is False
         reply = accept("q3", _draft_doc("thread"), {"body": "b", "target": REPLY, "verbatim": True})
         assert reply["body"] == COMMENT
         assert reply["target"] == {"kind": "reply", "note_id": "gh-9", "path": "a.py", "line": 3}
