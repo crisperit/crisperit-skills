@@ -953,7 +953,10 @@
     font:700 11px/1 system-ui;cursor:pointer;padding:0;user-select:none}
   .dline:hover .dline-plus,
   .dline:focus-visible .dline-plus,
-  .dline.dline-touch-active .dline-plus{display:flex;align-items:center;justify-content:center}
+  .dline.dline-touch-active .dline-plus,
+  .dline.dline-sel-last .dline-plus{display:flex;align-items:center;justify-content:center}
+  .dline.dline-sel-last .dline-plus{box-shadow:0 0 0 2px var(--purple)}
+  #plan-content ::selection{background:color-mix(in srgb,var(--purple) 30%,transparent);color:inherit}
   /* Lives inside <pre class="diff">, so it inherits its monospace and its white-space:pre.
      The font is reset because this is prose, and white-space for the same reason: left on pre a
      note never wrapped, it ran off to the right (a row 382px wide holding 855px of content).
@@ -963,7 +966,7 @@
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
   #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
-    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:#fff;
+    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:var(--bg);
     box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
   #cw-threads-btn{position:fixed;right:16px;bottom:calc(62px + var(--cw-bar-h,0px));z-index:40;border:1px solid var(--border);
     border-radius:999px;padding:8px 16px;font:600 var(--fs-sm) system-ui;cursor:pointer;
@@ -1126,6 +1129,18 @@
     .cw-compose.cw-nudge{animation:cw-nudge .9s ease-out}
   }
   @keyframes cw-nudge{from{outline-color:transparent;outline-offset:8px}40%{outline-color:var(--yellow)}to{outline-offset:2px}}
+  .cw-compose{--mode-color:var(--purple);border-left-color:var(--mode-color);
+    background:color-mix(in srgb,var(--mode-color) 8%,transparent)}
+  .cw-compose[data-mode="pr"]{--mode-color:var(--yellow)}
+  .cw-compose .cw-send{background:var(--mode-color);border-color:var(--mode-color)}
+  .cw-compose .cw-send:hover:not(:disabled){background:color-mix(in srgb,var(--mode-color) 88%,#000)}
+  .cw-compose-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 6px;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-modes{display:inline-flex;margin-left:auto;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .cw-mode-tab{min-height:24px;padding:0 10px;border:0;background:var(--panel2);color:var(--muted);
+    font:inherit;font-size:var(--fs-xs);cursor:pointer}
+  .cw-mode-tab[aria-selected="true"]{background:var(--mode-color);color:var(--bg)}
+  .cw-compose-note{margin:6px 0 0;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-compose-hint::before{content:" ";white-space:pre}
   .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
 
   #cw-post-confirm{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
@@ -1181,7 +1196,10 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-comment-btn,#cw-threads-btn{min-height:44px}
+    #cw-threads-btn{min-height:44px}
+    #cw-comment-btn{display:none!important}
+    .cw-mode-tab{min-height:44px;padding:0 14px}
+    .cw-compose-hint{display:none}
     #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     .fb-primary,.fb-ghost,.fb-danger,.fb-reply-input{min-height:44px}
@@ -1191,7 +1209,7 @@
        and the row above/below. ::before extends the tappable region on all sides instead,
        via inset rather than negative margins, so it never adds to .dline-plus's own box and
        can't grow the row's layout height. */
-    .dline-plus::before{content:'';position:absolute;inset:-10px}
+    .dline-plus::before{content:'';position:absolute;inset:-14px}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */
@@ -2413,6 +2431,7 @@
     plus.type='button'; plus.className='dline-plus'; plus.tabIndex=-1;
     plus.setAttribute('aria-label','Add comment on '+meta.path+':'+meta.line+' ('+meta.side+')');
     plus.textContent='+';
+    plus.addEventListener('mousedown',e=>e.preventDefault());
     plus.addEventListener('click',e=>{ e.stopPropagation(); open(); });
     span.appendChild(plus);
     spanByLineKey.set(meta.lineKey,{span,meta});
@@ -3816,6 +3835,18 @@
     return el&&el.closest('.dline');
   }
 
+  function selectionEndRow(range){
+    let end=closestDline(range.endContainer);
+    const start=closestDline(range.startContainer);
+    if(!end||end===start) return end;
+    const tail=range.cloneRange(); tail.setStart(end,0);
+    const frag=tail.cloneContents();
+    frag.querySelectorAll('.dline-num,.dline-plus').forEach(n=>n.remove());
+    if(frag.textContent.trim()) return end;
+    for(let p=end.previousElementSibling;p;p=p.previousElementSibling) if(p.classList.contains('dline')) return p;
+    return end;
+  }
+
   function blockKeyFrom(sectionSlug,text){
     const t=String(text).replace(/\s+/g,' ').trim();
     let h=0x811c9dc5;
@@ -3907,7 +3938,7 @@
       const quote=sel.toString();
       const range=sel.getRangeAt(0);
       const sm=lineMetaBySpan.get(closestDline(range.startContainer));
-      const em=lineMetaBySpan.get(closestDline(range.endContainer));
+      const em=lineMetaBySpan.get(selectionEndRow(range));
       if(sm&&em){
         return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
           end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
@@ -3967,24 +3998,62 @@
       };
     }
 
-    function makeComposer(label,payload,onSent,onCancel,onDraft){
+    const MODE_TEXT={
+      pr:{tab:'PR comment',btn:'Add to review',ph:'Comment for the PR review',
+        note:'Saved as a draft. Posts to the PR when you Submit review.'},
+      note:{tab:'Note',btn:'Save note',ph:'Write a note',note:'Saved as a note on this page.'},
+      agent:{tab:'Agent',btn:'Send to agent',ph:'Ask, or tell the agent what to change',
+        note:'To the agent. Ask, or tell it what to change. A code change comes back as a plan you review and Run.'},
+      prose:{tab:'Agent',btn:'Send to agent',ph:'Ask, or tell the agent how to change this page',
+        note:'Page edits apply at once, with Undo.'},
+    };
+
+    function makeComposer({modes,header,prose,payload,onSent,onCancel,onDraft}){
+      const hasPr=!!(state.meta&&state.meta.pr!=null);
+      const textFor=m=>MODE_TEXT[m==='agent'&&prose?'prose':m==='pr'&&!hasPr?'note':m];
       const box=mk('div','cw-compose');
+      const head=mk('div','cw-compose-head');
+      head.append(mk('span','cw-compose-title',header));
+      const tabs=new Map();
+      if(modes.length>1){
+        const list=mk('div','cw-modes'); list.setAttribute('role','tablist'); list.setAttribute('aria-label','Comment mode');
+        for(const m of modes){
+          const t=mkBtn(textFor(m).tab,'cw-mode-tab'); t.setAttribute('role','tab');
+          t.addEventListener('click',()=>setMode(m,true));
+          t.addEventListener('keydown',e=>{
+            if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight') return;
+            e.preventDefault();
+            setMode(modes[(modes.indexOf(m)+(e.key==='ArrowRight'?1:modes.length-1))%modes.length],true);
+          });
+          tabs.set(m,t); list.append(t);
+        }
+        head.append(list);
+      }
       const ta=mk('textarea','cw-compose-text');
-      ta.setAttribute('aria-label',label); ta.placeholder=label;
-      const send=mkBtn('Send','cw-send fb-primary');
+      const send=mkBtn('','cw-send fb-primary');
       const row=mk('div','fb-actions'); row.append(send);
-      const draftBtn=onDraft?mkBtn('Save as GitHub draft','cw-draft fb-ghost'):null;
-      if(draftBtn) row.append(draftBtn);
       const cancelBtn=onCancel?mkBtn('Cancel','cw-cancel fb-ghost'):null;
       if(cancelBtn) row.append(cancelBtn);
+      const noteText=mk('span'), hint=mk('span','cw-compose-hint','Esc closes, Ctrl+Enter sends');
+      const note=mk('p','cw-compose-note'); note.append(noteText,hint);
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       const prompt=mk('div','fb-actions cw-discard'); prompt.hidden=true;
       const keepBtn=mkBtn('Keep editing','fb-ghost'), dropBtn=mkBtn('Discard','fb-danger');
       const btns=mk('div','cw-discard-btns'); btns.append(keepBtn,dropBtn);
       prompt.append(mk('span','cw-discard-q','Discard this comment?'),btns);
-      box.append(ta,row,prompt,status);
+      box.append(head,ta,note,row,prompt,status);
+      let mode=modes[0], busy=false;
       const isEmpty=()=>!ta.value.trim();
       const prompting=()=>!prompt.hidden;
+      const sync=()=>{ send.disabled=busy||isEmpty(); };
+      function setMode(m,focusTab){
+        mode=m; box.dataset.mode=m;
+        const tx=textFor(m);
+        ta.placeholder=tx.ph; ta.setAttribute('aria-label',tx.ph);
+        noteText.textContent=tx.note; send.textContent=tx.btn; status.textContent='';
+        for(const [k,t] of tabs){ t.setAttribute('aria-selected',String(k===m)); t.tabIndex=k===m?0:-1; }
+        if(focusTab) tabs.get(m).focus();
+      }
       function keepEditing(){ prompt.hidden=true; row.hidden=false; ta.focus(); }
       function cancel(){
         if(!onCancel) return;
@@ -3998,36 +4067,42 @@
         setTimeout(()=>box.classList.remove('cw-nudge'),900);
       }
       function submit(){
-        const text=ta.value.trim();
-        if(!text){ status.textContent='Type a comment first.'; return; }
-        send.disabled=true; status.textContent='Sending…';
-        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(payload(text))})
+        busy=true; sync(); status.textContent='Sending…';
+        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(payload(ta.value.trim()))})
           .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
           .then(({ok,body})=>{
-            send.disabled=false;
-            if(!ok){ status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
-            ta.value=''; status.textContent='';
+            busy=false;
+            if(!ok){ sync(); status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
+            ta.value=''; sync(); status.textContent='';
             onSent(body);
           })
-          .catch(()=>{ send.disabled=false; status.textContent='Request failed -- check the daemon is still running.'; });
+          .catch(()=>{ busy=false; sync(); status.textContent='Request failed -- check the daemon is still running.'; });
       }
       function saveDraft(){
-        if(!ta.value.trim()){ status.textContent='Type a comment first.'; return; }
         onDraft(ta.value);
         if(onCancel) onCancel();
       }
-      send.addEventListener('click',submit);
+      const act=()=>{ if(!send.disabled) (mode==='pr'?saveDraft:submit)(); };
+      send.addEventListener('click',act);
       if(cancelBtn) cancelBtn.addEventListener('click',cancel);
       keepBtn.addEventListener('click',keepEditing);
       if(onCancel) dropBtn.addEventListener('click',()=>onCancel());
-      if(draftBtn) draftBtn.addEventListener('click',saveDraft);
+      ta.addEventListener('input',sync);
       ta.addEventListener('keydown',e=>{
-        if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){
-          e.preventDefault();
-          if(e.shiftKey&&onDraft) saveDraft(); else submit();
-        }
+        if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); act(); }
       });
-      return {box,ta,isEmpty,prompting,keepEditing,cancel,nudge};
+      setMode(mode); sync();
+      return {box,ta,isEmpty,prompting,keepEditing,cancel,nudge,sync};
+    }
+
+    function lineComposerOpts(anchor){
+      if(anchor.kind!=='line') return {modes:['agent'],header:'Selection in '+(anchor.section||'this page'),prose:true};
+      const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
+      const first=rec&&rec.meta.text?rec.meta.text[0]:' ';
+      const kind=anchor.side==='LEFT'?'removed (old file)':first==='+'?'added':'context';
+      const lines=anchor.end_line?'Lines '+anchor.line+'-'+anchor.end_line:'Line '+anchor.line;
+      const onDraft=directDraftFor(anchor);
+      return {modes:onDraft?['pr','agent']:['agent'],header:lines+' ('+kind+')',onDraft};
     }
 
     const threads=new Map();
@@ -4862,7 +4937,8 @@
       if(snapshots++>0) loadQa();
     };
 
-    const commentBtn=mkBtn('Comment');
+    const ASK_LABEL='Message agent...';
+    const commentBtn=mkBtn(ASK_LABEL);
     commentBtn.id='cw-comment-btn'; commentBtn.hidden=true;
     commentBtn.addEventListener('mousedown',e=>e.preventDefault());
     document.body.appendChild(commentBtn);
@@ -4961,16 +5037,54 @@
     dlg.addEventListener('close',()=>{ threadsBtn.focus(); });
     renderList();
 
-    function updateCommentButton(){
+    function diffSel(){
       const sel=window.getSelection();
-      if(!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)||inLiveUi(sel.anchorNode)){
+      if(!sel||sel.isCollapsed||!sel.rangeCount||!sel.toString().trim()) return null;
+      const r=sel.getRangeAt(0);
+      const last=selectionEndRow(r);
+      const sm=lineMetaBySpan.get(closestDline(r.startContainer)), em=lineMetaBySpan.get(last);
+      return sm&&em?{sel,sm,em,last}:null;
+    }
+
+    let selLast=null;
+    function markSelectedLine(d){
+      if(selLast&&(!d||d.last!==selLast)){
+        selLast.classList.remove('dline-sel-last');
+        selLast.querySelector('.dline-plus').removeAttribute('title');
+        selLast=null;
+      }
+      if(!d) return;
+      selLast=d.last;
+      selLast.classList.add('dline-sel-last');
+      const plus=selLast.querySelector('.dline-plus');
+      if(d.sm.line!==d.em.line) plus.title='Comment on lines '+d.sm.line+'-'+d.em.line;
+      else plus.removeAttribute('title');
+    }
+
+    function placeCommentButton(range,col){
+      commentBtn.hidden=false;
+      const w=commentBtn.offsetWidth, h=commentBtn.offsetHeight;
+      const rects=range.getClientRects();
+      const r=rects.length?rects[rects.length-1]:range.getBoundingClientRect();
+      const colLeft=col.getBoundingClientRect().left;
+      let left=r.right+8, top=r.top;
+      if(innerWidth-r.right<120){ left=r.right-w; top=r.bottom+4; }
+      left=Math.max(colLeft,Math.min(left,innerWidth-w-4));
+      top=Math.max(4,Math.min(top,innerHeight-h-4));
+      commentBtn.style.left=left+'px';
+      commentBtn.style.top=top+'px';
+    }
+
+    function updateCommentButton(){
+      const d=diffSel();
+      markSelectedLine(d);
+      const sel=window.getSelection();
+      if(d||!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)||inLiveUi(sel.anchorNode)){
         commentBtn.hidden=true;
         return;
       }
-      const rect=sel.getRangeAt(0).getBoundingClientRect();
-      commentBtn.style.left=Math.max(4,rect.left)+'px';
-      commentBtn.style.top=Math.max(4,rect.top-32)+'px';
-      commentBtn.hidden=false;
+      const range=sel.getRangeAt(0);
+      placeCommentButton(range,blockOf(range.endContainer)||planEl);
     }
     let selTimer=null;
     document.addEventListener('selectionchange',()=>{
@@ -5026,7 +5140,7 @@
       const ref=anchor&&placementFor(anchor);
       if(!ref) return;
       if(composerBusy()) return;
-      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeComposer,closeComposer,directDraftFor(anchor));
+      const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),onSent:closeComposer,onCancel:closeComposer});
       openComposer(c,box=>insertAfterThreads(ref,box));
       commentBtn.hidden=true;
     });
@@ -5034,19 +5148,21 @@
     openThreadAsk=(root,host,input)=>{
       if(composerBusy()) return;
       const anchor={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
-      const c=makeComposer('Ask the agent about this thread',text=>({anchor,text}),closeComposer,closeComposer,
-        text=>createGhDraft({body:text,target:{kind:'reply',note_id:root.id}}));
-      if(input&&input.value){ c.ta.value=input.value; input.value=''; }
+      const c=makeComposer({modes:['agent'],header:'Ask the agent about this thread',payload:text=>({anchor,text}),
+        onSent:closeComposer,onCancel:closeComposer});
+      if(input&&input.value){ c.ta.value=input.value; input.value=''; c.sync(); }
       openComposer(c,box=>host.append(box));
     };
 
     openLineComposer=meta=>{
-      const anchor={kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,
+      const d=diffSel();
+      const anchor=d&&lineMetaBySpan.get(d.last)===meta?buildAskAnchor(d.sel):
+        {kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,
         hunk_id:meta.hunkId||null,quote:meta.text};
       const ref=placementFor(anchor);
       if(!ref||lineDraft(meta)){ openOrFocusDraft(meta); return; }
       if(composerBusy()) return;
-      const c=makeComposer('Comment on this line',text=>({anchor,text}),closeComposer,closeComposer,directDraftFor(anchor));
+      const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),onSent:closeComposer,onCancel:closeComposer});
       openComposer(c,box=>insertAfterThreads(ref,box));
     };
 
