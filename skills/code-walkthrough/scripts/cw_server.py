@@ -290,6 +290,7 @@ def _threads_part(d, meta):
             continue
         open_threads.append({
             "thread_id": tid, "anchor": _anchor_public(t["turns"][0].get("anchor")),
+            "anchors": [_anchor_public(x) for x in cw_ask.turn_anchors(t["turns"][0])],
             "turns": [{"qid": r.get("qid"), "comment": _cap(r.get("comment"), 1000),
                        "answer": _cap(r.get("answer"), 2000), "status": r.get("status"),
                        "source": r.get("source")} for r in t["turns"][-3:]],
@@ -306,7 +307,9 @@ def _threads_part(d, meta):
                     "oid": o["oid"], "thread_id": tid, "title": _cap(p.get("title"), 300),
                     "steps": p.get("steps"), "files": p.get("files"),
                     "comment": _cap(first.get("comment"), 1000),
-                    "anchor": _anchor_public(first.get("anchor")), "repo": meta.get("repo"),
+                    "anchor": _anchor_public(first.get("anchor")),
+                    "anchors": [_anchor_public(x) for x in cw_ask.turn_anchors(first)],
+                    "repo": meta.get("repo"),
                     "base": meta.get("base"), "head": meta.get("head"),
                     "branch_hint": f"git switch -c cw/{o['oid']}",
                 })
@@ -832,10 +835,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "bad json"})
             return
         try:
-            anchor = cw_ask.validate_anchor(payload.get("anchor"))
+            anchors = (cw_ask.validate_anchors(payload["anchors"]) if "anchors" in payload
+                       else [cw_ask.validate_anchor(payload.get("anchor"))])
         except cw_store.CWError as e:
             self._send_json(400, {"error": str(e), "remedy": e.remedy})
             return
+        anchor = anchors[0]
         if anchor["kind"] == "thread" and not any(
                 n.get("id") == anchor["note_id"] and cw_ask.is_root_thread(n) for n in cw_ask._state_notes(d)):
             self._send_json(400, {"error": "bad anchor: not a GitHub review thread on this PR",
@@ -860,9 +865,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(409, {"error": f"thread has {THREAD_TURN_CAP} turns",
                                        "remedy": "start a new thread"})
                 return
-            anchor = thread["turns"][0].get("anchor") or anchor
+            anchors = cw_ask.turn_anchors(thread["turns"][0]) or anchors
+            anchor = anchors[0]
         try:
-            cw_ask.build_prompt(d, anchor, text, thread_id)
+            cw_ask.build_prompt(d, anchor, text, thread_id, anchors=anchors)
         except cw_store.CWError as e:
             self._send_json(400, {"error": str(e), "remedy": e.remedy})
             return
@@ -871,7 +877,7 @@ class _Handler(BaseHTTPRequestHandler):
                                   on_event=lambda ev, data: self.server.cw_daemon.hub.emit(key, wid, ev, data))
         qid = "q-" + secrets.token_hex(4)
         thread_id = thread_id or qid
-        self.server.cw_daemon.start_ask(key, wid, d, qid, thread_id, anchor, text)
+        self.server.cw_daemon.start_ask(key, wid, d, qid, thread_id, anchor, text, anchors=anchors)
         self._send_json(202, {"qid": qid, "thread_id": thread_id})
 
     def _route_triage(self, key, wid):
@@ -1683,7 +1689,7 @@ class Daemon:
             timer.start()
         return True
 
-    def start_ask(self, key, wid, d, qid, thread_id, anchor, question, source="user"):
+    def start_ask(self, key, wid, d, qid, thread_id, anchor, question, source="user", anchors=None):
         with self._inflight_lock:
             self._asks += 1
         live = {"text": "", "seq": 0, "progress": None, "proc": None, "cancelled": False,
@@ -1694,7 +1700,7 @@ class Daemon:
         self._idle_since = None
         emit = lambda ev, data: self.hub.emit(key, wid, ev, data)  # noqa: E731
         try:
-            cw_ask.begin_turn(d, qid, anchor, question, thread_id, on_event=emit, source=source)
+            cw_ask.begin_turn(d, qid, anchor, question, thread_id, on_event=emit, source=source, anchors=anchors)
         except BaseException:
             with self._inflight_lock:
                 self._asks -= 1
@@ -1708,15 +1714,17 @@ class Daemon:
                 with self.ask_lock(d, thread_id):
                     if live["cancelled"] or self._stopped.is_set():
                         now = cw_store.now_iso()
-                        record = {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
-                                  "anchor": anchor, "comment": question, "question": question,
-                                  "source": source, "status": "cancelled", "answer": "", "error": None, "remedy": None,
-                                  "profile": None, "model": None, "session_id": None,
-                                  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}
+                        record = cw_ask._with_anchors(
+                            {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
+                             "anchor": anchor, "comment": question, "question": question,
+                             "source": source, "status": "cancelled", "answer": "", "error": None, "remedy": None,
+                             "profile": None, "model": None, "session_id": None,
+                             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}, anchors)
                         cw_ask._append_qa(d, record)
                         emit("thread", {"kind": "turn", "record": record})
                         return
-                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live, source=source)
+                    cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live, source=source,
+                                  anchors=anchors)
             finally:
                 with self._inflight_lock:
                     self._asks -= 1

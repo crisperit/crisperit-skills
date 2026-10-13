@@ -205,6 +205,20 @@ def test_prompt_order_hunk_notes_and_pair_limit():
             assert i_question < i_hunk < i_note < i_verdict < i_first_pair
 
 
+def test_mixed_references_prompt_and_old_threads_read_as_one_anchor():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _done(home, stub)
+            line = cw_ask.validate_anchor(dict(ANCHOR_LINE))
+            block = cw_ask.validate_anchor(dict(ANCHOR_BLOCK))
+            prompt = cw_ask.build_prompt(d, line, "why?", anchors=[line, block])
+            assert "Reference 1 of 2" in prompt and "Reference 2 of 2" in prompt
+            assert "Diff context" in prompt
+            assert "Block key: overview:p1" in prompt
+            assert cw_ask.build_prompt(d, line, "why?") == cw_ask.build_prompt(d, line, "why?", anchors=[line])
+            assert cw_ask.turn_anchors({"anchor": line}) == [line]
+
+
 # ---------------------------------------------------------------------------
 # answer() never raises, even when the ask profile itself is malformed
 # ---------------------------------------------------------------------------
@@ -319,6 +333,12 @@ def test_validate_anchor():
                 {"kind": "thread", "note_id": "a b", "quote": "q"}, {"kind": "thread", "note_id": "gh-1"}):
         with pytest.raises(cw_store.CWError, match="^bad anchor"):
             cw_ask.validate_anchor(bad)
+
+    assert cw_ask.validate_anchors([dict(ANCHOR_BLOCK), dict(ANCHOR_SECTION), dict(ANCHOR_BLOCK)]) == [
+        ANCHOR_BLOCK, ANCHOR_SECTION]
+    for bad in ([], {}, [dict(ANCHOR_THREAD)], [dict(ANCHOR_BLOCK, block=f"b{i}") for i in range(9)]):
+        with pytest.raises(cw_store.CWError):
+            cw_ask.validate_anchors(bad)
 
 
 def _turn(qid, comment, answer, thread_id=None, status="ok"):
@@ -498,6 +518,16 @@ def test_comment_route_guards_and_unknown_thread():
                                       body=json.dumps({"anchor": ANCHOR_BLOCK, "text": "c"}))
                 assert status == 403
                 assert cw_ask.read_qa(d) == []
+
+                url = f"/api/walkthrough/{key}/{wid}/comment"
+                nine = [dict(ANCHOR_BLOCK, block=f"b{i}") for i in range(9)]
+                assert cw_testlib.request(daemon, "POST", url, token=daemon.token,
+                                          body=json.dumps({"anchors": nine, "text": "c"}))[0] == 400
+                status, _ = cw_testlib.request(daemon, "POST", url, token=daemon.token, body=json.dumps(
+                    {"anchors": [ANCHOR_BLOCK, ANCHOR_SECTION], "text": "c"}))
+                assert status == 202
+                _wait_final(d, 1)
+                assert len(cw_ask.read_qa(d)[0]["anchors"]) == 2
 
 
 # ---------------------------------------------------------------------------

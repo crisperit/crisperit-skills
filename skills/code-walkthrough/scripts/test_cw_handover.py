@@ -84,11 +84,13 @@ def test_threads_part_open_resolved_handed_and_caps():
         first = t["open"][0]["turns"][0]
         assert len(first["comment"]) == 1000 and len(first["answer"]) == 2000 and first["source"] == "user"
         assert len(t["open"][0]["anchor"]["quote"]) <= 300
+        assert t["open"][0]["anchors"] == [t["open"][0]["anchor"]]
         (h,) = t["handed"]
         assert h["oid"] == oid and h["thread_id"] == tk.QID and h["title"] == tk.PLAN["title"]
         assert h["steps"] == tk.PLAN["steps"] and h["files"] == tk.PLAN["files"] and h["comment"] == tk.COMMENT
         assert h["base"] == "BASE" and h["head"] == "HEAD" and h["branch_hint"] == f"git switch -c cw/{oid}"
         assert h["anchor"]["path"] == "a.py" and h["anchor"]["line"] == 1
+        assert h["anchors"] == [h["anchor"]]
 
         for i in range(22):
             cw_ask._append_qa(d, {"qid": f"q-{i:08x}", "thread_id": f"h-{i}", "anchor": tk.ANCHOR, "comment": "c",
@@ -96,7 +98,11 @@ def test_threads_part_open_resolved_handed_and_caps():
             srv._append_qa(d, {"type": "outcome", "oid": f"o-{i:08x}", "qid": f"q-{i:08x}", "thread_id": f"h-{i}",
                                "outcome": "task", "state": "handed", "at": "t",
                                "payload": {"title": "T" * 500, "steps": ["s"], "files": []}})
+        cw_ask._append_qa(d, {"qid": "q-0000ffff", "thread_id": "multi", "anchor": tk.ANCHOR,
+                              "anchors": [tk.ANCHOR, tk.ANCHOR], "comment": "c", "question": "c",
+                              "status": "ok", "answer": "a"})
         t = cw_server._threads_part(d, {})
+        assert len(t["open"][0]["anchors"]) == 2
         assert len(t["handed"]) == 20 and t["handed_remaining"] == 3
         assert t["handed"][0]["oid"] == "o-00000015" and len(t["handed"][0]["title"]) == 300
 

@@ -187,6 +187,12 @@ def test_check_page_edit_cases():
     assert "6000" in check(_edit(block={"type": "mermaid", "text": "x" * 6001}))
     assert "target must be overview:p1" in check(_edit(target="other:p9"))
     assert "reply instead" in check(_edit(), _page_doc("line"))
+    mixed = {**_page_doc(), "anchors": [_page_doc("line")["anchor"], _page_doc()["anchor"]]}
+    assert check(_edit(), mixed) is None
+    assert "target must be overview:p1" in check(_edit(target="a.py"), mixed)
+    task = {"title": "t", "steps": ["s"], "files": ["a.py"]}
+    assert cw_mcp.check_outcome(mixed, "propose_task", task) is None
+    assert "diff lines" in cw_mcp.check_outcome(_page_doc(), "propose_task", task)
     assert "already proposed a page edit" in check(_edit(), already={"page_edit"})
     assert cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "w"}, already={"page_edit"}) is not None
 
@@ -333,6 +339,10 @@ def test_check_github_draft_cases():
     assert "4000" in check({"body": "x" * 4001, "target": NEW})
     assert check({"body": "x" * 4000, "target": NEW}) is None
     assert "boolean" in check({"body": "b", "target": NEW, "verbatim": "yes"})
+    two = {**_draft_doc(), "anchors": [ANCHORS["line"], {**ANCHORS["line"], "line": 4}]}
+    assert "several diff-line references" in cw_mcp.check_outcome(two, "propose_github_draft", {"body": "b", "target": NEW})
+    mixed = {**_draft_doc(), "anchors": [ANCHORS["block"], ANCHORS["line"]]}
+    assert cw_mcp.check_outcome(mixed, "propose_github_draft", {"body": "b", "target": NEW}) is None
     assert "already drafted" in check({"body": "b", "target": NEW}, already={"github_draft"})
     assert check({"body": "b", "target": NEW}, already={"page_edit", "resolve:7"}) is None
 
