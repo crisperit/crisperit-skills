@@ -16,6 +16,7 @@ Stdlib only. Logging goes to stderr; stdout carries only JSON-RPC replies.
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -284,8 +285,12 @@ def task_plan_error(args):
     return None
 
 
+def _refs(anchor_doc):
+    return anchor_doc.get("anchors") or [anchor_doc.get("anchor") or {}]
+
+
 def _check_task(anchor_doc, args, already):
-    if (anchor_doc.get("anchor") or {}).get("kind") not in ("line", "thread"):
+    if not any(r.get("kind") in ("line", "thread") for r in _refs(anchor_doc)):
         return "code tasks attach to diff lines or review threads; reply in prose instead"
     error = task_plan_error(args)
     if error:
@@ -317,11 +322,9 @@ def _check_resolve(anchor_doc, args, already):
 
 
 def _check_page_edit(anchor_doc, args, already):
-    anchor = anchor_doc.get("anchor") or {}
-    kind = anchor.get("kind")
-    if kind not in ("block", "section"):
+    keys = [r[r["kind"]] for r in _refs(anchor_doc) if r.get("kind") in ("block", "section")]
+    if not keys:
         return "page edits attach to prose blocks, not diff lines; reply instead"
-    expected = anchor.get(kind)
     if args.get("op") not in PAGE_EDIT_OPS:
         return "op must be insert_after or replace"
     block = args.get("block")
@@ -335,17 +338,19 @@ def _check_page_edit(anchor_doc, args, already):
         return "block.text is required"
     if len(text.strip()) > cap:
         return f"block.text must be at most {cap} characters for {block['type']}"
-    if args.get("target") != expected:
-        return f"target must be {expected}, this comment's block key"
+    if args.get("target") not in keys:
+        if len(keys) == 1:
+            return f"target must be {keys[0]}, this comment's block key"
+        return f"target must be one of {', '.join(keys)}, this comment's block keys"
     if "page_edit" in already:
         return "already proposed a page edit in this turn"
     return None
 
 
 def _check_github_draft(anchor_doc, args, already):
-    anchor = anchor_doc.get("anchor") or {}
-    anchor_kind = anchor.get("kind")
-    if anchor_kind not in ("line", "thread"):
+    refs = _refs(anchor_doc)
+    lines = [r for r in refs if r.get("kind") == "line"]
+    if not lines and not any(r.get("kind") == "thread" for r in refs):
         return ("this comment is on the page text, not on a diff line or a review thread, so no GitHub "
                 "comment can be drafted; reply instead")
     body = args.get("body")
@@ -358,8 +363,9 @@ def _check_github_draft(anchor_doc, args, already):
     target = args.get("target")
     target_kind = target.get("kind") if isinstance(target, dict) else None
     if target_kind == "new":
-        if anchor_kind != "line":
-            return ("this comment is not on a diff line, so a new review comment cannot be drafted; "
+        if len(lines) != 1:
+            return (("this comment is not on a diff line" if not lines else "this comment has several diff-line references")
+                    + ", so a new review comment cannot be drafted; "
                     "reply in the thread or reply to an existing review thread")
     elif target_kind == "reply":
         note_id = target.get("note_id")
@@ -378,9 +384,12 @@ def _resolve_payload(args, anchor_doc=None):
 
 def _github_draft_payload(args, anchor_doc):
     original = "" if anchor_doc.get("source") == "triage" else anchor_doc.get("comment") or ""
+    stripped = cw_store.strip_ref_fences(original)
+    if stripped != original:
+        original = re.sub(r"\n{3,}", "\n\n", stripped).strip()
     verbatim = args.get("verbatim") is True and bool(original)
-    anchor = anchor_doc.get("anchor") or {}
     if args["target"]["kind"] == "new":
+        anchor = next(r for r in _refs(anchor_doc) if r.get("kind") == "line")
         target = {"kind": "new", **{k: anchor.get(k) for k in ("path", "line", "side", "end_line", "hunk_id")}}
     else:
         row = next(r for r in anchor_doc["replyable"] if r["id"] == args["target"]["note_id"])
@@ -421,6 +430,8 @@ def check_outcome(anchor_doc, name, args, already=()):
     kind = OUTCOME_KINDS.get(name)
     if kind is None:
         return f"unknown tool {name}"
+    if all(r.get("kind") == "free" for r in _refs(anchor_doc)):
+        return "this comment has no reference (no diff line, prose block or review thread), so this tool cannot be used; reply instead"
     return kind["check"](anchor_doc, args if isinstance(args, dict) else {}, already)
 
 

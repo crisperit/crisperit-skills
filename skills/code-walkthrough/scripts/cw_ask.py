@@ -96,6 +96,35 @@ def validate_anchor(anchor):
     raise cw_store.CWError("bad anchor: kind must be line, section, block or thread")
 
 
+REF_CAP = 8
+FREE_ANCHOR = {"kind": "free", "quote": ""}
+
+
+def validate_anchors(raw):
+    if not isinstance(raw, list) or not 1 <= len(raw) <= REF_CAP:
+        raise cw_store.CWError(f"anchors must be a list of 1-{REF_CAP} references",
+                               remedy=f"send at most {REF_CAP} references")
+    out = {}
+    for i, item in enumerate(raw):
+        a = validate_anchor(item)
+        if a["kind"] == "thread" and i:
+            raise cw_store.CWError("bad anchor: a review thread can only be the first reference")
+        out.setdefault(json.dumps(a, sort_keys=True), a)
+    return list(out.values())
+
+
+def turn_anchors(turn):
+    found = turn.get("anchors") or ([turn["anchor"]] if turn.get("anchor") else [])
+    return [a for a in found if a.get("kind") != "free"]
+
+
+def merge_anchors(inherited, own):
+    out = {}
+    for a in [*inherited, *own]:
+        out.setdefault(json.dumps(a, sort_keys=True), a)
+    return list(out.values())
+
+
 def _find_hunk(entry, anchor):
     """The hunk the frontend's hunk_id names, or else the one whose body actually covers
     anchor's line on anchor's side -- a stale hunk_id (the diff moved under the page) falls
@@ -117,7 +146,7 @@ def _find_hunk(entry, anchor):
     return None
 
 
-def _window_rows(hunk, side, anchor_line, window=HUNK_WINDOW):
+def _window_rows(hunk, side, anchor_line, window=HUNK_WINDOW, end_line=None):
     rows = []
     for kind, old_line, new_line, raw in notes._walk_hunk_lines({"hunks": [hunk]}):
         if side == "LEFT":
@@ -128,7 +157,7 @@ def _window_rows(hunk, side, anchor_line, window=HUNK_WINDOW):
             if kind == "d":
                 continue
             n = new_line
-        if abs(n - anchor_line) <= window:
+        if anchor_line - window <= n <= (end_line or anchor_line) + window:
             rows.append((n, raw))
     return rows
 
@@ -256,7 +285,15 @@ def _thread_row(n):
             "author": n.get("author"), "body": (n.get("body") or "")[:500]}
 
 
-def _root_threads(d, anchor, include_resolved):
+def _root_threads(d, anchors, include_resolved):
+    found = {}
+    for anchor in anchors:
+        for row in _anchor_root_threads(d, anchor, include_resolved):
+            found.setdefault(row["id"], row)
+    return list(found.values())
+
+
+def _anchor_root_threads(d, anchor, include_resolved):
     if anchor.get("kind") == "thread":
         roots = [n for n in _state_notes(d) if n.get("id") == anchor["note_id"] and is_root_thread(n)]
     elif anchor.get("kind") == "line":
@@ -270,19 +307,28 @@ def _root_threads(d, anchor, include_resolved):
     return [_thread_row(n) for n in roots if include_resolved or not n.get("resolved")]
 
 
-def _resolvable(d, anchor):
-    return _root_threads(d, anchor, include_resolved=False)
+def _resolvable(d, anchors):
+    return _root_threads(d, anchors, include_resolved=False)
 
 
-def _replyable(d, anchor):
-    return _root_threads(d, anchor, include_resolved=True)
+def _replyable(d, anchors):
+    return _root_threads(d, anchors, include_resolved=True)
 
 
-def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user"):
+def _with_anchors(record, anchors):
+    # `anchor` stays the first reference so single-anchor readers keep working.
+    if anchors and len(anchors) > 1:
+        record["anchors"] = anchors
+    return record
+
+
+def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user", anchors=None):
     path = Path(d) / "turns" / f"{qid}.anchor.json"
     path.parent.mkdir(exist_ok=True)
-    cw_store.write_json(path, {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment, "source": source,
-                               "resolvable": _resolvable(d, anchor), "replyable": _replyable(d, anchor)})
+    refs = anchors or [anchor]
+    cw_store.write_json(path, _with_anchors(
+        {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment, "source": source,
+         "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs)}, anchors))
 
 
 def _folded_outcome(r):
@@ -503,18 +549,16 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
     return "\n".join(lines)
 
 
-def _candidates_text(d, anchor):
-    found = _resolvable(d, anchor)
+def _candidates_text(d, anchors):
+    found = _resolvable(d, anchors)
     if not found:
         return ""
     rows = [f"- {c['id']}, {c['path']}:{c['line']}, {c['author']}: {c['body'][:300]}" for c in found]
     return "Review threads on these lines you may propose to resolve:\n" + "\n".join(rows)
 
 
-def _reply_targets_text(d, anchor):
-    if anchor.get("kind") != "line":
-        return ""
-    found = _replyable(d, anchor)
+def _reply_targets_text(d, anchors):
+    found = _replyable(d, [a for a in anchors if a.get("kind") == "line"])
     if not found:
         return ""
     rows = [f"- {c['id']}, {c['path']}:{c['line']}, {c['author']}: {c['body'][:300]}" for c in found]
@@ -585,44 +629,108 @@ def _thread_session(d, thread_id):
     return None
 
 
-def build_prompt(d, anchor, question, thread_id=None, resumed=False):
-    d = Path(d)
-    block_key = f"Block key: {anchor[anchor['kind']]}" if anchor["kind"] in ("section", "block") else ""
-    if resumed:
-        extras = [block_key, _candidates_text(d, anchor), _reply_targets_text(d, anchor),
-                  _outcome_updates_text(d, thread_id)]
-        return "\n\n".join([f"Question:\n{question}", *filter(None, extras)])
-    quote = anchor["quote"]
-    part1 = f"Question:\n{question}"
-    if anchor["kind"] in ("section", "block") and anchor.get("section"):
-        part1 += f"\n\nSection: {anchor['section']}"
-    if block_key:
-        part1 += f"\n\n{block_key}"
-    part1 += f"\n\nSelected text:\n{quote}"
+MULTI_WINDOW = 6
 
+
+def _block_key_text(anchors):
+    keys = [a[a["kind"]] for a in anchors if a["kind"] in ("section", "block")]
+    if not keys:
+        return ""
+    return f"Block key: {keys[0]}" if len(anchors) == 1 else "Block keys: " + ", ".join(keys)
+
+
+def _reference_text(d, anchor, files, window, with_section=True):
+    parts = []
+    is_block = anchor["kind"] in ("section", "block")
+    if with_section and is_block and anchor.get("section"):
+        parts.append(f"Section: {anchor['section']}")
+    if is_block:
+        parts.append(f"Block key: {anchor[anchor['kind']]}")
+    parts.append(f"Selected text:\n{anchor['quote']}")
     hunk = None
-    part2 = ""
     if anchor["kind"] == "line":
-        raw_path = d / "raw.diff"
-        raw_diff = raw_path.read_text(errors="replace") if raw_path.exists() else ""
-        _order, files = parse_hunks(raw_diff)
         entry = files.get(anchor["path"])
-        if entry:
-            hunk = _find_hunk(entry, anchor)
-            if hunk:
-                rows = _window_rows(hunk, anchor["side"], anchor["line"])
-                if rows:
-                    part2 = "Diff context:\n" + "\n".join(f"{n}\t{raw}" for n, raw in rows)
+        hunk = _find_hunk(entry, anchor) if entry else None
+        if hunk:
+            # a lone reference keeps the original first-line window so its prompt is unchanged
+            end = anchor.get("end_line") if window == MULTI_WINDOW else None
+            rows = _window_rows(hunk, anchor["side"], anchor["line"], window, end)
+            if rows:
+                parts.append("Diff context:\n" + "\n".join(f"{n}\t{raw}" for n, raw in rows))
+    return "\n\n".join(parts), hunk
 
-    combined = part1 + ("\n\n" + part2 if part2 else "")
-    if len(combined) > PROMPT_CAP:
-        raise cw_store.CWError("selection too large", remedy="select a smaller range")
 
-    parts = [part1]
-    if part2:
-        parts.append(part2)
+def _reference_label(anchor):
+    def one_line(x):
+        return " ".join(str(x).split())
+
+    if anchor["kind"] == "line":
+        span = f"{anchor['line']}-{anchor['end_line']}" if anchor.get("end_line") else str(anchor["line"])
+        return f"{one_line(anchor['path'])}:{span} ({anchor['side']})"
+    if anchor["kind"] == "block":
+        label = f"block {anchor['block']}"
+        return f"{label} (Section: {one_line(anchor['section'])})" if anchor.get("section") else label
+    if anchor["kind"] == "thread":
+        return f"review thread {anchor['note_id']}"
+    return f"section {one_line(anchor['section'])}"
+
+
+def _references_body(d, refs, many):
+    files = {}
+    if any(a["kind"] == "line" for a in refs):
+        raw_path = d / "raw.diff"
+        files = parse_hunks(raw_path.read_text(errors="replace") if raw_path.exists() else "")[1]
+
+    hunks = []
+    if many:
+        blocks = []
+        for i, a in enumerate(refs, 1):
+            text, hunk = _reference_text(d, a, files, MULTI_WINDOW, with_section=False)
+            blocks.append(f"Reference {i} of {len(refs)}: {_reference_label(a)}\n{text}")
+            if hunk is not None:
+                hunks.append((a["path"], hunk))
+        return "\n\n".join(blocks), hunks
+    body, hunk = _reference_text(d, refs[0], files, HUNK_WINDOW)
     if hunk is not None:
-        role_note = _role_and_note(d, anchor["path"], hunk)
+        hunks.append((refs[0]["path"], hunk))
+    return body, hunks
+
+
+def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=None):
+    d = Path(d)
+    anchors = anchors or [anchor]
+    anchor = anchors[0]
+    refs = [a for a in anchors if a["kind"] != "free"]
+    if resumed:
+        first = next((r for r in read_qa(d) if r["thread_id"] == thread_id), {})
+        fresh = [a for a in refs if a not in turn_anchors(first)]
+        added = []
+        if fresh:
+            body, _hunks = _references_body(d, fresh, True)
+            added = ["References added in this comment:\n\n" + body]
+        extras = [_block_key_text(anchors), _candidates_text(d, anchors), _reply_targets_text(d, anchors),
+                  _outcome_updates_text(d, thread_id)]
+        return "\n\n".join([f"Question:\n{question}", *added, *filter(None, extras)])
+
+    many = len(refs) > 1
+    if refs:
+        question = cw_store.replace_ref_fences(question, lambda header: f"[reference: {header}]")
+        body, hunks = _references_body(d, refs, many)
+        combined = f"Question:\n{question}\n\n{body}"
+    else:
+        hunks = []
+        combined = f"Question:\n{question}"
+    if len(combined) > PROMPT_CAP:
+        raise cw_store.CWError("selection too large",
+                               remedy="remove a reference" if many else "select a smaller range")
+
+    parts = [combined]
+    seen = set()
+    for path, hunk in hunks:
+        if (path, hunk["prefix"]) in seen:
+            continue
+        seen.add((path, hunk["prefix"]))
+        role_note = _role_and_note(d, path, hunk)
         if role_note:
             parts.append(role_note)
     overview_verdict = _overview_verdict(d)
@@ -631,10 +739,10 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     thread_text = _thread_text(d, anchor)
     if thread_text:
         parts.append(thread_text)
-    candidates = _candidates_text(d, anchor)
+    candidates = _candidates_text(d, anchors)
     if candidates:
         parts.append(candidates)
-    reply_targets = _reply_targets_text(d, anchor)
+    reply_targets = _reply_targets_text(d, anchors)
     if reply_targets:
         parts.append(reply_targets)
     qa_text = _qa_pairs_text(d, thread_id)
@@ -648,12 +756,12 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False):
     return "\n\n".join(parts)[:PROMPT_CAP]
 
 
-def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user"):
+def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user", anchors=None):
     """Persist the comment as a pending record before any model work, so it survives a crash
     and shows up in GET /qa while the turn is queued."""
-    record = {"qid": qid, "thread_id": thread_id or qid, "anchor": anchor, "comment": comment,
-              "question": comment, "started_at": cw_store.now_iso(), "status": "pending",
-              "source": source}
+    record = _with_anchors({"qid": qid, "thread_id": thread_id or qid, "anchor": anchor, "comment": comment,
+                            "question": comment, "started_at": cw_store.now_iso(), "status": "pending",
+                            "source": source}, anchors)
     _append_qa(d, record)
     if on_event:
         on_event("thread", {"kind": "turn", "record": record})
@@ -672,12 +780,12 @@ def finalise_stale(d, in_flight):
     mid-turn) with an error record, so the page stops showing it as working."""
     for r in read_qa(d):
         if r.get("status") == "pending" and r["qid"] not in in_flight:
-            _append_qa(d, {
+            _append_qa(d, _with_anchors({
                 "qid": r["qid"], "thread_id": r["thread_id"], "anchor": r.get("anchor"),
                 "comment": r["comment"], "question": r["question"], "source": r["source"],
                 "started_at": r.get("started_at"), "finished_at": cw_store.now_iso(),
                 "status": "error", "error": "turn was interrupted",
-                "remedy": "send the comment again"})
+                "remedy": "send the comment again"}, r.get("anchors")))
             sweep_outcomes(d, r["qid"], r["thread_id"])
     fail_interrupted_tasks(d, in_flight)
 
@@ -796,18 +904,18 @@ def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, 
     return st
 
 
-def _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage):
+def _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage, anchors=None):
     qid, thread_id = record["qid"], record["thread_id"]
     ctx = _ensure_ctx(d).resolve()
     system = _system_prompt(ctx)
     mcp_config = cw_mcp.outcome_mcp_config(d, qid)
     prior = _thread_session(d, thread_id)
-    write_turn_anchor(d, qid, thread_id, anchor, question, record["source"])
+    write_turn_anchor(d, qid, thread_id, anchor, question, record["source"], anchors=anchors)
 
     def run(session_id=None, resume=None):
         argv = cw_llm.thread_argv(
             profile, system, mcp_config=mcp_config, add_dir=ctx, session_id=session_id, resume=resume)
-        prompt = build_prompt(d, anchor, question, thread_id, resumed=bool(resume))
+        prompt = build_prompt(d, anchor, question, thread_id, resumed=bool(resume), anchors=anchors)
         return _stream_once(
             argv, prompt, cwd=d / "head", timeout=config["timeout_s"], qid=qid,
             thread_id=thread_id, on_event=on_event, live=live,
@@ -890,19 +998,19 @@ def _openai_tools(d, qid, thread_id, on_event, live):
     return tools, handlers
 
 
-def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, source="user"):
+def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, source="user", anchors=None):
     """Never raises: everything that can fail, including loading config and resolving the
     thread profile, runs inside the try below so a misconfigured role lands as an ordinary
     status: "error" record instead of killing the daemon's background thread silently.
     `live` is the daemon's per-turn dict (text, seq, progress, proc, cancelled)."""
     d = Path(d)
     live = live if live is not None else {}
-    record = {
+    record = _with_anchors({
         "qid": qid, "thread_id": thread_id or qid, "started_at": cw_store.now_iso(),
         "finished_at": None, "anchor": anchor, "comment": question, "question": question, "source": source, "status": "ok", "answer": None,
         "error": None, "remedy": None, "profile": None, "model": None, "session_id": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None},
-    }
+    }, anchors)
     usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}
 
     try:
@@ -925,10 +1033,11 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, s
                 usage_hook(usage)
 
             if profile.get("kind") == "claude-code":
-                _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage)
+                _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage,
+                             anchors=anchors)
             else:
-                write_turn_anchor(d, qid, record["thread_id"], anchor, question, source)
-                prompt = build_prompt(d, anchor, question, record["thread_id"])
+                write_turn_anchor(d, qid, record["thread_id"], anchor, question, source, anchors=anchors)
+                prompt = build_prompt(d, anchor, question, record["thread_id"], anchors=anchors)
                 messages = [
                     {"role": "system", "content": _system_prompt()},
                     {"role": "user", "content": prompt},

@@ -205,6 +205,39 @@ def test_prompt_order_hunk_notes_and_pair_limit():
             assert i_question < i_hunk < i_note < i_verdict < i_first_pair
 
 
+def test_mixed_references_prompt_and_old_threads_read_as_one_anchor():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _done(home, stub)
+            line = cw_ask.validate_anchor(dict(ANCHOR_LINE))
+            block = cw_ask.validate_anchor(dict(ANCHOR_BLOCK))
+            prompt = cw_ask.build_prompt(d, line, "why?", anchors=[line, block])
+            assert "Reference 1 of 2" in prompt and "Reference 2 of 2" in prompt
+            assert "Diff context" in prompt
+            assert "Block key: overview:p1" in prompt
+            assert cw_ask.build_prompt(d, line, "why?") == cw_ask.build_prompt(d, line, "why?", anchors=[line])
+            fenced = cw_ask.build_prompt(d, line, "see\n```ref a.py:1 RIGHT\nUNIQUEQUOTE\n```\nok", anchors=[line])
+            assert "[reference: a.py:1 RIGHT]" in fenced and "```ref" not in fenced
+            assert "UNIQUEQUOTE" not in fenced and fenced.count("Selected text:") == 1
+            ranged = cw_ask.validate_anchor({**ANCHOR_LINE, "end_line": 3})
+            assert cw_ask.build_prompt(d, ranged, "why?") == cw_ask.build_prompt(d, ranged, "why?", anchors=[ranged])
+            assert cw_ask._reference_label({**block, "section": "A\nReference 9 of 9: x"}) == (
+                "block overview:p1 (Section: A Reference 9 of 9: x)")
+            assert cw_ask.turn_anchors({"anchor": line}) == [line]
+            assert cw_ask.turn_anchors({"anchor": cw_ask.FREE_ANCHOR}) == []
+            assert cw_ask._reference_label(ANCHOR_THREAD) == "review thread gh-501"
+
+            free = cw_ask.build_prompt(d, cw_ask.FREE_ANCHOR, "why?", anchors=[])
+            assert free.startswith("Question:\nwhy?") and "Selected text" not in free
+
+            cw_ask._append_qa(d, {**_turn("q-r1", "first", "a1", "t-r"), "anchor": block})
+            resumed = cw_ask.build_prompt(d, block, "more", "t-r", resumed=True, anchors=[block, ANCHOR_SECTION])
+            assert "References added in this comment" in resumed and "Block key: overview:p1" not in resumed
+            assert "Selected text:\nq" in resumed
+            same = cw_ask.build_prompt(d, block, "more", "t-r", resumed=True, anchors=[block])
+            assert "References added" not in same
+
+
 # ---------------------------------------------------------------------------
 # answer() never raises, even when the ask profile itself is malformed
 # ---------------------------------------------------------------------------
@@ -319,6 +352,14 @@ def test_validate_anchor():
                 {"kind": "thread", "note_id": "a b", "quote": "q"}, {"kind": "thread", "note_id": "gh-1"}):
         with pytest.raises(cw_store.CWError, match="^bad anchor"):
             cw_ask.validate_anchor(bad)
+
+    assert cw_ask.validate_anchors([dict(ANCHOR_BLOCK), dict(ANCHOR_SECTION), dict(ANCHOR_BLOCK)]) == [
+        ANCHOR_BLOCK, ANCHOR_SECTION]
+    assert cw_ask.validate_anchors([dict(ANCHOR_THREAD)]) == [ANCHOR_THREAD]
+    for bad in ([], {}, [dict(ANCHOR_BLOCK), dict(ANCHOR_THREAD)], dict(kind="free", quote=""),
+                [cw_ask.FREE_ANCHOR], [dict(ANCHOR_BLOCK, block=f"b{i}") for i in range(9)]):
+        with pytest.raises(cw_store.CWError):
+            cw_ask.validate_anchors(bad)
 
 
 def _turn(qid, comment, answer, thread_id=None, status="ok"):
@@ -498,6 +539,43 @@ def test_comment_route_guards_and_unknown_thread():
                                       body=json.dumps({"anchor": ANCHOR_BLOCK, "text": "c"}))
                 assert status == 403
                 assert cw_ask.read_qa(d) == []
+
+                url = f"/api/walkthrough/{key}/{wid}/comment"
+                nine = [dict(ANCHOR_BLOCK, block=f"b{i}") for i in range(9)]
+                assert cw_testlib.request(daemon, "POST", url, token=daemon.token,
+                                          body=json.dumps({"anchors": nine, "text": "c"}))[0] == 400
+                status, _ = cw_testlib.request(daemon, "POST", url, token=daemon.token, body=json.dumps(
+                    {"anchors": [ANCHOR_BLOCK, ANCHOR_SECTION], "text": "c"}))
+                assert status == 202
+                _wait_final(d, 1)
+                assert len(cw_ask.read_qa(d)[0]["anchors"]) == 2
+
+                def post(**body):
+                    return cw_testlib.request(daemon, "POST", url, token=daemon.token, body=json.dumps(body))
+
+                status, raw = post(anchors=[], text="c")
+                assert status == 202
+                free = {t["qid"]: t for t in _wait_final(d, 2)}[json.loads(raw)["qid"]]
+                assert free["anchor"]["kind"] == "free" and cw_ask.turn_anchors(free) == []
+
+                status, raw = post(anchors=[ANCHOR_BLOCK], text="c")
+                tid = json.loads(raw)["thread_id"]
+                _wait_final(d, 3)
+                assert post(anchors=[ANCHOR_SECTION], thread_id=tid, text="c")[0] == 202
+                _wait_final(d, 4)
+                assert cw_ask.read_qa(d)[-1]["anchors"] == [ANCHOR_BLOCK, ANCHOR_SECTION]
+                assert post(anchor=ANCHOR_SECTION, thread_id=tid, text="c")[0] == 202
+                _wait_final(d, 5)
+                assert cw_ask.read_qa(d)[-1]["anchor"] == ANCHOR_BLOCK
+                assert "anchors" not in cw_ask.read_qa(d)[-1]
+
+                assert post(anchors=[ANCHOR_BLOCK], text="x" * 10 + "\n```ref a.py:1 RIGHT\n" + "y" * 3000
+                            + "\n```")[0] == 202
+                _wait_final(d, 6)
+                assert post(anchors=[ANCHOR_BLOCK], text="```ref a\n" * 7000)[0] == 400
+                assert post(anchors=[ANCHOR_BLOCK], text="```ref a\n" * 20000)[0] == 400
+                assert post(anchor=ANCHOR_BLOCK, thread_id=free["thread_id"], text="c")[0] == 202
+                assert _wait_final(d, 7)[-1]["anchor"] == ANCHOR_BLOCK
 
 
 # ---------------------------------------------------------------------------
