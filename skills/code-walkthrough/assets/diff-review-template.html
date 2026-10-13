@@ -956,6 +956,9 @@
   .dline.dline-touch-active .dline-plus,
   .dline.dline-sel-last .dline-plus{display:flex;align-items:center;justify-content:center}
   .dline.dline-sel-last .dline-plus{box-shadow:0 0 0 2px var(--purple)}
+  /* a gradient layer, not background-color, so the added/removed tint underneath still shows */
+  .dline.dline-in-sel{background-image:linear-gradient(color-mix(in srgb,var(--purple) 14%,transparent),color-mix(in srgb,var(--purple) 14%,transparent))}
+  .cw-gutter .dline-num{cursor:pointer}
   .dline.cw-ref-dot:not(.dline-sel-last):not(.dline-touch-active) .dline-plus{display:none}
   .dline.dline-touch-active .cw-ref-dot-btn{display:none}
   .cw-ref-dot-btn{position:absolute;left:4px;top:50%;width:12px;height:12px;margin-top:-6px;padding:0;border:0;
@@ -2508,7 +2511,7 @@
   let touchRevealedSpan=null;
 
   // set by wireAsk on a live page; a static page has no daemon, so wireLine falls back to the plain draft row
-  let onGutter=null;
+  let onGutter=null, gutterDown=null, rowTap=null;
   let openThreadAsk=null;
   const outcomeHooks={oidFor:()=>null,published:()=>{}};
 
@@ -2522,13 +2525,16 @@
     const badge=document.createElement('span'); badge.className='dline-num';
     badge.textContent=meta.line; badge.setAttribute('aria-hidden','true');
     span.insertBefore(badge,span.firstChild);
-    const open=()=>{ if(onGutter) onGutter(meta); else openOrFocusDraft(meta); };
+    const open=e=>{ if(onGutter) onGutter(meta,e); else openOrFocusDraft(meta); };
     const plus=document.createElement('button');
     plus.type='button'; plus.className='dline-plus'; plus.tabIndex=-1;
     plus.setAttribute('aria-label','Add comment on '+meta.path+':'+meta.line+' ('+meta.side+')');
     plus.textContent='+';
     plus.addEventListener('mousedown',e=>e.preventDefault());
-    plus.addEventListener('click',e=>{ e.stopPropagation(); open(); });
+    badge.addEventListener('mousedown',e=>e.preventDefault());
+    for(const g of [badge,plus]) g.addEventListener('pointerdown',e=>{ if(gutterDown) gutterDown(e,span); });
+    plus.addEventListener('click',e=>{ e.stopPropagation(); open(e); });
+    badge.addEventListener('click',e=>{ if(!onGutter) return; e.stopPropagation(); open(e); });
     span.appendChild(plus);
     spanByLineKey.set(meta.lineKey,{span,meta});
     lineMetaBySpan.set(span,meta);
@@ -2538,11 +2544,12 @@
     span.addEventListener('click',e=>{
       if(e.target===plus) return;
       if(!matchMedia('(pointer:coarse)').matches) return;
+      if(rowTap&&rowTap(span)) return;
       if(touchRevealedSpan&&touchRevealedSpan!==span) touchRevealedSpan.classList.remove('dline-touch-active');
       span.classList.toggle('dline-touch-active');
       touchRevealedSpan=span.classList.contains('dline-touch-active')?span:null;
     });
-    span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(); } });
+    span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(e); } });
   }
 
   // Extension (no dot) and, for extension-less files, lowercase basename -> hljs language
@@ -3935,6 +3942,7 @@
     let end=closestDline(range.endContainer);
     const start=closestDline(range.startContainer);
     if(!end||end===start) return end;
+    if(range.endContainer===end&&range.endOffset>1) return end;
     const tail=range.cloneRange(); tail.setStart(end,0);
     const frag=tail.cloneContents();
     frag.querySelectorAll('.dline-num,.dline-plus').forEach(n=>n.remove());
@@ -5820,13 +5828,22 @@
       return sm&&em?{sel,sm,em,last}:null;
     }
 
-    let selLast=null;
+    let selLast=null, selBand=[], gutterAnchor=null, gutterDrag=null;
     function markSelectedLine(d){
       if(selLast&&(!d||d.last!==selLast)){
         selLast.classList.remove('dline-sel-last');
         selLast.querySelector('.dline-plus').removeAttribute('title');
         selLast=null;
       }
+      let rows=[];
+      if(d){
+        const s=closestDline(d.sel.getRangeAt(0).startContainer);
+        for(let n=s;n;n=n.nextElementSibling){ if(n.classList.contains('dline')) rows.push(n); if(n===d.last) break; }
+        if(rows[rows.length-1]!==d.last) rows=[d.last];
+      }
+      for(const n of selBand) if(!rows.includes(n)) n.classList.remove('dline-in-sel');
+      for(const n of rows) n.classList.add('dline-in-sel');
+      selBand=rows;
       if(!d) return;
       selLast=d.last;
       selLast.classList.add('dline-sel-last');
@@ -5849,6 +5866,7 @@
     const selBarShown=()=>!selBar.hidden;
     function hideSelBar(){ selBar.hidden=true; sbAnchor=null; }
     function clearSelection(){
+      stopDrag(); gutterAnchor=null;
       const sel=window.getSelection();
       if(sel) sel.removeAllRanges();
       markSelectedLine(null);
@@ -5891,7 +5909,7 @@
     }
 
     function updateSelBar(){
-      if(selBar.contains(document.activeElement)) return;
+      if(gutterDrag||selBar.contains(document.activeElement)) return;
       const d=diffSel();
       markSelectedLine(d);
       const sel=window.getSelection();
@@ -5929,15 +5947,67 @@
       if(rec) openLineComposer(a,rec.meta);
     });
 
-    onGutter=meta=>{
+    function setRowRange(a,b){
+      const [lo,hi]=a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_PRECEDING?[b,a]:[a,b];
+      let end=hi.lastChild;
+      while(end&&end.nodeType===1&&end.matches('.dline-plus,.cw-ref-dot-btn')) end=end.previousSibling;
+      const r=document.createRange();
+      r.setStartAfter(lo.querySelector('.dline-num'));
+      r.setEndAfter(end);
+      const sel=window.getSelection();
+      sel.removeAllRanges(); sel.addRange(r);
+      markSelectedLine(diffSel());
+    }
+
+    // ponytail: no auto-scroll while dragging near the viewport edge; scroll first, or extend with Shift+click.
+    function dragMove(e){
+      if(!(e.buttons&1)){ dragEnd(); return; }
+      const cur=closestDline(document.elementFromPoint(e.clientX,e.clientY));
+      if(!cur||cur.parentNode!==gutterDrag.start.parentNode) return;
+      if(cur===gutterDrag.start&&!gutterDrag.moved) return;
+      gutterDrag.moved=true;
+      setRowRange(gutterDrag.start,cur);
+    }
+    function stopDrag(){
+      const moved=!!(gutterDrag&&gutterDrag.moved);
+      gutterDrag=null;
+      document.removeEventListener('pointermove',dragMove);
+      document.removeEventListener('pointerup',dragEnd);
+      document.removeEventListener('pointercancel',dragEnd);
+      return moved;
+    }
+    function dragEnd(){ if(stopDrag()) updateSelBar(); }
+    gutterDown=(e,span)=>{
+      if(e.pointerType==='touch'||e.button!==0||e.shiftKey) return;
+      stopDrag();
+      gutterAnchor=span;
+      gutterDrag={start:span,moved:false};
+      document.addEventListener('pointermove',dragMove);
+      document.addEventListener('pointerup',dragEnd);
+      document.addEventListener('pointercancel',dragEnd);
+    };
+    rowTap=span=>{
+      if(!selBarShown()||!gutterAnchor||span===gutterAnchor||span.parentNode!==gutterAnchor.parentNode) return false;
+      setRowRange(gutterAnchor,span);
+      updateSelBar();
+      return true;
+    };
+    rootEl.classList.add('cw-gutter');
+
+    onGutter=(meta,e)=>{
       const span=spanByLineKey.get(meta.lineKey).span;
-      const d=diffSel();
-      if(!(d&&d.last===span)){
-        const r=document.createRange();
-        r.setStartAfter(span.querySelector('.dline-num'));
-        r.setEndBefore(span.querySelector('.dline-plus'));
-        const sel=window.getSelection();
-        sel.removeAllRanges(); sel.addRange(r);
+      if(e&&e.shiftKey&&gutterAnchor&&gutterAnchor!==span&&gutterAnchor.parentNode===span.parentNode){
+        setRowRange(gutterAnchor,span);
+      }else{
+        gutterAnchor=span;
+        const d=diffSel();
+        if(!(d&&d.last===span)){
+          const r=document.createRange();
+          r.setStartAfter(span.querySelector('.dline-num'));
+          r.setEndBefore(span.querySelector('.dline-plus'));
+          const sel=window.getSelection();
+          sel.removeAllRanges(); sel.addRange(r);
+        }
       }
       updateSelBar();
     };
