@@ -128,7 +128,8 @@ def _live_payload(key, wid, meta, d, token, port):
         "batches": {"done": len(meta.get("batches_done") or []), "total": meta.get("batches", 0)},
         "usage": meta.get("usage", {}), "total": cw_store.usage_total(meta),
         "drafts": drafts, "sibling": sibling,
-        "agent": {"full": cw_agent.trust(meta, cw_store.load_config(), d), "own_pr": meta.get("own_pr")},
+        "agent": {"full": cw_llm.confinement_available() and cw_agent.trust(meta, cw_store.load_config(), d),
+                  "own_pr": meta.get("own_pr")},
     }
 
 
@@ -886,6 +887,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not cw_agent.trust(meta, config):
                 self._send_json(403, {"error": "Full access is off for this walkthrough",
                                       "remedy": "add owner/name to trust.repos in config.json"})
+                return
+            if not cw_llm.confinement_available():
+                self._send_json(400, {"error": "Full access needs bubblewrap with overlayfs, which this machine lacks",
+                                      "remedy": "install bubblewrap (Linux only); Review mode still works"})
                 return
         thread_id = payload.get("thread_id")
         if thread_id is not None:

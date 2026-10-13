@@ -9,6 +9,8 @@ import subprocess
 import sys
 import threading
 import time
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -530,6 +532,85 @@ def test_full_argv_is_pinned():
     for absent in ("--restricted", "--strict-mcp-config", "--safe-mode"):
         assert absent not in first
     assert not any(a.startswith("--tools") for a in first)
+
+
+def test_full_disallows_web_tools():
+    assert {"WebFetch", "WebSearch"} <= set(cw_llm.FULL_DISALLOWED.split(","))
+
+
+def test_confine_prefix():
+    h = "/home/u"
+    assert cw_llm.confine_prefix("/w/d/agent", "/r", h, "/w/d/turns", sockets=["/run/docker.sock"]) == [
+        "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+        "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
+        "--tmpfs", "/tmp", "--tmpfs", "/run/user", "--tmpfs", "/home/u/.ssh", "--tmpfs", "/home/u/.gnupg",
+        "--ro-bind", "/dev/null", "/run/docker.sock",
+        "--overlay-src", "/r", "--tmp-overlay", "/r",
+        "--ro-bind", "/w/d", "/w/d",
+        "--bind", "/w/d/agent", "/w/d/agent", "--bind", "/w/d/turns", "/w/d/turns",
+        "--bind-try", "/home/u/.claude/projects", "/home/u/.claude/projects",
+        "--bind-try", "/home/u/.claude/session-env", "/home/u/.claude/session-env",
+        "--bind-try", "/home/u/.claude/sessions", "/home/u/.claude/sessions",
+        "--bind-try", "/home/u/.claude/.credentials.json", "/home/u/.claude/.credentials.json",
+        "--bind-try", "/home/u/.local/share/rtk", "/home/u/.local/share/rtk",
+        "--chdir", "/w/d/agent", "--",
+    ]
+
+
+def test_confine_prefix_skips_missing_docker_socket(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: False)
+    assert "docker.sock" not in " ".join(cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns"))
+
+
+def test_confine_prefix_refuses_tmp_paths():
+    for wt, root, turns in (("/tmp/x/agent", "/r", "/w/turns"), ("/w/agent", "/tmp/r", "/w/turns"),
+                            ("/w/agent", "/r", "/tmp/w/turns")):
+        with pytest.raises(cw_llm.cw_store.CWError, match="under /tmp"):
+            cw_llm.confine_prefix(wt, root, "/home/u", turns, sockets=[])
+    cw_llm.confine_prefix("/var/tmp/w/agent", "/r", "/home/u", "/var/tmp/w/turns", sockets=[])
+
+
+def test_overlay_root():
+    assert cw_llm.overlay_root("/r/.git") == Path("/r")
+    assert cw_llm.overlay_root("/r/bare.git") == Path("/r/bare.git")
+
+
+def test_confinement_available_probes_the_real_prefix():
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    cw_llm.confinement_available.cache_clear()
+    assert cw_llm.confinement_available(run=run) is True
+    cw_llm.confinement_available.cache_clear()
+    argv = seen[0]
+    assert "--overlay-src" in argv and argv[-1] == "true"
+    wt = argv[argv.index("--chdir") + 1]
+    assert ["--bind", wt, wt] == argv[argv.index("--bind"):argv.index("--bind") + 3]
+
+
+def test_confinement_available():
+    def ok(argv, **kw):
+        assert argv[0] == "bwrap" and "--tmp-overlay" in argv
+        return subprocess.CompletedProcess(argv, 0)
+
+    def missing(argv, **kw):
+        raise FileNotFoundError("bwrap")
+
+    def failing(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1)
+
+    def timing_out(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 10)
+
+    verdicts = []
+    for run in (ok, missing, failing, timing_out):
+        cw_llm.confinement_available.cache_clear()
+        verdicts.append(cw_llm.confinement_available(run=run))
+    cw_llm.confinement_available.cache_clear()
+    assert verdicts == [True, False, False, False]
 
 
 def test_no_push_env_blocks_git_transports(tmp_path):

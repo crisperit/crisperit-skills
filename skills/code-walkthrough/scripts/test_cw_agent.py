@@ -40,6 +40,9 @@ def test_live_payload_agent_defaults_off(tmp_path, monkeypatch):
     assert live["agent"] == {"full": False, "own_pr": None}
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
     assert live["agent"] == {"full": True, "own_pr": True}
+    monkeypatch.setattr(cw_server.cw_llm, "confinement_available", lambda: False)
+    live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
+    assert live["agent"] == {"full": False, "own_pr": True}
 
 
 def test_repo_name_reads_origin_for_non_pr_targets(tmp_path):
@@ -182,6 +185,20 @@ def test_full_refusals():
                                     {"thread": "k"})
             status, raw = _comment(ask, daemon, d, "full")
             assert (status, json.loads(raw)["remedy"]) == (400, cw_task.REMEDY)
+        assert cw_ask.read_qa(d) == []
+
+
+def test_full_refused_without_confinement(monkeypatch):
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, _repo = _full_fixture(tmp, home)
+        monkeypatch.setattr(cw_server.cw_llm, "confinement_available", lambda: False)
+        with cw_testlib.running_daemon() as daemon:
+            status, raw = _comment(ask, daemon, d, "full")
+            assert status == 400
+            assert json.loads(raw)["error"] == "Full access needs bubblewrap with overlayfs, which this machine lacks"
+            assert json.loads(raw)["remedy"] == "install bubblewrap (Linux only); Review mode still works"
+            cw_store.update_meta(d, lambda m: m.update(own_pr=False))
+            assert _comment(ask, daemon, d, "full")[0] == 403
         assert cw_ask.read_qa(d) == []
 
 

@@ -1207,3 +1207,40 @@ def test_discarded_edits_reach_the_next_prompt():
         cw_ask.outcome_action(d, oid, "discard", None)
         text = cw_ask._outcome_updates_text(d, "q1", since_last_turn=False)
         assert "discarded your edits to the shared worktree" in text
+
+
+def _full_answer(d, wt):
+    return cw_ask.answer(d, "q-full", cw_ask.validate_anchor(dict(ANCHOR_SECTION)), "fix it", mode="full",
+                         prepare=lambda: wt)
+
+
+def test_full_turn_is_wrapped_in_bwrap_when_available(monkeypatch, tmp_path):
+    import cw_llm
+
+    seen = []
+    monkeypatch.setattr(cw_llm, "confinement_available", lambda: True)
+    monkeypatch.setattr(cw_llm, "git_common_dir", lambda wt: tmp_path / "repo.git")
+    monkeypatch.setattr(cw_llm, "confine_prefix", lambda *a: ["BWRAP", *map(str, a)])
+    monkeypatch.setattr(cw_ask, "_stream_once", lambda argv, *a, **k: seen.append((argv, k["cwd"])) or 1 / 0)
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _full_answer(d, wt)
+        assert (d / "turns").is_dir()
+    argv, cwd = seen[0]
+    assert argv[:5] == ["BWRAP", str(wt), str(tmp_path / "repo.git"), str(Path.home()), str(d / "turns")]
+    assert argv[5] == "claude" and cwd == wt
+
+
+def test_full_turn_refused_without_bwrap(monkeypatch, tmp_path):
+    import cw_llm
+
+    monkeypatch.setattr(cw_llm, "confinement_available", lambda: False)
+    monkeypatch.setattr(cw_ask, "_stream_once", lambda *a, **k: pytest.fail("a turn must never run unconfined"))
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        record = _full_answer(d, tmp_path / "never-prepared")
+    assert record["status"] == "error"
+    assert record["error"] == "Full access needs bubblewrap with overlayfs, which this machine lacks"
+    assert record["remedy"] == "install bubblewrap (Linux only); Review mode still works"

@@ -6,6 +6,7 @@ model backend.
 Stdlib only, no network except the configured profile's base_url.
 """
 
+import functools
 import json
 import os
 import re
@@ -356,7 +357,76 @@ FULL_DISALLOWED = ",".join((
     "Bash(env:*)", "Bash(*GIT_CONFIG*)", "Bash(gh pr create:*)", "Bash(gh pr review:*)",
     "Bash(gh pr merge:*)", "Bash(gh pr comment:*)", "Bash(gh issue:*)", "Bash(gh api:*)",
     "mcp__code-walkthrough", "mcp__plugin_crisperit-skills_code-walkthrough",
+    "WebFetch", "WebSearch",
 ))
+
+
+def _under_tmp(path):
+    real = os.path.realpath(path)
+    return real == "/tmp" or real.startswith("/tmp/")
+
+
+def _docker_sockets():
+    # --ro-bind needs the destination to exist on the read-only root, so only hide sockets that do.
+    found = {os.path.realpath(p) for p in ("/var/run/docker.sock", "/run/docker.sock") if os.path.exists(p)}
+    return sorted(found)
+
+
+def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None):
+    """bwrap argv that makes everything but the worktree and turns dir read-only for a Full turn.
+    The main repo root is an overlay: agent writes there succeed and are discarded, the daemon
+    commits the worktree on the host afterwards. ~/.claude stays read-only so the agent cannot
+    plant hooks, settings or CLAUDE.md; /run stays visible for DNS."""
+    worktree, repo_root, home, turns_dir = map(str, (worktree, repo_root, home, turns_dir))
+    walkthrough = str(Path(turns_dir).parent)
+    if any(_under_tmp(p) for p in (worktree, repo_root, walkthrough)):
+        raise cw_store.CWError("Full access cannot confine a walkthrough stored under /tmp",
+                               remedy="keep CODE_WALKTHROUGH_HOME and the repo outside /tmp")
+    prefix = [
+        "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+        "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
+        "--tmpfs", "/tmp", "--tmpfs", "/run/user", "--tmpfs", f"{home}/.ssh", "--tmpfs", f"{home}/.gnupg",
+    ]
+    for sock in _docker_sockets() if sockets is None else sockets:
+        prefix += ["--ro-bind", "/dev/null", str(sock)]
+    prefix += [
+        "--overlay-src", repo_root, "--tmp-overlay", repo_root,
+        "--ro-bind", walkthrough, walkthrough,
+        "--bind", worktree, worktree, "--bind", turns_dir, turns_dir,
+    ]
+    for rel in (".claude/projects", ".claude/session-env", ".claude/sessions", ".claude/.credentials.json",
+                ".local/share/rtk"):
+        prefix += ["--bind-try", f"{home}/{rel}", f"{home}/{rel}"]
+    return prefix + ["--chdir", worktree, "--"]
+
+
+@functools.lru_cache(maxsize=1)
+def confinement_available(run=subprocess.run):
+    # Runs the real prefix so the probe cannot drift from what a turn executes.
+    cache = Path.home() / ".cache"
+    with tempfile.TemporaryDirectory(dir=cache if cache.is_dir() else None) as t:
+        t = Path(t)
+        wt, root, turns = t / "w" / "agent", t / "repo", t / "w" / "turns"
+        for p in (wt, root / ".git", turns):
+            p.mkdir(parents=True)
+        try:
+            prefix = confine_prefix(wt, root, Path.home(), turns)
+            return run(prefix + ["true"], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError, cw_store.CWError):
+            return False
+
+
+def git_common_dir(worktree):
+    out = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
+                         capture_output=True, text=True, timeout=10)
+    if out.returncode != 0:
+        raise OSError(out.stderr.strip() or "git rev-parse failed")
+    return (Path(worktree) / out.stdout.strip()).resolve()
+
+
+def overlay_root(common_dir):
+    common_dir = Path(common_dir)
+    return common_dir.parent if common_dir.name == ".git" else common_dir
 
 
 def full_argv(profile, system, *, mcp_config, allowed, add_dir, session_id=None, resume=None):

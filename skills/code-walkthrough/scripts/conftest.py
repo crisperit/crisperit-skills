@@ -58,3 +58,14 @@ def _fast_server_shutdown(monkeypatch):
         return original(self, poll_interval)
 
     monkeypatch.setattr(socketserver.BaseServer, "serve_forever", serve_forever)
+
+
+@pytest.fixture(autouse=True)
+def _unwrapped_full_turns(request, monkeypatch):
+    """Full turns refuse to run without bwrap and wrap claude in it otherwise. Tests drive a fake
+    claude binary, so pretend confinement works and skip the wrapper. The wrapper itself is
+    pinned in test_cw_llm.py."""
+    cw_llm = sys.modules.get("cw_llm")
+    if cw_llm is not None and request.path.name != "test_cw_llm.py":
+        monkeypatch.setattr(cw_llm, "confinement_available", lambda: True)
+        monkeypatch.setattr(cw_llm, "confine_prefix", lambda *a: [])

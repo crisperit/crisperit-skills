@@ -948,6 +948,9 @@ def _claude_turn(d, record, profile, config, anchor, question, on_event, live, o
     mcp_config = cw_mcp.outcome_mcp_config(d, qid, mode)
     prior = _thread_session(d, thread_id, mode)
     write_turn_anchor(d, qid, thread_id, anchor, question, record["source"], anchors=anchors, mode=mode)
+    if full and not cw_llm.confinement_available():
+        raise cw_store.CWError("Full access needs bubblewrap with overlayfs, which this machine lacks",
+                               "install bubblewrap (Linux only); Review mode still works")
     cwd = Path(prepare()) if full else d / "head"
 
     def run(session_id=None, resume=None):
@@ -955,6 +958,9 @@ def _claude_turn(d, record, profile, config, anchor, question, on_event, live, o
             allowed = ",".join(MCP_PREFIX + t["name"] for t in cw_mcp.outcome_tools("full"))
             argv = cw_llm.full_argv(profile, system, mcp_config=mcp_config, allowed=allowed, add_dir=ctx,
                                     session_id=session_id, resume=resume)
+            turns = d / "turns"
+            turns.mkdir(exist_ok=True)
+            argv = cw_llm.confine_prefix(cwd, cw_llm.overlay_root(cw_llm.git_common_dir(cwd)), Path.home(), turns) + argv
         else:
             argv = cw_llm.thread_argv(
                 profile, system, mcp_config=mcp_config, add_dir=ctx, session_id=session_id, resume=resume)

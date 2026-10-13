@@ -118,12 +118,28 @@ Full is off by default and only offered when the walkthrough's repo is in `trust
 `trust.orgs` (for a non-PR local target the repo is read from `origin`), or the PR is the signed-in
 user's own (cached when the build syncs the PR). It is never offered on sibling pages, and needs a
 claude-code `thread` profile. `POST .../comment` with `mode: "full"` answers 400 without such a
-profile or on a bad mode, 409 on a sibling page, 403 when the repo is not trusted.
+profile or on a bad mode, 409 on a sibling page, 403 when the repo is not trusted, 400 when bubblewrap
+is missing.
 
 What loads: `--setting-sources user`, so your own settings (including `permissions.allow`), skills,
 user-level MCP servers and `CLAUDE.md`. The PR branch's `.claude/settings`, hooks, `.mcp.json` and
 `CLAUDE.md` do not load. The turn's cw outcome tools are added, with the `prompts/agent.md` rules
 appended to the system prompt.
+
+Full needs Linux with bubblewrap and overlayfs. Without them Full is unavailable (the page does not
+offer it and `mode: "full"` answers 400) and Review still works.
+
+The agent runs under bubblewrap. The filesystem is read-only except the shared worktree, the cw turns
+directory, Claude session state (`~/.claude/projects`, `session-env`, `sessions`, `.credentials.json`)
+and rtk history. `~/.claude` itself stays read-only, so the agent cannot plant hooks or settings.
+`/tmp` is private and discarded. `~/.ssh`, `~/.gnupg`, `/run/user` and the docker sockets are hidden.
+The main repo's `.git` is an overlay, so any git write the agent makes is discarded and the daemon
+commits the worktree after the turn. `WebFetch` and `WebSearch` are disallowed for the Full agent.
+
+Not confined: reads (home stays readable), and network, which follows your own Claude settings and
+sandbox, so a broad allow rule still applies to everything except writes outside the worktree.
+Push and `gh` rules remain best effort. Refreshing the Claude login token inside the sandbox is
+untested.
 
 What is blocked, best effort: git transports are disabled in the agent's environment
 (`cw_llm.no_push_env`, so fetch and clone fail too) and `git push` and other push-like commands are
@@ -132,7 +148,7 @@ denied by rule. Neither is a sandbox. Your own walkthrough MCP tools are disallo
 never pushes. Edits are accepted automatically inside the worktree. Anything else that would prompt
 is denied rather than asked, and the page lists it on the turn as "Needs permission".
 
-The agent runs with your `permissions.allow`, so a broad `Bash`, `Write` or `WebFetch` allow rule
+The agent runs with your `permissions.allow`, so a broad `Bash` or `Write` allow rule
 applies in full, and `gh` and network access (`gh api`, `curl`) follow your own settings. The PR
 text it reads can try to steer it. Keep broad allow rules out of your user settings if you use Full
 on code you do not trust.
