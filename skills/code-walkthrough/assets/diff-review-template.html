@@ -966,7 +966,7 @@
     padding:8px 12px;border:1px solid var(--purple);border-radius:8px;background:var(--panel2);color:var(--text);
     font-size:var(--fs-sm);box-shadow:0 6px 20px rgba(0,0,0,.35)}
   #cw-ref-toast:empty{display:none}
-  .cw-ref-pulse{outline:2px solid var(--purple);outline-offset:2px}
+  .cw-flash{outline:2px solid var(--purple);outline-offset:2px}
   #cw-agent-drawer{position:fixed;top:0;right:0;bottom:calc(var(--cw-bar-h,0px) + 70px);z-index:39;
     display:flex;flex-direction:column;box-sizing:border-box;width:min(360px,92vw);
     background:var(--panel);border-left:1px solid var(--border);color:var(--text);
@@ -1025,26 +1025,61 @@
   #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
     font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:var(--bg);
     box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
-  #cw-comment-btn:focus-visible,#cw-threads-close:focus-visible,#cw-agent-drawer button:focus-visible,
+  #cw-comment-btn:focus-visible,#cw-agent-drawer button:focus-visible,#cw-panel button:focus-visible,
   .cw-thread button:focus-visible,.cw-compose button:focus-visible,
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #cw-threads{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
-    border:1px solid var(--border);border-radius:10px;color:var(--text)}
-  #cw-threads::backdrop{background:rgba(0,0,0,.6)}
-  #cw-threads-head{position:sticky;top:0;z-index:1;background:var(--panel);display:flex;
-    align-items:center;justify-content:space-between;
-    padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
-  #cw-threads-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
-    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1}
-  #cw-threads-body{padding:14px 16px;overflow-y:auto;max-height:calc(82vh - 60px)}
-  #cw-threads-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-  #cw-threads-unplaced h3{margin:14px 0 6px;font-size:var(--fs-sm);color:var(--muted)}
-  .cw-th-go{display:flex;gap:10px;justify-content:space-between;width:100%;text-align:left;
-    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
-    padding:6px 10px;cursor:pointer;font:inherit;font-size:var(--fs-sm)}
-  .cw-th-go:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .cw-th-go-text{min-width:0;overflow-wrap:anywhere}
-  .cw-th-go-state{flex:none;color:var(--muted);font-size:var(--fs-xs)}
+  :root{--cw-panel-w:clamp(300px,26vw,360px)}
+  #cw-panel{position:fixed;top:0;right:0;bottom:var(--cw-bar-h,0px);z-index:51;width:var(--cw-panel-w);
+    display:flex;flex-direction:column;box-sizing:border-box;background:var(--panel);color:var(--text);
+    border-left:1px solid var(--border);box-shadow:-8px 0 24px rgba(0,0,0,.35)}
+  #cw-panel [hidden]{display:none!important}
+  #cw-panel[hidden]{display:none}
+  #cw-panel-grab{display:none}
+  #cw-panel-head{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;
+    border-bottom:1px solid var(--border);font-weight:600}
+  #cw-panel-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cw-panel-icon{flex:none;width:28px;height:28px;background:var(--panel2);border:1px solid var(--border);
+    color:var(--text);border-radius:6px;cursor:pointer;font-size:14px;line-height:1}
+  .cw-panel-icon:hover{border-color:var(--accent)}
+  #cw-panel-list,#cw-panel-thread{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+  #cw-panel-rows{list-style:none;margin:0;padding:10px 14px;display:flex;flex-direction:column;gap:6px;
+    flex:1 1 auto;min-height:0;overflow-y:auto}
+  .cw-pr-row{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;
+    background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--purple);
+    color:var(--text);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit;font-size:var(--fs-sm)}
+  .cw-pr-row:hover{border-color:var(--accent);border-left-color:var(--purple)}
+  .cw-pr-row[data-state="resolved"]{opacity:.6}
+  .cw-pr-title{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cw-pr-meta{display:flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:var(--muted)}
+  #cw-panel-foot{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 14px;
+    border-top:1px solid var(--border)}
+  #cw-panel-submit{margin-left:auto}
+  #cw-panel-status{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
+  #cw-panel-status:empty{display:none}
+  #cw-panel-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:10px 14px}
+  #cw-panel-compose{flex:none}
+  #cw-panel .cw-thread{margin:0;padding:0;border-left:0;background:none}
+  @media (min-width:601px) and (pointer:fine){
+    .cw-panel-open #cw-dock,.cw-panel-open #cw-ref-toast{right:calc(var(--cw-panel-w) + 16px)}
+  }
+  @media (min-width:1100px) and (pointer:fine){
+    .cw-panel-open body{padding-right:calc(var(--cw-panel-w) + 20px)}
+  }
+  @media (max-width:600px),(pointer:coarse){
+    #cw-panel{top:auto;left:0;right:0;bottom:var(--cw-bar-h,0px);width:auto;border-left:0;
+      border-top:1px solid var(--border);border-radius:12px 12px 0 0;box-shadow:0 -8px 24px rgba(0,0,0,.35);
+      height:min(90vh,calc(100vh - var(--cw-bar-h,0px) - 12px));
+      height:min(90dvh,calc(100dvh - var(--cw-bar-h,0px) - 12px))}
+    #cw-panel[data-sheet="collapsed"]{height:56px}
+    #cw-panel[data-sheet="collapsed"]>:not(#cw-panel-grab){display:none}
+    .cw-typing #cw-panel{bottom:var(--cw-kb,0px);height:min(90dvh,calc(var(--cw-vvh,100dvh) - 12px))}
+    #cw-panel-grab{flex:none;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;
+      height:28px;padding:0;background:none;border:0;color:var(--text);font:600 var(--fs-sm) system-ui;cursor:pointer}
+    #cw-panel-grab::before{content:'';width:36px;height:4px;border-radius:2px;background:var(--border)}
+    #cw-panel[data-sheet="collapsed"] #cw-panel-grab{height:56px}
+    #cw-panel[data-sheet="expanded"] .cw-grab-text{display:none}
+    .cw-panel-open #cw-dock{display:none}
+  }
   .cw-thread,.cw-compose{display:block;box-sizing:border-box;max-width:100%;margin:6px 0;
     padding:8px 10px;border-left:3px solid var(--purple);
     background:color-mix(in srgb,var(--purple) 8%,transparent);white-space:normal;line-height:1.6;
@@ -1054,8 +1089,6 @@
   .cw-th-resolve{margin-left:auto}
   .cw-th-badge{color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
   .cw-th-triage{border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--muted);font-size:var(--fs-xs)}
-  #cw-threads-triage-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
-  .cw-th-summary{min-width:0;flex:1 1 12em;color:var(--muted);font-style:italic}
   .cw-turn{margin:8px 0}
   .cw-turn-q{margin:0;color:var(--muted);font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap}
   .cw-turn-a{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -1111,19 +1144,9 @@
     padding:8px;font:inherit;font-size:var(--fs-sm)}
   .cw-ghdraft-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
   .cw-ghdraft-actions .cw-gh-publish,.fb-item .fb-publish-one{border-color:var(--yellow);color:var(--yellow)}
-  .cw-ghdraft button:focus-visible,.fb-publish-one:focus-visible,.cw-ghdraft textarea:focus-visible,
-  .cw-threads-top button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-ghdraft button:focus-visible,.fb-publish-one:focus-visible,.cw-ghdraft textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-ghdraft-msg,.fb-publish-msg{margin:4px 0 0;font-size:var(--fs-xs);color:var(--red)}
   .cw-ghdraft-msg:empty,.fb-publish-msg:empty{display:none}
-  .cw-threads-top{position:sticky;top:-14px;z-index:1;display:flex;flex-wrap:wrap;
-    align-items:center;gap:8px;margin:-14px -16px 10px;padding:14px 16px 8px;
-    background:var(--panel);border-bottom:1px solid var(--border)}
-  .cw-threads-top #cw-threads-submit{margin:0 0 0 auto}
-  @media (max-width:480px){
-    .cw-threads-top button{flex:1 1 100%;justify-content:center;min-height:44px}
-    .cw-threads-top #cw-threads-submit{order:-1;margin:0}
-  }
-  .cw-threads-top .cw-th-copy-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
   .cw-reply-ask{margin:6px 0 0}
   .cw-task{display:block;border-color:var(--purple);border-left:3px solid var(--purple);
     background:color-mix(in srgb,var(--purple) 7%,transparent);white-space:normal;overflow-wrap:anywhere}
@@ -1162,7 +1185,7 @@
   .cw-sibling-chip{margin-left:6px;padding:0 6px;border:1px solid var(--purple);border-radius:999px;
     color:var(--purple);font-size:var(--fs-xs);white-space:nowrap}
   .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-drafts-bar,
-  .cw-sibling #cw-threads-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
+  .cw-sibling #cw-panel-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
   .cw-sibling .fb-reply{display:none!important}
   @media (max-width:728px){.cw-ghdraft-cols{grid-template-columns:minmax(0,1fr)}}
   @media (prefers-reduced-motion:no-preference){
@@ -1257,7 +1280,7 @@
     #cw-comment-btn{display:none!important}
     .cw-mode-tab{min-height:44px;padding:0 14px}
     .cw-compose-hint{display:none}
-    #cw-threads-close{width:44px;height:44px;font-size:16px}
+    .cw-panel-icon{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     .fb-primary,.fb-ghost,.fb-danger,.fb-reply-input{min-height:44px}
     .stop{min-height:44px}
@@ -1882,8 +1905,6 @@
       :[...document.querySelectorAll('svg.vd-nav.vd-focusing')]
         .filter(el=>!el.closest('[hidden]')&&!el.closest('dialog:not([open])'));
     if(focusing.length){ e.preventDefault(); focusing.forEach(clearNavFocus); return; }
-    // Set by wireAsk (live pages only). preventDefault keeps the dialog's native cancel from
-    // closing the Threads dialog together with a composer inside it.
     if(!e.defaultPrevented&&window.cwComposerEsc&&window.cwComposerEsc()) e.preventDefault();
   });
 
@@ -3474,8 +3495,8 @@
       bar.hidden=!show;
       barText.textContent=plural(d,'draft')+', '+plural(r,'resolve')+', only on this machine until you submit';
       barSubmit.textContent='Submit review ('+plural(d,'draft')+', '+plural(r,'resolve')+')';
-      const ths=document.getElementById('cw-threads-submit');
-      if(ths){ ths.hidden=!show; ths.textContent=barSubmit.textContent; }
+      const ths=document.getElementById('cw-panel-submit');
+      if(ths){ ths.hidden=!show; ths.textContent='Submit review \u00b7 '+(d+r); }
       document.documentElement.style.setProperty('--cw-bar-h',show?bar.offsetHeight+'px':'0px');
     }
     refreshDraftsBar=updateBar;
@@ -3614,7 +3635,7 @@
     }
     postBtn.addEventListener('click',()=>start(postBtn));
     barSubmit.addEventListener('click',()=>start(barSubmit));
-    openSubmitReview=()=>start(barSubmit);
+    openSubmitReview=from=>start(from||barSubmit);
 
     evRadios.forEach(r=>r.addEventListener('change',syncSend));
     summary.addEventListener('input',syncSend);
@@ -4047,11 +4068,6 @@
       return null;
     }
 
-    function insertAfterThreads(ref,el){
-      while(ref.nextElementSibling&&ref.nextElementSibling.classList.contains('cw-thread')) ref=ref.nextElementSibling;
-      ref.insertAdjacentElement('afterend',el);
-    }
-
     function directDraftFor(anchor){
       if(!anchor||anchor.kind!=='line'||!anchor.path||!anchor.side||!anchor.line) return null;
       return text=>{
@@ -4219,19 +4235,6 @@
     function markRefs(){
       document.querySelectorAll('.cw-ref-dot:not([data-cw-sent])').forEach(e=>e.classList.remove('cw-ref-dot'));
       for(const a of refs){ const el=placementFor(a); if(el) el.classList.add('cw-ref-dot'); }
-    }
-    const foldKey=t=>lsKey('cw-thread-fold',t.id);
-    function isCollapsed(t){
-      let v=null;
-      try{ v=localStorage.getItem(foldKey(t)); }catch(e){}
-      return v==null?t.resolved:v==='1';
-    }
-    function setFold(t,collapsed){
-      try{
-        if(collapsed===null) localStorage.removeItem(foldKey(t));
-        else localStorage.setItem(foldKey(t),collapsed?'1':'0');
-      }catch(e){}
-      renderThread(t);
     }
     function triageCandidates(notes,turnsByNote){
       return notes.filter(n=>{
@@ -4434,12 +4437,7 @@
         .catch(()=>{ btn.disabled=false; msg.textContent='Request failed -- check the daemon is still running.'; });
     }
 
-    function openThreadOf(t){
-      setFold(t,false);
-      if(!t.placed){ renderList(); dlg.showModal(); return; }
-      t.el.scrollIntoView({block:'center'});
-      t.foldBtn.focus();
-    }
+    function openThreadOf(t){ openPanel({thread:t.id}); }
 
     function removePageEdit(oid){
       const cur=pageEdits.get(oid);
@@ -4483,7 +4481,6 @@
       }
       n.append(acts);
       if(dest.el) dest.el.insertAdjacentElement('afterend',n);
-      else { unplacedBox.appendChild(n); unplacedWrap.hidden=false; }
       pageEdits.set(o.oid,{node:n,orig,sig});
       n.querySelectorAll('pre.mermaid').forEach(pre=>renderMermaidEdit(pre,pre.textContent));
     }
@@ -4514,7 +4511,7 @@
         const show=mkBtn('Show it','fb-ghost');
         show.addEventListener('click',()=>{
           const cur=pageEdits.get(o.oid);
-          if(cur) cur.node.scrollIntoView({block:'center'});
+          if(cur&&cur.node.isConnected) cur.node.scrollIntoView({block:'center'});
         });
         acts.append(show);
       }
@@ -4941,27 +4938,25 @@
       if(o.outcome==='page_edit') syncPageEdit(o);
       const t=threads.get(o.thread_id);
       if(t) renderThread(t);
-      renderList();
+      renderPanelList();
     }
 
     function buildThread(t){
       t.el=mk('div','cw-thread'); t.el.dataset.thread=t.id;
       const head=mk('div','cw-thread-head');
-      t.foldBtn=mkBtn('Fold','cw-th-fold fb-ghost');
       t.badge=mk('span','cw-th-badge','Resolved');
       t.triageTag=mk('span','cw-th-triage','triage'); t.triageTag.hidden=true;
-      t.summary=mk('span','cw-th-summary');
       t.resolveBtn=mkBtn('Resolve','cw-th-resolve fb-ghost');
-      head.append(t.foldBtn,t.badge,t.triageTag,t.summary,t.resolveBtn);
+      head.append(t.badge,t.triageTag,t.resolveBtn);
       t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
       t.body=mk('div','cw-thread-body');
       t.turnsEl=mk('div','cw-turns');
       t.refsEl=mk('p','cw-th-refs');
       const follow=makeComposer({modes:['agent'],header:'Reply to the agent',ph:'Reply in this thread',
         payload:text=>({anchor:(t.turns[0]||{}).anchor||{},text,thread_id:t.id}),onSent:()=>{}});
+      t.ta=follow.ta;
       t.body.append(t.refsEl,t.turnsEl,follow.box);
       t.el.append(head,t.msg,t.body);
-      t.foldBtn.addEventListener('click',()=>setFold(t,!isCollapsed(t)));
       t.resolveBtn.addEventListener('click',()=>{
         t.msg.textContent='';
         const want=!t.resolved;
@@ -4970,7 +4965,6 @@
           .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
           .then(({ok,body})=>{
             if(!ok){ t.msg.textContent=body.error||'Request failed'; return; }
-            try{ localStorage.removeItem(foldKey(t)); }catch(e){}
             applyResolve(t.id,want);
           })
           .catch(()=>{ t.msg.textContent='Request failed -- check the daemon is still running.'; });
@@ -4981,17 +4975,11 @@
       :a.kind==='section'?a.section||'page':(a.section||'page')+' \u00b7 para';
     function renderThread(t){
       if(!t.el) buildThread(t);
-      const collapsed=isCollapsed(t), state=stateOf(t);
       const first=t.turns[0]||{};
-      t.el.dataset.state=state;
-      t.foldBtn.textContent=collapsed?'Unfold':'Fold';
-      t.foldBtn.setAttribute('aria-expanded',String(!collapsed));
+      t.el.dataset.state=stateOf(t);
       t.resolveBtn.textContent=t.resolved?'Reopen':'Resolve';
       t.badge.hidden=!t.resolved;
       t.triageTag.hidden=first.source!=='triage';
-      t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
-      t.summary.hidden=!collapsed;
-      t.body.hidden=collapsed;
       const as=first.anchors||[];
       t.refsEl.hidden=as.length<2;
       t.refsEl.textContent=as.length<2?'':'References: '+as.map(refLabel).join(', ');
@@ -4999,21 +4987,18 @@
     }
 
     const earlyResolve=new Map();
-    let pendingReveal=null;
+    let pendingOpen=null;
     function upsertTurn(r,fromSnapshot){
       if(!r||!r.thread_id) return;
       let t=threads.get(r.thread_id);
       const isNew=!t;
-      if(isNew){ t={id:r.thread_id,turns:[],resolved:earlyResolve.get(r.thread_id)===true,el:null,placed:false}; threads.set(t.id,t); earlyResolve.delete(t.id); }
+      if(isNew){ t={id:r.thread_id,turns:[],resolved:earlyResolve.get(r.thread_id)===true,el:null}; threads.set(t.id,t); earlyResolve.delete(t.id); }
       const i=t.turns.findIndex(x=>x.qid===r.qid);
       if(fromSnapshot&&i>=0&&r.status==='pending'&&t.turns[i].status!=='pending') return;
       if(r.status!=='pending') streams.delete(r.qid);
       if(i<0) t.turns.push(r); else t.turns[i]=r;
       renderThread(t);
       if(isNew){
-        const ref=placementFor(t.turns[0].anchor||{});
-        if(ref){ insertAfterThreads(ref,t.el); t.placed=true; }
-        if(pendingReveal===t.id){ pendingReveal=null; if(t.placed) t.el.scrollIntoView({block:'center'}); }
         for(const a of (t.turns[0].anchors||[]).slice(1)){
           const el=placementFor(a);
           if(el){ el.classList.add('cw-ref-dot'); el.dataset.cwSent='1'; }
@@ -5021,7 +5006,8 @@
         syncThreadEdits(t.id);
         renderThread(t);
       }
-      renderList();
+      renderPanelList();
+      if(isNew&&pendingOpen===t.id){ pendingOpen=null; openPanel({thread:t.id}); }
     }
 
     function applyResolve(tid,resolved){
@@ -5029,7 +5015,7 @@
       if(!t){ earlyResolve.set(tid,!!resolved); return; }
       t.resolved=!!resolved;
       renderThread(t);
-      renderList();
+      renderPanelList();
     }
 
     window.__cwOnThread=ev=>{
@@ -5046,7 +5032,7 @@
       st.seq=d.seq; st.text+=d.text||'';
       const els=streamElsOf(d.qid);
       if(els.length) els.forEach(e=>{ e.firstChild.textContent=st.text; });
-      else { const t=threads.get(d.thread_id); if(t) renderThread(t); }
+      else { const t=threads.get(d.thread_id); if(t&&t.el&&t.el.isConnected) renderThread(t); }
     };
     window.__cwOnProgress=d=>{
       if(!d||!d.qid) return;
@@ -5094,61 +5080,141 @@
     function setDockAsk(on){ if(on!==dockAsk){ dockAsk=on; paintDock(); } }
     const rootEl=document.documentElement;
     document.addEventListener('focusin',e=>{
-      if(coarseQ.matches&&e.target.matches&&e.target.matches('.cw-compose textarea')) rootEl.classList.add('cw-typing');
+      if(coarseQ.matches&&e.target.matches&&e.target.matches('.cw-compose textarea,.cw-ed')) rootEl.classList.add('cw-typing');
     });
     document.addEventListener('focusout',()=>rootEl.classList.remove('cw-typing'));
 
-    const dlg=document.createElement('dialog');
-    dlg.id='cw-threads'; dlg.setAttribute('aria-label','Threads');
-    const dlgHead=mk('div'); dlgHead.id='cw-threads-head';
-    const dlgClose=mkBtn('✕'); dlgClose.id='cw-threads-close'; dlgClose.setAttribute('aria-label','Close');
-    const dlgTitle=mk('span',null,'Threads');
-    dlgHead.append(dlgTitle,dlgClose);
-    const dlgBody=mk('div'); dlgBody.id='cw-threads-body';
-    const listEl=mk('ul'); listEl.id='cw-threads-list';
-    const unplacedWrap=mk('section'); unplacedWrap.id='cw-threads-unplaced';
-    const unplacedBox=mk('div');
-    unplacedWrap.append(mk('h3',null,'Unplaced'),unplacedBox);
-    const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-threads-submit'; thSubmit.hidden=true;
-    thSubmit.addEventListener('click',()=>{ dlg.close(); openSubmitReview(); });
-    const thCopy=mkBtn('Copy for agent','fb-ghost'); thCopy.id='cw-threads-copy';
-    const thCopyMsg=mk('p','cw-th-copy-msg'); thCopyMsg.setAttribute('role','status');
+    const plural=(n,w)=>n+' '+w+(n===1?'':'s');
+    const sheetQ=matchMedia('(max-width:600px),(pointer:coarse)');
+    const visible=el=>!!(el&&el.isConnected&&el.getClientRects().length);
+
+    const panel=mk('aside'); panel.id='cw-panel'; panel.hidden=true;
+    panel.setAttribute('role','complementary'); panel.setAttribute('aria-label','Threads');
+    const grab=mkBtn(null,null); grab.id='cw-panel-grab';
+    grab.setAttribute('aria-controls','cw-panel'); grab.setAttribute('aria-expanded','false');
+    const grabText=mk('span','cw-grab-text');
+    grab.append(grabText);
+    const pHead=mk('div'); pHead.id='cw-panel-head';
+    const pBack=mkBtn('‹','cw-panel-icon'); pBack.id='cw-panel-back';
+    pBack.setAttribute('aria-label','Back to all threads'); pBack.hidden=true;
+    const pTitle=mk('span'); pTitle.id='cw-panel-title';
+    const pClose=mkBtn('✕','cw-panel-icon'); pClose.id='cw-panel-close'; pClose.setAttribute('aria-label','Close');
+    pHead.append(pBack,pTitle,pClose);
+
+    const pList=mk('div'); pList.id='cw-panel-list';
+    const pFilters=mk('div'); pFilters.id='cw-panel-filters'; pFilters.hidden=true;
+    const pRows=mk('ul'); pRows.id='cw-panel-rows';
+    const pFoot=mk('div'); pFoot.id='cw-panel-foot';
+    const pNew=mkBtn('+ New thread','fb-ghost'); pNew.id='cw-panel-new'; pNew.disabled=true;
+    const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-panel-submit'; thSubmit.hidden=true;
+    thSubmit.addEventListener('click',()=>openSubmitReview(thSubmit));
+    const thCopy=mkBtn('Copy for agent','fb-ghost'); thCopy.id='cw-panel-copy';
+    const triageBtn=mkBtn('Triage','fb-ghost'); triageBtn.id='cw-panel-triage'; triageBtn.hidden=true;
+    const pStatus=mk('p'); pStatus.id='cw-panel-status'; pStatus.setAttribute('role','status');
     thCopy.addEventListener('click',()=>{
       const notes=notesForAgent();
-      if(!notes.length){ thCopyMsg.textContent='No comments ready to copy yet.'; return; }
+      if(!notes.length){ pStatus.textContent='No comments ready to copy yet.'; return; }
       const text=agentFeedbackText(notes);
-      const done=()=>{ thCopyMsg.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.'; };
-      const fallback=()=>{ if(legacyCopy(text)) done(); else thCopyMsg.textContent='Copy failed in this browser.'; };
+      const done=()=>{ pStatus.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.'; };
+      const fallback=()=>{ if(legacyCopy(text)) done(); else pStatus.textContent='Copy failed in this browser.'; };
       if(navigator.clipboard&&navigator.clipboard.writeText){
         navigator.clipboard.writeText(text).then(done).catch(fallback);
       } else fallback();
     });
-    const triageBtn=mkBtn('Triage','fb-ghost'); triageBtn.id='cw-threads-triage'; triageBtn.hidden=true;
-    const triageMsg=mk('p'); triageMsg.id='cw-threads-triage-msg'; triageMsg.setAttribute('role','status');
-    const plural=(n,w)=>n+' '+w+(n===1?'':'s');
     triageBtn.addEventListener('click',()=>{
-      triageBtn.disabled=true; triageMsg.textContent='Starting…';
+      triageBtn.disabled=true; pStatus.textContent='Starting…';
       postJson('/triage',{})
         .then(({ok,body})=>{
           triageBtn.disabled=false;
-          if(!ok||body.error){ triageMsg.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
-          triageMsg.textContent='Started '+(body.started||0)+', skipped '+(body.skipped||0)+(body.remaining>0?' ('+body.remaining+' more not started)':'');
+          if(!ok||body.error){ pStatus.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
+          pStatus.textContent='Started '+(body.started||0)+', skipped '+(body.skipped||0)+(body.remaining>0?' ('+body.remaining+' more not started)':'');
           loadQa();
         })
-        .catch(()=>{ triageBtn.disabled=false; triageMsg.textContent='Request failed -- check the daemon is still running.'; });
+        .catch(()=>{ triageBtn.disabled=false; pStatus.textContent='Request failed -- check the daemon is still running.'; });
     });
-    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,triageBtn,thSubmit,thCopyMsg,triageMsg);
-    dlgBody.append(thTop,listEl,unplacedWrap);
-    refreshDraftsBar();
-    dlg.append(dlgHead,dlgBody);
-    document.body.appendChild(dlg);
+    pFoot.append(pNew,thSubmit,thCopy,triageBtn,pStatus);
+    pList.append(pFilters,pRows,pFoot);
 
-    function renderList(){
+    const pThread=mk('div'); pThread.id='cw-panel-thread'; pThread.hidden=true;
+    const pBody=mk('div'); pBody.id='cw-panel-body';
+    const pCompose=mk('div'); pCompose.id='cw-panel-compose';
+    pThread.append(pBody,pCompose);
+    panel.append(grab,pHead,pList,pThread);
+    $('cw-dock').after(panel);
+
+    let panelView=null, panelOpener=null, panelLabel='Threads';
+    const panelOpen=()=>!panel.hidden;
+    function setSheet(s){ panel.dataset.sheet=s; grab.setAttribute('aria-expanded',String(s==='expanded')); }
+    setSheet('collapsed');
+    grab.addEventListener('click',()=>setSheet(panel.dataset.sheet==='expanded'?'collapsed':'expanded'));
+
+    function paintPanelHead(){
+      const t=panelView&&threads.get(panelView);
+      const first=t&&t.turns[0];
+      pTitle.textContent=t?firstLine(first&&(first.comment||first.question))||'Thread':panelLabel;
+      grabText.textContent=panelLabel;
+    }
+    function showView(tid){
+      const t=tid&&threads.get(tid);
+      panelView=t?t.id:null;
+      pList.hidden=!!t; pThread.hidden=!t; pBack.hidden=!t;
+      if(t){ renderThread(t); pBody.replaceChildren(t.el); pBody.scrollTop=pBody.scrollHeight; }
+      else pBody.replaceChildren();
+      renderPanelList();
+    }
+    function openPanel(view,opts){
+      const a=document.activeElement;
+      if(a&&a!==document.body&&!panel.contains(a)) panelOpener=a;
+      if(drawerOpen()) closeDrawer(false);
+      panel.hidden=false;
+      rootEl.classList.add('cw-panel-open');
+      dock.setAttribute('aria-expanded','true');
+      setSheet('expanded');
+      showView(view&&view.thread);
+      if(opts&&opts.focus===false) return;
+      const t=panelView&&threads.get(panelView);
+      (sheetQ.matches?(t?pBack:pClose):t?t.ta:(pRows.querySelector('button')||pClose)).focus();
+    }
+    function closePanel(){
+      if(!panelOpen()) return;
+      panel.hidden=true;
+      rootEl.classList.remove('cw-panel-open');
+      dock.setAttribute('aria-expanded','false');
+      const o=panelOpener; panelOpener=null;
+      (visible(o)?o:dock).focus();
+    }
+    const togglePanel=()=>panelOpen()?closePanel():openPanel(panelView?{thread:panelView}:null);
+    pClose.addEventListener('click',closePanel);
+    pBack.addEventListener('click',()=>{
+      const id=panelView;
+      showView(null);
+      (pRows.querySelector('button[data-key="'+id+'"]')||pClose).focus();
+    });
+
+    function openThreadWhenReady(tid){
+      if(!tid) return;
+      if(threads.has(tid)) openPanel({thread:tid}); else pendingOpen=tid;
+    }
+
+    function revealAnchor(a){
+      const el=a&&a.kind!=='free'&&placementFor(a);
+      if(!el) return false;
+      openAncestorDetails(el);
+      el.scrollIntoView({block:'center'});
+      const dline=el.classList.contains('dline');
+      const cls=dline?'vd-flash-line':'cw-flash';
+      el.classList.add(cls);
+      setTimeout(()=>el.classList.remove(cls),dline?1400:1200);
+      return true;
+    }
+
+    function renderPanelList(){
       const all=[...threads.values()];
-      const waiting=waitingCount([...outcomesByQid.values()].flatMap(m=>[...m.values()]));
-      const label='Threads ('+all.filter(t=>!t.resolved).length+')'+(waiting?' \u00b7 '+waiting+' wait for you':'');
-      dlgTitle.textContent=label;
-      dockView={open:all.filter(t=>!t.resolved).length,waiting,label}; paintDock();
+      const outcomes=[...outcomesByQid.values()].flatMap(m=>[...m.values()]);
+      const waiting=waitingCount(outcomes);
+      const open=all.filter(t=>!t.resolved).length;
+      panelLabel='Threads ('+open+')'+(waiting?' · '+waiting+' wait for you':'');
+      dockView={open,waiting,label:panelLabel}; paintDock();
       const turnsByNote=new Map();
       for(const t of all){
         const a=(t.turns[0]||{}).anchor;
@@ -5157,37 +5223,40 @@
       const cand=(state.meta&&state.meta.pr)?triageCandidates(state.notes,turnsByNote).length:0;
       triageBtn.hidden=!cand;
       triageBtn.textContent='Triage '+plural(cand,'open thread');
-      const rows=[];
-      for(const t of all.filter(t=>t.placed)){
-        const li=document.createElement('li');
-        const go=mkBtn(null,'cw-th-go');
-        go.append(mk('span','cw-th-go-text',firstLine((t.turns[0]||{}).comment||(t.turns[0]||{}).question)),
-          mk('span','cw-th-go-state',stateOf(t)));
+      const focused=pRows.contains(document.activeElement)&&document.activeElement.dataset.key;
+      const rows=all.slice().sort((a,b)=>(a.resolved?1:0)-(b.resolved?1:0)).map(t=>{
+        const first=t.turns[0]||{}, st=stateOf(t);
+        const go=mkBtn(null,'cw-pr-row'); go.dataset.key=t.id; go.dataset.state=st;
+        const meta=mk('span','cw-pr-meta',st);
+        const w=waitingCount(outcomes.filter(o=>o.thread_id===t.id));
+        if(w) meta.append(mk('span','cw-dock-badge yellow',w+' waiting'));
+        go.append(mk('span','cw-pr-title',firstLine(first.comment||first.question)||'(no text)'),meta);
         go.addEventListener('click',()=>{
-          setFold(t,false);
-          dlg.close();
-          t.el.scrollIntoView({block:'center'});
-          t.foldBtn.focus();
+          openPanel({thread:t.id});
+          revealAnchor((first.anchors&&first.anchors[0])||first.anchor);
         });
-        li.append(go); rows.push(li);
-      }
-      if(!rows.length&&!all.some(t=>!t.placed)){
-        const li=mk('li','hr-comments-empty','No threads yet. Press + beside a diff line, or select prose, to start one.');
-        rows.push(li);
-      }
-      listEl.replaceChildren(...rows);
-      const unplaced=all.filter(t=>!t.placed);
-      unplacedWrap.hidden=!unplaced.length&&!unplacedBox.querySelector('.cw-pageedit');
-      for(const t of unplaced) if(t.el.parentElement!==unplacedBox) unplacedBox.appendChild(t.el);
+        const li=document.createElement('li'); li.append(go);
+        return li;
+      });
+      if(!rows.length) rows.push(mk('li','hr-comments-empty','No threads yet. Press + beside a diff line, or select prose, to start one.'));
+      pRows.replaceChildren(...rows);
+      if(focused){ const r=pRows.querySelector('button[data-key="'+focused+'"]'); if(r) r.focus(); }
+      paintPanelHead();
     }
 
-    dock.addEventListener('click',()=>{ if(dockAsk) askFromSelection(); else { renderList(); dlg.showModal(); } });
-    dlgClose.addEventListener('click',()=>dlg.close());
-    backdropClose(dlg,()=>dlg.close());
-    dlg.addEventListener('close',()=>{ dock.focus(); });
-    renderList();
+    const vv=window.visualViewport;
+    function syncVV(){
+      rootEl.style.setProperty('--cw-vvh',vv.height+'px');
+      rootEl.style.setProperty('--cw-kb',Math.max(0,innerHeight-vv.height-vv.offsetTop)+'px');
+    }
+    if(vv){ vv.addEventListener('resize',syncVV); vv.addEventListener('scroll',syncVV); syncVV(); }
 
-    const sheetQ=matchMedia('(max-width:600px),(pointer:coarse)');
+    dock.setAttribute('aria-controls','cw-panel'); dock.setAttribute('aria-expanded','false');
+    dock.removeAttribute('aria-haspopup');
+    dock.addEventListener('click',()=>{ if(dockAsk) askFromSelection(); else togglePanel(); });
+    refreshDraftsBar();
+    renderPanelList();
+
     const agentSeg=mkBtn('','cw-agent-seg'); agentSeg.id='cw-agent-seg'; agentSeg.hidden=true;
     agentSeg.setAttribute('aria-controls','cw-agent-drawer'); agentSeg.setAttribute('aria-expanded','false');
     $('cw-dock').prepend(agentSeg);
@@ -5205,29 +5274,21 @@
       onSent:(body,sent)=>{
         const keys=new Set(sent.anchors.map(refKey));
         refs=refs.filter(r=>!keys.has(refKey(r))); refsChanged(); closeDrawer();
-        toast('Sent to agent. The reply appears under the first reference.');
-        const t=threads.get(body&&body.thread_id);
-        if(t&&t.placed) t.el.scrollIntoView({block:'center'});
-        else if(body&&body.thread_id) pendingReveal=body.thread_id;
+        openThreadWhenReady(body&&body.thread_id);
       }});
     agentC.send.after(clearBtn);
     drawer.append(dHead,chipsEl,emptyEl,agentC.box);
     document.body.appendChild(drawer);
 
     const chipText=a=>a.kind==='line'?refLabel(a).replace(/^.*\//,''):refLabel(a);
-    function revealRef(a){
-      const el=placementFor(a);
-      if(!el){ toast('That spot is no longer on the page.'); return; }
-      if(sheetQ.matches) closeDrawer(false);
-      el.scrollIntoView({block:'center'});
-      el.classList.add('cw-ref-pulse');
-      setTimeout(()=>el.classList.remove('cw-ref-pulse'),1200);
-    }
     function chipEl(a,i){
       const li=mk('li','cw-agent-chip');
       const go=mkBtn(null,'cw-agent-go'); go.title=refLabel(a);
       go.append(mk('span','cw-agent-lbl',chipText(a)),mk('span','cw-agent-quote',firstLine(a.quote)));
-      go.addEventListener('click',()=>revealRef(a));
+      go.addEventListener('click',()=>{
+        if(sheetQ.matches) closeDrawer(false);
+        if(!revealAnchor(a)) toast('That spot is no longer on the page.');
+      });
       const x=mkBtn('\u2715','cw-agent-x'); x.setAttribute('aria-label','Remove '+chipText(a));
       x.addEventListener('click',()=>removeRef(i));
       li.append(go,x);
@@ -5246,6 +5307,7 @@
     onRefs(paintAgent);
     const drawerOpen=()=>!drawer.hidden;
     function openDrawer(){
+      closePanel();
       drawer.hidden=false; agentSeg.setAttribute('aria-expanded','true'); rootEl.classList.add('cw-agent-open');
       (sheetQ.matches?dHead:agentC.ta).focus();
     }
@@ -5354,12 +5416,10 @@
       closeBox(false);
     });
     window.cwComposerEsc=()=>{
-      const dlg=document.querySelector('dialog[open]');
-      if(openC&&openBox.isConnected&&(!dlg||openBox.closest('dialog[open]'))){
-        if(openC.prompting()) openC.keepEditing(); else openC.cancel();
-        return true;
-      }
-      if(drawerOpen()&&!document.querySelector('dialog[open]')){ closeDrawer(); return true; }
+      if(document.querySelector('dialog[open]')) return false;
+      if(openC&&openBox.isConnected){ if(openC.prompting()) openC.keepEditing(); else openC.cancel(); return true; }
+      if(drawerOpen()){ closeDrawer(); return true; }
+      if(panelOpen()){ closePanel(); return true; }
       return false;
     };
 
@@ -5380,7 +5440,7 @@
       if(composerBusy()) return;
       const anchor={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
       const c=makeComposer({modes:['agent'],header:'Ask the agent about this thread',payload:text=>({anchor,text}),
-        onSent:closeComposer,onCancel:closeComposer});
+        onSent:body=>{ closeComposer(); openThreadWhenReady(body&&body.thread_id); },onCancel:closeComposer});
       if(input&&input.value){ c.ta.value=input.value; input.value=''; c.sync(); }
       openComposer(c,box=>host.append(box));
     };
@@ -5393,8 +5453,9 @@
       const ref=placementFor(anchor);
       if(!ref||lineDraft(meta)){ openOrFocusDraft(meta); return; }
       if(composerBusy()) return;
-      const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),onSent:closeComposer,onCancel:closeComposer});
-      openComposer(c,box=>insertAfterThreads(ref,box));
+      const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),
+        onSent:body=>{ closeComposer(); openThreadWhenReady(body&&body.thread_id); },onCancel:closeComposer});
+      openComposer(c,box=>ref.insertAdjacentElement('afterend',box));
     };
 
     function loadQa(){
@@ -6042,7 +6103,7 @@ document.querySelectorAll('summary a').forEach(a => {
     function busyEditing(){
       const a=document.activeElement;
       if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)) return true;
-      return !!document.querySelector('dialog[open]');
+      return !!document.querySelector('dialog[open]')||document.documentElement.classList.contains('cw-panel-open');
     }
 
     function scrollKey(){ return 'cw-scroll:'+LIVE.key+'/'+LIVE.id; }
