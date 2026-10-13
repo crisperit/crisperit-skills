@@ -552,6 +552,44 @@ for (const k of [a, blockKeyFrom('Why it works? / é', 'x'), blockKeyFrom('', ''
 """)
 
 
+def test_ref_fences_round_trip_and_reject_bad_headers():
+    src = "function refFenceFor(" + _between(_real_template(), "function refFenceFor(", "function wireAsk(){")
+    _node(src + r"""
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+const line = (path, a, b, quote) => ({anchor: {kind:'line', path, side:'RIGHT', line:a, end_line:b, quote}, label:'x'});
+const block = {anchor: {kind:'block', block:'overview|1a2b3c4d', quote:'Some prose'}, label:'Overview · ¶1'};
+const hdr = r => { const a = r.anchor; return a.kind === 'line'
+  ? {kind:'line', path:a.path, line:a.line, end_line:a.end_line, side:a.side}
+  : {kind:'block', block:a.block, label:r.label}; };
+const back = (segs) => parseRefText(serializeSegs(segs)).map(p => p.text != null ? p.text
+  : {header: p.ref, body: p.body});
+const want = segs => segs.map(s => typeof s === 'string' ? s : {header: hdr(s), body: s.anchor.quote});
+
+const l1 = line('src/a.py', 3, 5, '+x = 1\n y = 2\n-z');
+eq(back(['Look at', l1, 'and also', block, 'tail']), want(['Look at', l1, 'and also', block, 'tail']));
+eq(back([l1, block]), want([l1, block]));
+eq(back(['a\n', l1, '\nb']), ['a\n', {header: hdr(l1), body: l1.anchor.quote}, '\nb']);
+eq(serializeSegs(['only text']), 'only text');
+
+const tick = line('b.py', 7, null, 'a ```tick``` here\n+k');
+if (!refFence(tick).startsWith('````ref b.py:7 RIGHT\n')) throw new Error('fence not widened: ' + refFence(tick));
+eq(back(['t', tick]), want(['t', tick]));
+
+const spaced = line('my dir/a "b".py', 2, null, '+q');
+eq(back([spaced]), want([spaced]));
+eq(parseRefText(refFence(spaced))[0].ref.path, 'my dir/a "b".py');
+
+const bad = ['```ref nothing here\nbody\n```', '```ref a.py:0 RIGHT\nx\n```', '```ref a.py:5-2 RIGHT\nx\n```',
+  '```ref a.py:3 MIDDLE\nx\n```'];
+for (const t of bad) eq(parseRefText(t), [{text: t}]);
+const open = '```ref a.py:3 RIGHT\n+x\nno closing fence';
+eq(parseRefText(open), [{text: open}]);
+
+eq(parseRefText('a\r\n```ref a.py:3 RIGHT\r\n+x\r\n```\r\nb'),
+  [{text:'a'}, {ref:{kind:'line', path:'a.py', line:3, end_line:null, side:'RIGHT'}, body:'+x'}, {text:'b'}]);
+""")
+
+
 def test_split_backticks_turns_code_spans_into_nodes_and_never_parses_markup():
     src = "function splitBackticks(" + _between(_real_template(), "function splitBackticks(", "function wireAsk(){")
     _node(src + """
