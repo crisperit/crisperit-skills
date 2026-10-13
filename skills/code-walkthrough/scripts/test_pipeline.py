@@ -40,7 +40,6 @@ def _scratch(tmp, repo, base, head, verdict=""):
         "target": f"{base}...{head}",
         "verdict": verdict,
         "overview": "Adds a widget helper.\n\n- widget_helper introduced",
-        "flow_mermaid": "",
         "files": [{
             "path": "foo.py",
             "role": "defines the widget helper",
@@ -276,9 +275,9 @@ def _symdelta(path, label, line):
 
 
 def _render_with_text(repo, base, head, d, payload):
-    """Two files, two groups, so verdict, overview, top-level and group flow_mermaid, group
-    title/why/hop, role and note are all exercised, each carrying `payload` -- wrapped in just
-    enough scaffolding (a real identifier for note/hop) to pass validate_analysis.py's content
+    """Two files, two groups, so verdict, overview, group
+    title/why, role and note are all exercised, each carrying `payload` -- wrapped in just
+    enough scaffolding (a real identifier for note) to pass validate_analysis.py's content
     gate regardless of what `payload` is. visuals.json carries it in the title, in fragment
     text and in a title= attribute (all of which must stay inert), and as a whole second
     fragment (which the sanitiser must drop when it is markup). Returns the rendered page."""
@@ -290,9 +289,8 @@ def _render_with_text(repo, base, head, d, payload):
         "target": f"{base}...{head}",
         "verdict": payload,
         "overview": payload,
-        "flow_mermaid": payload,
         "groups": [
-            {"title": payload, "why": payload, "hop": f"`foo_helper` {payload}",
+            {"title": payload, "why": payload,
              "paths": ["foo.py"]},
             {"title": payload, "paths": ["bar.py"]},
         ],

@@ -240,7 +240,7 @@ def test_small_diff_makes_one_prose_conversation_and_no_batch_calls():
         repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
         with cw_testlib.StubLLM({"prose-m": [cw_testlib.tool_call("submit_analysis", {
             "files": [{"path": "foo.py", "role": "r", "hunks": []}],
-            "overview": "o", "verdict": "v", "flow_mermaid": "",
+            "overview": "o", "verdict": "v",
         })] * 10}) as stub:
             cw_testlib.write_config(
                 home, {"a": stub.profile("analysis-m"), "p": stub.profile("prose-m")},
@@ -367,7 +367,7 @@ def test_visuals_pass_runs_after_symdelta_joined_and_a_failed_pass_leaves_the_ru
                       "hunks": [{"header": h["header"], "note": "n"} for h in f["hunks"]]}
                      for f in seed["files"]]
             stub.script = {"prose-m": [cw_testlib.tool_call("submit_analysis", {
-                "files": files, "overview": "o", "verdict": "v", "flow_mermaid": ""})]}
+                "files": files, "overview": "o", "verdict": "v"})]}
 
             def slow_symdelta(d_, meta_, on_event):
                 threading.Event().wait(0.3)
@@ -468,8 +468,7 @@ def test_file_problem_routes_to_its_owning_batch():
         for n, entry in enumerate(manifest, 1):
             seed = json.loads(Path(entry["seed"]).read_text())
             (d / "batches" / f"fragment-{n}.json").write_text(json.dumps(_passing_fragment(seed)))
-        (d / "prose.json").write_text(json.dumps({"target": "t", "overview": "", "verdict": "",
-                                                    "flow_mermaid": ""}))
+        (d / "prose.json").write_text(json.dumps({"target": "t", "overview": "", "verdict": ""}))
 
         b_seed = json.loads(Path(manifest[b_n - 1]["seed"]).read_text())
         fixed = {"files": [{"path": "b.py", "role": "fixed role", "hunks": b_seed["files"][0]["hunks"]}]}

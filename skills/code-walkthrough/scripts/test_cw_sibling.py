@@ -28,8 +28,7 @@ OID_OPEN = "o-00000002"
 def _reply(body, _n):
     names = cw_testlib.tool_names(body)
     if "submit_prose" in names:
-        return cw_testlib.tool_call("submit_prose", {"overview": "PARENT OVERVIEW", "verdict": "PARENT VERDICT",
-                                                       "flow_mermaid": ""})
+        return cw_testlib.tool_call("submit_prose", {"overview": "PARENT OVERVIEW", "verdict": "PARENT VERDICT"})
     seed = cw_testlib.first_json_block(cw_testlib.last_user_text(body))
     files = [{"path": f["path"], "role": f["role"] or f"role of {f['path']}",
               "hunks": [{"header": h["header"], "note": h["note"] or "changes A2 B2 TASK4 b2 b4 a2"}

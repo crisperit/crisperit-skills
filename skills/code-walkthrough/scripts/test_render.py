@@ -15,10 +15,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_server  # noqa: E402
 from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
-    render_html, load_visuals, counts_from, _flow_tb, _wrap_flow_labels,
+    render_html, load_visuals, counts_from,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
-from sections import ZWSP  # noqa: E402
 from state import build  # noqa: E402
 from walkthrough import render_html as walkthrough_html, story  # noqa: E402
 from validate_analysis import parse_hunks  # noqa: E402
@@ -43,7 +42,6 @@ ANALYSIS = {
     "verdict": "Session loading gained a refresh fallback.",
     "overview": ("`loadSession` now falls back to the refresh token.\n\nThe title changed."
                 "\n\n`store.get` reads the access token from the cookie jar."),
-    "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]',
     "files": [{"path": "src/auth.py", "role": "r", "hunks": [{"header": "@@", "note": "n"}]}],
 }
 
@@ -112,14 +110,6 @@ def test_html_promotes_backticks_in_every_prose_field():
     assert "`" not in out.split("<body>")[1]
 
 
-def test_html_escapes_the_mermaid_source():
-    flow = {**ANALYSIS, "flow_mermaid": 'flowchart LR\n  A["a < b && c"] --> B'}
-    out = html(flow)
-
-    assert "a &lt; b &amp;&amp; c" in out
-    assert "a < b && c" not in out
-
-
 def test_pasted_sections_are_never_re_escaped():
     # sections.py already escaped these. Escaping again renders "&amp;lt;" on the page, and
     # re-indenting or re-wording them is how a legend drifts from its arrows.
@@ -128,75 +118,6 @@ def test_pasted_sections_are_never_re_escaped():
 
     assert walk in out
     assert "&amp;lt;" not in out
-
-
-def test_an_empty_flow_drops_the_whole_section():
-    out = html({**ANALYSIS, "flow_mermaid": ""})
-
-    assert "<h2>Flow</h2>" not in out
-    assert "pre class=\"mermaid\"" not in out
-    assert "svgbox-flow" not in out
-
-
-@pytest.mark.parametrize("flow, expected", [
-    ('flowchart TB\n  A --> B', 'flowchart TB\n  A --> B'),
-    ('', ''),
-    # Slicing on len("flowchart LR") rather than a blind replace: an LR appearing again later
-    # in the diagram (a node label, say) must survive untouched.
-    ('flowchart LR\n  A["go LR"] --> B', 'flowchart TB\n  A["go LR"] --> B'),
-])
-def test_flow_tb(flow, expected):
-    assert _flow_tb(flow) == expected
-
-
-def test_html_rewrites_a_flowchart_lr_analysis_to_tb():
-    lr = {**ANALYSIS, "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]'}
-
-    html_out = html(lr)
-
-    assert "flowchart TB" in html_out and "flowchart LR" not in html_out
-
-
-def test_wrap_flow_labels_leaves_ids_arrows_edge_counts_and_multiword_labels_alone():
-    # mermaid wraps on spaces by itself, so a label with no over-length word comes back
-    # byte for byte (see sections.wrap_label).
-    for flow in (
-        'flowchart TB\n  A["one two three four five six seven eight"] -->|1| B["ok"]',
-        ('flowchart TB\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
-         'for the MediaGuard lookup"]'),
-    ):
-        assert _wrap_flow_labels(flow) == flow
-
-
-@pytest.mark.parametrize("flow, labels", [
-    ('flowchart TB\n  A["short"] -->|"via resolveSymbolMergesAcrossPackages"| B["ok"]',
-     [('-->|"', '"|', "via resolveSymbolMergesAcrossPackages")]),
-    ('flowchart TB\n  A["short"] -->|via resolveSymbolMergesAcrossPackages| B["ok"]',
-     [('-->|', '|', "via resolveSymbolMergesAcrossPackages")]),
-    ('flowchart TB\n  A["filterUnusableIdentifierThatIsVeryLong"] '
-     '-->|"via resolveSymbolMergesAcrossPackages"| B["ok"]',
-     [('A["', '"]', "filterUnusableIdentifierThatIsVeryLong"),
-      ('-->|"', '"|', "via resolveSymbolMergesAcrossPackages")]),
-])
-def test_wrap_flow_labels_edge_forms(flow, labels):
-    out = _wrap_flow_labels(flow)
-
-    for start, end, original in labels:
-        label = out.split(start, 1)[1].split(end, 1)[0]
-        assert ZWSP in label
-        assert label.replace(ZWSP, "") == original
-
-
-def test_flow_diagram_breaks_a_long_identifier_end_to_end():
-    long_flow = {**ANALYSIS, "flow_mermaid":
-                 'flowchart LR\n  A["short"] --> B["filterUnusableIdentifierThatIsVeryLong"]'}
-
-    html_out = html(long_flow)
-
-    # A zero-width space needs no HTML escaping, so it reaches the page as itself -- unlike the
-    # <br/> this used to emit, which mermaid's sanitiser deleted (see sections.wrap_label).
-    assert ZWSP in html_out
-    assert "&lt;br" not in html_out
 
 
 def test_an_empty_overview_drops_the_whole_section():
@@ -292,7 +213,7 @@ def test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic():
     assert "<b>Summary</b>" in out and "<b>Verdict</b>" not in out
 
 
-# ---- structure and flow placement ----
+# ---- structure placement ----
 
 def test_structure_section_lands_between_the_overview_and_the_walkthrough():
     # render.py adds nothing around section-structure.html's own content, only places it.
@@ -320,16 +241,6 @@ def test_no_story_map_is_rendered_however_many_groups_there_are():
 
     assert "Story map" not in out and '<div class="map">' not in out
     assert "cw-story" not in out
-
-
-def test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox():
-    out = html()
-    heading = out.split('<span>Flow</span>')[1].split("</h2>")[0]
-
-    assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in heading
-    assert out.index("</h2>") < out.index("svgbox-flow")
-    # svgbox-flow lets the template size FLOW apart from the capped symbol graph.
-    assert 'class="panel svgbox svgbox-flow"' in out
 
 
 # ---- the real template: contracts that survive a refactor ----

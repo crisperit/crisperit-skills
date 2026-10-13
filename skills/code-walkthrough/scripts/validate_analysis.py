@@ -5,10 +5,9 @@ Usage:
   python3 validate_analysis.py --diff raw.diff --analysis analysis.json
   python3 validate_analysis.py --diff raw.diff --analysis analysis.json --rendered out.html
   python3 validate_analysis.py --diff batch-N.diff --analysis fragment-N.json --fragment
-  python3 validate_analysis.py --diff raw.diff --analysis analysis.json --symdelta symdelta.json
 
 --fragment gates one batch agent's fragment.json ahead of the central gate: it skips the
-top-level target/overview/flow_mermaid keys and the empty-note floor, both of which only
+top-level target/overview keys and the empty-note floor, both of which only
 make sense over the whole diff, not one batch (see validate()). Mutually exclusive with
 --rendered.
 
@@ -29,7 +28,6 @@ Schema (see code-walkthrough/SKILL.md step 2):
   {
     "target": "master...HEAD",
     "overview": "lead (1-2 sentences) + 3-5 one-line bullets of organizing ideas",
-    "flow_mermaid": "flowchart LR ... , or \"\" when there is no flow worth drawing",
     "files": [
       {
         "path": "pkg/thing.py",
@@ -41,20 +39,7 @@ Schema (see code-walkthrough/SKILL.md step 2):
       {
         "title": "Hot-reload the rate-limit config",
         "why": "optional one line on why this theme reads here",
-        "paths": ["pkg/thing.py"],
-        "flow_mermaid": "optional, flowchart LR or sequenceDiagram, at most 12 lines",
-        "hop": "optional, 2-6 words naming the hand-off to the next stop, one backticked "
-               "identifier that must appear in the diff",
-        "side": "optional, true for a supporting group off the main line (docs, dev setup)"
-      }
-    ],
-    "visuals": [
-      {
-        "title": "...", "intro": "optional",
-        "acts": [{
-          "title": "...", "text": "optional", "bridge": "optional",
-          "flow": [{"sym": "<symdelta node id or file:label>"}, {"edge": "label"}]
-        }]
+        "paths": ["pkg/thing.py"]
       }
     ]
   }
@@ -67,15 +52,6 @@ which theme a reviewer should read first -- the list order IS the story order, n
 reading convenience. Only the grouping and the group order are judgment; the order within a
 group is derived from the import graph. A file left out of every group still renders, in a
 trailing catch-all, so a forgotten group cannot hide it from the reader.
-
-A group may also carry "hop" (the hand-off to the next main-line stop; a backticked
-identifier inside it must appear in raw.diff) and "side" (true for a supporting group, e.g.
-docs or dev setup, that sits off the main line). The last group that isn't a side group must
-not carry a hop -- there is no next stop for it to name.
-
-"visuals" is optional and advisory: check_visuals() is not part of validate(), so a bad
-visual never fails the gate. With --symdelta the CLI prints one `warning: ...` line per
-problem to stderr and leaves the exit code alone.
 
 Stdlib only, no network. Exits 1 and prints one plain line per problem.
 """
@@ -91,16 +67,7 @@ HUNK_PREFIX = re.compile(r"^(@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@)")
 # The post-image blob sha, used by state.py to invalidate a file's hunk hashes when anything
 # in the file changes, not just the edited hunk.
 INDEX_LINE = re.compile(r"^index [0-9a-fA-F]+\.\.([0-9a-fA-F]+)")
-REQUIRED_KEYS = ("target", "overview", "flow_mermaid", "files")
-# A group's own flow_mermaid is optional (see _validate_group_flow) and small by design: it is
-# a per-group aid, not the page's one flow diagram, so a diagram that needed more than this is
-# the subagent inventing a flow rather than describing a genuinely short one.
-GROUP_FLOW_MAX_LINES = 12
-GROUP_FLOW_KINDS = ("flowchart", "sequenceDiagram")
-# A hop names one hand-off, not a sentence about it; see _validate_hop.
-HOP_MIN_WORDS = 2
-HOP_MAX_WORDS = 6
-HOP_BACKTICK = re.compile(r"`([^`]+)`")
+REQUIRED_KEYS = ("target", "overview", "files")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 MIN_IDENTIFIER_LEN = 4
@@ -403,62 +370,13 @@ def validate(diff_text, analysis, fragment=False):
         if path not in diff_hunks:
             problems.append(f"{path}: in files[] but not changed in the diff")
 
-    problems += _validate_groups(analysis.get("groups"), diff_hunks, diff_text)
+    problems += _validate_groups(analysis.get("groups"), diff_hunks)
     if not fragment:
         problems += _empty_note_floor(all_hunks)
     return problems
 
 
-def _validate_group_flow(index, flow_mermaid):
-    """Checks a non-blank group flow_mermaid: its first non-blank line must name one of
-    GROUP_FLOW_KINDS, and it must not exceed GROUP_FLOW_MAX_LINES (see that constant for why)."""
-    lines = [line for line in flow_mermaid.splitlines() if line.strip()]
-    if not lines:
-        return []
-    problems = []
-    if not lines[0].strip().startswith(GROUP_FLOW_KINDS):
-        problems.append(
-            f"groups[{index}].flow_mermaid does not start with {' or '.join(GROUP_FLOW_KINDS)}"
-        )
-    if len(lines) > GROUP_FLOW_MAX_LINES:
-        problems.append(
-            f"groups[{index}].flow_mermaid is {len(lines)} lines, over the "
-            f"{GROUP_FLOW_MAX_LINES}-line cap"
-        )
-    return problems
-
-
-def _validate_hop(index, hop, diff_ids):
-    """Checks a non-blank group hop: HOP_MIN_WORDS to HOP_MAX_WORDS words, at least one
-    backticked identifier, and every backticked identifier inside it has to appear in
-    raw.diff (`diff_ids`, tokenised the same language-independent way as a hunk note's own
-    identifier check) -- a hop names a real hand-off, not an invented one."""
-    problems = []
-    words = hop.split()
-    if len(words) > HOP_MAX_WORDS:
-        problems.append(
-            f"groups[{index}].hop is {len(words)} words, over the {HOP_MAX_WORDS}-word cap"
-        )
-    elif len(words) < HOP_MIN_WORDS:
-        problems.append(
-            f"groups[{index}].hop is {len(words)} word{'s' if len(words) != 1 else ''}, "
-            f"under the {HOP_MIN_WORDS}-word floor"
-        )
-    identifiers = HOP_BACKTICK.findall(hop)
-    if not identifiers:
-        problems.append(
-            f"groups[{index}].hop has no backticked identifier -- name the thing being handed off"
-        )
-    for identifier in identifiers:
-        if identifier.strip() and _identifiers(identifier).isdisjoint(diff_ids):
-            problems.append(
-                f"groups[{index}].hop backticked identifier `{identifier}` does not appear "
-                "in the diff"
-            )
-    return problems
-
-
-def _validate_groups(groups, diff_hunks, diff_text):
+def _validate_groups(groups, diff_hunks):
     """Groups are optional, but a group that exists has to be usable: a title to print, paths
     that are really in the diff, and no path claimed twice. A file in no group is not an error,
     the renderer sweeps those into a catch-all, which is what keeps a partial grouping safe to
@@ -468,36 +386,12 @@ def _validate_groups(groups, diff_hunks, diff_text):
     if not isinstance(groups, list):
         return ["groups must be a list"]
     problems, claimed = [], {}
-    diff_ids = None  # tokenised lazily -- most analyses carry no hop at all
-    last_main_line = None
     for i, group in enumerate(groups):
         if not isinstance(group, dict):
             problems.append(f"groups[{i}] is not an object")
             continue
         if _blank(group.get("title")):
             problems.append(f"groups[{i}] has no title")
-        flow = group.get("flow_mermaid")
-        if flow is not None:
-            # Checked ahead of _blank: _blank treats any non-string as blank, which would wave
-            # a list or dict through as "nothing to validate" instead of flagging the wrong
-            # type -- and that value reaching walkthrough.py crashes on its own `.strip()` call.
-            if not isinstance(flow, str):
-                problems.append(f"groups[{i}].flow_mermaid must be a string")
-            elif not _blank(flow):
-                problems += _validate_group_flow(i, flow)
-        side = group.get("side")
-        if side is not None and not isinstance(side, bool):
-            problems.append(f"groups[{i}].side must be a boolean")
-        hop = group.get("hop")
-        if hop is not None:
-            if _blank(hop):
-                problems.append(f"groups[{i}].hop must be a non-empty string")
-            else:
-                if diff_ids is None:
-                    diff_ids = _identifiers(diff_text)
-                problems += _validate_hop(i, hop, diff_ids)
-        if side is not True:
-            last_main_line = i
         paths = group.get("paths")
         if not isinstance(paths, list) or not paths:
             problems.append(f"groups[{i}] has no paths")
@@ -509,138 +403,7 @@ def _validate_groups(groups, diff_hunks, diff_text):
                 problems.append(f"{path}: in both group {claimed[path]} and group {i}")
             else:
                 claimed[path] = i
-    if last_main_line is not None:
-        last = groups[last_main_line]
-        if isinstance(last, dict) and not _blank(last.get("hop")):
-            problems.append(
-                f"groups[{last_main_line}] is the last stop in the story and must not have a "
-                "hop -- a hop names the hand-off to the NEXT stop"
-            )
     return problems
-
-
-VISUALS_MAX = 3
-ACTS_MAX = 4
-VISUAL_SYMS_MAX = 12
-ACT_SYMS_MAX = 6
-VISUAL_TEXT_CAPS = {
-    "title": (1, 80), "intro": (0, 300), "act title": (1, 60), "text": (0, 300),
-    "bridge": (0, 120), "edge": (1, 32),
-}
-
-
-def resolve_symbol(ref, by_id, by_file_label):
-    """Returns (node id, None) or (None, reason). An exact node id wins over the
-    `<file>:<label>` alias; an alias hitting two nodes is ambiguous, and pkg nodes never
-    resolve."""
-    if not isinstance(ref, str):
-        return None, "sym must be a string"
-    node = by_id.get(ref)
-    if node is None:
-        file, _, label = ref.partition(":")
-        ids = by_file_label.get((file, label), [])
-        if len(ids) > 1:
-            return None, f"{ref!r} is ambiguous"
-        node = by_id.get(ids[0]) if ids else None
-    if node is None:
-        return None, f"{ref!r} is not a symbol in symdelta.json"
-    if node.get("kind") != "symbol":
-        return None, f"{ref!r} is not a symbol node"
-    return node["id"], None
-
-
-def _check_text(where, field, value, problems):
-    lo, hi = VISUAL_TEXT_CAPS[field]
-    if value is None and lo == 0:
-        return
-    if not isinstance(value, str) or not lo <= len(value) <= hi:
-        problems.append(f"{where}: {field} must be a string of {lo}..{hi} characters")
-
-
-def _check_flow(where, flow, by_id, by_file_label):
-    """Returns (flow with syms canonicalised, problems)."""
-    if not isinstance(flow, list) or not flow:
-        return None, [f"{where}.flow must be a non-empty list"]
-    problems, out, syms = [], [], 0
-    for j, item in enumerate(flow):
-        at = f"{where}.flow[{j}]"
-        if not isinstance(item, dict) or len(item) != 1 or not ({"sym", "edge"} & item.keys()):
-            problems.append(f"{at} must have exactly one of sym or edge")
-        elif "sym" in item:
-            sym_id, reason = resolve_symbol(item["sym"], by_id, by_file_label)
-            if reason:
-                problems.append(f"{at}: {reason}")
-            else:
-                out.append({"sym": sym_id})
-                syms += 1
-        else:
-            _check_text(at, "edge", item["edge"], problems)
-            if j in (0, len(flow) - 1) or (isinstance(flow[j - 1], dict) and "edge" in flow[j - 1]):
-                problems.append(f"{at}: an edge must sit between two syms")
-            out.append({"edge": item["edge"]})
-    if syms > ACT_SYMS_MAX:
-        problems.append(f"{where} has {syms} syms, over the {ACT_SYMS_MAX} cap")
-    return out, problems
-
-
-def check_visuals(visuals, symdelta):
-    """Returns (clean, problems). A visual with any problem is dropped whole; unknown keys
-    are ignored. `clean` carries only the known keys, syms canonicalised to node ids."""
-    if visuals is None:
-        return [], []
-    nodes = [n for n in (symdelta or {}).get("nodes", []) if isinstance(n, dict)]
-    if not any(n.get("kind") == "symbol" for n in nodes):
-        return [], ["visuals: dropped, symdelta.json has no symbols"]
-    if not isinstance(visuals, list):
-        return [], ["visuals must be a list"]
-    nodes = [n for n in nodes if isinstance(n.get("id"), str)]
-    by_id = {n["id"]: n for n in nodes}
-    by_file_label = {}
-    for n in nodes:
-        if n.get("kind") == "symbol":
-            by_file_label.setdefault((n.get("file"), n.get("label")), []).append(n["id"])
-
-    clean, problems = [], []
-    if len(visuals) > VISUALS_MAX:
-        problems.append(f"visuals has {len(visuals)} entries, over the {VISUALS_MAX} cap; extras dropped")
-    for i, visual in enumerate(visuals[:VISUALS_MAX]):
-        where = f"visuals[{i}]"
-        found = []
-        if not isinstance(visual, dict):
-            problems.append(f"{where} is not an object")
-            continue
-        _check_text(where, "title", visual.get("title"), found)
-        _check_text(where, "intro", visual.get("intro"), found)
-        acts = visual.get("acts")
-        out_acts, distinct = [], set()
-        if not isinstance(acts, list) or not 1 <= len(acts) <= ACTS_MAX:
-            found.append(f"{where}.acts must be a list of 1..{ACTS_MAX} acts")
-        else:
-            for k, act in enumerate(acts):
-                at = f"{where}.acts[{k}]"
-                if not isinstance(act, dict):
-                    found.append(f"{at} is not an object")
-                    continue
-                _check_text(at, "act title", act.get("title"), found)
-                _check_text(at, "text", act.get("text"), found)
-                _check_text(at, "bridge", act.get("bridge"), found)
-                flow, flow_problems = _check_flow(at, act.get("flow"), by_id, by_file_label)
-                found += flow_problems
-                distinct.update(item["sym"] for item in flow or [] if "sym" in item)
-                out_acts.append({
-                    **{key: act[key] for key in ("title", "text", "bridge") if key in act},
-                    "flow": flow,
-                })
-            if len(distinct) > VISUAL_SYMS_MAX:
-                found.append(f"{where} has {len(distinct)} distinct syms, over the {VISUAL_SYMS_MAX} cap")
-        if found:
-            problems += found
-        else:
-            clean.append({
-                **{key: visual[key] for key in ("title", "intro") if key in visual},
-                "acts": out_acts,
-            })
-    return clean, problems
 
 
 def check_rendered(diff_text, rendered):
@@ -672,7 +435,6 @@ def main():
     parser.add_argument("--diff", required=True)
     parser.add_argument("--analysis", required=True)
     parser.add_argument("--sections", nargs="*", default=[])
-    parser.add_argument("--symdelta", help="symdelta.json; enables advisory visuals warnings")
     exclusive = parser.add_mutually_exclusive_group()
     exclusive.add_argument("--rendered")
     exclusive.add_argument("--fragment", action="store_true",
@@ -691,14 +453,6 @@ def main():
         rendered = open(args.rendered, errors="replace").read()
         problems += check_rendered(diff_text, rendered)
         problems += check_sections(args.sections, rendered)
-
-    if args.symdelta and analysis.get("visuals") is not None:
-        try:
-            symdelta = json.load(open(args.symdelta))
-        except (OSError, json.JSONDecodeError):
-            symdelta = None
-        for problem in check_visuals(analysis["visuals"], symdelta)[1]:
-            print(f"warning: {problem}", file=sys.stderr)
 
     if problems:
         for problem in problems:

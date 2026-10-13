@@ -40,15 +40,14 @@ already know where it sits.
 1. **Overview: what changed, and why.** Two sentences and a few bullets, no
    file names. On the example: lazygit's side panels stop being a fixed five
    and become a list you configure.
-2. **Story map: in what order does it happen.** The files grouped into three
-   to five themes, drawn as stops in the order the story runs. Each hop names
-   the function that hands off to the next stop. On the example: declare the
-   config, derive the layout, build and live-reload it, prove it end to end.
+2. **The PR in one picture, then one per theme.** The files grouped into three
+   to five themes. A model draws one picture of the change and one per theme,
+   from real names and numbers in the diff; a docs-only change may get none.
 3. **System change: what does it touch.** The types and functions the diff
-   touched, callers on the left and callees on the right, coloured by story
-   stop. Parsed from the code at both refs; no model is involved. Go and
+   touched, callers on the left and callees on the right, Parsed from the
+   code at both refs; no model is involved. Go and
    TypeScript for now.
-4. **Call graph: how far does it reach.** Per theme, the call graph resolved
+4. **Call graph: how far does it reach.** The call graph, under "All symbols", resolved
    by the compiler or a language server, at package and symbol level. That
    shows the blast radius: which new function is called from everywhere and
    which is a leaf.
@@ -96,8 +95,8 @@ bills per token against that backend's own API key.
 ### Language support
 
 Everything built from the diff itself works in any language: the grouping and
-reading order, the annotated walkthrough, per-line comments and the flow
-diagram.
+reading order, the annotated walkthrough, per-line comments and the
+pictures.
 
 The graphs have to parse the code. Python, Go, JavaScript and TypeScript need
 nothing installed. `pip install tree-sitter-language-pack` adds the symbol graph

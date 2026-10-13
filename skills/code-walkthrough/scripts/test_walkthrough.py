@@ -486,11 +486,10 @@ def test_the_catch_all_group_gets_no_picture_slot_and_a_skipped_group_keeps_late
     assert re.findall(r"<!-- cw-picture:(\d+) -->", out) == ["1"]
 
 
-def test_no_group_diagram_or_tab_markup_is_emitted_even_when_the_analysis_has_flow_mermaid():
+def test_no_group_diagram_or_tab_markup_is_emitted():
     files = _chain_files("src/api.py", "src/store.py")
     groups = story(list(files), files, [
-        {"title": "API", "paths": ["src/api.py"], "flow_mermaid": 'flowchart LR\n  A --> B',
-         "hop": "feeds `x`", "side": True},
+        {"title": "API", "paths": ["src/api.py"]},
         {"title": "Store", "paths": ["src/store.py"]}], None)
     out = render_html(groups, files, {})
 

@@ -18,7 +18,6 @@ from validate_analysis import (  # noqa: E402
     check_sections,
     is_test_path,
     parse_diff,
-    check_visuals,
     validate,
 )
 
@@ -47,7 +46,6 @@ Binary files a/logo.png and b/logo.png differ
 GOOD = {
     "target": "master...HEAD",
     "overview": "Renames the thing.",
-    "flow_mermaid": "",
     "files": [
         {
             "path": "pkg/thing.py",
@@ -180,9 +178,18 @@ def test_invented_file_and_invented_hunk_fail():
 
 def test_missing_top_level_key_fails():
     bad = copy.deepcopy(GOOD)
-    del bad["flow_mermaid"]
+    del bad["overview"]
 
-    assert any("flow_mermaid" in p for p in validate(DIFF, bad))
+    assert any("overview" in p for p in validate(DIFF, bad))
+
+
+def test_legacy_flow_visuals_hop_side_keys_are_ignored():
+    legacy = copy.deepcopy(GOOD)
+    legacy.update({"flow_mermaid": "flowchart LR\n  A --> B", "visuals": "junk"})
+    legacy["groups"] = [{"title": "A", "paths": ["pkg/thing.py", "gone.py", "logo.png"],
+                         "flow_mermaid": ["junk"], "hop": 3, "side": "yes"}]
+
+    assert validate(DIFF, legacy) == []
 
 
 def test_rendered_must_mention_every_path():
@@ -210,7 +217,7 @@ def test_a_generated_section_must_reach_the_rendered_output():
         assert present == []
 
 
-# ---- hop / side (story map) ----
+# ---- groups ----
 
 VALID_GROUPS = {
     "complete": [
@@ -218,27 +225,6 @@ VALID_GROUPS = {
         {"title": "Artwork", "paths": ["logo.png"]},
     ],
     "partial, the renderer sweeps the rest": [{"title": "The rename", "paths": ["pkg/thing.py"]}],
-    # Optional: a group with no flow_mermaid at all, or an explicit blank one, is not a problem.
-    "flow blank or absent": [
-        {"title": "The rename", "paths": ["pkg/thing.py"]},
-        {"title": "Artwork", "paths": ["logo.png"], "flow_mermaid": ""},
-    ],
-    "real flow diagram": [
-        {"title": "The rename", "paths": ["pkg/thing.py"],
-         "flow_mermaid": 'flowchart LR\n  A["old"] --> B["new"]'},
-    ],
-    # "added" is a real identifier on pkg/thing.py's own second hunk (+added).
-    "hop naming an identifier in the diff": [
-        {"title": "A", "paths": ["pkg/thing.py"], "hop": "feeds the `added` line"},
-        {"title": "B", "paths": ["gone.py", "logo.png"]},
-    ],
-    # "side" groups sit off the main line and are skipped when the gate looks for the last
-    # stop, so one trailing a hop-carrying main-line group is not the last-group failure.
-    "side group after the last stop carries a hop": [
-        {"title": "A", "paths": ["pkg/thing.py"]},
-        {"title": "Docs", "paths": ["gone.py", "logo.png"], "side": True,
-         "hop": "feeds the `added` line"},
-    ],
 }
 
 
@@ -250,8 +236,6 @@ def test_valid_group_shapes_pass(groups):
     assert validate(DIFF, good) == []
 
 
-_FLOW_OVER_CAP = "flowchart LR\n" + "\n".join(f"  n{i} --> n{i + 1}" for i in range(13))
-
 INVALID_GROUPS = {
     "file outside the diff": (
         [{"title": "Stale", "paths": ["ghost.py"]}],
@@ -262,30 +246,6 @@ INVALID_GROUPS = {
     "no title and no paths": (
         [{"paths": ["pkg/thing.py"]}, {"title": "Empty", "paths": []}],
         [("groups[0] has no title", ""), ("groups[1] has no paths", "")]),
-    "flow_mermaid not a known kind": (
-        [{"title": "The rename", "paths": ["pkg/thing.py"], "flow_mermaid": "graph LR\n  A --> B"}],
-        [("groups[0].flow_mermaid", "flowchart or sequenceDiagram")]),
-    "flow_mermaid over the line cap": (
-        [{"title": "The rename", "paths": ["pkg/thing.py"], "flow_mermaid": _FLOW_OVER_CAP}],
-        [("groups[0].flow_mermaid", "line cap")]),
-    # A subagent handing back a list instead of a string must not slip past _blank, which
-    # would read "not a string" as "blank" and skip validation entirely -- and the unvalidated
-    # value would go on to crash walkthrough.py's own .strip() call.
-    "flow_mermaid not a string": (
-        [{"title": "The rename", "paths": ["pkg/thing.py"], "flow_mermaid": ["flowchart LR"]}],
-        [("groups[0].flow_mermaid", "must be a string")]),
-    "hop over six words": (
-        [{"title": "A", "paths": ["pkg/thing.py"], "hop": "this hop has entirely way too many words here"},
-         {"title": "B", "paths": ["gone.py", "logo.png"]}],
-        [("groups[0].hop", "word cap")]),
-    "hop identifier missing from the diff": (
-        [{"title": "A", "paths": ["pkg/thing.py"], "hop": "leads to `nonexistentSymbol`"},
-         {"title": "B", "paths": ["gone.py", "logo.png"]}],
-        [("groups[0].hop", "does not appear")]),
-    "side not a boolean": (
-        [{"title": "A", "paths": ["pkg/thing.py"], "side": "yes"},
-         {"title": "B", "paths": ["gone.py", "logo.png"]}],
-        [("groups[0].side", "must be a boolean")]),
 }
 
 
@@ -300,24 +260,10 @@ def test_invalid_group_fields_fail(groups, expected):
         assert any(key in p and msg in p for p in problems), (key, msg, problems)
 
 
-def test_last_group_with_a_hop_fails():
-    # The last stop in the story has no next stop for a hop to name.
-    bad = copy.deepcopy(GOOD)
-    bad["groups"] = [{"title": "A", "paths": ["pkg/thing.py"], "hop": "feeds the `added` line"},
-                     {"title": "B", "paths": ["gone.py", "logo.png"],
-                      "hop": "feeds the `added` line"}]
-
-    problems = validate(DIFF, bad)
-
-    assert any("groups[1]" in p and "must not have a hop" in p for p in problems)
-    assert not any("groups[0]" in p and "must not have a hop" in p for p in problems)
-
-
 def _ident_analysis(note):
     return {
         "target": "x",
         "overview": "renames a variable",
-        "flow_mermaid": "",
         "files": [{
             "path": "pkg/mod.py",
             "role": "renames the sensor variable",
@@ -348,7 +294,7 @@ index 1111111..2222222 100644
 
 def _guard_analysis(note):
     return {
-        "target": "x", "overview": "flips a guard", "flow_mermaid": "",
+        "target": "x", "overview": "flips a guard",
         "files": [{
             "path": "pkg/guard.go",
             "role": "flips the nil guard",
@@ -390,7 +336,7 @@ index 1111111..2222222 100644
 
 def _context_analysis(note):
     return {
-        "target": "x", "overview": "bumps counter", "flow_mermaid": "",
+        "target": "x", "overview": "bumps counter",
         "files": [{
             "path": "pkg/other.py",
             "role": "bumps a counter",
@@ -401,7 +347,7 @@ def _context_analysis(note):
 
 def _whitespace_analysis(note):
     return {
-        "target": "x", "overview": "reindents", "flow_mermaid": "",
+        "target": "x", "overview": "reindents",
         "files": [{
             "path": "pkg/ws.py",
             "role": "reindents a block",
@@ -477,7 +423,6 @@ index 1111111..2222222 100644
 def _rename_analysis(note):
     return {
         "target": "x", "overview": "exports a function",
-        "flow_mermaid": "",
         "files": [FILLER_FILE, {
             "path": "pkg/errors.go",
             "role": "exports classifyLookupError as ClassifyLookupError",
@@ -521,7 +466,6 @@ index 1111111..2222222 100644
 def _filler_analysis(path, role, header, overview):
     return {
         "target": "x", "overview": overview,
-        "flow_mermaid": "",
         "files": [FILLER_FILE, {"path": path, "role": role,
                                 "hunks": [{"header": header, "note": ""}]}],
     }
@@ -577,8 +521,8 @@ def test_validate_fails_when_almost_every_note_is_blank():
 
 
 def test_fragment_mode_passes_a_seed_shaped_fragment_missing_target_and_overview():
-    # A seed fragment only has "files"; fragment mode must not demand target/overview/
-    # flow_mermaid the way the central gate does.
+    # A seed fragment only has "files"; fragment mode must not demand target/overview
+    # the way the central gate does.
     seed = {"files": copy.deepcopy(GOOD["files"])}
 
     assert validate(DIFF, seed, fragment=True) == []
@@ -628,74 +572,3 @@ def test_overview_blob_gate(text, names_length):
         assert str(len(text)) in problems[0]
     else:
         assert problems == []
-
-
-SYMDELTA = {"nodes": [
-    {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0, "file": "a.py"},
-    *[{"id": f"p:f{i}", "label": f"f{i}", "kind": "symbol", "parent": "p", "depth": 1,
-       "state": "new", "file": "a.py", "range": [i, i + 1]} for i in range(14)],
-    {"id": "p:dup1", "label": "dup", "kind": "symbol", "file": "b.py", "range": [1, 2]},
-    {"id": "p:dup2", "label": "dup", "kind": "symbol", "file": "b.py", "range": [5, 6]},
-]}
-
-
-def _visual(flow=None, **over):
-    flow = flow or [{"sym": "p:f0"}, {"edge": "calls"}, {"sym": "a.py:f1"}]
-    return {"title": "T", "acts": [{"title": "A", "flow": flow}], **over}
-
-
-def _syms(*idx):
-    return [{"sym": f"p:f{i}"} for i in idx]
-
-
-def test_valid_visual_passes_and_alias_is_canonicalised():
-    clean, problems = check_visuals([_visual()], SYMDELTA)
-    assert problems == []
-    assert clean[0]["acts"][0]["flow"][2] == {"sym": "p:f1"}
-
-
-@pytest.mark.parametrize("flow", [
-    [{"sym": "nope"}],
-    [{"sym": "p"}],
-    [{"sym": "b.py:dup"}],
-    [{"edge": "x"}, {"sym": "p:f0"}],
-    [{"sym": "p:f0"}, {"edge": "x"}],
-    [{"sym": "p:f0"}, {"edge": "x"}, {"edge": "y"}, {"sym": "p:f1"}],
-    _syms(*range(7)),
-])
-def test_bad_flow_drops_the_visual(flow):
-    clean, problems = check_visuals([_visual(flow)], SYMDELTA)
-    assert clean == [] and problems[0].startswith("visuals[0]")
-
-
-@pytest.mark.parametrize("visuals", [
-    [_visual()] * 4,
-    [{"title": "T", "acts": [{"title": "A", "flow": _syms(0, 1)}] * 5}],
-    [{"title": "T", "acts": [{"title": "A", "flow": _syms(*range(i, i + 5))}
-                             for i in (0, 5, 9)]}],
-    [_visual(title="x" * 81)],
-])
-def test_caps_are_enforced(visuals):
-    clean, problems = check_visuals(visuals, SYMDELTA)
-    assert problems and len(clean) < len(visuals)
-    if len(visuals) == 4:
-        assert len(clean) == 3
-
-
-def test_no_symbols_drops_everything_with_one_line():
-    assert check_visuals([_visual()], {"nodes": [SYMDELTA["nodes"][0]]}) == (
-        [], ["visuals: dropped, symdelta.json has no symbols"])
-    assert check_visuals([_visual()], None)[0] == []
-
-
-def test_visuals_skip_symbol_nodes_without_a_str_id():
-    nodes = [{"kind": "symbol", "file": "a.py", "label": "f"}, {"kind": "symbol", "id": 3}]
-    assert check_visuals([_visual()], {"nodes": nodes + SYMDELTA["nodes"]})[0] != []
-    clean, _ = check_visuals([_visual()], {"nodes": nodes})
-    assert clean == []
-
-
-def test_visuals_never_fail_the_gate():
-    analysis = copy.deepcopy(GOOD)
-    analysis["visuals"] = "junk"
-    assert validate(DIFF, analysis) == validate(DIFF, GOOD)

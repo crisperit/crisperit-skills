@@ -1012,7 +1012,7 @@ def small_route_reply(body):
         "files": [{"path": f["path"], "role": "does a thing",
                    "hunks": [{"header": h["header"], "note": "explains it"} for h in f["hunks"]]}
                   for f in seed["files"]],
-        "overview": "o", "verdict": "v", "flow_mermaid": "",
+        "overview": "o", "verdict": "v",
     }
     return tool_call("submit_analysis", analysis)
 

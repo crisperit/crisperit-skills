@@ -78,3 +78,4 @@ def test_visuals_prompt_stays_small_and_examples_are_phone_sized():
 def test_prose_prompt_no_longer_asks_for_visuals_or_flow_diagrams():
     text = (PROMPTS_DIR / "prose.md").read_text()
     assert "Story visuals" not in text and "sequenceDiagram" not in text
+    assert "flow_mermaid" not in text and "`hop`" not in text and "`side`" not in text

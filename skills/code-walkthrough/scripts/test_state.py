@@ -58,7 +58,6 @@ index aaa1111..ccc3333 100644
 ANALYSIS = {
     "target": "master...HEAD",
     "overview": "does a thing",
-    "flow_mermaid": "",
     "files": [{"path": "x.py", "role": "does a thing",
                "hunks": [{"header": "@@ -10,2 +10,3 @@", "note": "swaps the line"}]}],
     "groups": [{"title": "g", "why": "", "paths": ["x.py"]}],

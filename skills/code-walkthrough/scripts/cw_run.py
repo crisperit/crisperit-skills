@@ -310,11 +310,10 @@ def _fragment_submit_tool():
 def _prose_submit_tool():
     return {"type": "function", "function": {
         "name": "submit_prose",
-        "description": "Submit overview, verdict, flow_mermaid and groups.",
-        "parameters": {"type": "object", "required": ["overview", "verdict", "flow_mermaid"],
+        "description": "Submit overview, verdict and groups.",
+        "parameters": {"type": "object", "required": ["overview", "verdict"],
             "properties": {
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
-                "flow_mermaid": {"type": "string"},
                 "groups": {"type": "array", "items": {"type": "object"}}}}}}
 
 
@@ -329,12 +328,11 @@ def _resolution_submit_tool():
 def _analysis_submit_tool():
     return {"type": "function", "function": {
         "name": "submit_analysis",
-        "description": "Submit the whole analysis: files, overview, verdict, flow_mermaid, groups.",
-        "parameters": {"type": "object", "required": ["files", "overview", "verdict", "flow_mermaid"],
+        "description": "Submit the whole analysis: files, overview, verdict, groups.",
+        "parameters": {"type": "object", "required": ["files", "overview", "verdict"],
             "properties": {
                 "files": {"type": "array", "items": {"type": "object"}},
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
-                "flow_mermaid": {"type": "string"},
                 "groups": {"type": "array", "items": {"type": "object"}}}}}}
 
 
@@ -789,7 +787,6 @@ def _run_prose(d, meta, config, on_event, batch_count):
             "target": meta["target"],
             "overview": args.get("overview") if isinstance(args.get("overview"), str) else "",
             "verdict": args.get("verdict") if isinstance(args.get("verdict"), str) else "",
-            "flow_mermaid": args.get("flow_mermaid") if isinstance(args.get("flow_mermaid"), str) else "",
         }
         if isinstance(args.get("groups"), list):
             prose["groups"] = args["groups"]
@@ -1019,7 +1016,6 @@ def _run_small(d, meta, config, on_event):
                 "target": meta["target"],
                 "overview": args.get("overview") if isinstance(args.get("overview"), str) else "",
                 "verdict": args.get("verdict") if isinstance(args.get("verdict"), str) else "",
-                "flow_mermaid": args.get("flow_mermaid") if isinstance(args.get("flow_mermaid"), str) else "",
             }
             if isinstance(args.get("groups"), list):
                 prose["groups"] = args["groups"]

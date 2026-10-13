@@ -16,7 +16,7 @@ instructions a model had to remember every time, and getting one wrong meant eit
 `<img onerror=...>` from a branch name in someone else's PR, or a diagram replaced by a raw
 mermaid error box. They are now one function with a test.
 
-The judgment stays in analysis.json: `overview`, `flow_mermaid`, `verdict`, `groups` and the per-file `role` and per-hunk `note` that walkthrough.py
+The judgment stays in analysis.json: `overview`, `verdict`, `groups` and the per-file `role` and per-hunk `note` that walkthrough.py
 places.
 
 Prose fields mark identifiers with backticks; HTML promotes them to `<code>` after escaping,
@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import summary_line  # noqa: E402  one owner for wording a complexity delta
-from sections import _codeify, _diagram_max_button, _wrap_flow_labels, render_symbols  # noqa: E402  one owner for these
+from sections import _codeify, render_symbols  # noqa: E402  one owner for these
 import visuals as visuals_mod  # noqa: E402  the sanitiser, the single trust boundary for pictures
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 from walkthrough import story  # noqa: E402  one owner for the group order
@@ -99,16 +99,6 @@ def _html_prose(text):
     return _codeify(escape(text))
 
 
-def _flow_tb(mermaid):
-    """Force FLOW to a portrait-friendly top-to-bottom layout, at render time rather than
-    trusting the prose agent to write `flowchart TB` itself: analysis.json is free-form prose
-    output, and the one thing this page cannot afford is a wide `flowchart LR` shrunk to
-    illegibility on a phone."""
-    if mermaid.startswith("flowchart LR"):
-        return "flowchart TB" + mermaid[len("flowchart LR"):]
-    return mermaid
-
-
 def render_html(analysis, files, template, walkthrough="", links=None, title=None,
                 now=None, complexity=None, state=None, explain=False, order=None,
                 structure="", symdelta=None, visuals=None):
@@ -151,14 +141,6 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                     ' aria-labelledby="cw-pr-picture-h"><h2 id="cw-pr-picture-h">The PR in one picture</h2>'
                     f'<div class="cw-vis" role="group" aria-label="{escape(pr_picture["title"])}">'
                     f'{pr_picture["html"]}</div></section>')
-
-    flow = _wrap_flow_labels(_flow_tb((analysis.get("flow_mermaid") or "").strip()))
-    if flow:
-        body.append('<h2 class="h2-row"><span>Flow</span><span class="ctl">'
-                    f'{_diagram_max_button()}</span></h2>')
-        body.append('<div class="panel svgbox svgbox-flow" tabindex="0" role="button"'
-                    ' aria-label="Expand diagram to full size">'
-                    f'<pre class="mermaid">{escape(flow)}</pre></div>')
 
     # sections.py's own section (marker, heading, everything), pasted verbatim: render.py
     # places generated sections, it never rewrites their markup.

@@ -135,21 +135,17 @@ languages -- never from grep or name matching. The LLM tier's edges carry no pos
 schema, so its symbols get no `range`. The range is BASE-side when the node's state is `gone`,
 HEAD-side otherwise, since that's the only ref the symbol is known to still exist on.
 
-## The story block and "All symbols"
+## Pictures and "All symbols"
 
-`render.py` turns valid `visuals` (see `static.md`) into a hidden `<section class="cw-story">`
-right after the Overview, filled by the template's `wireStory` once the page loads. Each flow
-item is a card; selecting one shows its `file:start-end`, complexity before and after, up to four
-code rows and an "Open in diff" button that scrolls to the symbol's lines (the file when no
-hunk covers them). Hunks that contain a story symbol get an "In graph" chip that jumps back to its
-card. The data comes from `symdelta.json`, `complexity.json` and `raw.diff`, so `pipeline.py render`
-and `partial` now pass `--symdelta` and `--complexity` whenever those files exist (the latter also
-shows the Complexity fact on every page).
-
-With at least one valid visual, `walkthrough.py` drops the per-group call-graph tabs and the story
-section carries the whole graph once in an "All symbols" disclosure, drawn on first open because
-mermaid cannot measure a closed `<details>`. With none, there is no story section and the page
-keeps today's per-group graphs. Explain mode hides the `span.h` markers, so no chips there.
+The pictures are written by a model (`static.md` step 2b4, the daemon's `visuals` step) into
+`visuals.json` and sanitised again at render: `scripts/visuals.py` rebuilds the HTML and SVG from an
+allowlisted tree, so anything outside it (scripts, links, images, classes, event handlers) drops that
+picture whole. The allowlist lives there, not here. The page shows "The PR in one picture" right after
+the Overview, then one picture per group, matched by the group's index in `analysis.json`. The symbol
+graph appears only inside the collapsed "All symbols" disclosure, drawn on first open because mermaid
+cannot measure a closed `<details>`. There is no story map and there are no per-group flow diagrams,
+and there is no fallback: a page without pictures has none, and an old page is regenerated (a fresh
+run, or `cw_run.py visuals --dir <dir> --force` then `pipeline.py render`).
 
 ## `structure.py`: real symbols, not symdelta's own node state
 
@@ -160,7 +156,7 @@ the file at both refs directly and diffs declared symbols -- classes, interfaces
 functions/methods, never a local closure -- so its own `new`/`changed`/`moved`/`removed`/
 `unchanged` states are trustworthy on their own, independent of whatever symdelta.json says.
 
-It also needs `analysis.json`'s own `groups` to colour components by story stop, which is why
+It also needs `analysis.json`'s own `groups` to colour components by group, which is why
 `pipeline.py prepare` runs it only after the gate has passed, never alongside the fan-out. It
 still reads `symdelta.json` too, whatever that script's own `"language"` came back as, but only
 for call edges between the components it finds; parsing the two refs at each language is its own

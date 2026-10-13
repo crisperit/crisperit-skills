@@ -179,38 +179,6 @@ def wrap_label(label, target=LABEL_WRAP_TARGET):
     )
 
 
-# A label's opening delimiter: one or two of mermaid's bracket-shape characters directly
-# before the quote -- rectangle `["`, subroutine `[["`, cylinder `[("`, stadium `(["`, round
-# `("`, circle `(("`, diamond `{"`, hexagon `{{"`, and the asymmetric flag `>"`. Matching just
-# this prefix finds the label regardless of which shape closes it.
-_MERMAID_LABEL_RE = re.compile(r'([\[({>]{1,2})"([^"]*)"')
-
-# An edge label, `-->|text|` or `-->|"text"|`, anchored on the arrow so a `|` used for
-# something else on the line can't be mistaken for one. Matches any arrow shape (solid, dotted,
-# thick, `--x`/`--o`, and their `<`-reversed forms); quoted and bare are separate groups so the
-# substitution can put back exactly the quoting it found.
-_MERMAID_EDGE_LABEL_RE = re.compile(r'(<?[-=.]+[-=]?[>ox])\|(?:"([^"|\n]*)"|([^|\n]*))\|')
-
-
-def _wrap_edge_label(m):
-    arrow, quoted, bare = m.groups()
-    if quoted is not None:
-        return f'{arrow}|"{wrap_label(quoted)}"|'
-    return f'{arrow}|{wrap_label(bare)}|'
-
-
-def _wrap_flow_labels(mermaid):
-    """Run every quoted node/subgraph label, and every edge label, in a flow diagram through
-    `wrap_label`, so a long space-free identifier gets somewhere to break instead of stretching
-    its node across the page (see `wrap_label` for why it is zero-width spaces and not `<br/>`).
-
-    Used by render.py's top-level FLOW; one owner for the regex pair. Safe to run unconditionally on a
-    `sequenceDiagram` too: its message syntax (`A->>B: text`) never matches either regex, since
-    both require the bracket/pipe shapes only a flowchart node or edge label uses."""
-    mermaid = _MERMAID_LABEL_RE.sub(lambda m: f'{m.group(1)}"{wrap_label(m.group(2))}"', mermaid)
-    return _MERMAID_EDGE_LABEL_RE.sub(_wrap_edge_label, mermaid)
-
-
 def _pkg_label(pkg_id, pkg_by_id):
     """A package box's own label: just its path segment (symdelta.py's own bare-last-segment,
     already collapsing a chain of single-child prefixes into one). The box nests inside its
@@ -1030,7 +998,7 @@ def _structure_chips(components, group_color, titles=None):
     buttons = ['<button type="button" class="vds-chip" data-g="all" aria-pressed="true">All</button>']
     for gi in groups:
         title = titles.get(gi)
-        # analysis.json's own group titles carry backticked identifiers same as `why`/`hop`
+        # analysis.json's own group titles carry backticked identifiers same as `why`
         # elsewhere on this page; _html_note's escape-then-codeify is what promotes them to
         # <code> instead of a literal backtick landing in the chip.
         label = _html_note(f"{gi + 1} {title}") if title else str(gi + 1)

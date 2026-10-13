@@ -47,8 +47,8 @@ enough to group from, and it moves 40 to 50 seconds off what the main thread wou
 spend writing groups, notes and gate patches by hand.
 
 Write one group per theme, in story order, not just reading order: the list's own order is what
-the page's story map draws as stops one after another, so a group earlier in the list reads as
-happening earlier in the story. Title it as the theme rather than as a directory.
+the page reads one after another, so a group earlier in the list reads as happening earlier in the
+story. Title it as the theme rather than as a directory.
 
 Keep the groups wide. Aim for three to five whatever the file count, and never more than six: a
 group is a theme a reviewer holds in their head, not a stage in the data flow. Tracing the change
@@ -62,16 +62,3 @@ graph, caller before callee, then by size, tests and generated files last. Leavi
 entirely turns the whole walkthrough into one such group, and a file it forgets still renders in
 a trailing "Everything else" group, so a partial grouping is safe to ship. The gate rejects a
 group with no title, a path not in the diff, or a file in two groups.
-
-## `flow_mermaid`
-
-Leave the top-level `flow_mermaid` an empty string and write none per group; the page's pictures
-are authored in a separate pass.
-
-## `hop` and `side`
-
-Tell it about the two fields that drive the story map. `hop`, 2 to 6 words with one backticked
-identifier that has to appear in `raw.diff`, names the hand-off to the NEXT group in the list --
-the last group that isn't a `side` group must not have one, since there is no next stop for it
-to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
-the story) that the map lists off the main line rather than in the chain.
