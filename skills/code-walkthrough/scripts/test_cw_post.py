@@ -28,8 +28,8 @@ import notes  # noqa: E402
 from cw_testlib import request as _request  # noqa: E402
 from cw_testlib import running_daemon  # noqa: E402
 
-NO_PR_MSG = "No PR for this comparison -- use Copy for agent instead."
-HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet -- use Copy for agent instead."
+NO_PR_MSG = "No PR for this comparison."
+HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet."
 
 
 def _note(**overrides):

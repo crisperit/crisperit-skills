@@ -319,10 +319,9 @@ The page is a plain local file. Open it with `xdg-open <out>.html` on Linux, `op
 macOS, or `start "" <out>.html` on Windows. When none of those work, or the session is remote or
 headless, print the path instead and do not open it -- a text-mode browser fallback would launch
 inside the agent's own terminal and block it. Notes typed into the page live in `localStorage` on
-this file's origin; nothing round-trips to `state.json` on its own. The Comments panel's two copy
-buttons are the only way out: Copy gh command posts straight to GitHub (a later sync pulls the
-posted comments back into `state.json`), and Copy for agent copies the same comments as feedback
-text to paste back into this session, see step 6.
+this file's origin; nothing round-trips to `state.json` on its own. The Comments panel's copy
+button is the only way out: Copy gh command posts straight to GitHub (a later sync pulls the
+posted comments back into `state.json`), see step 6.
 
 ### 4b. Hosting, only when the user asks for it in words
 
@@ -344,18 +343,16 @@ Report what actually ran:
 - When step 4b uploaded the page, give the URL on its own line and repeat that commenting is
   local-file only.
 
-Nothing is published anywhere unless the user asked for hosting in step 4b, or the user pastes a
-Copy for agent payload and asks for it to be delivered, step 6.
+Nothing is published anywhere unless the user asked for hosting in step 4b, or asks for their
+comments to be delivered, step 6.
 
 ## 6. Turn notes into PR comments, when the user asks
 
 The page has no server to post a click to. When there is a pushed PR, the user runs the `gh`
 command Copy gh command printed -- one heredoc per postable comment plus one
 `resolveReviewThread` mutation per thread marked Resolve conversation -- in which case posting is
-already done. Explain mode never has a PR, so the page offers only Copy for agent there. Copy for
-agent copies the same comments as plain text (`Feedback:` then one `path:line` and its body per
-comment, in page order): read it as feedback to act on directly in this conversation, not a
-payload to machine-import, since it carries no ids.
+already done. Explain mode never has a PR, so the page offers no export there; feedback goes back
+through live-mode threads or in conversation.
 
 How the `gh` command payload is built, what to show the user before posting, and why posting is
 never automatic: `references/pr-comments.md`.

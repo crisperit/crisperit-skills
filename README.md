@@ -55,8 +55,8 @@ already know where it sits.
 5. **Code: the lines, with the reason beside them.** Each file gets a one line
    role and each hunk a note on what the code does. Inside a theme, callers
    come before callees.
-6. **Respond: send it back.** Comment on any line. Copy for agent hands the
-   whole set to the assistant to act on, Copy gh command prints the calls to
+6. **Respond: send it back.** Comment on any line. In live mode, Add to
+   thread sends a comment to the agent; Copy gh command prints the calls to
    post them as PR review comments. The page has no server, so nothing leaves
    it unless you copy it. The page is a local file and only gets hosted if
    you ask.

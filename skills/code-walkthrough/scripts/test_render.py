@@ -624,6 +624,26 @@ def test_template_css_rule_pins(selector, must, must_not):
         assert decl not in body
 
 
+def test_panel_counts_cover_every_listed_row_except_resolved():
+    tpl = _real_template()
+    src = "function panelCounts(" + _between(tpl, "function panelCounts(", "function wireAsk(){")
+    _node(src + """
+const e = (kind, state) => ({kind, state});
+const c = panelCounts([e('agent','answered'), e('agent','resolved'), e('agent','draft'),
+  e('draft','draft'), e('pr','open'), e('pr','resolved')]);
+if (JSON.stringify(c) !== JSON.stringify({all:4, agent:2, pr:1, drafts:1})) throw new Error(JSON.stringify(c));
+""")
+    panel = _between(_wire_ask(), "function renderPanelList(){", "const vv=window.visualViewport")
+    assert "const counts=panelCounts(entries), open=counts.all;" in panel
+    assert "+counts[k]" in panel and "all.filter(t=>!t.resolved)" not in panel
+
+
+def test_copy_for_agent_is_gone():
+    tpl = _real_template()
+    for gone in ("Copy for agent", "hr-comments-agent-btn", "cw-panel-copy", "agentFeedbackText", "notesForAgent"):
+        assert gone not in tpl
+
+
 def test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe():
     src = "function blockKeyFrom(" + _between(_real_template(), "function blockKeyFrom(", "function wireAsk(){")
     _node(src + """

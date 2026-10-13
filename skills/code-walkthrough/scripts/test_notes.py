@@ -1175,7 +1175,7 @@ def test_page_origin_write_drops_a_new_note_missing_postable_fields(fields):
 
 
 # ---------------------------------------------------------------------------
-# import (copy-for-agent payload)
+# import (page notes payload)
 # ---------------------------------------------------------------------------
 
 def test_import_merges_new_notes_into_a_state_without_them():

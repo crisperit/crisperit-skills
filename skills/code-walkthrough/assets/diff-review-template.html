@@ -1391,13 +1391,11 @@
   </div>
   <div id="hr-comments-body">
     <p id="hr-comments-help">Copy gh command posts these yourself, right now, when there is a
-      pushed PR to post to. Copy for agent copies the same comments as plain text instead, to
-      paste to the assistant -- the only way when there is no PR.</p>
+      pushed PR to post to.</p>
     <ul id="hr-comments-list"></ul>
     <div id="hr-comments-actions" class="fb-actions">
       <button type="button" id="hr-comments-gh-btn" class="fb-ghost">Copy gh command</button>
       <button type="button" id="hr-comments-post-btn" class="fb-primary" hidden>Submit review</button>
-      <button type="button" id="hr-comments-agent-btn" class="fb-primary">Copy for agent</button>
     </div>
     <p id="hr-comments-gh-note" hidden></p>
     <p id="hr-comments-status" role="status"></p>
@@ -2468,52 +2466,10 @@
     'mutation ResolveThread($id: ID!) { resolveReviewThread(input: {threadId: $id}) '
     +'{ thread { id isResolved } } }';
 
-  // Ids notes.py's pending_publish_ids (payloads_for's predicate, read there rather than
-  // guessed) would call ready to post right now: a reply only once its parent has actually
-  // posted (gh_id set, so the reply can address it by in_reply_to); any other draft as long as
-  // its line anchor is still current. reply_to is one of merge_state's PAGE_DENIED_NOTE_FIELDS
-  // (only the agent may set it), so a page-created reply also carries the same parent id on
-  // in_reply_to -- the field name notes.py's own deliver_note already falls back to -- which
-  // survives the page-origin import merge_state would otherwise strip reply_to out of.
-  function notesForAgent(){
-    const byId=new Map(state.notes.map(n=>[n.id,n]));
-    return state.notes.filter(n=>{
-      if(n.state!=='draft'||n.origin!=='local') return false;
-      const replyTo=n.reply_to||n.in_reply_to;
-      if(replyTo){
-        const parent=byId.get(replyTo);
-        return !!(parent&&parent.gh_id!=null);
-      }
-      return !n.stale;
-    });
-  }
-
-  // "path:line", "path:start-end" for a multi-line thread (start_line/line, GitHub's own
-  // range-comment shape, should a synced thread ever carry one -- nothing authored on this
-  // page does), or just "line"/"" when a synced general comment carries no path.
-  function agentLocation(n){
-    if(!n.path) return n.line!=null?String(n.line):'';
-    if(n.start_line!=null&&n.line!=null&&n.start_line!==n.line) return n.path+':'+n.start_line+'-'+n.line;
-    return n.line!=null?n.path+':'+n.line:n.path;
-  }
-
-  // Plain text, not the JSON this replaced: the agent reads this directly as feedback to act
-  // on, so it reads like a person wrote it, with room to type more below (see the trailing
-  // newline). Order is page order, not creation order -- `order` is the same document-position
-  // counter wireLine assigns while walking the diff top to bottom, file by file, line by line.
-  function agentFeedbackText(notes){
-    const ordered=notes.slice().sort((a,b)=>(a.order||0)-(b.order||0));
-    const entries=ordered.map(n=>{
-      const where=agentLocation(n);
-      return where?where+'\n'+n.body:n.body;
-    });
-    return 'Feedback:\n'+entries.join('\n\n')+'\n';
-  }
-
   // Fallback for navigator.clipboard, which is undefined on plenty of file:// pages (gated
   // behind a secure context) and blocked outright in a sandboxed share-link iframe.
   function legacyCopy(text){
-    // Both copy buttons live inside an open modal <dialog>; everything outside it is inert,
+    // The copy buttons can live inside an open modal <dialog>; everything outside it is inert,
     // so a textarea on document.body could never take focus there.
     const openDialog=document.querySelector('dialog[open]');
     const ta=document.createElement('textarea');
@@ -3837,9 +3793,8 @@
   function wireCommentsPanel(){
     const btn=$('hr-comments-btn'), dlg=$('hr-comments'), close=$('hr-comments-close'),
       list=$('hr-comments-list'), ghBtn=$('hr-comments-gh-btn'), ghNote=$('hr-comments-gh-note'),
-      agentBtn=$('hr-comments-agent-btn'), status=$('hr-comments-status'),
-      reveal=$('hr-comments-reveal');
-    if(!btn||!dlg||!close||!list||!ghBtn||!ghNote||!agentBtn||!status||!reveal) return;
+      status=$('hr-comments-status'), reveal=$('hr-comments-reveal');
+    if(!btn||!dlg||!close||!list||!ghBtn||!ghNote||!status||!reveal) return;
 
     function renderList(){
       const notes=myNotesForPanel();
@@ -3871,8 +3826,6 @@
     }
     refreshCommentsPanel=renderList;
 
-    // Shared with both action buttons below, so there is exactly one clipboard/fallback path
-    // for the panel to keep in sync, the same fallback legacyCopy always provided.
     function copyText(text,onSuccess){
       const manual=()=>{
         status.textContent='Copy failed -- select the text below and copy it by hand.';
@@ -3897,8 +3850,8 @@
       ghBtn.hidden=true;
       ghNote.hidden=false;
       ghNote.textContent=(state.meta&&state.meta.pr==null)
-        ?'No PR for this comparison -- use Copy for agent instead.'
-        :'The compared commit has not been pushed yet -- use Copy for agent instead.';
+        ?'No PR for this comparison.'
+        :'The compared commit has not been pushed yet.';
     }
     if(window.CW_LIVE){
       ghBtn.hidden=true;
@@ -3948,15 +3901,6 @@
       copyText(blocks.join('\n'),()=>{
         status.textContent='Copied '+parts.join(' and ')+'.'
           +(skipped?' ('+skipped+' reply skipped -- parent not posted yet)':'');
-      });
-    });
-
-    agentBtn.addEventListener('click',()=>{
-      reveal.hidden=true;
-      const notes=notesForAgent();
-      if(!notes.length){ status.textContent='No comments ready to copy yet.'; return; }
-      copyText(agentFeedbackText(notes),()=>{
-        status.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.';
       });
     });
 
@@ -4103,6 +4047,17 @@
     }
     flush();
     return out;
+  }
+
+  // Counts every row the Threads panel lists, per filter chip; resolved rows stay listed
+  // (dimmed) but are not counted, so the label, dock badge and chips agree.
+  function panelCounts(entries){
+    const c={all:0,agent:0,pr:0,drafts:0};
+    for(const e of entries){
+      if(e.state==='resolved') continue;
+      c.all++; c[e.kind==='draft'?'drafts':e.kind]++;
+    }
+    return c;
   }
 
   function wireAsk(){
@@ -5880,19 +5835,8 @@
     const pNew=mkBtn('+ New thread','fb-ghost'); pNew.id='cw-panel-new';
     const thSubmit=mkBtn('Submit review','fb-primary'); thSubmit.id='cw-panel-submit'; thSubmit.hidden=true;
     thSubmit.addEventListener('click',()=>openSubmitReview(thSubmit));
-    const thCopy=mkBtn('Copy for agent','fb-ghost'); thCopy.id='cw-panel-copy';
     const triageBtn=mkBtn('Triage','fb-ghost'); triageBtn.id='cw-panel-triage'; triageBtn.hidden=true;
     const pStatus=mk('p'); pStatus.id='cw-panel-status'; pStatus.setAttribute('role','status');
-    thCopy.addEventListener('click',()=>{
-      const notes=notesForAgent();
-      if(!notes.length){ pStatus.textContent='No comments ready to copy yet.'; return; }
-      const text=agentFeedbackText(notes);
-      const done=()=>{ pStatus.textContent='Copied '+notes.length+' comment'+(notes.length===1?'':'s')+' for the agent.'; };
-      const fallback=()=>{ if(legacyCopy(text)) done(); else pStatus.textContent='Copy failed in this browser.'; };
-      if(navigator.clipboard&&navigator.clipboard.writeText){
-        navigator.clipboard.writeText(text).then(done).catch(fallback);
-      } else fallback();
-    });
     triageBtn.addEventListener('click',()=>{
       triageBtn.disabled=true; pStatus.textContent='Starting…';
       postJson('/triage',{})
@@ -5904,7 +5848,7 @@
         })
         .catch(()=>{ triageBtn.disabled=false; pStatus.textContent='Request failed -- check the daemon is still running.'; });
     });
-    pFoot.append(pNew,thSubmit,thCopy,triageBtn,pStatus);
+    pFoot.append(pNew,thSubmit,triageBtn,pStatus);
     pList.append(pFilters,pRows,pFoot);
 
     const pThread=mk('div'); pThread.id='cw-panel-thread'; pThread.hidden=true;
@@ -6057,9 +6001,6 @@
       const all=[...threads.values()];
       const outcomes=[...outcomesByQid.values()].flatMap(m=>[...m.values()]);
       const waiting=waitingCount(outcomes);
-      const open=all.filter(t=>!t.resolved).length;
-      panelLabel='Threads ('+open+')'+(waiting?' · '+waiting+' wait for you':'');
-      dockView={open,waiting,label:panelLabel}; paintDock();
       const turnsByNote=new Map();
       for(const t of all){
         const a=(t.turns[0]||{}).anchor;
@@ -6095,10 +6036,13 @@
           meta:[r.author||'you',where(r)].concat(replies?[replies+(replies===1?' reply':' replies')]:[]),
           go:()=>revealNote(r)});
       }
+      const counts=panelCounts(entries), open=counts.all;
+      panelLabel='Threads ('+open+')'+(waiting?' · '+waiting+' wait for you':'');
+      dockView={open,waiting,label:panelLabel}; paintDock();
       const inFilter=(e,k)=>k==='all'||e.kind===(k==='drafts'?'draft':k);
       const FILTER_LABEL={all:'All',agent:'Agent',pr:'PR',drafts:'Drafts'};
       for(const [k,b] of filterBtns){
-        b.textContent=FILTER_LABEL[k]+' '+entries.filter(e=>inFilter(e,k)).length;
+        b.textContent=FILTER_LABEL[k]+' '+counts[k];
         b.setAttribute('aria-pressed',String(k===panelFilter));
       }
       const shown=entries.filter(e=>inFilter(e,panelFilter))
