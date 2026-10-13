@@ -148,7 +148,7 @@ told about either on the next turn. Page edits are not offered on diff-line comm
 The agent may also draft a GitHub comment (`propose_github_draft`): a new review comment on the
 commented diff line, or a reply in a review thread on those lines. A comment can be anchored to a
 review thread directly (anchor `kind: "thread"` with the thread root's `note_id`); the prompt then
-carries the thread's comments and diff hunk. A thread started from the page may carry up to 8 references: `anchor` is the first and `anchors` lists them all, and both appear in `walkthrough_get` threads. A draft is a proposal stored in `qa.jsonl`, never in
+carries the thread's comments and diff hunk. A thread started from the page may carry up to 8 references: `anchor` is the first and `anchors` lists them all, and both appear in `walkthrough_get` threads. A thread may also start with `anchors: []` (kind `free`, no reference): the agent then only replies, and `anchors` sent with a follow-up merge into the thread's references. A draft is a proposal stored in `qa.jsonl`, never in
 `notes[]`: Keep makes it a local draft through the page's normal draft path, Edit and Use my words
 change its text, Dismiss drops it, and nothing reaches GitHub from the draft itself. Outcomes of
 this kind never enter the Post preview. The agent is told about a dismissal or an edit on the next

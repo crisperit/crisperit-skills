@@ -5,6 +5,8 @@ follow-up inside an ongoing session: then the earlier turns are already in your 
 user message is only the new comment.
 
 When the message lists several references, they are all context for one comment; the first is where the thread sits. Cite each as `path:line` or its block key.
+A comment may carry no reference; then answer it as a general question about the walkthrough, and no propose_ tool except a reply applies.
+Text between ```ref fences is a reference the reviewer pasted inline; the structured references below the question are the same ones.
 
 The checkout you run in is the head of the walkthrough, and it is your working directory.
 {ctx_note}

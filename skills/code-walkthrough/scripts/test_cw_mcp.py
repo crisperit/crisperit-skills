@@ -372,6 +372,26 @@ def test_github_draft_payload_copies_target_and_verbatim_is_byte_for_byte():
         assert not ok and "already drafted" in text
 
 
+def test_free_comment_refuses_every_proposal_tool():
+    free = {**_draft_doc(), "anchor": {"kind": "free"}, "anchors": []}
+    calls = {"propose_task": {"title": "t", "steps": ["s"], "files": ["a.py"]},
+             "propose_page_edit": _edit(),
+             "propose_github_draft": {"body": "b", "target": NEW}}
+    for name, args in calls.items():
+        assert "no reference" in cw_mcp.check_outcome(free, name, args), name
+
+
+def test_github_draft_original_has_no_ref_fences():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        doc = {**_draft_doc(), "comment": "why?\n\n```ref a.py:3\nx = 1\n```\n\nthanks"}
+        cw_store.write_json(d / "turns" / "q1.anchor.json", doc)
+        assert cw_mcp.accept_outcome(d, "q1", "propose_github_draft", {"body": "b", "target": NEW})[0]
+        rec = json.loads((d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()[-1])
+        assert "```" not in rec["arguments"]["original"] and "why?" in rec["arguments"]["original"]
+
+
 def test_ensure_server_replaces_a_daemon_on_older_code_unless_it_is_busy():
     spawned = []
     old = None

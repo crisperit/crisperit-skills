@@ -16,6 +16,7 @@ Stdlib only. Logging goes to stderr; stdout carries only JSON-RPC replies.
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -383,6 +384,9 @@ def _resolve_payload(args, anchor_doc=None):
 
 def _github_draft_payload(args, anchor_doc):
     original = "" if anchor_doc.get("source") == "triage" else anchor_doc.get("comment") or ""
+    stripped = cw_store.strip_ref_fences(original)
+    if stripped != original:
+        original = re.sub(r"\n{3,}", "\n\n", stripped).strip()
     verbatim = args.get("verbatim") is True and bool(original)
     if args["target"]["kind"] == "new":
         anchor = next(r for r in _refs(anchor_doc) if r.get("kind") == "line")
@@ -426,6 +430,8 @@ def check_outcome(anchor_doc, name, args, already=()):
     kind = OUTCOME_KINDS.get(name)
     if kind is None:
         return f"unknown tool {name}"
+    if all(r.get("kind") == "free" for r in _refs(anchor_doc)):
+        return "this comment has no reference (no diff line, prose block or review thread), so this tool cannot be used; reply instead"
     return kind["check"](anchor_doc, args if isinstance(args, dict) else {}, already)
 
 
