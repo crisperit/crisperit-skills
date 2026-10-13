@@ -255,9 +255,95 @@ def test_small_diff_makes_one_prose_conversation_and_no_batch_calls():
         assert stub.count("prose-m") >= 1
 
 
-def _small_run_with_visuals(visuals):
-    """Runs _run_small against a symdelta.json holding one symbol and a stub that always
-    submits `visuals`; returns (ok, the dir, the stub's requests)."""
+GOOD_SVG = ("<svg viewBox='0 0 100 40' role='img' aria-label='x'>"
+            "<rect x='1' y='1' width='50' height='20' fill='var(--card)'/></svg>")
+
+
+def _visuals_dir(home, tmp, stub, symbols=True, groups=True):
+    repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+    cw_testlib.write_config(home, {"p": stub.profile("prose-m")}, {"analysis": "p", "prose": "p"},
+                            small_diff_lines=1000000, batch_max_lines=1)
+    d, meta, _reused = cw_run.prepare_walkthrough({
+        "repo": str(repo), "base": base, "head": head, "target": "main...HEAD", "slug": "t"})
+    analysis = {"target": "main...HEAD", "overview": "Overview text", "verdict": "v", "files": [],
+                "groups": [{"title": "Core", "why": "the change", "paths": ["foo.py"]}] if groups else []}
+    (d / "analysis.json").write_text(json.dumps(analysis))
+    if symbols:
+        (d / "symdelta.json").write_text(json.dumps({"language": "python", "nodes": [
+            {"id": "foo.py:run", "label": "run", "kind": "symbol", "file": "foo.py",
+             "state": "changed", "range": [2, 2]}]}))
+    return d, meta
+
+
+def _submit(args):
+    return cw_testlib.tool_call("submit_visuals", args)
+
+
+def test_visuals_pass_repairs_then_writes_visuals_json():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            bad = {"pr": {"title": "T", "html": "<img src='x'>"}, "groups": []}
+            good = {"pr": {"title": "T", "html": GOOD_SVG}, "groups": [{"index": 0, "html": "<p>g</p>"}]}
+            stub.script = {"prose-m": [_submit(bad), _submit(good)]}
+            assert cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            gate = [m["content"] for m in stub.requests[1]["messages"] if m.get("role") == "tool"][-1]
+            assert gate.startswith("gate:") and "<img> is not allowed" in gate
+            assert gate.endswith("fix and call submit_visuals again")
+            assert "foo.py:run | foo.py:2-2 | changed" in cw_testlib.last_user_text(stub.requests[0])
+            saved = json.loads((d / "visuals.json").read_text())
+            assert saved["pr"]["title"] == "T" and saved["groups"] == [{"index": 0, "html": "<p>g</p>"}]
+            assert cw_store.read_meta(d)["steps"]["visuals"]["status"] == "ok"
+
+
+def test_visuals_pass_keeps_the_clean_part_on_the_final_attempt():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            mixed = {"pr": {"title": "T", "html": "<img src='x'>"},
+                     "groups": [{"index": 0, "html": "<p>g</p>"}]}
+            stub.script = {"prose-m": [_submit(mixed)]}
+            assert cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            saved = json.loads((d / "visuals.json").read_text())
+            assert saved["pr"] is None and saved["groups"][0]["index"] == 0
+            assert stub.count("prose-m") == 3
+
+
+def test_visuals_pass_skips_when_visuals_json_exists_unless_forced():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            (d / "visuals.json").write_text('{"pr": null, "groups": []}')
+            stub.script = {"prose-m": [_submit({"pr": None, "groups": [{"index": 0, "html": "<p>n</p>"}]})]}
+            assert not cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            assert stub.count("prose-m") == 0
+            assert cw_store.read_meta(d)["steps"]["visuals"]["status"] == "skipped"
+            assert cw_run._run_visuals(d, meta, cw_store.load_config(), None, force=True)
+            assert json.loads((d / "visuals.json").read_text())["groups"][0]["html"] == "<p>n</p>"
+
+
+def test_visuals_pass_runs_without_symbols_when_there_are_groups():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub, symbols=False)
+            stub.script = {"prose-m": [_submit({"pr": None, "groups": [{"index": 0, "html": "<p>n</p>"}]})]}
+            assert cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            assert "symbols (id" not in cw_testlib.last_user_text(stub.requests[0])
+            assert "0 | Core | the change | foo.py" in cw_testlib.last_user_text(stub.requests[0])
+
+
+def test_visuals_llm_error_marks_the_step_failed_and_never_raises():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            stub.script = {"prose-m": [cw_testlib.http_error(400, "nope")]}
+            assert not cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            assert not (d / "visuals.json").exists()
+            assert cw_store.read_meta(d)["steps"]["visuals"]["status"] == "failed"
+
+
+def test_visuals_pass_runs_after_symdelta_joined_and_a_failed_pass_leaves_the_run_done(monkeypatch):
+    order = []
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
         with cw_testlib.StubLLM({}) as stub:
@@ -269,31 +355,37 @@ def _small_run_with_visuals(visuals):
             files = [{"path": f["path"], "role": "r",
                       "hunks": [{"header": h["header"], "note": "n"} for h in f["hunks"]]}
                      for f in seed["files"]]
-            args = {"files": files, "overview": "o", "verdict": "v", "flow_mermaid": "", "visuals": visuals}
-            stub.script = {"prose-m": [cw_testlib.tool_call("submit_analysis", args)] * 10}
-            (d / "symdelta.json").write_text(json.dumps({"language": "python", "nodes": [
-                {"id": "foo.py:run", "label": "run", "kind": "symbol", "file": "foo.py",
-                 "state": "changed", "range": [2, 2]}]}))
-            ok = cw_run._run_small(d, meta, cw_store.load_config(), None)
-            analysis = cw_store.read_json(d / "analysis.json", default=None)
-            return ok, analysis, list(stub.requests)
+            stub.script = {"prose-m": [cw_testlib.tool_call("submit_analysis", {
+                "files": files, "overview": "o", "verdict": "v", "flow_mermaid": ""})]}
+
+            def slow_symdelta(d_, meta_, on_event):
+                threading.Event().wait(0.3)
+                order.append("symdelta")
+
+            def failing_visuals(d_, meta_, config, on_event, force=False):
+                order.append("visuals")
+                return False
+
+            monkeypatch.setattr(cw_run, "_run_symdelta", slow_symdelta)
+            monkeypatch.setattr(cw_run, "_run_visuals", failing_visuals)
+            monkeypatch.setattr(cw_run, "_final_build", lambda *a, **k: True)
+            assert cw_run.run(d) == "done"
+        assert order == ["symdelta", "visuals"]
 
 
-def test_small_route_repairs_then_drops_an_unknown_visual_symbol():
-    bad = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "foo.py:nope"}]}]}]
-    ok, analysis, requests = _small_run_with_visuals(bad)
-    assert ok
-    assert "visuals" not in analysis
-    assert "foo.py:run | foo.py:2-2 | changed" in cw_testlib.last_user_text(requests[0])
-    gate = [m["content"] for m in requests[1]["messages"] if m.get("role") == "tool"][-1]
-    assert gate.startswith("gate:") and "visuals[0]" in gate
+def test_visuals_error_inside_the_pass_leaves_the_run_done(monkeypatch):
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            monkeypatch.setattr(cw_run, "_visuals_user_text", lambda *a: 1 / 0)
+            assert not cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            assert cw_store.read_meta(d)["steps"]["visuals"]["status"] == "failed"
 
 
-def test_small_route_keeps_valid_visuals():
-    good = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "foo.py:run"}]}]}]
-    ok, analysis, requests = _small_run_with_visuals(good)
-    assert ok and len(requests) == 1
-    assert analysis["visuals"][0]["acts"][0]["flow"] == [{"sym": "foo.py:run"}]
+def test_submit_tools_no_longer_take_visuals():
+    for tool in (cw_run._prose_submit_tool(), cw_run._analysis_submit_tool()):
+        assert "visuals" not in tool["function"]["parameters"]["properties"]
+    assert "visuals" in cw_run.STEPS and cw_run.STEPS.index("visuals") == cw_run.STEPS.index("symdelta") + 1
 
 
 @pytest.mark.parametrize("route, small_diff_lines, generic", [

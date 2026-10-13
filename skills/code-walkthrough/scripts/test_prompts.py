@@ -3,10 +3,15 @@
 dir, and nowhere in SKILL.md or references/ -- the duplication phase 1 moved text to fix.
 Assert-based, no framework."""
 
+import json
+import re
+import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent.parent
 PROMPTS_DIR = SKILL_DIR / "prompts"
+sys.path.insert(0, str(Path(__file__).parent))
+import visuals  # noqa: E402
 
 # One distinctive sentence per prompt file, present verbatim in the moved text.
 DISTINCTIVE_SENTENCES = {
@@ -16,6 +21,7 @@ DISTINCTIVE_SENTENCES = {
     "comment.md": "Never propose an edit, a patch, or a replacement for the selected code",
     "thread.md": "The path is a signal, not a requirement",
     "agent.md": "Never push, and do not try to reach a remote.",
+    "visuals.md": "Clarity beats coverage: leave out symbols and files that do not serve",
 }
 
 
@@ -48,3 +54,16 @@ def test_each_distinctive_sentence_lives_in_exactly_one_place():
             assert sentence not in sibling.read_text(), (
                 f"{sentence!r} (owned by prompts/{filename}) leaked into {sibling}"
             )
+
+
+def test_visuals_prompt_example_passes_the_sanitiser():
+    text = (PROMPTS_DIR / "visuals.md").read_text()
+    example = json.loads(re.search(r"```json\n(.*?)\n```", text, re.S).group(1))
+    clean, problems = visuals.check_visuals(example, len(example["groups"]))
+    assert problems == []
+    assert clean["pr"] and set(clean["groups"]) == {0}
+
+
+def test_prose_prompt_no_longer_asks_for_visuals_or_flow_diagrams():
+    text = (PROMPTS_DIR / "prose.md").read_text()
+    assert "Story visuals" not in text and "sequenceDiagram" not in text

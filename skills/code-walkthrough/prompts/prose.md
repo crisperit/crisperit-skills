@@ -1,5 +1,5 @@
 Judgment rules for the subagent that writes the whole-picture fields `overview`, `verdict`,
-`groups` and the flow diagrams, from the fragments (or, on the small-diff route, straight from
+`groups`, from the fragments (or, on the small-diff route, straight from
 the diff) plus the numstat and the graph summaries. Delivery mechanics (what it is handed, what
 it writes to, how it replies) stay with each caller: `references/fanout.md` for the fan-out
 route, `static.md`'s schema block for the single small-diff subagent, and the daemon's prose worker.
@@ -63,23 +63,10 @@ entirely turns the whole walkthrough into one such group, and a file it forgets 
 a trailing "Everything else" group, so a partial grouping is safe to ship. The gate rejects a
 group with no title, a path not in the diff, or a file in two groups.
 
-## Flow diagrams
+## `flow_mermaid`
 
-Tell it each group may also carry its own `flow_mermaid`: one small diagram, `sequenceDiagram` or
-`flowchart LR`, its pick per group. Default to a sequence; fall back to a flowchart only when the
-group genuinely has no order to show, a theme like error handling or config plumbing where
-participants and an ordered exchange would have to be invented. At most about 8 steps, and omit
-the field rather than draw something it had to guess.
-
-And about the top-level `flow_mermaid` it now writes itself: leave it blank when it settles on
-two or more groups (the story map replaces it), but when it settles on exactly one group, copy
-that group's own `flow_mermaid` (if it wrote one) up to the top level too, since a single group
-has no map to carry it instead.
-
-**`flow_mermaid` node labels are 2 to 6 words naming the step**, not a sentence explaining it; the
-reasoning belongs in `overview`. **An edge carries a label only when the arrow itself is the
-action or transition**, 1 to 4 words, verb-led; a plain sequential step needs none. A group's own
-`flow_mermaid` follows the same two rules.
+Leave the top-level `flow_mermaid` an empty string and write none per group; the page's pictures
+are authored in a separate pass.
 
 ## `hop` and `side`
 
@@ -88,15 +75,3 @@ identifier that has to appear in `raw.diff`, names the hand-off to the NEXT grou
 the last group that isn't a `side` group must not have one, since there is no next stop for it
 to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
 the story) that the map lists off the main line rather than in the chain.
-
-## Story visuals
-
-It may also write `visuals`: one to three, each telling one thread of the change's story as
-`{title, intro?, acts: [{title, text?, bridge?, flow: [...]}]}`, at most four acts per visual. A
-`flow` is an ordered list of `{"sym": id}` items with an optional `{"edge": label}` between two of
-them; an edge is never first, last or next to another edge. Take every `sym` from the symbol list
-it was handed (or write it as `<file>:<label>`), never invent one, and do not try to cover every
-symbol: a visual follows the few that carry the story. At most six symbols per act and twelve
-distinct per visual. Edge labels are one to three words, verb-led. Everything is plain text, no
-markdown or backticks; titles stay under 80 characters, `text` and `intro` under 300, `bridge`
-under 120. Omit `visuals` for a docs- or config-only change; the page then shows the plain graph.
