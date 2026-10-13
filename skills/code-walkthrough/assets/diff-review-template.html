@@ -716,18 +716,24 @@
   .fb-item .del-btn{float:right;background:none;border:none;color:var(--red);
     cursor:pointer;font-size:14px;padding:0 2px}
   .fb-actions{display:flex;gap:8px;margin-top:8px}
-  .fb-actions button, .fb-item button{border:none;border-radius:6px;padding:6px 12px;
-    font:600 var(--fs-xs) system-ui;cursor:pointer}
-  /* .fb-item .del-btn (0,2,0) still outranks this (0,1,1), so the × keeps its borderless red
-     look; margin-left keeps a button from butting against whatever sits next to it. */
   .fb-item button{margin-left:6px}
-  .fb-primary{background:var(--accent);color:#fff}
-  .fb-ghost{background:var(--panel2);color:var(--muted)}
-  /* Shares --panel2 with .fb-item, so without an edge (Reply) reads as plain text.
-     --border, not --accent (the toggle idiom), keeps it secondary rather than primary.
-     .fb-item .fb-ghost (0,2,0) outranks .fb-item button's border:none (0,1,1) above regardless
-     of source order; .del-btn is untouched since it lacks the .fb-ghost class. */
-  .fb-item .fb-ghost{border:1px solid var(--border)}
+  .fb-primary,.fb-ghost,.fb-danger{display:inline-flex;align-items:center;gap:6px;
+    min-height:32px;padding:6px 12px;border:1px solid var(--border);border-radius:6px;
+    font:600 var(--fs-xs) system-ui;cursor:pointer;
+    transition:background .12s,transform .12s}
+  .fb-primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+  .fb-primary[hidden],.fb-ghost[hidden],.fb-danger[hidden]{display:none}
+  .fb-primary:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 88%,#000)}
+  .fb-ghost{background:var(--panel2);color:var(--text)}
+  .fb-ghost:hover:not(:disabled){background:var(--border)}
+  .fb-danger{background:transparent;color:var(--red);
+    border-color:color-mix(in srgb,var(--red) 55%,var(--border))}
+  .fb-danger:hover:not(:disabled){background:color-mix(in srgb,var(--red) 12%,transparent)}
+  .fb-primary:disabled,.fb-ghost:disabled,.fb-danger:disabled{opacity:.45;cursor:not-allowed}
+  .fb-primary:active:not(:disabled),.fb-ghost:active:not(:disabled),
+  .fb-danger:active:not(:disabled){transform:scale(.97)}
+  .fb-primary:focus-visible,.fb-ghost:focus-visible,.fb-danger:focus-visible{
+    outline:2px solid var(--accent);outline-offset:2px}
   /* A draft's own body, inline in place of the static text node other notes render. Reuses
      .fb-item's font-size/colour; only needs its own box and full-width sizing. */
   .fb-item textarea.fb-draft-body{display:block;width:100%;margin-top:4px;
@@ -854,7 +860,7 @@
   #hr-comments-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
   /* Same dialog idiom as #mermaid-zoom, sized for a list rather than a diagram. */
-  #hr-comments{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+  #hr-comments{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
     border:1px solid var(--border);border-radius:10px;color:var(--text)}
   #hr-comments::backdrop{background:rgba(0,0,0,.6)}
   #hr-comments-head{display:flex;align-items:center;justify-content:space-between;
@@ -965,10 +971,11 @@
   #cw-comment-btn:focus-visible,#cw-threads-btn:focus-visible,#cw-threads-close:focus-visible,
   .cw-thread button:focus-visible,.cw-compose button:focus-visible,
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #cw-threads{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+  #cw-threads{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
     border:1px solid var(--border);border-radius:10px;color:var(--text)}
   #cw-threads::backdrop{background:rgba(0,0,0,.6)}
-  #cw-threads-head{display:flex;align-items:center;justify-content:space-between;
+  #cw-threads-head{position:sticky;top:0;z-index:1;background:var(--panel);display:flex;
+    align-items:center;justify-content:space-between;
     padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
   #cw-threads-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
     border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1}
@@ -987,9 +994,6 @@
     font:var(--fs-sm)/1.6 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;overflow-wrap:anywhere}
   .cw-thread [hidden]{display:none!important}
   .cw-thread-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-  .cw-thread-head button,.cw-compose .fb-actions button{cursor:pointer;border:1px solid var(--border);
-    background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;
-    font-size:var(--fs-xs)}
   .cw-th-resolve{margin-left:auto}
   .cw-th-badge{color:var(--purple);font-weight:600;font-size:var(--fs-xs)}
   .cw-th-triage{border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--muted);font-size:var(--fs-xs)}
@@ -1020,8 +1024,6 @@
   .cw-pageedit details{margin:6px 0;color:var(--muted);font-size:var(--fs-sm)}
   .cw-pageedit-orig{white-space:pre-wrap}
   .cw-pageedit-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
-  .cw-pageedit-actions button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);
-    color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:var(--fs-xs)}
   .cw-pageedit button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-pageedit-msg{font-size:var(--fs-xs);color:var(--muted)}
   .cw-pageedit-hidden{display:none!important}
@@ -1051,16 +1053,19 @@
     background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;
     padding:8px;font:inherit;font-size:var(--fs-sm)}
   .cw-ghdraft-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-  .cw-ghdraft-actions button,.fb-publish-one{cursor:pointer;border:1px solid var(--border);
-    background:var(--panel2);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;
-    font-size:var(--fs-xs)}
   .cw-ghdraft-actions .cw-gh-publish,.fb-item .fb-publish-one{border-color:var(--yellow);color:var(--yellow)}
   .cw-ghdraft button:focus-visible,.fb-publish-one:focus-visible,.cw-ghdraft textarea:focus-visible,
   .cw-threads-top button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-ghdraft-msg,.fb-publish-msg{margin:4px 0 0;font-size:var(--fs-xs);color:var(--red)}
   .cw-ghdraft-msg:empty,.fb-publish-msg:empty{display:none}
-  .cw-threads-top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 10px}
-  .cw-threads-top #cw-threads-submit{margin:0}
+  .cw-threads-top{position:sticky;top:-14px;z-index:1;display:flex;flex-wrap:wrap;
+    align-items:center;gap:8px;margin:-14px -16px 10px;padding:14px 16px 8px;
+    background:var(--panel);border-bottom:1px solid var(--border)}
+  .cw-threads-top #cw-threads-submit{margin:0 0 0 auto}
+  @media (max-width:480px){
+    .cw-threads-top button{flex:1 1 100%;justify-content:center;min-height:44px}
+    .cw-threads-top #cw-threads-submit{order:-1;margin:0}
+  }
   .cw-threads-top .cw-th-copy-msg{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
   .cw-reply-ask{margin:6px 0 0}
   .cw-task{display:block;border-color:var(--purple);border-left:3px solid var(--purple);
@@ -1088,8 +1093,6 @@
     padding:6px 8px;font:inherit;font-size:var(--fs-sm)}
   .cw-task textarea{min-height:64px}
   .cw-task-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px}
-  .cw-task-actions button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);
-    color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:var(--fs-xs)}
   .cw-task-actions .cw-task-run{border-color:var(--purple);color:var(--purple)}
   .cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
   #cw-sibling a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -1115,7 +1118,7 @@
   .cw-compose .fb-actions{margin-top:6px}
   .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
 
-  #cw-post-confirm{width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
+  #cw-post-confirm{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
     border:1px solid var(--border);border-radius:10px;color:var(--text)}
   #cw-post-confirm::backdrop{background:rgba(0,0,0,.6)}
   #cw-post-confirm-head{display:flex;align-items:center;justify-content:space-between;
@@ -1149,7 +1152,6 @@
     border-top:1px solid var(--border);font-size:var(--fs-sm)}
   #cw-drafts-bar[hidden]{display:none}
   #cw-drafts-text{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
-  #cw-threads-submit{margin:0 0 10px}
   .fb-review-tag{margin-left:6px;color:var(--accent);font-size:var(--fs-xs)}
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
@@ -1167,13 +1169,12 @@
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
     #hr-comments-btn{min-height:44px}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
-    #hr-comments-list button,#hr-comments-actions button{min-height:44px}
+    #hr-comments-list button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-comment-btn,#cw-threads-btn,.cw-thread button,.cw-compose button,.fb-publish-one,.cw-threads-top button{min-height:44px}
+    #cw-comment-btn,#cw-threads-btn{min-height:44px}
     #cw-threads-close{width:44px;height:44px;font-size:16px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
-    #cw-drafts-bar button,#cw-threads-submit,#cw-post-confirm button{min-height:44px}
-    .fb-reply-input,.fb-actions button{min-height:44px}
+    .fb-primary,.fb-ghost,.fb-danger,.fb-reply-input{min-height:44px}
     .stop{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
     /* Hit area grows, visible size doesn't: a 44px button here would overlap the line number
@@ -3519,6 +3520,7 @@
     close.addEventListener('click',closeIdle);
     cancelBtn.addEventListener('click',closeIdle);
     leaveBtn.addEventListener('click',closeIdle);
+    dlg.addEventListener('click',e=>{ if(e.target===dlg) closeIdle(); });
     dlg.addEventListener('cancel',e=>{ if(posting) e.preventDefault(); });
     dlg.addEventListener('close',()=>{
       const o=opener&&opener.isConnected&&!opener.hidden&&!opener.disabled&&opener.offsetParent!==null?opener
@@ -3777,6 +3779,7 @@
       dlg.showModal();
     });
     close.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
     // Esc also fires this (the dialog's default cancel behaviour closes it), so both paths
     // return focus to the button that opened it, same as the mermaid zoom dialog's own close.
     dlg.addEventListener('close',()=>{ btn.focus(); });
@@ -4541,7 +4544,7 @@
       d.append(mk('p','cw-task-title',title));
       const acts=mk('div','cw-task-actions');
       const btns=[];
-      const add=(text,cls,fn)=>{ const b=mkBtn(text,cls||'fb-ghost'); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); return b; };
+      const add=(text,cls,fn)=>{ const b=mkBtn(text,'fb-ghost'+(cls?' '+cls:'')); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); return b; };
       const oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
       if(o.state==='proposed'||o.state==='handed'){
         const ol=document.createElement('ol');
@@ -4719,11 +4722,11 @@
     function buildThread(t){
       t.el=mk('div','cw-thread'); t.el.dataset.thread=t.id;
       const head=mk('div','cw-thread-head');
-      t.foldBtn=mkBtn('Fold','cw-th-fold');
+      t.foldBtn=mkBtn('Fold','cw-th-fold fb-ghost');
       t.badge=mk('span','cw-th-badge','Resolved');
       t.triageTag=mk('span','cw-th-triage','triage'); t.triageTag.hidden=true;
       t.summary=mk('span','cw-th-summary');
-      t.resolveBtn=mkBtn('Resolve','cw-th-resolve');
+      t.resolveBtn=mkBtn('Resolve','cw-th-resolve fb-ghost');
       head.append(t.foldBtn,t.badge,t.triageTag,t.summary,t.resolveBtn);
       t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
       t.body=mk('div','cw-thread-body');
@@ -4872,7 +4875,7 @@
         })
         .catch(()=>{ triageBtn.disabled=false; triageMsg.textContent='Request failed -- check the daemon is still running.'; });
     });
-    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,thSubmit,triageBtn,thCopyMsg,triageMsg);
+    const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,triageBtn,thSubmit,thCopyMsg,triageMsg);
     const commentsBtn=$('hr-comments-btn');
     if(commentsBtn) commentsBtn.hidden=true;
     dlgBody.append(thTop,listEl,unplacedWrap);
@@ -4908,7 +4911,7 @@
         li.append(go); rows.push(li);
       }
       if(!rows.length&&!all.some(t=>!t.placed)){
-        const li=mk('li','hr-comments-empty','No threads yet -- select text on the page and click Comment.');
+        const li=mk('li','hr-comments-empty','No threads yet. Press + beside a diff line, or select prose, to start one.');
         rows.push(li);
       }
       listEl.replaceChildren(...rows);
@@ -4919,6 +4922,7 @@
 
     threadsBtn.addEventListener('click',()=>{ renderList(); dlg.showModal(); });
     dlgClose.addEventListener('click',()=>dlg.close());
+    dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
     dlg.addEventListener('close',()=>{ threadsBtn.focus(); });
     renderList();
 
