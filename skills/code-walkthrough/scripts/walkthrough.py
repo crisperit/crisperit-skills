@@ -308,15 +308,11 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     # No legend here: the chip reads "load_session 2->9 branches" in words and carries the
     # long form in its title, so a legend here would only add a paragraph of vocabulary
     # between the reader and the first file.
-    has_story = len(groups) > 1
     out = ["<!-- code-walkthrough:walkthrough -->"]
     for gi, group in enumerate(groups):
         title, why, paths = group
         if title:
-            n = gi + 1
-            heading_attrs = (f' id="wt-group-{n}" style="--c:{_group_color(gi)}"'
-                             if has_story else "")
-            out.append(f'<h3 class="wt-group"{heading_attrs}>'
+            out.append(f'<h3 class="wt-group">'
                        f'{_codeify(escape(title))} '
                        f'<span class="wt-count">{len(paths)} '
                        f'file{"s" if len(paths) != 1 else ""}</span> '

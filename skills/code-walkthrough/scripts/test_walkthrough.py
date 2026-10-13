@@ -441,22 +441,13 @@ def test_every_hunk_summary_carries_a_viewed_checkbox():
 
 # ---- group headings and picture slots ----
 
-def test_group_heading_gets_an_id_and_colour_but_no_story_badge_or_back_link():
+def test_group_headings_carry_no_id_or_style():
     order, files = parsed()
     groups = story(order, files, [{"title": "Session handling", "paths": ["src/auth.py"]},
                                    {"title": "Docs", "paths": ["README.md"]}], None)
     out = render_html(groups, files, {})
 
-    assert 'id="wt-group-1"' in out and 'id="wt-group-2"' in out
-    assert "wt-badge" not in out and "story-1" not in out
-
-
-def test_a_single_group_heading_gets_no_id_or_badge():
-    order, files = parsed()
-    groups = story(order, files, [{"title": "Everything",
-                                   "paths": ["src/auth.py", "README.md"]}], None)
-    out = render_html(groups, files, {})
-
+    assert out.count('<h3 class="wt-group">') == 2
     assert "wt-group-" not in out and "wt-badge" not in out
 
 
@@ -470,7 +461,7 @@ def test_each_group_has_one_picture_slot_between_its_why_line_and_its_first_file
     assert re.findall(r"<!-- cw-picture:(\d+) -->", out) == ["0", "1"]
     why = out.index('<p class="wt-why">')
     assert why < out.index("<!-- cw-picture:0 -->") < out.index('<details class="hunk"')
-    assert out.index("<!-- cw-picture:1 -->") > out.index('id="wt-group-2"')
+    assert out.index("<!-- cw-picture:1 -->") > out.index("Docs")
 
 
 def test_the_catch_all_group_gets_no_picture_slot_and_a_skipped_group_keeps_later_indices():
