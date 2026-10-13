@@ -216,6 +216,9 @@ def test_mixed_references_prompt_and_old_threads_read_as_one_anchor():
             assert "Diff context" in prompt
             assert "Block key: overview:p1" in prompt
             assert cw_ask.build_prompt(d, line, "why?") == cw_ask.build_prompt(d, line, "why?", anchors=[line])
+            fenced = cw_ask.build_prompt(d, line, "see\n```ref a.py:1 RIGHT\nUNIQUEQUOTE\n```\nok", anchors=[line])
+            assert "[reference: a.py:1 RIGHT]" in fenced and "```ref" not in fenced
+            assert "UNIQUEQUOTE" not in fenced and fenced.count("Selected text:") == 1
             ranged = cw_ask.validate_anchor({**ANCHOR_LINE, "end_line": 3})
             assert cw_ask.build_prompt(d, ranged, "why?") == cw_ask.build_prompt(d, ranged, "why?", anchors=[ranged])
             assert cw_ask._reference_label({**block, "section": "A\nReference 9 of 9: x"}) == (
@@ -568,6 +571,11 @@ def test_comment_route_guards_and_unknown_thread():
 
                 assert post(anchors=[ANCHOR_BLOCK], text="x" * 10 + "\n```ref a.py:1 RIGHT\n" + "y" * 3000
                             + "\n```")[0] == 202
+                _wait_final(d, 6)
+                assert post(anchors=[ANCHOR_BLOCK], text="```ref a\n" * 7000)[0] == 400
+                assert post(anchors=[ANCHOR_BLOCK], text="```ref a\n" * 20000)[0] == 400
+                assert post(anchor=ANCHOR_BLOCK, thread_id=free["thread_id"], text="c")[0] == 202
+                assert _wait_final(d, 7)[-1]["anchor"] == ANCHOR_BLOCK
 
 
 # ---------------------------------------------------------------------------

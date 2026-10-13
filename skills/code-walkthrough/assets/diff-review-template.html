@@ -1913,7 +1913,7 @@
         .filter(el=>!el.closest('[hidden]')&&!el.closest('dialog:not([open])'));
     if(focusing.length){ e.preventDefault(); focusing.forEach(clearNavFocus); return; }
     // Set by wireAsk (live pages only). preventDefault keeps a modal dialog's native cancel from running when a composer, the selection bar or the panel took this Escape.
-    if(!e.defaultPrevented&&window.cwComposerEsc&&window.cwComposerEsc()) e.preventDefault();
+    if(!e.defaultPrevented&&!e.isComposing&&e.keyCode!==229&&window.cwComposerEsc&&window.cwComposerEsc()) e.preventDefault();
   });
 
   // Pan and zoom by rewriting the svg's viewBox: it already carries one, so scaling it needs
@@ -3997,11 +3997,14 @@
     return f+refHeader(r)+'\n'+(q?q+'\n':'')+f;
   }
 
+  const REF_MAX_ROWS=500;
+  const refEnd=a=>Math.min(a.end_line||a.line,a.line+REF_MAX_ROWS-1);
+
   function parseRefHeader(h){
     let m=REF_LINE_HEAD.exec(h);
     if(m){
       const line=+m[3], end=m[4]==null?null:+m[4];
-      if(line<1||(end!=null&&end<line)) return null;
+      if(line<1||(end!=null&&(end<line||end-line>=REF_MAX_ROWS))) return null;
       let path=m[2];
       if(m[1]!=null){ try{ path=JSON.parse('"'+m[1]+'"'); }catch(e){ return null; } }
       if(!path) return null;
@@ -4962,7 +4965,7 @@
       renderPanelList();
     }
 
-    const ED_MAX=8, ED_FULL=ED_MAX+' references max';
+    const ED_MAX=8, edFull=ed=>ed.max+' references max';
     const editors=new Set();
     const isChip=n=>!!(n&&n.nodeType===1&&n.classList.contains('cw-ref'));
     const isTail=n=>!!(n&&n.nodeType===1&&n.hasAttribute('data-cw-tail'));
@@ -4988,7 +4991,7 @@
           else if(c.nodeType!==1||isTail(c)) continue;
           else if(isChip(c)){
             if(buf){ out.push(buf); buf=''; }
-            try{ out.push(JSON.parse(c.dataset.ref)); }catch(e){}
+            try{ const r=JSON.parse(c.dataset.ref); if(validRef(r)) out.push(r); }catch(e){}
           }
           else if(c.nodeName==='BR') buf+='\n';
           else walk(c);
@@ -5098,6 +5101,7 @@
     }
 
     function edEdit(ed,fn,sel){
+      if(ed.locked) return;
       const s=sel&&typeof sel==='object'?sel:edSel(ed,sel===true);
       const segs=ed.segs();
       histPush(ed,{segs,caret:s.a});
@@ -5162,12 +5166,12 @@
         for(const p of parts){
           if(p.text!=null){ for(const ch of p.text.split('')) ins.push(ch); continue; }
           const ref=refFromParsed(p);
-          if(chips<ED_MAX){ chips++; ins.push(ref); }
+          if(chips<ed.max){ chips++; ins.push(ref); }
           else { over=true; for(const ch of refFence(ref).split('')) ins.push(ch); }
         }
         return [u.slice(0,a).concat(ins,u.slice(b)),a+ins.length];
       });
-      if(over&&ed.say) ed.say(ED_FULL+'; the rest stayed as text');
+      if(over&&ed.say) ed.say(edFull(ed)+'; the rest stayed as text');
     }
 
     function edCopyCut(e){
@@ -5206,7 +5210,7 @@
         let quote=p.body;
         if(!quote){
           const rows=[];
-          for(let n=h.line;n<=(h.end_line||h.line);n++){ const r=spanByLineKey.get(key(n)); if(r) rows.push(r.meta.text); }
+          for(let n=h.line;n<=refEnd(h);n++){ const r=spanByLineKey.get(key(n)); if(r) rows.push(r.meta.text); }
           quote=rows.join('\n')||h.path+':'+h.line;
         }
         return {kind:'line',path:h.path,side:h.side,line:h.line,end_line:h.end_line,
@@ -5226,7 +5230,7 @@
       if(a.kind!=='line') return mk('span','cw-ref-quote',a.quote);
       const wrap=mk('span','cw-ref-lines diff'), key=n=>a.path+'\t'+a.side+'\t'+n;
       let found=false;
-      for(let n=a.line;n<=(a.end_line||a.line);n++){
+      for(let n=a.line;n<=refEnd(a);n++){
         const rec=spanByLineKey.get(key(n));
         if(!rec) continue;
         found=true;
@@ -5252,7 +5256,9 @@
       let body=chip.querySelector('.cw-ref-body');
       const open=!body||body.hidden;
       if(!body){
-        const ref=JSON.parse(chip.dataset.ref);
+        let ref;
+        try{ ref=JSON.parse(chip.dataset.ref); }catch(e){ return; }
+        if(!validRef(ref)) return;
         body=mk('span','cw-ref-body');
         const acts=mk('span','cw-ref-acts');
         const copy=mkBtn('Copy'), fold=mkBtn('Collapse');
@@ -5281,11 +5287,20 @@
       c.setAttribute('contenteditable','false'); c.draggable=false;
       c.dataset.ref=JSON.stringify(ref);
       const tag=mkBtn('⧉ '+(ref.label||refLabelOf(ref.anchor)),'cw-ref-tag');
-      tag.tabIndex=-1; tag.setAttribute('aria-expanded','false');
+      tag.tabIndex=0; tag.setAttribute('aria-expanded','false');
       tag.addEventListener('click',()=>{ openChip(c); if(ro&&!sheetQ.matches) revealAnchor(ref.anchor); });
       c.append(tag);
       return c;
     }
+
+    const validRef=s=>{
+      const a=s&&s.anchor;
+      if(!a||typeof a!=='object'||typeof a.quote!=='string'||(s.label!=null&&typeof s.label!=='string')) return false;
+      if(a.kind==='line') return typeof a.path==='string'&&!!a.path&&(a.side==='LEFT'||a.side==='RIGHT')
+        &&Number.isInteger(a.line)&&a.line>=1
+        &&(a.end_line==null||(Number.isInteger(a.end_line)&&a.end_line>a.line&&a.end_line-a.line<REF_MAX_ROWS));
+      return a.kind==='block'&&typeof a.block==='string'&&!!a.block;
+    };
 
     function makeEditor({key,placeholder}){
       const el=mk('div','cw-ed');
@@ -5293,14 +5308,15 @@
       if(el.contentEditable!=='plaintext-only') el.contentEditable='true';
       el.setAttribute('role','textbox'); el.setAttribute('aria-multiline','true');
       el.setAttribute('aria-label',placeholder); el.dataset.placeholder=placeholder;
-      const ed={el,key,hist:{undo:[],redo:[],t:0,kind:''},_caret:null,_saveT:0,onChange:null,onSend:null,say:null};
+      const ed={el,key,hist:{undo:[],redo:[],t:0,kind:''},_caret:null,_saveT:0,max:ED_MAX,locked:false,onChange:null,onSend:null,say:null};
       el._ed=ed;
       ed.segs=()=>edSegs(el);
       ed.setSegs=(segs,caret)=>{ const s=fromUnits(toUnits(segs)); edRender(ed,s,caret==null?toUnits(s).length:caret); };
       ed.refs=()=>ed.segs().filter(s=>typeof s!=='string');
       ed.isEmpty=()=>ed.segs().every(s=>typeof s==='string'&&!s.trim());
       ed.insertRef=(ref,atSavedCaret)=>{
-        if(ed.refs().length>=ED_MAX){ if(ed.say) ed.say(ED_FULL); return false; }
+        if(ed.locked) return false;
+        if(ed.refs().length>=ed.max){ if(ed.say) ed.say(edFull(ed)); return false; }
         edEdit(ed,(u,a,b)=>[u.slice(0,a).concat([ref,' '],u.slice(b)),a+2],atSavedCaret===true);
         return true;
       };
@@ -5309,6 +5325,14 @@
         el.replaceChildren(); ed._caret=0;
         if(ed.onChange) ed.onChange();
         clearTimeout(ed._saveT); edSave(ed);
+      };
+      const editMode=el.contentEditable;
+      ed.lock=on=>{
+        if(on){ ed.wasFocused=document.activeElement===el; if(ed.wasFocused) ed._caret=edSel(ed).a; }
+        ed.locked=on;
+        el.contentEditable=on?'false':editMode;
+        if(on) el.setAttribute('aria-busy','true'); else el.removeAttribute('aria-busy');
+        if(!on&&ed.wasFocused) ed.focus();
       };
       ed.focus=()=>{ el.focus(); edSetCaret(ed,ed._caret==null?edLen(el):ed._caret); };
 
@@ -5339,7 +5363,11 @@
         if(ed.say) ed.say('');
         edNormalize(ed); edChanged(ed);
       });
-      el.addEventListener('compositionend',()=>{ edNormalize(ed); edChanged(ed); });
+      el.addEventListener('compositionstart',()=>{ ed._pre={segs:ed.segs(),caret:edSel(ed).a}; });
+      el.addEventListener('compositionend',()=>{
+        if(ed._pre){ histPush(ed,ed._pre); ed._pre=null; ed.hist.kind='op'; }
+        edNormalize(ed); edChanged(ed);
+      });
       el.addEventListener('paste',e=>{
         e.preventDefault();
         const text=e.clipboardData&&e.clipboardData.getData('text/plain');
@@ -5350,7 +5378,7 @@
       try{
         const d=JSON.parse(localStorage.getItem(edDraftKey(ed))||'null');
         if(d&&d.v===1&&Array.isArray(d.segs)){
-          const ok=d.segs.filter(s=>typeof s==='string'||(s&&s.anchor&&typeof s.anchor==='object'));
+          const ok=d.segs.map(s=>typeof s==='string'||validRef(s)?s:s&&s.anchor&&typeof s.anchor.quote==='string'?s.anchor.quote:'');
           if(ok.length) ed.setSegs(ok);
         }
       }catch(e){}
@@ -5391,19 +5419,20 @@
         return;
       }
       const chips=segs.filter(s=>typeof s!=='string').map(r=>r.anchor);
-      const body={text:serializeSegs(segs).trim(),
-        anchors:dedupeAnchors(view.seed?[view.seed,...chips]:chips).slice(0,ED_MAX)};
+      const anchors=dedupeAnchors(view.seed?[view.seed,...chips]:chips);
+      if(anchors.length>ED_MAX){ c.status.textContent='Too many references: '+ED_MAX+' max in total.'; return; }
+      const body={text:serializeSegs(segs).trim(),anchors};
       if(threads.has(view.id)) body.thread_id=view.id;
-      c.busy=true; c.sync(); c.status.textContent='Sending…';
+      c.busy=true; c.sync(); ed.lock(true); c.status.textContent='Sending…';
       fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(body)})
         .then(r=>r.json().catch(()=>({})).then(b=>({ok:r.ok,b})))
         .then(({ok,b})=>{
-          c.busy=false;
+          c.busy=false; ed.lock(false);
           if(!ok){ c.sync(); c.status.textContent=(b.error||'Request failed')+(b.remedy?' ('+b.remedy+')':''); return; }
           ed.clear(); c.status.textContent=''; c.sync();
           if(!threads.has(view.id)) openThreadWhenReady(b.thread_id);
         })
-        .catch(()=>{ c.busy=false; c.sync(); c.status.textContent='Request failed -- check the daemon is still running.'; });
+        .catch(()=>{ c.busy=false; ed.lock(false); c.sync(); c.status.textContent='Request failed -- check the daemon is still running.'; });
     }
 
     function buildThread(t){
@@ -5452,7 +5481,7 @@
     function refEls(a){
       if(a.kind!=='line') return [placementFor(a)].filter(Boolean);
       const out=[];
-      for(let n=a.line;n<=(a.end_line||a.line);n++){
+      for(let n=a.line;n<=refEnd(a);n++){
         const rec=spanByLineKey.get(a.path+'\t'+a.side+'\t'+n);
         if(rec) out.push(rec.span);
       }
@@ -5867,12 +5896,12 @@
     const sbWhat=mk('span'); sbWhat.id='cw-selbar-what';
     const sbTarget=document.createElement('select'); sbTarget.id='cw-selbar-target';
     sbTarget.setAttribute('aria-label','Add to thread');
-    const sbAdd=mkBtn('Add'); sbAdd.id='cw-selbar-add';
+    const sbAdd=mkBtn('Add'); sbAdd.id='cw-selbar-add'; sbAdd.title='Add to thread (Alt+Enter focuses this button)';
     const sbPr=mkBtn('PR comment\u2026'); sbPr.id='cw-selbar-pr';
     selBar.append(sbWhat,sbTarget,sbAdd,sbPr);
     document.body.appendChild(selBar);
     for(const b of [sbAdd,sbPr]) b.addEventListener('mousedown',e=>e.preventDefault());
-    let sbAnchor=null;
+    let sbAnchor=null, sbReturn=null;
     const selBarShown=()=>!selBar.hidden;
     function hideSelBar(){ selBar.hidden=true; sbAnchor=null; }
     function clearSelection(){
@@ -5880,8 +5909,17 @@
       const sel=window.getSelection();
       if(sel) sel.removeAllRanges();
       markSelectedLine(null);
+      const hadFocus=selBar.contains(document.activeElement);
       hideSelBar();
+      if(hadFocus&&sbReturn&&sbReturn.isConnected) sbReturn.focus();
+      sbReturn=null;
     }
+    document.addEventListener('keydown',e=>{
+      if(!e.altKey||e.key!=='Enter'||e.isComposing||!selBarShown()) return;
+      e.preventDefault();
+      if(!selBar.contains(document.activeElement)) sbReturn=document.activeElement;
+      sbAdd.focus();
+    });
 
     function placeSelBar(range){
       const s=selBar.style;
@@ -6075,6 +6113,7 @@
         const seed={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
         v={id:null,seed,editor:makeEditor({key,placeholder:'Ask the agent about this review thread'}),
           hint:mk('p','hr-comments-empty','Asking about the review thread: '+(firstLine(seed.quote)||'(no text)'))};
+        v.editor.max=ED_MAX-1;
         v.composer=threadComposer(v);
         seeds.set(key,v);
       }

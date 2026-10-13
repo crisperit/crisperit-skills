@@ -43,11 +43,39 @@ def code_id():
 ID_RE = re.compile(r"^(pr-\d+-[0-9a-f]{4}|cmp-[0-9a-f]{8})$")
 KEY_RE = re.compile(r"^[A-Za-z0-9._-]+-[0-9a-f]{6}$")
 SLUG_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")  # the slug becomes a filename
-REF_FENCE_RE = re.compile(r"^(`{3,})ref [^\n]*\n(?:.*\n)*?\1`*[ \t]*$", re.M)
+REF_OPEN_RE = re.compile(r"(`{3,})ref (.*)")
+
+
+def replace_ref_fences(text, repl):
+    """Replace each closed ```ref fence with repl(header); an unclosed open stays text.
+
+    A line scanner, not a regex: many unclosed opens made the regex quadratic."""
+    lines = text.split("\n")
+    out = []
+    i = 0
+    min_failed = None  # a run of this length found no closer, so no longer run can either
+    while i < len(lines):
+        m = REF_OPEN_RE.fullmatch(lines[i])
+        if m and (min_failed is None or len(m.group(1)) < min_failed):
+            n = len(m.group(1))
+            for j in range(i + 1, len(lines)):
+                tail = lines[j].rstrip(" \t")
+                if len(tail) >= n and not tail.strip("`"):
+                    out.append(repl(m.group(2)))
+                    i = j + 1
+                    break
+            else:
+                min_failed = n
+                out.append(lines[i])
+                i += 1
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
 
 
 def strip_ref_fences(text):
-    return REF_FENCE_RE.sub("", text)
+    return replace_ref_fences(text, lambda _header: "")
 
 
 DEFAULTS = {

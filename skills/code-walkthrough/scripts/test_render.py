@@ -580,7 +580,7 @@ eq(back([spaced]), want([spaced]));
 eq(parseRefText(refFence(spaced))[0].ref.path, 'my dir/a "b".py');
 
 const bad = ['```ref nothing here\nbody\n```', '```ref a.py:0 RIGHT\nx\n```', '```ref a.py:5-2 RIGHT\nx\n```',
-  '```ref a.py:3 MIDDLE\nx\n```'];
+  '```ref a.py:3 MIDDLE\nx\n```', '```ref a.py:1-999999999999 RIGHT\nx\n```'];
 for (const t of bad) eq(parseRefText(t), [{text: t}]);
 const open = '```ref a.py:3 RIGHT\n+x\nno closing fence';
 eq(parseRefText(open), [{text: open}]);

@@ -714,6 +714,7 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=Non
 
     many = len(refs) > 1
     if refs:
+        question = cw_store.replace_ref_fences(question, lambda header: f"[reference: {header}]")
         body, hunks = _references_body(d, refs, many)
         combined = f"Question:\n{question}\n\n{body}"
     else:

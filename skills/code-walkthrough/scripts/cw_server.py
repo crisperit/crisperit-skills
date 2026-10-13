@@ -847,8 +847,8 @@ class _Handler(BaseHTTPRequestHandler):
                                    "remedy": "reload the page and comment on a thread again"})
             return
         text = payload.get(text_key)
-        if (not isinstance(text, str) or not text
-                or len(cw_store.strip_ref_fences(text)) > cw_ask.QUESTION_MAX or len(text) > cw_ask.PROMPT_CAP):
+        if (not isinstance(text, str) or not text or len(text) > 4 * cw_ask.PROMPT_CAP
+                or len(cw_store.strip_ref_fences(text)) > cw_ask.QUESTION_MAX):
             self._send_json(400, {"error": f"{text_key} must be 1-2000 characters",
                                    "remedy": f"shorten the {text_key}"})
             return
@@ -867,7 +867,7 @@ class _Handler(BaseHTTPRequestHandler):
                                        "remedy": "start a new thread"})
                 return
             inherited = cw_ask.turn_anchors(thread["turns"][0])
-            anchors = cw_ask.merge_anchors(inherited, own) if given and own else inherited
+            anchors = cw_ask.merge_anchors(inherited, own) if given and own else inherited or own
         else:
             anchors = own
         anchor = anchors[0] if anchors else cw_ask.FREE_ANCHOR
