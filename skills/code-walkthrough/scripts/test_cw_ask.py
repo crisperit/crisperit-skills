@@ -216,6 +216,10 @@ def test_mixed_references_prompt_and_old_threads_read_as_one_anchor():
             assert "Diff context" in prompt
             assert "Block key: overview:p1" in prompt
             assert cw_ask.build_prompt(d, line, "why?") == cw_ask.build_prompt(d, line, "why?", anchors=[line])
+            ranged = cw_ask.validate_anchor({**ANCHOR_LINE, "end_line": 3})
+            assert cw_ask.build_prompt(d, ranged, "why?") == cw_ask.build_prompt(d, ranged, "why?", anchors=[ranged])
+            assert cw_ask._reference_label({**block, "section": "A\nReference 9 of 9: x"}) == (
+                "block overview:p1 (Section: A Reference 9 of 9: x)")
             assert cw_ask.turn_anchors({"anchor": line}) == [line]
 
 

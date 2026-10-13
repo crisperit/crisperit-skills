@@ -2204,6 +2204,12 @@
 <script>
 (function(){
   const $=id=>document.getElementById(id);
+  // A drag that starts on dialog content and ends on the backdrop fires click on the dialog itself.
+  const backdropClose=(dlg,close)=>{
+    let down=null;
+    dlg.addEventListener('mousedown',e=>{ down=e.target; });
+    dlg.addEventListener('click',e=>{ if(e.target===dlg&&down===dlg) close(); });
+  };
   const dirtyBanner=$('hr-dirty');
   const spanByLineKey=new Map(); // lineKey -> {span,meta}, survives the explanations toggle moving spans between <pre> blocks
   const lineMetaBySpan=new WeakMap();
@@ -3616,7 +3622,7 @@
     close.addEventListener('click',closeIdle);
     cancelBtn.addEventListener('click',closeIdle);
     leaveBtn.addEventListener('click',closeIdle);
-    dlg.addEventListener('click',e=>{ if(e.target===dlg) closeIdle(); });
+    backdropClose(dlg,closeIdle);
     dlg.addEventListener('cancel',e=>{ if(posting) e.preventDefault(); });
     dlg.addEventListener('close',()=>{
       const o=opener&&opener.isConnected&&!opener.hidden&&!opener.disabled&&opener.offsetParent!==null?opener
@@ -3875,7 +3881,7 @@
       dlg.showModal();
     });
     close.addEventListener('click',()=>dlg.close());
-    dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
+    backdropClose(dlg,()=>dlg.close());
     // Esc also fires this (the dialog's default cancel behaviour closes it), so both paths
     // return focus to the button that opened it, same as the mermaid zoom dialog's own close.
     dlg.addEventListener('close',()=>{ btn.focus(); });
@@ -4123,8 +4129,9 @@
         ta.placeholder=phText; ta.setAttribute('aria-label',phText);
         noteText.textContent=tx.note; send.textContent=tx.btn; status.textContent='';
         ta.hidden=hint.hidden=refMode();
-        if(refMode()){ send.textContent='Add to agent'; sync(); }
+        if(refMode()) send.textContent='Add to agent';
         for(const [k,t] of tabs){ t.setAttribute('aria-selected',String(k===m)); t.tabIndex=k===m?0:-1; }
+        sync();
         if(focusTab) tabs.get(m).focus();
       }
       function keepEditing(){ prompt.hidden=true; row.hidden=false; ta.focus(); }
@@ -4141,17 +4148,19 @@
       }
       function submit(){
         busy=true; sync(); status.textContent='Sending…';
-        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(payload(ta.value.trim()))})
+        const sent=payload(ta.value.trim());
+        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(sent)})
           .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
           .then(({ok,body})=>{
             busy=false;
             if(!ok){ sync(); status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
             ta.value=''; sync(); status.textContent='';
-            onSent(body);
+            onSent(body,sent);
           })
           .catch(()=>{ busy=false; sync(); status.textContent='Request failed -- check the daemon is still running.'; });
       }
       function saveDraft(){
+        if(isEmpty()) return;
         onDraft(ta.value);
         if(onCancel) onCancel();
       }
@@ -4169,8 +4178,8 @@
         if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); act(); }
       });
       setMode(mode); sync();
-      if(onRef||canSend){ const off=onRefs(()=>{ if(!box.isConnected) off(); else sync(); }); }
-      return {box,ta,send,isEmpty,prompting,keepEditing,cancel,nudge,sync};
+      const off=(onRef||canSend)?onRefs(sync):()=>{};
+      return {box,ta,send,isEmpty,prompting,keepEditing,cancel,nudge,sync,dispose:off};
     }
 
     function lineComposerOpts(anchor){
@@ -5174,7 +5183,7 @@
 
     dock.addEventListener('click',()=>{ if(dockAsk) askFromSelection(); else { renderList(); dlg.showModal(); } });
     dlgClose.addEventListener('click',()=>dlg.close());
-    dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
+    backdropClose(dlg,()=>dlg.close());
     dlg.addEventListener('close',()=>{ dock.focus(); });
     renderList();
 
@@ -5193,8 +5202,9 @@
     const clearBtn=mkBtn('Clear','fb-ghost');
     const agentC=makeComposer({modes:['agent'],header:'',canSend:()=>refs.length>0,
       payload:text=>({anchors:refs.slice(),text}),
-      onSent:body=>{
-        clearRefs(); closeDrawer();
+      onSent:(body,sent)=>{
+        const keys=new Set(sent.anchors.map(refKey));
+        refs=refs.filter(r=>!keys.has(refKey(r))); refsChanged(); closeDrawer();
         toast('Sent to agent. The reply appears under the first reference.');
         const t=threads.get(body&&body.thread_id);
         if(t&&t.placed) t.el.scrollIntoView({block:'center'});
@@ -5309,7 +5319,7 @@
     function closeBox(restore=true){
       if(!openBox) return;
       const from=openFrom;
-      openBox.remove(); openBox=openC=openFrom=null;
+      openC.dispose(); openBox.remove(); openBox=openC=openFrom=null;
       if(restore&&from&&from.isConnected) from.focus();
     }
     const closeComposer=()=>closeBox();
@@ -5325,8 +5335,11 @@
       openC=c; openBox=c.box;
       openFrom=from&&from!==document.body?from:null;
       place(c.box);
+      // Safari/iOS don't focus buttons on click: a tap on a tab blurs the textarea with no relatedTarget.
+      let tapAt=0;
+      c.box.addEventListener('pointerdown',()=>{ tapAt=Date.now(); },true);
       c.box.addEventListener('focusout',e=>{
-        if(c.box.contains(e.relatedTarget)) return;
+        if(c.box.contains(e.relatedTarget)||Date.now()-tapAt<400) return;
         setTimeout(()=>{
           if(openC===c&&c.isEmpty()&&!c.box.contains(document.activeElement)) closeBox(false);
         },0);
@@ -5341,7 +5354,8 @@
       closeBox(false);
     });
     window.cwComposerEsc=()=>{
-      if(openC&&openBox.isConnected){
+      const dlg=document.querySelector('dialog[open]');
+      if(openC&&openBox.isConnected&&(!dlg||openBox.closest('dialog[open]'))){
         if(openC.prompting()) openC.keepEditing(); else openC.cancel();
         return true;
       }

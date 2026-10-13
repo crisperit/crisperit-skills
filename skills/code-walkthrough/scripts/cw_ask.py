@@ -643,20 +643,25 @@ def _reference_text(d, anchor, files, window, with_section=True):
         entry = files.get(anchor["path"])
         hunk = _find_hunk(entry, anchor) if entry else None
         if hunk:
-            rows = _window_rows(hunk, anchor["side"], anchor["line"], window, anchor.get("end_line"))
+            # a lone reference keeps the original first-line window so its prompt is unchanged
+            end = anchor.get("end_line") if window == MULTI_WINDOW else None
+            rows = _window_rows(hunk, anchor["side"], anchor["line"], window, end)
             if rows:
                 parts.append("Diff context:\n" + "\n".join(f"{n}\t{raw}" for n, raw in rows))
     return "\n\n".join(parts), hunk
 
 
 def _reference_label(anchor):
+    def one_line(x):
+        return " ".join(str(x).split())
+
     if anchor["kind"] == "line":
         span = f"{anchor['line']}-{anchor['end_line']}" if anchor.get("end_line") else str(anchor["line"])
-        return f"{anchor['path']}:{span} ({anchor['side']})"
+        return f"{one_line(anchor['path'])}:{span} ({anchor['side']})"
     if anchor["kind"] == "block":
         label = f"block {anchor['block']}"
-        return f"{label} (Section: {anchor['section']})" if anchor.get("section") else label
-    return f"section {anchor['section']}"
+        return f"{label} (Section: {one_line(anchor['section'])})" if anchor.get("section") else label
+    return f"section {one_line(anchor['section'])}"
 
 
 def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=None):
