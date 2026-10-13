@@ -5,6 +5,7 @@ cw_testlib, never a real network. conftest.py zeroes BACKOFF_S so the retry test
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -503,3 +504,50 @@ time.sleep(60)
 def test_reply_is_not_an_allowed_tool_of_a_turn():
     argv = cw_llm.thread_argv({"model": "sonnet"}, "SYS", mcp_config={"mcpServers": {}}, add_dir="/d", session_id="u")
     assert not any("walkthrough_reply" in a for a in argv)
+    full = cw_llm.full_argv({"model": "sonnet"}, "SYS", mcp_config={"mcpServers": {}}, allowed="mcp__cw__propose_resolve",
+                            add_dir="/d", session_id="u")
+    assert not any("walkthrough_reply" in a and not a.startswith("--disallowedTools=") for a in full)
+    disallowed = next(a for a in full if a.startswith("--disallowedTools=")).split("=", 1)[1].split(",")
+    assert "mcp__code-walkthrough" in disallowed and "mcp__plugin_crisperit-skills_code-walkthrough" in disallowed
+
+
+def test_full_argv_is_pinned():
+    mcp = {"mcpServers": {"cw": {"args": ["cw_mcp.py", "outcomes", "--mode", "full"]}}}
+    allowed = "mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft"
+    kwargs = dict(mcp_config=mcp, allowed=allowed, add_dir="/d/ctx")
+    expected = [
+        "claude", "-p", "--setting-sources", "user", f"--mcp-config={json.dumps(mcp)}",
+        f"--allowedTools={allowed}",
+        "--disallowedTools=Bash(git push:*),mcp__code-walkthrough,mcp__plugin_crisperit-skills_code-walkthrough",
+        "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--model=sonnet",
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "--append-system-prompt=SYS", "--add-dir=/d/ctx",
+    ]
+    first = cw_llm.full_argv({"model": "sonnet"}, "SYS", session_id="uuid-1", **kwargs)
+    assert first == expected + ["--session-id", "uuid-1"]
+    follow = cw_llm.full_argv({"model": "sonnet"}, "SYS", resume="sid-9", **kwargs)
+    assert follow == expected + ["--resume", "sid-9"]
+    for absent in ("--restricted", "--strict-mcp-config", "--safe-mode"):
+        assert absent not in first
+    assert not any(a.startswith("--tools") for a in first)
+
+
+def test_no_push_env_blocks_git_transports(tmp_path):
+    cw_testlib.require_posix()
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    url = f"file://{bare}"
+    base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    assert subprocess.run(["git", "ls-remote", url], env=base, capture_output=True).returncode == 0
+    blocked = subprocess.run(["git", "ls-remote", url], env={**base, **cw_llm.no_push_env()},
+                             capture_output=True, text=True)
+    assert blocked.returncode != 0 and "not allowed" in blocked.stderr
+
+
+def test_claude_stream_env_overlays_claude_env(tmp_path):
+    cw_testlib.require_posix()
+    out = tmp_path / "env.json"
+    argv = _script(tmp_path, f"sys.stdin.read()\nopen({str(out)!r}, 'w').write(json.dumps(dict(os.environ)))\n")
+    cw_llm.claude_stream(argv, "", cwd=tmp_path, timeout=10, on_line=lambda o: None, env={"CW_X": "1"})
+    seen = json.loads(out.read_text())
+    assert seen["CW_X"] == "1" and "PATH" in seen

@@ -231,6 +231,20 @@ def claude_env():
     return {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_DROP}
 
 
+_NO_PUSH_PROTOCOLS = ("https", "http", "ssh", "git", "file", "ext")
+
+
+def no_push_env():
+    """Env additions that make every git transport fail, so nothing spawned under the agent can
+    push (or fetch). git reads these as config above the repo's own."""
+    keys = ["protocol.allow"] + [f"protocol.{p}.allow" for p in _NO_PUSH_PROTOCOLS]
+    env = {"GIT_CONFIG_COUNT": str(len(keys))}
+    for n, key in enumerate(keys):
+        env[f"GIT_CONFIG_KEY_{n}"] = key
+        env[f"GIT_CONFIG_VALUE_{n}"] = "never"
+    return env
+
+
 def _classify_claude_error(parsed, stderr, profile):
     status = parsed.get("api_error_status")
     text = f"{parsed.get('result') or ''} {stderr or ''}".lower()
@@ -331,6 +345,22 @@ def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume
     return argv + (["--resume", resume] if resume else ["--session-id", session_id])
 
 
+FULL_DISALLOWED = (
+    "Bash(git push:*),mcp__code-walkthrough,mcp__plugin_crisperit-skills_code-walkthrough"
+)
+
+
+def full_argv(profile, system, *, mcp_config, allowed, add_dir, session_id=None, resume=None):
+    argv = [
+        "claude", "-p", "--setting-sources", "user", f"--mcp-config={json.dumps(mcp_config)}",
+        f"--allowedTools={allowed}", f"--disallowedTools={FULL_DISALLOWED}",
+        "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+        f"--model={profile['model']}", "--output-format", "stream-json", "--verbose",
+        "--include-partial-messages", f"--append-system-prompt={system}", f"--add-dir={add_dir}",
+    ]
+    return argv + (["--resume", resume] if resume else ["--session-id", session_id])
+
+
 def task_argv(profile, system, *, mcp_config):
     # Fresh session: sessions are keyed by cwd, and a task runs in its own worktree. Without
     # --safe-mode (it disables MCP), --restricted ignores the PR's .claude settings and hooks and
@@ -346,16 +376,17 @@ def task_argv(profile, system, *, mcp_config):
     ]
 
 
-def claude_stream(argv, prompt, *, cwd, timeout, on_line, on_spawn=None):
+def claude_stream(argv, prompt, *, cwd, timeout, on_line, on_spawn=None, env=None):
     """Run argv, feeding each parsed stdout JSON line to on_line. Returns (returncode,
-    stderr_tail); a timeout raises LLMError(kind="timeout") like claude_call."""
+    stderr_tail); a timeout raises LLMError(kind="timeout") like claude_call. env overlays
+    claude_env()."""
     sem = _current_semaphore()
     sem.acquire()
     try:
         try:
             proc = subprocess.Popen(
-                argv, cwd=cwd, env=claude_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, start_new_session=True,
+                argv, cwd=cwd, env={**claude_env(), **(env or {})}, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
             )
         except FileNotFoundError as e:
             raise LLMError(

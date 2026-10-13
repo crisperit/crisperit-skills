@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_agent  # noqa: E402
+import cw_ask  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
 import cw_task  # noqa: E402
@@ -117,3 +119,88 @@ def test_commit_refuses_a_repointed_link_or_a_branch_switch():
             cw_agent.commit(d, meta, "t", "q-1")
         (wt / ".git").write_text(link)
         assert cw_agent.commit(d, meta, "t", "q-1")["files"] == ["a.py"]
+
+
+# -- Full turns end to end -------------------------------------------------
+
+def _full_fixture(tmp, home, **meta):
+    import test_cw_ask as ask
+
+    cw_testlib.require_git((2, 31))
+    repo, _base, head = cw_testlib.make_repo(tmp, {"a.py": "x = 1\n"}, {"a.py": "x = 2\n"})
+    d = ask._claude_done(home)
+    cw_store.update_meta(d, lambda m: m.update(repo=str(repo), head=head, **{"own_pr": True, **meta}))
+    return ask, d, repo
+
+
+def _comment(ask, daemon, d, mode=None, thread_id=None):
+    body = {"anchor": ask.ANCHOR_SECTION, "text": "fix it"}
+    if mode:
+        body["mode"] = mode
+    if thread_id:
+        body["thread_id"] = thread_id
+    return cw_testlib.request(daemon, "POST", f"/api/walkthrough/{d.parent.name}/{d.name}/comment",
+                              token=daemon.token, body=json.dumps(body))
+
+
+def test_full_turn_edits_only_the_shared_worktree_and_records_edits_and_denials():
+    denial = {"tool_name": "Bash", "tool_input": {"command": "curl evil.example"}}
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, repo = _full_fixture(tmp, home)
+        entry = cw_testlib.claude_stream_entry(["done"], writes={"a.py": "x = 3\n"}, denials=[denial])
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, cw_testlib.running_daemon() as daemon:
+            status, raw = _comment(ask, daemon, d, "full")
+            assert status == 202, raw
+            ask._wait_final(d, 1)
+            status, raw = cw_testlib.request(
+                daemon, "GET", f"/api/walkthrough/{d.parent.name}/{d.name}/qa", token=daemon.token)
+        argv = fc.log()[-1]["argv"]
+        assert Path(fc.log()[-1]["cwd"]).resolve() == (d / "agent").resolve()
+        assert argv[argv.index("--setting-sources") + 1] == "user"
+        turn = json.loads(raw)["turns"][0]
+        assert turn["status"] == "ok" and turn["mode"] == "full"
+        assert turn["denied"] == [{"tool": "Bash", "detail": "curl evil.example"}]
+        edits = next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "edits")
+        assert edits["state"] == "done" and edits["payload"]["files"] == ["a.py"]
+        assert edits["payload"]["branch"] == cw_store.read_meta(d)["agent"]["branch"]
+        assert (repo / "a.py").read_text() == "x = 2\n"
+        assert cw_testlib.git(repo, "status", "--porcelain") == ""
+
+
+def test_full_refusals():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, _repo = _full_fixture(tmp, home, own_pr=False)
+        with cw_testlib.running_daemon() as daemon:
+            status, raw = _comment(ask, daemon, d, "full")
+            assert (status, json.loads(raw)["error"]) == (403, "Full access is off for this walkthrough")
+            assert json.loads(raw)["remedy"] == "add owner/name to trust.repos in config.json"
+            assert _comment(ask, daemon, d, "root")[0] == 400
+            cw_store.update_meta(d, lambda m: m.update(own_pr=True, sibling_of={"key": "k", "id": "w"}))
+            assert _comment(ask, daemon, d, "full")[0] == 409
+            cw_store.update_meta(d, lambda m: m.pop("sibling_of"))
+            cw_testlib.write_config(home, {"k": {"kind": "openai", "model": "m", "base_url": "http://x"}},
+                                    {"thread": "k"})
+            status, raw = _comment(ask, daemon, d, "full")
+            assert (status, json.loads(raw)["remedy"]) == (400, cw_task.REMEDY)
+        assert cw_ask.read_qa(d) == []
+
+
+def test_modes_keep_separate_sessions():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, _repo = _full_fixture(tmp, home)
+        script = {"sonnet": [cw_testlib.claude_stream_entry(["r1"], session_id=f"s-{n}") for n in "rfRF"]}
+        with cw_testlib.fake_claude(tmp, script) as fc, cw_testlib.running_daemon() as daemon:
+            tid = None
+            for n, mode in enumerate(["review", "full", "review", "full"], 1):
+                status, raw = _comment(ask, daemon, d, mode, tid)
+                assert status == 202, raw
+                tid = tid or json.loads(raw)["thread_id"]
+                ask._wait_final(d, n)
+        flags = [("--resume" in e["argv"] and e["argv"][e["argv"].index("--resume") + 1]) for e in fc.log()]
+        assert flags == [False, False, "s-r", "s-f"]
+
+
+def test_old_records_read_as_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_WALKTHROUGH_HOME", str(tmp_path))
+    (tmp_path / "qa.jsonl").write_text(json.dumps({"qid": "q-1", "question": "why", "status": "ok"}) + "\n")
+    assert cw_ask.read_qa(tmp_path)[0]["mode"] == "review"

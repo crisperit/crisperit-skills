@@ -466,6 +466,28 @@ def test_live_ui_never_uses_html_injection_sinks():
     assert "'pointerdown'" in chip and "'mousedown'" in chip and "e.stopPropagation()" in chip
 
 
+def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds():
+    wire_ask = _wire_ask()
+    outcome = _between(wire_ask, "function outcomeEl(t,o){", "function turnEl(")
+    assert "if(o.outcome==='edits') return editsCard(o);" in outcome
+    assert "if(o.outcome!=='resolve') return plainOutcomeCard(" in outcome
+    assert outcome.index("plainOutcomeCard(") < outcome.index("Suggests resolving")
+    edits = _between(wire_ask, "function editsCard(o){", "function outcomeEl(t,o){")
+    assert "'Agent edited '" in edits and "pl.files" in edits and "pl.stat" in edits and "pl.branch" in edits
+    assert ".slice(0,7)" in edits
+    turn = _between(wire_ask, "function turnEl(r,t,isLast){", "function upsertOutcome(")
+    assert "r.mode==='full'" in turn and "'cw-mode-badge'" in turn
+    assert "'Queued behind '+r.queued_behind" in turn
+    assert "Array.isArray(r.denied)" in turn and "'Needs permission'" in turn
+    progress = _between(wire_ask, "function progressText(p){", "const noteById")
+    assert "p.tool==='queued'" in progress and "'Queued behind '+d" in progress
+    assert "p.tool==='Bash'" in progress and "'Running '+d" in progress
+    template = _real_template()
+    badge = re.search(r"\.cw-mode-badge\{[^}]*\}", template).group(0)
+    assert "var(--accent)" in badge
+    assert "#" not in badge
+
+
 def test_post_flow_double_submit_guards():
     wire_post = _wire_post()
     send = _between(wire_post, "function send(){", "function retry(){")

@@ -687,10 +687,11 @@ def claude_delayed(seconds, entry, *, spawn_child=False):
 
 
 def claude_stream_entry(chunks, *, session_id="s-1", result=None, usage=None, mcp_calls=(),
-                        delay=0, init_cw=True):
+                        delay=0, init_cw=True, writes=None, denials=()):
     """A stream-json entry: init, per-chunk text deltas (`delay` seconds apart), the assistant
     message, then the result. mcp_calls[i]["at"] indexes the returned `stream` list (init is 0,
-    _sleep items count)."""
+    _sleep items count). `writes` ({relative path: content}) land in the fake's cwd at start;
+    `denials` ({tool_name, tool_input} dicts) ride on the result's permission_denials."""
     stream = [{"type": "system", "subtype": "init", "session_id": session_id,
                "mcp_servers": [{"name": "cw", "status": "connected"}] if init_cw else [],
                "tools": ["mcp__cw__propose_resolve", "mcp__cw__propose_page_edit"] if init_cw else []}]
@@ -707,9 +708,10 @@ def claude_stream_entry(chunks, *, session_id="s-1", result=None, usage=None, mc
     stream.append({"type": "assistant", "message": {"content": [{"type": "text", "text": text_}]}})
     stream.append({"type": "result", "subtype": "success", "is_error": False,
                    "result": text_ if result is None else result, "session_id": session_id,
+                   "permission_denials": list(denials),
                    "usage": usage or {"input_tokens": 10, "output_tokens": 5,
                                       "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}})
-    return {"stream": stream, "exit": 0, "stderr": "", "mcp_calls": list(mcp_calls)}
+    return {"stream": stream, "exit": 0, "stderr": "", "mcp_calls": list(mcp_calls), "writes": writes or {}}
 
 
 def claude_task_entry(summary, writes=None, *, tools=("Edit",), delay=0, exit=0, mcp_calls=()):

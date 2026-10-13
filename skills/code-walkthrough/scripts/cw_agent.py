@@ -3,6 +3,7 @@ cw_server: cw_task and cw_ask must never import it back."""
 
 from pathlib import Path
 
+import cw_ask
 import cw_store
 import cw_task
 import links
@@ -72,3 +73,12 @@ def commit(d, meta, title, qid):
     cw_store.update_meta(d, lambda m: m["agent"].update(sha=sha))
     agent["sha"] = sha
     return {"sha": sha, "parent": parent, "branch": agent["branch"], "files": list(stat), "stat": stat}
+
+
+def after_turn(d, meta, record, on_event=None):
+    """Commit the Full turn's edits and record them as an `edits` outcome; returns the summary or None."""
+    lines = (record.get("comment") or "").strip().splitlines()
+    edits = commit(d, meta, (lines[0][:72] if lines else "agent edits"), record["qid"])
+    if edits:
+        cw_ask.append_outcome(d, record["qid"], record["thread_id"], "edits", "done", edits, on_event)
+    return edits

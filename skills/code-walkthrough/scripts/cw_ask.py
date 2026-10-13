@@ -241,6 +241,7 @@ def read_qa(d, limit=None):
         r = dict(r)
         r.setdefault("thread_id", r["qid"])
         r.setdefault("source", "user")
+        r.setdefault("mode", "review")
         r.setdefault("comment", r.get("question"))
         r.setdefault("question", r["comment"])
         turns.append(r)
@@ -322,18 +323,28 @@ def _with_anchors(record, anchors):
     return record
 
 
-def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user", anchors=None):
+def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user", anchors=None, mode="review"):
     path = Path(d) / "turns" / f"{qid}.anchor.json"
     path.parent.mkdir(exist_ok=True)
     refs = anchors or [anchor]
     cw_store.write_json(path, _with_anchors(
         {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment, "source": source,
-         "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs)}, anchors))
+         "mode": mode, "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs)}, anchors))
 
 
 def _folded_outcome(r):
     return {"oid": r["oid"], "qid": r.get("qid"), "thread_id": r.get("thread_id"),
             "outcome": r.get("outcome"), "payload": r.get("payload"), "state": r.get("state")}
+
+
+def append_outcome(d, qid, thread_id, outcome, state, payload, on_event=None):
+    """Writes an outcome that no model tool call produced (a Full turn's edits summary)."""
+    record = {"type": "outcome", "oid": "o-" + uuid.uuid4().hex[:8], "qid": qid, "thread_id": thread_id,
+              "outcome": outcome, "payload": payload, "state": state, "at": cw_store.now_iso()}
+    _append_qa(d, record)
+    if on_event:
+        on_event("outcome", _folded_outcome(record))
+    return record
 
 
 def read_outcomes(d):
@@ -622,9 +633,10 @@ def _system_prompt(ctx_dir=None):
     return text.replace("{ctx_note}\n", note + "\n" if note else "")
 
 
-def _thread_session(d, thread_id):
+def _thread_session(d, thread_id, mode="review"):
+    # Sessions are keyed by cwd and Full runs in another one, so a session only resumes in its own mode.
     for r in reversed(read_qa(d)):
-        if r["thread_id"] == thread_id and r.get("session_id"):
+        if r["thread_id"] == thread_id and r.get("session_id") and r["mode"] == mode:
             return r["session_id"]
     return None
 
@@ -756,12 +768,13 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=Non
     return "\n\n".join(parts)[:PROMPT_CAP]
 
 
-def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user", anchors=None):
+def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user", anchors=None,
+               mode="review"):
     """Persist the comment as a pending record before any model work, so it survives a crash
     and shows up in GET /qa while the turn is queued."""
     record = _with_anchors({"qid": qid, "thread_id": thread_id or qid, "anchor": anchor, "comment": comment,
                             "question": comment, "started_at": cw_store.now_iso(), "status": "pending",
-                            "source": source}, anchors)
+                            "source": source, "mode": mode}, anchors)
     _append_qa(d, record)
     if on_event:
         on_event("thread", {"kind": "turn", "record": record})
@@ -782,7 +795,7 @@ def finalise_stale(d, in_flight):
         if r.get("status") == "pending" and r["qid"] not in in_flight:
             _append_qa(d, _with_anchors({
                 "qid": r["qid"], "thread_id": r["thread_id"], "anchor": r.get("anchor"),
-                "comment": r["comment"], "question": r["question"], "source": r["source"],
+                "comment": r["comment"], "question": r["question"], "source": r["source"], "mode": r["mode"],
                 "started_at": r.get("started_at"), "finished_at": cw_store.now_iso(),
                 "status": "error", "error": "turn was interrupted",
                 "remedy": "send the comment again"}, r.get("anchors")))
@@ -815,7 +828,7 @@ def _kill(proc):
 
 
 def _tool_detail(tool_input):
-    for key in ("file_path", "pattern", "path"):
+    for key in ("file_path", "pattern", "path", "command"):
         value = (tool_input or {}).get(key)
         if isinstance(value, str) and value:
             return value[:DETAIL_MAX]
@@ -829,7 +842,8 @@ def _emit_progress(live, on_event, qid, thread_id, tool, detail):
         on_event("progress", progress)
 
 
-def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None, plain=False):
+def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, sweep=None, plain=False,
+                 env=None):
     """plain: a turn with no outcome server (code task): no cw connection check, no text deltas."""
     st = {"init": False, "session_id": None, "texts": [], "result": None, "bad_mcp": False,
           "buf": "", "last": 0.0, "sep": False, "mcp_ids": set()}
@@ -897,29 +911,40 @@ def _stream_once(argv, prompt, *, cwd, timeout, qid, thread_id, on_event, live, 
 
     try:
         st["returncode"], st["stderr"] = cw_llm.claude_stream(
-            argv, prompt, cwd=cwd, timeout=timeout, on_line=on_line, on_spawn=on_spawn)
+            argv, prompt, cwd=cwd, timeout=timeout, on_line=on_line, on_spawn=on_spawn, env=env)
     finally:
         flush()
         live["proc"] = None
     return st
 
 
-def _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage, anchors=None):
-    qid, thread_id = record["qid"], record["thread_id"]
+def _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage, anchors=None,
+                 prepare=None):
+    qid, thread_id, mode = record["qid"], record["thread_id"], record["mode"]
+    full = mode == "full"
     ctx = _ensure_ctx(d).resolve()
     system = _system_prompt(ctx)
-    mcp_config = cw_mcp.outcome_mcp_config(d, qid)
-    prior = _thread_session(d, thread_id)
-    write_turn_anchor(d, qid, thread_id, anchor, question, record["source"], anchors=anchors)
+    if full:
+        system += "\n\n" + (SKILL_DIR / "prompts" / "agent.md").read_text()
+    mcp_config = cw_mcp.outcome_mcp_config(d, qid, mode)
+    prior = _thread_session(d, thread_id, mode)
+    write_turn_anchor(d, qid, thread_id, anchor, question, record["source"], anchors=anchors, mode=mode)
+    cwd = Path(prepare()) if full else d / "head"
 
     def run(session_id=None, resume=None):
-        argv = cw_llm.thread_argv(
-            profile, system, mcp_config=mcp_config, add_dir=ctx, session_id=session_id, resume=resume)
+        if full:
+            allowed = ",".join(MCP_PREFIX + t["name"] for t in cw_mcp.outcome_tools("full"))
+            argv = cw_llm.full_argv(profile, system, mcp_config=mcp_config, allowed=allowed, add_dir=ctx,
+                                    session_id=session_id, resume=resume)
+        else:
+            argv = cw_llm.thread_argv(
+                profile, system, mcp_config=mcp_config, add_dir=ctx, session_id=session_id, resume=resume)
         prompt = build_prompt(d, anchor, question, thread_id, resumed=bool(resume), anchors=anchors)
         return _stream_once(
-            argv, prompt, cwd=d / "head", timeout=config["timeout_s"], qid=qid,
+            argv, prompt, cwd=cwd, timeout=config["timeout_s"], qid=qid,
             thread_id=thread_id, on_event=on_event, live=live,
-            sweep=lambda: sweep_outcomes(d, qid, thread_id, on_event))
+            sweep=lambda: sweep_outcomes(d, qid, thread_id, on_event),
+            env=cw_llm.no_push_env() if full else None)
 
     st = run(resume=prior) if prior else run(session_id=str(uuid.uuid4()))
     if prior and st["returncode"] != 0 and not st["init"] and not live.get("cancelled"):
@@ -936,6 +961,10 @@ def _claude_turn(d, record, profile, config, anchor, question, on_event, live, o
     result = st["result"]
     if result:
         on_usage(cw_llm.claude_usage(result))
+        denied = [{"tool": p.get("tool_name"), "detail": _tool_detail(p.get("tool_input"))}
+                  for p in result.get("permission_denials") or [] if isinstance(p, dict)][:10]
+        if denied:
+            record["denied"] = denied
     completed = bool(result) and not result.get("is_error")
     if live.get("cancelled") and not completed:
         record.update(status="cancelled", answer=live.get("text") or "")
@@ -998,16 +1027,19 @@ def _openai_tools(d, qid, thread_id, on_event, live):
     return tools, handlers
 
 
-def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, source="user", anchors=None):
+def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, source="user", anchors=None,
+           mode="review", prepare=None, after_turn=None):
     """Never raises: everything that can fail, including loading config and resolving the
     thread profile, runs inside the try below so a misconfigured role lands as an ordinary
     status: "error" record instead of killing the daemon's background thread silently.
-    `live` is the daemon's per-turn dict (text, seq, progress, proc, cancelled)."""
+    `live` is the daemon's per-turn dict (text, seq, progress, proc, cancelled). Full mode:
+    `prepare()` returns the cwd (the shared worktree) and `after_turn(record)` commits what the
+    turn left; the server passes both in because cw_agent imports this module."""
     d = Path(d)
     live = live if live is not None else {}
     record = _with_anchors({
         "qid": qid, "thread_id": thread_id or qid, "started_at": cw_store.now_iso(),
-        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "source": source, "status": "ok", "answer": None,
+        "finished_at": None, "anchor": anchor, "comment": question, "question": question, "source": source, "mode": mode, "status": "ok", "answer": None,
         "error": None, "remedy": None, "profile": None, "model": None, "session_id": None,
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None},
     }, anchors)
@@ -1034,7 +1066,7 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, s
 
             if profile.get("kind") == "claude-code":
                 _claude_turn(d, record, profile, config, anchor, question, on_event, live, on_usage,
-                             anchors=anchors)
+                             anchors=anchors, prepare=prepare)
             else:
                 write_turn_anchor(d, qid, record["thread_id"], anchor, question, source, anchors=anchors)
                 prompt = build_prompt(d, anchor, question, record["thread_id"], anchors=anchors)
@@ -1058,6 +1090,14 @@ def answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, s
         record.update(status="error", error=str(e), remedy=None)
 
     sweep_outcomes(d, qid, record["thread_id"], on_event)
+    if live.get("queued_behind"):
+        record["queued_behind"] = live["queued_behind"]
+    if after_turn:
+        try:
+            after_turn(record)
+        except Exception as e:
+            if record["status"] == "ok":
+                record.update(status="error", error=f"could not commit the agent's edits: {e}", remedy=None)
     record["finished_at"] = cw_store.now_iso()
     record["usage"] = usage_totals
     _append_qa(d, record)

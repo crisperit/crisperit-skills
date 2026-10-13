@@ -252,6 +252,22 @@ def test_outcomes_server_accepts_and_rejects():
             assert rpc.close() == 0
 
 
+def test_outcome_server_lists_tools_by_mode():
+    review = ["propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task"]
+    full = ["propose_resolve", "propose_page_edit", "propose_github_draft"]
+    assert [t["name"] for t in cw_mcp.outcome_tools()] == review
+    assert [t["name"] for t in cw_mcp.outcome_tools("full")] == full
+    assert "--mode" not in cw_mcp.outcome_mcp_config("/d", "q1")["mcpServers"]["cw"]["args"]
+    assert cw_mcp.outcome_mcp_config("/d", "q1", "full")["mcpServers"]["cw"]["args"][-2:] == ["--mode", "full"]
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        for extra, names in (([], review), (["--mode", "review"], review), (["--mode", "full"], full)):
+            rpc = _Rpc("outcomes", "--dir", tmp, "--qid", "q1", *extra)
+            try:
+                assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == names
+            finally:
+                assert rpc.close() == 0
+
+
 def test_outcomes_server_page_edit_is_stored_stripped_and_once_per_turn():
     with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)

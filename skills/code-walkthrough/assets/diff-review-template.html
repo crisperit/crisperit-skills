@@ -1111,6 +1111,14 @@
     border:1px solid var(--border);border-radius:6px;background:var(--panel2)}
   .cw-outcome-text{min-width:0;flex:1 1 14em;overflow-wrap:anywhere}
   .cw-outcome-why{display:block;color:var(--muted)}
+  .cw-edits{display:block}
+  .cw-edits-files{margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:var(--fs-xs);overflow-wrap:anywhere}
+  .cw-mode-badge{margin-left:8px;padding:0 6px;border:1px solid var(--accent);border-radius:10px;color:var(--accent);
+    font:600 var(--fs-xs)/1.5 system-ui,sans-serif;vertical-align:middle}
+  .cw-queued{color:var(--muted);font-size:var(--fs-xs)}
+  .cw-denied{margin:6px 0 0;padding:4px 8px;border-left:3px solid var(--yellow);font-size:var(--fs-xs)}
+  .cw-denied-title{margin:0;color:var(--yellow);font-weight:600}
+  .cw-denied ul{margin:2px 0 0;padding-left:18px;color:var(--muted);overflow-wrap:anywhere}
   .cw-outcome-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
   .cw-ghdraft{display:block;border-color:var(--yellow);border-left:3px dashed var(--yellow);
     background:color-mix(in srgb,var(--yellow) 8%,transparent);white-space:normal;overflow-wrap:anywhere}
@@ -4353,6 +4361,8 @@
       if(p.tool==='propose_resolve') return 'Suggesting a resolve';
       if(p.tool==='propose_page_edit') return 'Editing the page';
       if(p.tool==='propose_github_draft') return 'Drafting a GitHub comment';
+      if(p.tool==='queued') return 'Queued behind '+d;
+      if(p.tool==='Bash') return d?'Running '+d:'Running a command';
       return p.tool||'';
     }
     const noteById=id=>state.notes.find(n=>n.id===id);
@@ -4928,10 +4938,39 @@
       return d;
     }
 
+    function plainOutcomeCard(o,label){
+      const d=mk('div','cw-outcome'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      d.append(mk('span','cw-outcome-text',label+(o.state?' ('+o.state+')':'')));
+      return d;
+    }
+
+    function editsCard(o){
+      const pl=o.payload||{};
+      const files=Array.isArray(pl.files)?pl.files:[];
+      const d=mk('div','cw-outcome cw-edits'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      const text=mk('span','cw-outcome-text','Agent edited '+files.length+(files.length===1?' file':' files'));
+      const sub=[pl.branch,pl.sha?String(pl.sha).slice(0,7):''].filter(Boolean).join(' @ ');
+      if(sub) text.append(mk('span','cw-outcome-why',sub));
+      d.append(text);
+      if(files.length){
+        const stat=pl.stat&&typeof pl.stat==='object'?pl.stat:{};
+        const ul=mk('ul','cw-edits-files');
+        for(const f of files){
+          const path=typeof f==='string'?f:(f&&f.path)||'';
+          const st=stat[path];
+          ul.append(mk('li',null,path+(st!=null&&typeof st!=='object'?'  '+st:'')));
+        }
+        d.append(ul);
+      }
+      return d;
+    }
+
     function outcomeEl(t,o){
       if(o.outcome==='task') return taskCard(t,o);
       if(o.outcome==='page_edit') return pageEditCard(t,o);
       if(o.outcome==='github_draft') return ghDraftCard(t,o);
+      if(o.outcome==='edits') return editsCard(o);
+      if(o.outcome!=='resolve') return plainOutcomeCard(o,String(o.outcome||'unknown outcome'));
       const id=o.payload&&o.payload.thread;
       const note=noteById(id);
       const where=note?(note.path+':'+(note.line!=null?note.line:'')+(note.author?' by '+note.author:'')):id;
@@ -4985,6 +5024,7 @@
         if(p.text!=null){ if(p.text) q.append(document.createTextNode(p.text)); }
         else q.append(chipNode(refFromParsed(p),true));
       }
+      if(r.mode==='full') q.append(mk('span','cw-mode-badge','Full'));
       d.append(q);
       if(r.status==='pending'){
         const st=streams.get(r.qid)||{};
@@ -4998,12 +5038,20 @@
         const prog=mk('span','cw-progress',progressText(st.progress)); prog.dataset.qid=r.qid;
         p.append(dots,mk('span',null,'(working)'),stopBtn(t,r),prog);
         d.append(live,p);
+        if(r.queued_behind) d.append(mk('p','cw-turn-a cw-queued','Queued behind '+r.queued_behind));
       } else if(r.status==='error'){
         d.append(mk('p','cw-turn-a cw-turn-err','Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':'')));
       } else {
         const a=mk('p','cw-turn-a',r.answer||'');
         if(r.status==='cancelled') a.append(mk('span','cw-stopped','(stopped)'));
         d.append(a);
+      }
+      if(Array.isArray(r.denied)&&r.denied.length){
+        const dn=mk('div','cw-denied',null);
+        dn.append(mk('p','cw-denied-title','Needs permission'));
+        const ul=mk('ul',null);
+        for(const x of r.denied) ul.append(mk('li',null,String((x&&x.tool)||'')+(x&&x.detail?' '+x.detail:'')));
+        dn.append(ul); d.append(dn);
       }
       if((r.status==='error'||r.status==='cancelled')&&isLast) d.append(retryBtn(t,r));
       for(const o of (outcomesByQid.get(r.qid)||new Map()).values()) d.append(outcomeEl(t,o));

@@ -468,9 +468,19 @@ def accept_outcome(d, qid, name, args):
     return True, kind["accepted"]
 
 
-def outcome_mcp_config(d, qid):
-    return {"mcpServers": {"cw": {"type": "stdio", "command": sys.executable, "args": [
-        str(Path(__file__).resolve()), "outcomes", "--dir", str(d), "--qid", qid]}}}
+def outcome_tools(mode="review"):
+    if mode == "review":
+        return OUTCOME_TOOLS
+    if mode == "full":
+        return [t for t in OUTCOME_TOOLS if t["name"] != "propose_task"]
+    raise ValueError(f"unknown outcome mode {mode}")
+
+
+def outcome_mcp_config(d, qid, mode="review"):
+    args = [str(Path(__file__).resolve()), "outcomes", "--dir", str(d), "--qid", qid]
+    if mode != "review":
+        args += ["--mode", mode]
+    return {"mcpServers": {"cw": {"type": "stdio", "command": sys.executable, "args": args}}}
 
 
 RUNNER_TOOLS = [{
@@ -739,6 +749,7 @@ def main(argv=None):
     outcomes_parser = sub.add_parser("outcomes")
     outcomes_parser.add_argument("--dir", required=True)
     outcomes_parser.add_argument("--qid", required=True)
+    outcomes_parser.add_argument("--mode", choices=["review", "full"], default="review")
     runner_parser = sub.add_parser("runner")
     runner_parser.add_argument("--dir", required=True)
     runner_parser.add_argument("--qid", required=True)
@@ -751,7 +762,7 @@ def main(argv=None):
     if args.cmd in (None, "mcp"):
         return cmd_mcp()
     if args.cmd == "outcomes":
-        return cmd_outcomes(args.dir, args.qid)
+        return cmd_outcomes(args.dir, args.qid, outcome_tools(args.mode))
     if args.cmd == "runner":
         return cmd_runner(args.dir, args.qid, args.worktree, args.timeout)
     if args.cmd == "setup":
