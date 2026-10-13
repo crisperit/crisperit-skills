@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_mcp  # noqa: E402
+import cw_server  # noqa: E402
 import cw_store  # noqa: E402
 import cw_testlib  # noqa: E402
 
@@ -359,3 +360,37 @@ def test_github_draft_payload_copies_target_and_verbatim_is_byte_for_byte():
         assert reply["target"] == {"kind": "reply", "note_id": "gh-9", "path": "a.py", "line": 3}
         ok, text = cw_mcp.accept_outcome(d, "q3", "propose_github_draft", {"body": "b", "target": REPLY})
         assert not ok and "already drafted" in text
+
+
+def test_ensure_server_replaces_a_daemon_on_older_code_unless_it_is_busy():
+    spawned = []
+    old = None
+    new = None
+    real_spawn, real_wait, real_probe = cw_mcp._spawn_daemon, cw_mcp._wait_pid_exit, cw_mcp._probe_health
+
+    def spawn():
+        nonlocal new
+        spawned.append(1)
+        old._serve_thread.join(5)
+        new = cw_server.Daemon(idle_s=None, write_server_json=True).start()
+
+    with cw_testlib.temp_home():
+        old = cw_server.Daemon(idle_s=None, write_server_json=True).start()
+        cw_mcp._spawn_daemon, cw_mcp._wait_pid_exit = spawn, lambda pid, timeout=5: None
+        try:
+            assert cw_mcp.ensure_server()["port"] == old.port
+            assert not spawned
+
+            cw_mcp._probe_health = lambda port: {**real_probe(port), "code": "older-install"}
+            old._asks = 1
+            assert cw_mcp.ensure_server()["port"] == old.port
+            assert not spawned and not old._stopped.is_set()
+
+            old._asks = 0
+            assert cw_mcp.ensure_server()["port"] == new.port
+            assert spawned and old._stopped.is_set()
+        finally:
+            cw_mcp._spawn_daemon, cw_mcp._wait_pid_exit, cw_mcp._probe_health = real_spawn, real_wait, real_probe
+            old.stop()
+            if new:
+                new.stop()

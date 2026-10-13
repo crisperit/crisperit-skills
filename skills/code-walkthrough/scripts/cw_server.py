@@ -581,7 +581,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _route_health(self):
         if not self._check_host():
             return
-        self._send_json(200, {"protocol": cw_store.PROTOCOL, "pid": os.getpid()})
+        self._send_json(200, {"protocol": cw_store.PROTOCOL, "pid": os.getpid(),
+                              "code": cw_store.code_id(), "busy": self.server.cw_daemon.is_working()})
 
     def _route_page(self, key, wid, qs):
         if not self._check_host() or not self._check_token_query(qs) or not self._check_origin():
@@ -1559,7 +1560,7 @@ class Daemon:
             cw_store.write_json(
                 cw_store.server_json_path(),
                 {"pid": os.getpid(), "port": self.port, "token": self.token,
-                 "protocol": cw_store.PROTOCOL, "started_at": cw_store.now_iso()},
+                 "protocol": cw_store.PROTOCOL, "code": cw_store.code_id(), "started_at": cw_store.now_iso()},
                 mode=0o600,
             )
 
@@ -1772,6 +1773,13 @@ class Daemon:
 
         threading.Thread(target=_target, daemon=True).start()
         return folded
+
+    def is_working(self):
+        with self._inflight_lock:
+            asks = self._asks
+        with self._run_threads_lock:
+            running = len(self._run_threads)
+        return asks > 0 or running > 0
 
     def _is_idle_now(self):
         with self._inflight_lock:

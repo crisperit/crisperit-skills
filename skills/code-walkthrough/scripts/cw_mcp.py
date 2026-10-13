@@ -147,12 +147,16 @@ def _spawn_daemon():
 
 
 def ensure_server():
-    """server.json names a live pid on our protocol: return it. A live pid on a different
-    protocol gets shut down and waited out. Otherwise spawn and poll (CW_START_TIMEOUT)."""
+    """server.json names a live pid on our protocol and code: return it. A live pid on a different
+    protocol gets shut down and waited out; so does one on different code (one predating the
+    "code" field counts as different), unless it is mid-turn or mid-run, in which case it is left
+    alone and replaced on the first call after it goes idle. Otherwise spawn and poll
+    (CW_START_TIMEOUT)."""
     info = cw_store.read_json(cw_store.server_json_path())
     if info:
         health = _probe_health(info.get("port"))
-        if health and health.get("protocol") == cw_store.PROTOCOL:
+        if (health and health.get("protocol") == cw_store.PROTOCOL
+                and (health.get("code") == cw_store.code_id() or health.get("busy"))):
             return info
         if health is not None:
             try:
