@@ -834,20 +834,21 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "bad json"})
             return
+        given = "anchors" in payload
         try:
-            anchors = (cw_ask.validate_anchors(payload["anchors"]) if "anchors" in payload
-                       else [cw_ask.validate_anchor(payload.get("anchor"))])
+            own = ((cw_ask.validate_anchors(payload["anchors"]) if payload["anchors"] != [] else [])
+                   if given else [cw_ask.validate_anchor(payload.get("anchor"))])
         except cw_store.CWError as e:
             self._send_json(400, {"error": str(e), "remedy": e.remedy})
             return
-        anchor = anchors[0]
-        if anchor["kind"] == "thread" and not any(
-                n.get("id") == anchor["note_id"] and cw_ask.is_root_thread(n) for n in cw_ask._state_notes(d)):
+        if own and own[0]["kind"] == "thread" and not any(
+                n.get("id") == own[0]["note_id"] and cw_ask.is_root_thread(n) for n in cw_ask._state_notes(d)):
             self._send_json(400, {"error": "bad anchor: not a GitHub review thread on this PR",
                                    "remedy": "reload the page and comment on a thread again"})
             return
         text = payload.get(text_key)
-        if not isinstance(text, str) or not (1 <= len(text) <= cw_ask.QUESTION_MAX):
+        if (not isinstance(text, str) or not text
+                or len(cw_store.strip_ref_fences(text)) > cw_ask.QUESTION_MAX or len(text) > cw_ask.PROMPT_CAP):
             self._send_json(400, {"error": f"{text_key} must be 1-2000 characters",
                                    "remedy": f"shorten the {text_key}"})
             return
@@ -865,8 +866,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(409, {"error": f"thread has {THREAD_TURN_CAP} turns",
                                        "remedy": "start a new thread"})
                 return
-            anchors = cw_ask.turn_anchors(thread["turns"][0]) or anchors
-            anchor = anchors[0]
+            inherited = cw_ask.turn_anchors(thread["turns"][0])
+            anchors = cw_ask.merge_anchors(inherited, own) if given and own else inherited
+        else:
+            anchors = own
+        anchor = anchors[0] if anchors else cw_ask.FREE_ANCHOR
         try:
             cw_ask.build_prompt(d, anchor, text, thread_id, anchors=anchors)
         except cw_store.CWError as e:

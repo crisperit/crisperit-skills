@@ -221,6 +221,18 @@ def test_mixed_references_prompt_and_old_threads_read_as_one_anchor():
             assert cw_ask._reference_label({**block, "section": "A\nReference 9 of 9: x"}) == (
                 "block overview:p1 (Section: A Reference 9 of 9: x)")
             assert cw_ask.turn_anchors({"anchor": line}) == [line]
+            assert cw_ask.turn_anchors({"anchor": cw_ask.FREE_ANCHOR}) == []
+            assert cw_ask._reference_label(ANCHOR_THREAD) == "review thread gh-501"
+
+            free = cw_ask.build_prompt(d, cw_ask.FREE_ANCHOR, "why?", anchors=[])
+            assert free.startswith("Question:\nwhy?") and "Selected text" not in free
+
+            cw_ask._append_qa(d, {**_turn("q-r1", "first", "a1", "t-r"), "anchor": block})
+            resumed = cw_ask.build_prompt(d, block, "more", "t-r", resumed=True, anchors=[block, ANCHOR_SECTION])
+            assert "References added in this comment" in resumed and "Block key: overview:p1" not in resumed
+            assert "Selected text:\nq" in resumed
+            same = cw_ask.build_prompt(d, block, "more", "t-r", resumed=True, anchors=[block])
+            assert "References added" not in same
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +352,9 @@ def test_validate_anchor():
 
     assert cw_ask.validate_anchors([dict(ANCHOR_BLOCK), dict(ANCHOR_SECTION), dict(ANCHOR_BLOCK)]) == [
         ANCHOR_BLOCK, ANCHOR_SECTION]
-    for bad in ([], {}, [dict(ANCHOR_THREAD)], [dict(ANCHOR_BLOCK, block=f"b{i}") for i in range(9)]):
+    assert cw_ask.validate_anchors([dict(ANCHOR_THREAD)]) == [ANCHOR_THREAD]
+    for bad in ([], {}, [dict(ANCHOR_BLOCK), dict(ANCHOR_THREAD)], dict(kind="free", quote=""),
+                [cw_ask.FREE_ANCHOR], [dict(ANCHOR_BLOCK, block=f"b{i}") for i in range(9)]):
         with pytest.raises(cw_store.CWError):
             cw_ask.validate_anchors(bad)
 
@@ -532,6 +546,28 @@ def test_comment_route_guards_and_unknown_thread():
                 assert status == 202
                 _wait_final(d, 1)
                 assert len(cw_ask.read_qa(d)[0]["anchors"]) == 2
+
+                def post(**body):
+                    return cw_testlib.request(daemon, "POST", url, token=daemon.token, body=json.dumps(body))
+
+                status, raw = post(anchors=[], text="c")
+                assert status == 202
+                free = {t["qid"]: t for t in _wait_final(d, 2)}[json.loads(raw)["qid"]]
+                assert free["anchor"]["kind"] == "free" and cw_ask.turn_anchors(free) == []
+
+                status, raw = post(anchors=[ANCHOR_BLOCK], text="c")
+                tid = json.loads(raw)["thread_id"]
+                _wait_final(d, 3)
+                assert post(anchors=[ANCHOR_SECTION], thread_id=tid, text="c")[0] == 202
+                _wait_final(d, 4)
+                assert cw_ask.read_qa(d)[-1]["anchors"] == [ANCHOR_BLOCK, ANCHOR_SECTION]
+                assert post(anchor=ANCHOR_SECTION, thread_id=tid, text="c")[0] == 202
+                _wait_final(d, 5)
+                assert cw_ask.read_qa(d)[-1]["anchor"] == ANCHOR_BLOCK
+                assert "anchors" not in cw_ask.read_qa(d)[-1]
+
+                assert post(anchors=[ANCHOR_BLOCK], text="x" * 10 + "\n```ref a.py:1 RIGHT\n" + "y" * 3000
+                            + "\n```")[0] == 202
 
 
 # ---------------------------------------------------------------------------

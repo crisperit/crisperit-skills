@@ -97,6 +97,7 @@ def validate_anchor(anchor):
 
 
 REF_CAP = 8
+FREE_ANCHOR = {"kind": "free", "quote": ""}
 
 
 def validate_anchors(raw):
@@ -104,16 +105,24 @@ def validate_anchors(raw):
         raise cw_store.CWError(f"anchors must be a list of 1-{REF_CAP} references",
                                remedy=f"send at most {REF_CAP} references")
     out = {}
-    for item in raw:
+    for i, item in enumerate(raw):
         a = validate_anchor(item)
-        if a["kind"] == "thread":
-            raise cw_store.CWError("bad anchor: a review thread cannot join a multi-reference thread")
+        if a["kind"] == "thread" and i:
+            raise cw_store.CWError("bad anchor: a review thread can only be the first reference")
         out.setdefault(json.dumps(a, sort_keys=True), a)
     return list(out.values())
 
 
 def turn_anchors(turn):
-    return turn.get("anchors") or ([turn["anchor"]] if turn.get("anchor") else [])
+    found = turn.get("anchors") or ([turn["anchor"]] if turn.get("anchor") else [])
+    return [a for a in found if a.get("kind") != "free"]
+
+
+def merge_anchors(inherited, own):
+    out = {}
+    for a in [*inherited, *own]:
+        out.setdefault(json.dumps(a, sort_keys=True), a)
+    return list(out.values())
 
 
 def _find_hunk(entry, anchor):
@@ -661,39 +670,55 @@ def _reference_label(anchor):
     if anchor["kind"] == "block":
         label = f"block {anchor['block']}"
         return f"{label} (Section: {one_line(anchor['section'])})" if anchor.get("section") else label
+    if anchor["kind"] == "thread":
+        return f"review thread {anchor['note_id']}"
     return f"section {one_line(anchor['section'])}"
+
+
+def _references_body(d, refs, many):
+    files = {}
+    if any(a["kind"] == "line" for a in refs):
+        raw_path = d / "raw.diff"
+        files = parse_hunks(raw_path.read_text(errors="replace") if raw_path.exists() else "")[1]
+
+    hunks = []
+    if many:
+        blocks = []
+        for i, a in enumerate(refs, 1):
+            text, hunk = _reference_text(d, a, files, MULTI_WINDOW, with_section=False)
+            blocks.append(f"Reference {i} of {len(refs)}: {_reference_label(a)}\n{text}")
+            if hunk is not None:
+                hunks.append((a["path"], hunk))
+        return "\n\n".join(blocks), hunks
+    body, hunk = _reference_text(d, refs[0], files, HUNK_WINDOW)
+    if hunk is not None:
+        hunks.append((refs[0]["path"], hunk))
+    return body, hunks
 
 
 def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=None):
     d = Path(d)
     anchors = anchors or [anchor]
     anchor = anchors[0]
+    refs = [a for a in anchors if a["kind"] != "free"]
     if resumed:
+        first = next((r for r in read_qa(d) if r["thread_id"] == thread_id), {})
+        fresh = [a for a in refs if a not in turn_anchors(first)]
+        added = []
+        if fresh:
+            body, _hunks = _references_body(d, fresh, True)
+            added = ["References added in this comment:\n\n" + body]
         extras = [_block_key_text(anchors), _candidates_text(d, anchors), _reply_targets_text(d, anchors),
                   _outcome_updates_text(d, thread_id)]
-        return "\n\n".join([f"Question:\n{question}", *filter(None, extras)])
+        return "\n\n".join([f"Question:\n{question}", *added, *filter(None, extras)])
 
-    files = {}
-    if any(a["kind"] == "line" for a in anchors):
-        raw_path = d / "raw.diff"
-        files = parse_hunks(raw_path.read_text(errors="replace") if raw_path.exists() else "")[1]
-
-    many = len(anchors) > 1
-    hunks = []
-    if many:
-        blocks = []
-        for i, a in enumerate(anchors, 1):
-            text, hunk = _reference_text(d, a, files, MULTI_WINDOW, with_section=False)
-            blocks.append(f"Reference {i} of {len(anchors)}: {_reference_label(a)}\n{text}")
-            if hunk is not None:
-                hunks.append((a["path"], hunk))
-        body = "\n\n".join(blocks)
+    many = len(refs) > 1
+    if refs:
+        body, hunks = _references_body(d, refs, many)
+        combined = f"Question:\n{question}\n\n{body}"
     else:
-        body, hunk = _reference_text(d, anchor, files, HUNK_WINDOW)
-        if hunk is not None:
-            hunks.append((anchor["path"], hunk))
-
-    combined = f"Question:\n{question}\n\n{body}"
+        hunks = []
+        combined = f"Question:\n{question}"
     if len(combined) > PROMPT_CAP:
         raise cw_store.CWError("selection too large",
                                remedy="remove a reference" if many else "select a smaller range")

@@ -43,6 +43,13 @@ def code_id():
 ID_RE = re.compile(r"^(pr-\d+-[0-9a-f]{4}|cmp-[0-9a-f]{8})$")
 KEY_RE = re.compile(r"^[A-Za-z0-9._-]+-[0-9a-f]{6}$")
 SLUG_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")  # the slug becomes a filename
+REF_FENCE_RE = re.compile(r"^(`{3,})ref [^\n]*\n(?:.*\n)*?\1`*[ \t]*$", re.M)
+
+
+def strip_ref_fences(text):
+    return REF_FENCE_RE.sub("", text)
+
+
 DEFAULTS = {
     "profiles": {},
     "roles": {},
