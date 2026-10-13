@@ -74,6 +74,7 @@ def ensure_worktree(d, meta):
     if meta.get("agent") and wt.exists():
         return wt
     repo, branch = meta["repo"], cw_task.branch_name(meta, "agent")
+    cw_task._git(repo, ["worktree", "prune"])
     agent = _adopt(repo, wt, branch) if wt.exists() else None
     if agent is None:
         if wt.exists():
@@ -149,13 +150,29 @@ def after_turn(d, meta, record, on_event=None, start_sibling=None):
     """Commit the Full turn's edits and record them as an `edits` outcome; returns the summary or None.
     A reload the turn requested is answered here: the daemon, not the page, marks it done or failed."""
     lines = (record.get("comment") or "").strip().splitlines()
-    edits = commit(d, meta, (lines[0][:72] if lines else "agent edits"), record["qid"])
-    if edits:
-        cw_ask.append_outcome(d, record["qid"], record["thread_id"], "edits", "done", edits, on_event)
-    for o in cw_ask.read_outcomes(d):
-        if o["outcome"] == "reload" and o["state"] == "requested" and o["qid"] == record["qid"]:
+    try:
+        edits = commit(d, meta, (lines[0][:72] if lines else "agent edits"), record["qid"])
+        if edits:
+            cw_ask.append_outcome(d, record["qid"], record["thread_id"], "edits", "done", edits, on_event)
+        for o in _requested_reloads(d, record["qid"]):
             _answer_reload(d, meta, o, edits, on_event, start_sibling)
+    except Exception as e:
+        for o in _requested_reloads(d, record["qid"]):
+            cw_ask.mark_outcome(d, o["oid"], "failed", on_event, {"reason": (str(e) or type(e).__name__)[:200]})
+        raise
     return edits
+
+
+def _requested_reloads(d, qid):
+    return [o for o in cw_ask.read_outcomes(d)
+            if o["outcome"] == "reload" and o["state"] == "requested" and o["qid"] == qid]
+
+
+def fail_interrupted_reloads(d):
+    """A reload still requested at daemon start: its turn died with the old daemon."""
+    for o in cw_ask.read_outcomes(d):
+        if o["outcome"] == "reload" and o["state"] == "requested":
+            cw_ask.mark_outcome(d, o["oid"], "failed", payload={"reason": "interrupted"}, expect=("requested",))
 
 
 def _answer_reload(d, meta, o, edits, on_event, start_sibling):

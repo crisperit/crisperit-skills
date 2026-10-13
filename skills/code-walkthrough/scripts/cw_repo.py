@@ -83,6 +83,12 @@ def _fetch(path, params, run, env, cwd):
                     "check gh auth status and network, then retry")
 
 
+def _trusted_repos(config):
+    trust = config.get("trust")
+    repos = trust.get("repos") if isinstance(trust, dict) else None
+    return {r.lower() for r in repos if isinstance(r, str)} if isinstance(repos, list) else set()
+
+
 def resolve(params, config, run=subprocess.run):
     repo = params.get("repo")
     if isinstance(repo, str) and os.path.isabs(repo):
@@ -95,7 +101,8 @@ def resolve(params, config, run=subprocess.run):
     cwd = cache_root()
     cwd.mkdir(parents=True, exist_ok=True)
     # gh runs as the default/global account: the per-tree PATH shim does not apply under ~/.code-walkthrough.
-    mapped = {k.lower(): v for k, v in (config.get("repos") or {}).items()}.get(name)
+    repos_cfg = config.get("repos")
+    mapped = {k.lower(): v for k, v in (repos_cfg.items() if isinstance(repos_cfg, dict) else ()) if isinstance(k, str)}.get(name)
     final = cache_root() / match.group(1).lower() / match.group(2).lower()
     if mapped is not None:
         if not isinstance(mapped, str) or not os.path.isabs(mapped) or not Path(mapped).is_dir():
@@ -103,7 +110,7 @@ def resolve(params, config, run=subprocess.run):
         path = Path(mapped)
     elif final.is_dir():
         path = final
-    elif params.get("clone") is True or name in {r.lower() for r in (config.get("trust") or {}).get("repos") or []}:
+    elif params.get("clone") is True or name in _trusted_repos(config):
         _clone(repo, final, run, env, cwd)
         path = final
     else:

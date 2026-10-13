@@ -168,3 +168,12 @@ def test_prune_survives_a_clone_that_vanishes_mid_scan(home, monkeypatch):
     monkeypatch.setattr(Path, "stat", flaky)
     cw_repo.prune(set(), time.time())
     assert not old.exists()
+
+
+def test_malformed_config_entries_are_ignored(home, tmp_path):
+    for config in ({"trust": {"repos": [None, 3]}, "repos": [1]}, {"trust": "x", "repos": "y"},
+                   {"trust": {"repos": "acme/widgets"}, "repos": {1: "/x"}}):
+        with pytest.raises(cw_store.CWError) as e:
+            cw_repo.resolve({"repo": "acme/widgets"}, config, FakeRun())
+        assert "not cloned" in str(e.value)
+    assert cw_repo.resolve({"repo": "acme/widgets"}, {"trust": {"repos": [None, "acme/widgets"]}}, FakeRun())

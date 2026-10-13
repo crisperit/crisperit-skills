@@ -364,3 +364,47 @@ def test_commit_caps_the_file_list():
             (wt / f"f{n}.txt").write_text("x\n")
         edits = cw_agent.commit(d, meta, "t", "q-1")
         assert len(edits["files"]) == len(edits["stat"]) == cw_agent.FILES_CAP and edits["truncated"] is True
+
+
+def test_ensure_worktree_recovers_a_hand_deleted_directory():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        wt = cw_agent.ensure_worktree(d, meta)
+        shutil.rmtree(wt)
+        meta.pop("agent")
+        assert cw_agent.ensure_worktree(d, meta) == wt and (wt / "a.py").exists()
+
+
+def test_after_turn_fails_a_requested_reload_when_commit_raises():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        wt = cw_agent.ensure_worktree(d, meta)
+        cw_testlib.git(wt, "checkout", "-q", "-b", "elsewhere")
+        cw_ask.append_outcome(d, "q-1", "t-1", "reload", "requested", None)
+        with pytest.raises(cw_agent.BranchChanged):
+            cw_agent.after_turn(d, meta, {"qid": "q-1", "thread_id": "t-1", "comment": "c"})
+        o = next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "reload")
+        assert o["state"] == "failed" and "no longer on its branch" in o["payload"]["reason"]
+
+
+def test_fail_interrupted_reloads_marks_stale_requested_reloads():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        cw_ask.append_outcome(d, "q-1", "t-1", "reload", "requested", None)
+        cw_agent.fail_interrupted_reloads(d)
+        o, = cw_ask.read_outcomes(d)
+        assert o["state"] == "failed" and o["payload"]["reason"] == "interrupted"
+
+
+def test_discard_cwerror_is_a_clean_json_error(monkeypatch):
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, repo = _full_fixture(tmp, home)
+        entry = cw_testlib.claude_stream_entry(["done"], writes={"a.py": "x = 3\n"})
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), cw_testlib.running_daemon() as daemon:
+            edits = _full_turn_with_edits(ask, daemon, d, tmp)
+            def boom(*a, **k):
+                raise cw_store.CWError("the agent record does not name this walkthrough's branch")
+            monkeypatch.setattr(cw_agent, "discard_all", boom)
+            status, raw = _discard(daemon, d, edits["oid"])
+        assert status == 500 and "does not name" in json.loads(raw)["error"]

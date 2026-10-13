@@ -1199,6 +1199,35 @@ def test_ensure_ctx_restores_an_edited_copy():
         assert (ctx / "raw.diff").read_text() == original
 
 
+def test_ensure_ctx_replaces_files_atomically():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        ctx = cw_ask._ensure_ctx(d)
+        before = (ctx / "raw.diff").stat().st_ino
+        cw_ask._ensure_ctx(d)
+        assert (ctx / "raw.diff").stat().st_ino != before
+        assert sorted(p.name for p in ctx.iterdir()) == ["analysis.json", "raw.diff"]
+
+
+def _forge_outcomes(d, qid, records):
+    path = d / "turns" / f"{qid}.outcomes.jsonl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+
+def test_sweep_drops_forged_outcome_records():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page")
+        _forge_outcomes(d, "q1", [
+            {"oid": "o-bad1", "name": "post_draft_comments", "arguments": {"comments": "nope"}},
+            {"oid": "o-bad2", "name": "post_draft_comments", "arguments": {"comments": [{"body": "x"}] * 500}},
+            {"oid": "o-bad3", "name": "delete_everything", "arguments": {}},
+        ])
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert cw_ask.read_outcomes(d) == []
+
+
 def test_discarded_edits_reach_the_next_prompt():
     with cw_testlib.temp_home() as home:
         d = _claude_done(home)
@@ -1221,6 +1250,7 @@ def test_full_turn_is_wrapped_in_bwrap_when_available(monkeypatch, tmp_path):
     monkeypatch.setattr(cw_llm, "confinement_available", lambda: True)
     monkeypatch.setattr(cw_llm, "git_common_dir", lambda wt: tmp_path / "repo.git")
     monkeypatch.setattr(cw_llm, "confine_prefix", lambda *a: ["BWRAP", *map(str, a)])
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setattr(cw_ask, "_stream_once", lambda argv, *a, **k: seen.append((argv, k["cwd"])) or 1 / 0)
     with cw_testlib.temp_home() as home:
         d = _claude_done(home)
@@ -1228,9 +1258,26 @@ def test_full_turn_is_wrapped_in_bwrap_when_available(monkeypatch, tmp_path):
         wt.mkdir()
         _full_answer(d, wt)
         assert (d / "turns").is_dir()
+    assert cw_llm.project_dir(tmp_path / "home", wt).is_dir()
     argv, cwd = seen[0]
-    assert argv[:5] == ["BWRAP", str(wt), str(tmp_path / "repo.git"), str(Path.home()), str(d / "turns")]
+    assert argv[:5] == ["BWRAP", str(wt), str(tmp_path / "repo.git"), str(tmp_path / "home"), str(d / "turns")]
     assert argv[5] == "claude" and cwd == wt
+
+
+def test_unwrapped_full_turn_does_not_create_the_project_dir(monkeypatch, tmp_path):
+    import cw_llm
+
+    monkeypatch.setattr(cw_llm, "confinement_available", lambda: True)
+    monkeypatch.setattr(cw_llm, "git_common_dir", lambda wt: tmp_path / "repo.git")
+    monkeypatch.setattr(cw_llm, "confine_prefix", lambda *a: [])
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(cw_ask, "_stream_once", lambda *a, **k: 1 / 0)
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _full_answer(d, wt)
+    assert not cw_llm.project_dir(tmp_path / "home", wt).exists()
 
 
 def test_full_turn_refused_without_bwrap(monkeypatch, tmp_path):

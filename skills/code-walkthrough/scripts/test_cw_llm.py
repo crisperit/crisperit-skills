@@ -540,21 +540,34 @@ def test_full_disallows_web_tools():
 
 def test_confine_prefix():
     h = "/home/u"
-    assert cw_llm.confine_prefix("/w/d/agent", "/r", h, "/w/d/turns", sockets=["/run/docker.sock"]) == [
+    assert cw_llm.confine_prefix("/w/d/agent", "/r", h, "/w/d/turns", sockets=["/run/docker.sock"],
+                                 exists=lambda p: True) == [
         "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
         "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
-        "--tmpfs", "/tmp", "--tmpfs", "/run/user", "--tmpfs", "/home/u/.ssh", "--tmpfs", "/home/u/.gnupg",
+        "--tmpfs", "/tmp",
         "--ro-bind", "/dev/null", "/run/docker.sock",
         "--overlay-src", "/r", "--tmp-overlay", "/r",
+        "--tmpfs", "/run/user", "--tmpfs", "/home/u/.ssh", "--tmpfs", "/home/u/.gnupg",
         "--ro-bind", "/w/d", "/w/d",
         "--bind", "/w/d/agent", "/w/d/agent", "--bind", "/w/d/turns", "/w/d/turns",
-        "--bind-try", "/home/u/.claude/projects", "/home/u/.claude/projects",
+        "--bind-try", "/home/u/.claude/projects/-w-d-agent", "/home/u/.claude/projects/-w-d-agent",
         "--bind-try", "/home/u/.claude/session-env", "/home/u/.claude/session-env",
         "--bind-try", "/home/u/.claude/sessions", "/home/u/.claude/sessions",
         "--bind-try", "/home/u/.claude/.credentials.json", "/home/u/.claude/.credentials.json",
         "--bind-try", "/home/u/.local/share/rtk", "/home/u/.local/share/rtk",
         "--chdir", "/w/d/agent", "--",
     ]
+
+
+def test_project_dir_matches_claude_codes_encoding():
+    assert cw_llm.project_dir("/home/u", "/home/u/.t3/work_trees/a b") == Path(
+        "/home/u/.claude/projects/-home-u--t3-work-trees-a-b")
+
+
+def test_confine_prefix_masks_only_existing_paths():
+    argv = cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns", sockets=[],
+                                 exists=lambda p: p == "/home/u/.ssh")
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == "--tmpfs"] == ["/tmp", "/home/u/.ssh"]
 
 
 def test_confine_prefix_skips_missing_docker_socket(monkeypatch):
@@ -575,6 +588,13 @@ def test_overlay_root():
     assert cw_llm.overlay_root("/r/bare.git") == Path("/r/bare.git")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_confinement_cache():
+    cw_llm._confined.update(ok=False, failed_at=None)
+    yield
+    cw_llm._confined.update(ok=False, failed_at=None)
+
+
 def test_confinement_available_probes_the_real_prefix():
     seen = []
 
@@ -582,9 +602,7 @@ def test_confinement_available_probes_the_real_prefix():
         seen.append(argv)
         return subprocess.CompletedProcess(argv, 0)
 
-    cw_llm.confinement_available.cache_clear()
     assert cw_llm.confinement_available(run=run) is True
-    cw_llm.confinement_available.cache_clear()
     argv = seen[0]
     assert "--overlay-src" in argv and argv[-1] == "true"
     wt = argv[argv.index("--chdir") + 1]
@@ -607,10 +625,28 @@ def test_confinement_available():
 
     verdicts = []
     for run in (ok, missing, failing, timing_out):
-        cw_llm.confinement_available.cache_clear()
+        cw_llm._confined.update(ok=False, failed_at=None)
         verdicts.append(cw_llm.confinement_available(run=run))
-    cw_llm.confinement_available.cache_clear()
     assert verdicts == [True, False, False, False]
+
+
+def test_confinement_failure_is_retried_after_a_minute_and_success_is_final():
+    now = [1000.0]
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(argv, 10)
+        return subprocess.CompletedProcess(argv, 0)
+
+    clock = lambda: now[0]
+    assert cw_llm.confinement_available(run=run, clock=clock) is False
+    now[0] += 59
+    assert cw_llm.confinement_available(run=run, clock=clock) is False and len(calls) == 1
+    now[0] += 2
+    assert cw_llm.confinement_available(run=run, clock=clock) is True and len(calls) == 2
+    assert cw_llm.confinement_available(run=run, clock=clock) is True and len(calls) == 2
 
 
 def test_no_push_env_blocks_git_transports(tmp_path):

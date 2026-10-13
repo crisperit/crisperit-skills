@@ -369,7 +369,13 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
         lines = (Path(d) / "turns" / f"{qid}.outcomes.jsonl").read_text().splitlines()
     except OSError:
         return
+    # The file is writable by a Full agent, so each record is re-checked as the MCP server checks it.
+    anchor_doc = cw_store.read_json(Path(d) / "turns" / f"{qid}.anchor.json")
+    if not isinstance(anchor_doc, dict):
+        return
+    anchor_doc = {**anchor_doc, "dir": str(d)}
     known = {r.get("oid") for r in _read_records(d) if r.get("type") == "outcome"}
+    already = set()
     for line in lines:
         try:
             rec = json.loads(line)
@@ -377,8 +383,12 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
             payload = rec["arguments"]
             if not isinstance(payload, dict):
                 continue
+            if oid not in known and cw_mcp.check_outcome(anchor_doc, rec["name"], payload, already):
+                continue
+            key = kind["key"](payload)
         except (ValueError, KeyError, TypeError):
             continue
+        already.add(key)
         if oid in known:
             continue
         known.add(oid)
@@ -628,16 +638,19 @@ def _thread_text(d, anchor):
 
 def _ensure_ctx(d):
     """Copies, not symlinks: the model reads them through --add-dir and the analysis can be
-    replaced under it. Rewritten from the source on every use: the Full agent can write here."""
+    replaced under it. Rewritten from the source on every use, atomically so a concurrent turn never
+    reads a truncated file. Inside bubblewrap ctx is read-only (it sits under the read-only
+    walkthrough dir), so the overwrite is defence in depth."""
     ctx = d / "ctx"
     ctx.mkdir(exist_ok=True)
     analysis = d / "analysis.json"
     if not analysis.exists():
         analysis = d / "analysis.partial.json"
     for source, name in ((analysis, "analysis.json"), (d / "raw.diff", "raw.diff")):
-        dest = ctx / name
         if source.exists():
-            shutil.copyfile(source, dest)
+            tmp = ctx / f".{name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            shutil.copyfile(source, tmp)
+            os.replace(tmp, ctx / name)
     return ctx
 
 
@@ -960,7 +973,10 @@ def _claude_turn(d, record, profile, config, anchor, question, on_event, live, o
                                     session_id=session_id, resume=resume)
             turns = d / "turns"
             turns.mkdir(exist_ok=True)
-            argv = cw_llm.confine_prefix(cwd, cw_llm.overlay_root(cw_llm.git_common_dir(cwd)), Path.home(), turns) + argv
+            prefix = cw_llm.confine_prefix(cwd, cw_llm.overlay_root(cw_llm.git_common_dir(cwd)), Path.home(), turns)
+            if prefix:
+                cw_llm.project_dir(Path.home(), cwd).mkdir(parents=True, exist_ok=True)
+            argv = prefix + argv
         else:
             argv = cw_llm.thread_argv(
                 profile, system, mcp_config=mcp_config, add_dir=ctx, session_id=session_id, resume=resume)

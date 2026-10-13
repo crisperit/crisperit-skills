@@ -58,7 +58,7 @@ usage is booked under the "thread" role. `small_diff_lines` and `batch_max_lines
 step 2a. An openai profile may also carry `price_per_mtok: {"input": x, "output": y}`, which is what
 turns a usage total into `cost_usd`; no price table ships, since one would go stale.
 `trust.repos` and `trust.orgs` (both default to empty, matched case-insensitively) say where Full
-access may be offered and which repos clone without asking, see "Full access" and "Repos without a
+access may be offered (`trust.repos` also lets a repo clone without asking), see "Full access" and "Repos without a
 local clone". `repos` maps `owner/name` to an existing absolute directory and wins over the cache.
 
 ## `check`
@@ -130,16 +130,19 @@ Full needs Linux with bubblewrap and overlayfs. Without them Full is unavailable
 offer it and `mode: "full"` answers 400) and Review still works.
 
 The agent runs under bubblewrap. The filesystem is read-only except the shared worktree, the cw turns
-directory, Claude session state (`~/.claude/projects`, `session-env`, `sessions`, `.credentials.json`)
-and rtk history. `~/.claude` itself stays read-only, so the agent cannot plant hooks or settings.
-`/tmp` is private and discarded. `~/.ssh`, `~/.gnupg`, `/run/user` and the docker sockets are hidden.
+directory, Claude session state (only this agent's own `~/.claude/projects/<encoded cwd>`,
+`session-env` and `sessions`, plus `.credentials.json`) and rtk history. Anything the agent leaves in
+the turns directory is re-validated by the daemon before it is accepted. `~/.claude` itself stays read-only, so the agent cannot plant hooks or settings.
+`/tmp` is private and discarded. `~/.ssh`, `~/.gnupg` and `/run/user` are masked when they exist, after
+the repo overlay, and the docker sockets are hidden.
 The main repo's `.git` is an overlay, so any git write the agent makes is discarded and the daemon
 commits the worktree after the turn. `WebFetch` and `WebSearch` are disallowed for the Full agent.
 
 Not confined: reads (home stays readable), and network, which follows your own Claude settings and
 sandbox, so a broad allow rule still applies to everything except writes outside the worktree.
 Push and `gh` rules remain best effort. Refreshing the Claude login token inside the sandbox is
-untested.
+untested. The agent can read the daemon token and your gh token files, so treat Full like running
+Claude Code yourself on that repo.
 
 What is blocked, best effort: git transports are disabled in the agent's environment
 (`cw_llm.no_push_env`, so fetch and clone fail too) and `git push` and other push-like commands are

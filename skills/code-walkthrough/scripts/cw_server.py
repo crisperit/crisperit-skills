@@ -806,6 +806,10 @@ class _Handler(BaseHTTPRequestHandler):
                 body["remedy"] = e.remedy
             self._send_json(status, body)
             return
+        except cw_store.CWError as e:
+            locked = "in use" in str(e) or "locked" in str(e)
+            self._send_json(409 if locked else 500, {"error": str(e), "remedy": e.remedy})
+            return
         self._send_json(200, {"ok": True, "outcome": folded})
 
     def _route_resolve(self, key, wid, tid):
@@ -2068,6 +2072,7 @@ def _mark_interrupted():
             cw_store.update_meta(d, lambda m: m.update(status="interrupted"))
         if meta:
             cw_ask.fail_interrupted_tasks(d, set())
+            cw_agent.fail_interrupted_reloads(d)
 
 
 def _has_local_drafts(d):

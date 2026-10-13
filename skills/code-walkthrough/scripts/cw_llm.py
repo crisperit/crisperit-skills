@@ -6,7 +6,6 @@ model backend.
 Stdlib only, no network except the configured profile's base_url.
 """
 
-import functools
 import json
 import os
 import re
@@ -372,11 +371,17 @@ def _docker_sockets():
     return sorted(found)
 
 
-def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None):
+def project_dir(home, cwd):
+    # Claude Code names a cwd's state dir after the path with every non-alphanumeric character replaced by '-'.
+    return Path(home) / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+
+
+def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None, exists=os.path.exists):
     """bwrap argv that makes everything but the worktree and turns dir read-only for a Full turn.
     The main repo root is an overlay: agent writes there succeed and are discarded, the daemon
-    commits the worktree on the host afterwards. ~/.claude stays read-only so the agent cannot
-    plant hooks, settings or CLAUDE.md; /run stays visible for DNS."""
+    commits the worktree on the host afterwards. ~/.claude stays read-only except the agent cwd's own
+    project dir, so the agent cannot plant hooks, settings, CLAUDE.md or auto-memory the user's other
+    sessions would load; /run stays visible for DNS."""
     worktree, repo_root, home, turns_dir = map(str, (worktree, repo_root, home, turns_dir))
     walkthrough = str(Path(turns_dir).parent)
     if any(_under_tmp(p) for p in (worktree, repo_root, walkthrough)):
@@ -385,23 +390,43 @@ def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None):
     prefix = [
         "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
         "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
-        "--tmpfs", "/tmp", "--tmpfs", "/run/user", "--tmpfs", f"{home}/.ssh", "--tmpfs", f"{home}/.gnupg",
+        "--tmpfs", "/tmp",
     ]
     for sock in _docker_sockets() if sockets is None else sockets:
         prefix += ["--ro-bind", "/dev/null", str(sock)]
+    prefix += ["--overlay-src", repo_root, "--tmp-overlay", repo_root]
+    # After the overlay, which may sit on $HOME; tmpfs needs the mount point to exist on the read-only root.
+    for hidden in ("/run/user", f"{home}/.ssh", f"{home}/.gnupg"):
+        if exists(hidden):
+            prefix += ["--tmpfs", hidden]
     prefix += [
-        "--overlay-src", repo_root, "--tmp-overlay", repo_root,
         "--ro-bind", walkthrough, walkthrough,
         "--bind", worktree, worktree, "--bind", turns_dir, turns_dir,
     ]
-    for rel in (".claude/projects", ".claude/session-env", ".claude/sessions", ".claude/.credentials.json",
-                ".local/share/rtk"):
-        prefix += ["--bind-try", f"{home}/{rel}", f"{home}/{rel}"]
+    writable = [str(project_dir(home, worktree))] + [f"{home}/{rel}" for rel in (
+        ".claude/session-env", ".claude/sessions", ".claude/.credentials.json", ".local/share/rtk")]
+    for path in writable:
+        prefix += ["--bind-try", path, path]
     return prefix + ["--chdir", worktree, "--"]
 
 
-@functools.lru_cache(maxsize=1)
-def confinement_available(run=subprocess.run):
+_confined = {"ok": False, "failed_at": None}
+CONFINEMENT_RETRY_S = 60
+
+
+def confinement_available(run=subprocess.run, clock=time.monotonic):
+    # A failed probe may be transient (timeout), so it is retried after a minute; success is final.
+    if _confined["ok"]:
+        return True
+    failed_at = _confined["failed_at"]
+    if failed_at is not None and clock() - failed_at < CONFINEMENT_RETRY_S:
+        return False
+    _confined["ok"] = _probe_confinement(run)
+    _confined["failed_at"] = None if _confined["ok"] else clock()
+    return _confined["ok"]
+
+
+def _probe_confinement(run):
     # Runs the real prefix so the probe cannot drift from what a turn executes.
     cache = Path.home() / ".cache"
     with tempfile.TemporaryDirectory(dir=cache if cache.is_dir() else None) as t:
