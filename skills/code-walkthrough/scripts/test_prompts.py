@@ -56,12 +56,23 @@ def test_each_distinctive_sentence_lives_in_exactly_one_place():
             )
 
 
-def test_visuals_prompt_example_passes_the_sanitiser():
+def test_visuals_prompt_examples_pass_the_sanitiser():
     text = (PROMPTS_DIR / "visuals.md").read_text()
-    example = json.loads(re.search(r"```json\n(.*?)\n```", text, re.S).group(1))
-    clean, problems = visuals.check_visuals(example, len(example["groups"]))
-    assert problems == []
-    assert clean["pr"] and set(clean["groups"]) == {0}
+    blocks = re.findall(r"```json\n(.*?)\n```", text, re.S)
+    assert len(blocks) >= 3
+    for block in blocks:
+        example = json.loads(block)
+        n_groups = max([g["index"] for g in example["groups"]], default=-1) + 1
+        clean, problems = visuals.check_visuals(example, n_groups)
+        assert problems == []
+        assert bool(clean["pr"]) == bool(example["pr"]) and len(clean["groups"]) == len(example["groups"])
+
+
+def test_visuals_prompt_stays_small_and_examples_are_phone_sized():
+    text = (PROMPTS_DIR / "visuals.md").read_text()
+    assert len(text.encode()) <= 9 * 1024
+    for vb in re.findall(r"viewBox='0 0 (\d+) \d+'", text):
+        assert 360 <= int(vb) <= 560
 
 
 def test_prose_prompt_no_longer_asks_for_visuals_or_flow_diagrams():

@@ -888,7 +888,8 @@ def _run_visuals(d, meta, config, on_event, force=False):
         if not analysis or (not n_groups and not visuals.symbol_digest(symdelta)):
             _emit_step(d, on_event, "visuals", "skipped")
             return False
-        profile = cw_store.role_profile(config, "prose")
+        role = "visuals" if cw_store.role_profile(config, "visuals") else "prose"
+        profile = cw_store.role_profile(config, role)
         if profile is None:
             _emit_step(d, on_event, "visuals", "failed", error="no profile for role prose")
             return False
@@ -914,7 +915,7 @@ def _run_visuals(d, meta, config, on_event, force=False):
             cw_llm.run_tools(
                 profile, messages, tools + [_visuals_submit_tool()], local_handlers, max_rounds=3,
                 max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
-                on_usage=_make_on_usage(d, "prose", on_event, config), cwd=d / "head")
+                on_usage=_make_on_usage(d, role, on_event, config), cwd=d / "head")
         finally:
             _write_transcript(d, "visuals", profile, messages, result="clean" in state)
         clean = state["clean"]

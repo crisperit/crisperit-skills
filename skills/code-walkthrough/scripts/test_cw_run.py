@@ -296,6 +296,17 @@ def test_visuals_pass_repairs_then_writes_visuals_json():
             assert cw_store.read_meta(d)["steps"]["visuals"]["status"] == "ok"
 
 
+def test_visuals_pass_prefers_the_visuals_role_over_prose():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            cw_testlib.write_config(home, {"p": stub.profile("prose-m"), "v": stub.profile("vis-m")},
+                                    {"analysis": "p", "prose": "p", "visuals": "v"})
+            stub.script = {"vis-m": [_submit({"pr": None, "groups": [{"index": 0, "html": "<p>n</p>"}]})]}
+            assert cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            assert stub.count("vis-m") == 1 and stub.count("prose-m") == 0
+
+
 def test_visuals_pass_keeps_the_clean_part_on_the_final_attempt():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM({}) as stub:
