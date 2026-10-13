@@ -844,15 +844,17 @@
     border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;
     padding:10px 16px;font-size:var(--fs-sm);color:var(--text)}
 
-  #hr-comments-btn{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
-    display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
+  #cw-dock{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+    display:flex;align-items:center;gap:8px}
+  #hr-comments-btn,#cw-agent-seg{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:999px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;user-select:none;-webkit-user-select:none;
     box-shadow:0 6px 20px rgba(0,0,0,.35);transition:transform .15s,border-color .15s}
-  #hr-comments-btn:hover{border-color:var(--accent)}
-  #hr-comments-btn:active{transform:scale(.97)}
-  #hr-comments-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #hr-comments-btn.cw-dock-ask{background:var(--purple);border-color:var(--purple);color:var(--bg)}
+  #hr-comments-btn:hover,#cw-agent-seg:hover{border-color:var(--accent)}
+  #hr-comments-btn:active,#cw-agent-seg:active{transform:scale(.97)}
+  #hr-comments-btn:focus-visible,#cw-agent-seg:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #hr-comments-btn.cw-dock-ask,#cw-agent-seg{background:var(--purple);border-color:var(--purple);color:var(--bg)}
+  #cw-agent-seg[hidden]{display:none}
   .cw-dock-badge{border-radius:999px;padding:1px 8px;font:600 var(--fs-xs) system-ui;
     background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
   .cw-dock-badge.purple{background:color-mix(in srgb,var(--purple) 18%,transparent);color:var(--purple)}
@@ -956,6 +958,61 @@
   .dline.dline-touch-active .dline-plus,
   .dline.dline-sel-last .dline-plus{display:flex;align-items:center;justify-content:center}
   .dline.dline-sel-last .dline-plus{box-shadow:0 0 0 2px var(--purple)}
+  .dline.cw-ref-dot::after{content:'';position:absolute;left:7px;top:50%;width:6px;height:6px;margin-top:-3px;
+    border-radius:50%;background:var(--purple)}
+  .dline.cw-ref-dot:hover::after{display:none}
+  .cw-ref-dot:not(.dline){box-shadow:inset 3px 0 0 var(--purple)}
+  #cw-ref-toast{position:fixed;right:16px;bottom:calc(64px + var(--cw-bar-h,0px));z-index:40;max-width:min(320px,calc(100vw - 32px));
+    padding:8px 12px;border:1px solid var(--purple);border-radius:8px;background:var(--panel2);color:var(--text);
+    font-size:var(--fs-sm);box-shadow:0 6px 20px rgba(0,0,0,.35)}
+  #cw-ref-toast:empty{display:none}
+  .cw-ref-pulse{outline:2px solid var(--purple);outline-offset:2px}
+  #cw-agent-drawer{position:fixed;top:0;right:0;bottom:calc(var(--cw-bar-h,0px) + 70px);z-index:39;
+    display:flex;flex-direction:column;box-sizing:border-box;width:min(360px,92vw);
+    background:var(--panel);border-left:1px solid var(--border);color:var(--text);
+    box-shadow:-8px 0 24px rgba(0,0,0,.35)}
+  #cw-agent-drawer[hidden]{display:none}
+  #cw-agent-head{display:flex;align-items:center;gap:8px;padding:12px 14px;
+    border-bottom:1px solid var(--border);font-weight:600}
+  .cw-agent-count{margin-right:auto;font:400 var(--fs-xs) system-ui;color:var(--muted)}
+  #cw-agent-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1}
+  #cw-agent-refs{list-style:none;margin:0;padding:10px 14px;display:flex;flex-direction:column;gap:6px;
+    flex:1 1 auto;min-height:0;overflow-y:auto}
+  #cw-agent-refs:empty{display:none}
+  .cw-agent-empty{flex:1 1 auto;margin:0;padding:14px;color:var(--muted);font-size:var(--fs-sm)}
+  .cw-agent-chip{display:flex;gap:6px;align-items:stretch}
+  .cw-agent-go{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px;
+    text-align:left;background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--purple);
+    color:var(--text);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit;font-size:var(--fs-sm)}
+  .cw-agent-go:hover{border-color:var(--accent);border-left-color:var(--purple)}
+  .cw-agent-lbl,.cw-agent-quote{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cw-agent-lbl{font-weight:600}
+  .cw-agent-quote{font-size:var(--fs-xs);color:var(--muted)}
+  .cw-agent-x{flex:none;width:28px;background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;cursor:pointer;font-size:14px;line-height:1}
+  .cw-agent-x:hover{border-color:var(--red)}
+  #cw-agent-drawer .cw-compose{flex:none;margin:0;padding:10px 14px;border-left:0;
+    border-top:1px solid var(--border);background:none}
+  #cw-agent-drawer .cw-compose-head{display:none}
+  #cw-agent-drawer .cw-send{background:var(--purple);border-color:var(--purple)}
+  #cw-agent-drawer .cw-send:hover:not(:disabled){background:color-mix(in srgb,var(--purple) 85%,var(--text))}
+  @media (min-width:601px) and (pointer:fine){
+    .cw-agent-open #cw-ref-toast{right:calc(min(360px,92vw) + 16px)}
+  }
+  @media (max-width:600px),(pointer:coarse){
+    #cw-agent-drawer{top:auto;left:0;right:0;bottom:var(--cw-bar-h,0px);width:auto;height:min(90vh,calc(100vh - var(--cw-bar-h,0px) - 12px));
+      height:min(90dvh,calc(100dvh - var(--cw-bar-h,0px) - 12px));
+      z-index:45;border-left:0;border-top:1px solid var(--border);border-radius:12px 12px 0 0;
+      box-shadow:0 -8px 24px rgba(0,0,0,.35)}
+  }
+  /* Stacked above the dock row: beside the 82px Agent segment it sat 2px away at 390px. */
+  @media (max-width:480px){
+    #cw-live-reload{bottom:calc(16px + var(--cw-bar-h,0px) + 44px + 8px)}
+    #cw-ref-toast{bottom:calc(16px + var(--cw-bar-h,0px) + 44px + 8px + 44px + 8px)}
+  }
+  .cw-compose-text[hidden]{display:none}
+  .cw-th-refs{margin:0 0 6px;font-size:var(--fs-xs);color:var(--muted)}
   #plan-content ::selection{background:color-mix(in srgb,var(--purple) 30%,transparent);color:inherit}
   /* Lives inside <pre class="diff">, so it inherits its monospace and its white-space:pre.
      The font is reset because this is prose, and white-space for the same reason: left on pre a
@@ -968,7 +1025,7 @@
   #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
     font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:var(--bg);
     box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
-  #cw-comment-btn:focus-visible,#cw-threads-close:focus-visible,
+  #cw-comment-btn:focus-visible,#cw-threads-close:focus-visible,#cw-agent-drawer button:focus-visible,
   .cw-thread button:focus-visible,.cw-compose button:focus-visible,
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   #cw-threads{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
@@ -1189,8 +1246,11 @@
     .vd-level-toggle,.wt-tab{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
-    #hr-comments-btn,#cw-live-reload{height:44px}
-    .cw-typing #hr-comments-btn,.cw-typing #cw-drafts-bar{visibility:hidden;pointer-events:none}
+    #hr-comments-btn,#cw-agent-seg,#cw-live-reload{height:44px}
+    #cw-agent-close{width:44px;height:44px;font-size:16px}
+    .cw-agent-x{width:44px}
+    .cw-agent-go{min-height:44px}
+    .cw-typing #cw-dock,.cw-typing #cw-drafts-bar{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
@@ -1229,7 +1289,7 @@
 
 <!-- Ahead of #plan-content in source order (fixed visual position is unchanged) so a keyboard
      user reaches this button without tabbing through every commentable diff line first. -->
-<button type="button" id="hr-comments-btn" aria-haspopup="dialog">Comments <span class="cw-dock-badge">0</span></button>
+<div id="cw-dock"><button type="button" id="hr-comments-btn" aria-haspopup="dialog">Comments <span class="cw-dock-badge">0</span></button></div>
 <dialog id="hr-comments" aria-label="Your comments">
   <div id="hr-comments-head">
     <span>Your comments</span>
@@ -4012,7 +4072,7 @@
         note:'Page edits apply at once, with Undo.'},
     };
 
-    function makeComposer({modes,header,prose,payload,onSent,onCancel,onDraft}){
+    function makeComposer({modes,header,prose,ph,payload,onSent,onCancel,onDraft,onRef,refWhat,canSend}){
       const hasPr=!!(state.meta&&state.meta.pr!=null);
       const textFor=m=>MODE_TEXT[m==='agent'&&prose?'prose':m==='pr'&&!hasPr?'note':m];
       const box=mk('div','cw-compose');
@@ -4038,7 +4098,7 @@
       const row=mk('div','fb-actions'); row.append(send);
       const cancelBtn=onCancel?mkBtn('Cancel','cw-cancel fb-ghost'):null;
       if(cancelBtn) row.append(cancelBtn);
-      const noteText=mk('span'), hint=mk('span','cw-compose-hint','Esc closes, Ctrl+Enter sends');
+      const noteText=mk('span'), hint=mk('span','cw-compose-hint',onCancel?'Esc closes, Ctrl+Enter sends':'Ctrl+Enter sends');
       const note=mk('p','cw-compose-note'); note.append(noteText,hint);
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       const prompt=mk('div','fb-actions cw-discard'); prompt.hidden=true;
@@ -4049,12 +4109,21 @@
       let mode=modes[0], busy=false;
       const isEmpty=()=>!ta.value.trim();
       const prompting=()=>!prompt.hidden;
-      const sync=()=>{ send.disabled=busy||isEmpty(); };
+      const refMode=()=>!!onRef&&mode==='agent';
+      const refNote=()=>refs.length>=REF_CAP?REF_FULL
+        :'Adds '+refWhat+' to the agent thread. Nothing is sent yet. '+plural(refs.length,'reference')+' so far.';
+      const sync=()=>{
+        send.disabled=refMode()?refs.length>=REF_CAP:busy||isEmpty()||(!!canSend&&!canSend());
+        if(refMode()) noteText.textContent=refNote();
+      };
       function setMode(m,focusTab){
         mode=m; box.dataset.mode=m;
         const tx=textFor(m);
-        ta.placeholder=tx.ph; ta.setAttribute('aria-label',tx.ph);
+        const phText=ph||tx.ph;
+        ta.placeholder=phText; ta.setAttribute('aria-label',phText);
         noteText.textContent=tx.note; send.textContent=tx.btn; status.textContent='';
+        ta.hidden=hint.hidden=refMode();
+        if(refMode()){ send.textContent='Add to agent'; sync(); }
         for(const [k,t] of tabs){ t.setAttribute('aria-selected',String(k===m)); t.tabIndex=k===m?0:-1; }
         if(focusTab) tabs.get(m).focus();
       }
@@ -4086,7 +4155,11 @@
         onDraft(ta.value);
         if(onCancel) onCancel();
       }
-      const act=()=>{ if(!send.disabled) (mode==='pr'?saveDraft:submit)(); };
+      const act=()=>{
+        if(send.disabled) return;
+        if(refMode()){ if(onRef().ok) onCancel(); else sync(); return; }
+        (mode==='pr'?saveDraft:submit)();
+      };
       send.addEventListener('click',act);
       if(cancelBtn) cancelBtn.addEventListener('click',cancel);
       keepBtn.addEventListener('click',keepEditing);
@@ -4096,7 +4169,8 @@
         if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); act(); }
       });
       setMode(mode); sync();
-      return {box,ta,isEmpty,prompting,keepEditing,cancel,nudge,sync};
+      if(onRef||canSend){ const off=onRefs(()=>{ if(!box.isConnected) off(); else sync(); }); }
+      return {box,ta,send,isEmpty,prompting,keepEditing,cancel,nudge,sync};
     }
 
     function lineComposerOpts(anchor){
@@ -4106,10 +4180,37 @@
       const kind=anchor.side==='LEFT'?'removed (old file)':first==='+'?'added':'context';
       const lines=anchor.end_line?'Lines '+anchor.line+'-'+anchor.end_line:'Line '+anchor.line;
       const onDraft=directDraftFor(anchor);
-      return {modes:onDraft?['pr','agent']:['agent'],header:lines+' ('+kind+')',onDraft};
+      return {modes:onDraft?['pr','agent']:['agent'],header:lines+' ('+kind+')',onDraft,
+        onRef:()=>addRef(anchor),refWhat:anchor.end_line?'these lines':'this line'};
     }
 
     const threads=new Map();
+    const REF_CAP=8, REF_FULL='Agent thread is full ('+REF_CAP+' references). Send or clear it first.';
+    const refsKey=()=>lsKey('cw-agent-refs',state.meta.id);
+    const refListeners=new Set();
+    const onRefs=fn=>{ refListeners.add(fn); return ()=>refListeners.delete(fn); };
+    let refs=[];
+    function loadRefs(){
+      try{ const v=JSON.parse(localStorage.getItem(refsKey())||'[]'); refs=Array.isArray(v)?v.slice(0,REF_CAP):[]; }catch(e){ refs=[]; }
+    }
+    function refsChanged(){
+      try{ localStorage.setItem(refsKey(),JSON.stringify(refs)); }catch(e){}
+      markRefs();
+      refListeners.forEach(fn=>fn());
+    }
+    const refKey=a=>JSON.stringify([a.kind,a.path,a.side,a.line,a.end_line,a.block,a.section,a.quote]);
+    function addRef(a){
+      if(refs.some(r=>refKey(r)===refKey(a))) return {ok:true,dup:true};
+      if(refs.length>=REF_CAP) return {ok:false,full:true};
+      refs.push(a); refsChanged();
+      return {ok:true};
+    }
+    function removeRef(i){ if(i>=0&&i<refs.length){ refs.splice(i,1); refsChanged(); } }
+    function clearRefs(){ if(refs.length){ refs=[]; refsChanged(); } }
+    function markRefs(){
+      document.querySelectorAll('.cw-ref-dot:not([data-cw-sent])').forEach(e=>e.classList.remove('cw-ref-dot'));
+      for(const a of refs){ const el=placementFor(a); if(el) el.classList.add('cw-ref-dot'); }
+    }
     const foldKey=t=>lsKey('cw-thread-fold',t.id);
     function isCollapsed(t){
       let v=null;
@@ -4304,7 +4405,8 @@
 
     function pageEditTarget(o){
       const t=threads.get(o.thread_id);
-      const a=(t&&t.turns[0]&&t.turns[0].anchor)||{};
+      const t0=(t&&t.turns[0])||{};
+      const a=(t0.anchors&&t0.anchors.find(x=>x.kind==='block'||x.kind==='section'))||t0.anchor||{};
       const target=o.payload&&o.payload.target;
       const heading=a.section&&[...planEl.querySelectorAll('h1,h2,h3,h4')].find(x=>x.textContent.trim()===a.section);
       if(a.kind==='section'&&target===a.section) return {el:heading||null,outdated:!heading};
@@ -4845,9 +4947,10 @@
       t.msg=mk('p','cw-compose-status'); t.msg.setAttribute('role','status');
       t.body=mk('div','cw-thread-body');
       t.turnsEl=mk('div','cw-turns');
-      const anchor=(t.turns[0]||{}).anchor||{};
-      const follow=makeComposer('Reply in this thread',text=>({anchor,text,thread_id:t.id}),()=>{},null);
-      t.body.append(t.turnsEl,follow.box);
+      t.refsEl=mk('p','cw-th-refs');
+      const follow=makeComposer({modes:['agent'],header:'Reply to the agent',ph:'Reply in this thread',
+        payload:text=>({anchor:(t.turns[0]||{}).anchor||{},text,thread_id:t.id}),onSent:()=>{}});
+      t.body.append(t.refsEl,t.turnsEl,follow.box);
       t.el.append(head,t.msg,t.body);
       t.foldBtn.addEventListener('click',()=>setFold(t,!isCollapsed(t)));
       t.resolveBtn.addEventListener('click',()=>{
@@ -4865,6 +4968,8 @@
       });
     }
 
+    const refLabel=a=>a.kind==='line'?a.path+':'+a.line+(a.end_line?'-'+a.end_line:'')
+      :a.kind==='section'?a.section||'page':(a.section||'page')+' \u00b7 para';
     function renderThread(t){
       if(!t.el) buildThread(t);
       const collapsed=isCollapsed(t), state=stateOf(t);
@@ -4878,10 +4983,14 @@
       t.summary.textContent=firstLine(first.comment||first.question)+' ('+state+')';
       t.summary.hidden=!collapsed;
       t.body.hidden=collapsed;
+      const as=first.anchors||[];
+      t.refsEl.hidden=as.length<2;
+      t.refsEl.textContent=as.length<2?'':'References: '+as.map(refLabel).join(', ');
       t.turnsEl.replaceChildren(...t.turns.map((r,i)=>turnEl(r,t,i===t.turns.length-1)));
     }
 
     const earlyResolve=new Map();
+    let pendingReveal=null;
     function upsertTurn(r,fromSnapshot){
       if(!r||!r.thread_id) return;
       let t=threads.get(r.thread_id);
@@ -4895,6 +5004,11 @@
       if(isNew){
         const ref=placementFor(t.turns[0].anchor||{});
         if(ref){ insertAfterThreads(ref,t.el); t.placed=true; }
+        if(pendingReveal===t.id){ pendingReveal=null; if(t.placed) t.el.scrollIntoView({block:'center'}); }
+        for(const a of (t.turns[0].anchors||[]).slice(1)){
+          const el=placementFor(a);
+          if(el){ el.classList.add('cw-ref-dot'); el.dataset.cwSent='1'; }
+        }
         syncThreadEdits(t.id);
         renderThread(t);
       }
@@ -4941,7 +5055,15 @@
       if(snapshots++>0) loadQa();
     };
 
-    const ASK_LABEL='Message agent...';
+    const ASK_LABEL='Add to agent';
+    const refToast=mk('p'); refToast.id='cw-ref-toast'; refToast.setAttribute('role','status');
+    document.body.appendChild(refToast);
+    let toastTimer=null;
+    function toast(text){
+      refToast.textContent=text;
+      clearTimeout(toastTimer);
+      toastTimer=setTimeout(()=>{ refToast.textContent=''; },3000);
+    }
     const commentBtn=mkBtn(ASK_LABEL);
     commentBtn.id='cw-comment-btn'; commentBtn.hidden=true;
     commentBtn.addEventListener('mousedown',e=>e.preventDefault());
@@ -5056,6 +5178,76 @@
     dlg.addEventListener('close',()=>{ dock.focus(); });
     renderList();
 
+    const sheetQ=matchMedia('(max-width:600px),(pointer:coarse)');
+    const agentSeg=mkBtn('','cw-agent-seg'); agentSeg.id='cw-agent-seg'; agentSeg.hidden=true;
+    agentSeg.setAttribute('aria-controls','cw-agent-drawer'); agentSeg.setAttribute('aria-expanded','false');
+    $('cw-dock').prepend(agentSeg);
+    const drawer=mk('aside'); drawer.id='cw-agent-drawer'; drawer.hidden=true;
+    drawer.setAttribute('role','region'); drawer.setAttribute('aria-label','Agent thread');
+    const dHead=mk('div'); dHead.id='cw-agent-head'; dHead.tabIndex=-1;
+    const dCount=mk('span','cw-agent-count');
+    const dClose=mkBtn('\u2715'); dClose.id='cw-agent-close'; dClose.setAttribute('aria-label','Close');
+    dHead.append(mk('span',null,'Agent thread'),dCount,dClose);
+    const chipsEl=mk('ul'); chipsEl.id='cw-agent-refs';
+    const emptyEl=mk('p','cw-agent-empty','No references yet. Press + beside a diff line, or select prose, and choose Add to agent.');
+    const clearBtn=mkBtn('Clear','fb-ghost');
+    const agentC=makeComposer({modes:['agent'],header:'',canSend:()=>refs.length>0,
+      payload:text=>({anchors:refs.slice(),text}),
+      onSent:body=>{
+        clearRefs(); closeDrawer();
+        toast('Sent to agent. The reply appears under the first reference.');
+        const t=threads.get(body&&body.thread_id);
+        if(t&&t.placed) t.el.scrollIntoView({block:'center'});
+        else if(body&&body.thread_id) pendingReveal=body.thread_id;
+      }});
+    agentC.send.after(clearBtn);
+    drawer.append(dHead,chipsEl,emptyEl,agentC.box);
+    document.body.appendChild(drawer);
+
+    const chipText=a=>a.kind==='line'?refLabel(a).replace(/^.*\//,''):refLabel(a);
+    function revealRef(a){
+      const el=placementFor(a);
+      if(!el){ toast('That spot is no longer on the page.'); return; }
+      if(sheetQ.matches) closeDrawer(false);
+      el.scrollIntoView({block:'center'});
+      el.classList.add('cw-ref-pulse');
+      setTimeout(()=>el.classList.remove('cw-ref-pulse'),1200);
+    }
+    function chipEl(a,i){
+      const li=mk('li','cw-agent-chip');
+      const go=mkBtn(null,'cw-agent-go'); go.title=refLabel(a);
+      go.append(mk('span','cw-agent-lbl',chipText(a)),mk('span','cw-agent-quote',firstLine(a.quote)));
+      go.addEventListener('click',()=>revealRef(a));
+      const x=mkBtn('\u2715','cw-agent-x'); x.setAttribute('aria-label','Remove '+chipText(a));
+      x.addEventListener('click',()=>removeRef(i));
+      li.append(go,x);
+      return li;
+    }
+    function paintAgent(){
+      const n=refs.length;
+      agentSeg.hidden=!n;
+      agentSeg.textContent='Agent \u00b7 '+n;
+      agentSeg.setAttribute('aria-label','Agent thread, '+plural(n,'reference'));
+      dCount.textContent=plural(n,'reference');
+      emptyEl.hidden=n>0;
+      clearBtn.disabled=!n;
+      chipsEl.replaceChildren(...refs.map(chipEl));
+    }
+    onRefs(paintAgent);
+    const drawerOpen=()=>!drawer.hidden;
+    function openDrawer(){
+      drawer.hidden=false; agentSeg.setAttribute('aria-expanded','true'); rootEl.classList.add('cw-agent-open');
+      (sheetQ.matches?dHead:agentC.ta).focus();
+    }
+    function closeDrawer(restore=true){
+      if(!drawerOpen()) return;
+      drawer.hidden=true; agentSeg.setAttribute('aria-expanded','false'); rootEl.classList.remove('cw-agent-open');
+      if(restore) (agentSeg.hidden?dock:agentSeg).focus();
+    }
+    agentSeg.addEventListener('click',()=>drawerOpen()?closeDrawer():openDrawer());
+    dClose.addEventListener('click',()=>closeDrawer());
+    clearBtn.addEventListener('click',clearRefs);
+
     function diffSel(){
       const sel=window.getSelection();
       if(!sel||sel.isCollapsed||!sel.rangeCount||!sel.toString().trim()) return null;
@@ -5139,7 +5331,7 @@
           if(openC===c&&c.isEmpty()&&!c.box.contains(document.activeElement)) closeBox(false);
         },0);
       });
-      c.ta.focus();
+      (c.ta.hidden?c.send:c.ta).focus();
     }
     document.addEventListener('pointerdown',e=>{
       if(!openC||!openC.isEmpty()) return;
@@ -5149,22 +5341,24 @@
       closeBox(false);
     });
     window.cwComposerEsc=()=>{
-      if(!openC||!openBox.isConnected) return false;
-      if(openC.prompting()) openC.keepEditing(); else openC.cancel();
-      return true;
+      if(openC&&openBox.isConnected){
+        if(openC.prompting()) openC.keepEditing(); else openC.cancel();
+        return true;
+      }
+      if(drawerOpen()&&!document.querySelector('dialog[open]')){ closeDrawer(); return true; }
+      return false;
     };
 
     function askFromSelection(){
       const sel=window.getSelection();
       if(!sel||sel.isCollapsed||!sel.toString().trim()) return;
       const anchor=buildAskAnchor(sel);
-      const ref=anchor&&placementFor(anchor);
-      if(!ref) return;
-      if(composerBusy()) return;
-      const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),onSent:closeComposer,onCancel:closeComposer});
-      openComposer(c,box=>insertAfterThreads(ref,box));
+      if(!anchor||!placementFor(anchor)) return;
+      const r=addRef(anchor);
+      sel.removeAllRanges();
       commentBtn.hidden=true;
       setDockAsk(false);
+      toast(r.full?REF_FULL:'Added to agent thread ('+refs.length+' of '+REF_CAP+').');
     }
     commentBtn.addEventListener('click',askFromSelection);
 
@@ -5201,6 +5395,8 @@
         .catch(()=>{});
     }
     loadQa();
+    loadRefs();
+    refsChanged();
   }
 
   document.querySelectorAll('pre.diff').forEach(wireHunk);
