@@ -1116,6 +1116,16 @@
     border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;
     font:inherit;font-size:var(--fs-sm);box-sizing:border-box}
   .cw-compose .fb-actions{margin-top:6px}
+  .cw-compose .fb-actions[hidden]{display:none}
+  .cw-discard{align-items:center;flex-wrap:wrap}
+  .cw-discard-q{font-size:var(--fs-sm);color:var(--text);flex:1 1 auto}
+  .cw-discard-btns{display:flex;gap:8px;flex-wrap:wrap}
+  @media (max-width:520px){.cw-discard-q{flex-basis:100%}}
+  .cw-compose.cw-nudge{outline:2px solid var(--yellow);outline-offset:2px}
+  @media (prefers-reduced-motion:no-preference){
+    .cw-compose.cw-nudge{animation:cw-nudge .9s ease-out}
+  }
+  @keyframes cw-nudge{from{outline-color:transparent;outline-offset:8px}40%{outline-color:var(--yellow)}to{outline-offset:2px}}
   .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
 
   #cw-post-confirm{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
@@ -1796,7 +1806,10 @@
       ?[...zbody.querySelectorAll('svg.vd-nav.vd-focusing')]
       :[...document.querySelectorAll('svg.vd-nav.vd-focusing')]
         .filter(el=>!el.closest('[hidden]')&&!el.closest('dialog:not([open])'));
-    if(focusing.length){ e.preventDefault(); focusing.forEach(clearNavFocus); }
+    if(focusing.length){ e.preventDefault(); focusing.forEach(clearNavFocus); return; }
+    // Set by wireAsk (live pages only). preventDefault keeps the dialog's native cancel from
+    // closing the Threads dialog together with a composer inside it.
+    if(!e.defaultPrevented&&window.cwComposerEsc&&window.cwComposerEsc()) e.preventDefault();
   });
 
   // Pan and zoom by rewriting the svg's viewBox: it already carries one, so scaling it needs
@@ -3962,8 +3975,28 @@
       const row=mk('div','fb-actions'); row.append(send);
       const draftBtn=onDraft?mkBtn('Save as GitHub draft','cw-draft fb-ghost'):null;
       if(draftBtn) row.append(draftBtn);
+      const cancelBtn=onCancel?mkBtn('Cancel','cw-cancel fb-ghost'):null;
+      if(cancelBtn) row.append(cancelBtn);
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
-      box.append(ta,row,status);
+      const prompt=mk('div','fb-actions cw-discard'); prompt.hidden=true;
+      const keepBtn=mkBtn('Keep editing','fb-ghost'), dropBtn=mkBtn('Discard','fb-danger');
+      const btns=mk('div','cw-discard-btns'); btns.append(keepBtn,dropBtn);
+      prompt.append(mk('span','cw-discard-q','Discard this comment?'),btns);
+      box.append(ta,row,prompt,status);
+      const isEmpty=()=>!ta.value.trim();
+      const prompting=()=>!prompt.hidden;
+      function keepEditing(){ prompt.hidden=true; row.hidden=false; ta.focus(); }
+      function cancel(){
+        if(!onCancel) return;
+        if(isEmpty()){ onCancel(); return; }
+        row.hidden=true; prompt.hidden=false; keepBtn.focus();
+      }
+      function nudge(){
+        status.textContent='Finish or discard this comment first.';
+        ta.focus();
+        box.classList.remove('cw-nudge'); void box.offsetWidth; box.classList.add('cw-nudge');
+        setTimeout(()=>box.classList.remove('cw-nudge'),900);
+      }
       function submit(){
         const text=ta.value.trim();
         if(!text){ status.textContent='Type a comment first.'; return; }
@@ -3984,15 +4017,17 @@
         if(onCancel) onCancel();
       }
       send.addEventListener('click',submit);
+      if(cancelBtn) cancelBtn.addEventListener('click',cancel);
+      keepBtn.addEventListener('click',keepEditing);
+      if(onCancel) dropBtn.addEventListener('click',()=>onCancel());
       if(draftBtn) draftBtn.addEventListener('click',saveDraft);
       ta.addEventListener('keydown',e=>{
         if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){
           e.preventDefault();
           if(e.shiftKey&&onDraft) saveDraft(); else submit();
         }
-        else if(e.key==='Escape'&&onCancel){ e.preventDefault(); onCancel(); }
       });
-      return {box,ta};
+      return {box,ta,isEmpty,prompting,keepEditing,cancel,nudge};
     }
 
     const threads=new Map();
@@ -4943,8 +4978,46 @@
       selTimer=setTimeout(updateCommentButton,150);
     });
 
-    let openBox=null;
-    function closeBox(){ if(openBox){ openBox.remove(); openBox=null; } }
+    let openBox=null, openC=null, openFrom=null;
+    function closeBox(restore=true){
+      if(!openBox) return;
+      const from=openFrom;
+      openBox.remove(); openBox=openC=openFrom=null;
+      if(restore&&from&&from.isConnected) from.focus();
+    }
+    const closeComposer=()=>closeBox();
+
+    function composerBusy(){
+      if(!openC||!openBox.isConnected||openC.isEmpty()) return false;
+      openC.nudge();
+      return true;
+    }
+    function openComposer(c,place){
+      const from=document.activeElement;
+      closeBox(false);
+      openC=c; openBox=c.box;
+      openFrom=from&&from!==document.body?from:null;
+      place(c.box);
+      c.box.addEventListener('focusout',e=>{
+        if(c.box.contains(e.relatedTarget)) return;
+        setTimeout(()=>{
+          if(openC===c&&c.isEmpty()&&!c.box.contains(document.activeElement)) closeBox(false);
+        },0);
+      });
+      c.ta.focus();
+    }
+    document.addEventListener('pointerdown',e=>{
+      if(!openC||!openC.isEmpty()) return;
+      const t=e.target;
+      if(t.closest&&t.closest('.cw-compose')) return;
+      if(openFrom&&openFrom.contains(t)) return;
+      closeBox(false);
+    });
+    window.cwComposerEsc=()=>{
+      if(!openC||!openBox.isConnected) return false;
+      if(openC.prompting()) openC.keepEditing(); else openC.cancel();
+      return true;
+    };
 
     commentBtn.addEventListener('click',()=>{
       const sel=window.getSelection();
@@ -4952,23 +5025,19 @@
       const anchor=buildAskAnchor(sel);
       const ref=anchor&&placementFor(anchor);
       if(!ref) return;
-      closeBox();
-      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeBox,closeBox,directDraftFor(anchor));
-      openBox=c.box;
-      insertAfterThreads(ref,c.box);
+      if(composerBusy()) return;
+      const c=makeComposer('Comment on the selection',text=>({anchor,text}),closeComposer,closeComposer,directDraftFor(anchor));
+      openComposer(c,box=>insertAfterThreads(ref,box));
       commentBtn.hidden=true;
-      c.ta.focus();
     });
 
     openThreadAsk=(root,host,input)=>{
-      closeBox();
+      if(composerBusy()) return;
       const anchor={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
-      const c=makeComposer('Ask the agent about this thread',text=>({anchor,text}),closeBox,closeBox,
+      const c=makeComposer('Ask the agent about this thread',text=>({anchor,text}),closeComposer,closeComposer,
         text=>createGhDraft({body:text,target:{kind:'reply',note_id:root.id}}));
       if(input&&input.value){ c.ta.value=input.value; input.value=''; }
-      openBox=c.box;
-      host.append(c.box);
-      c.ta.focus();
+      openComposer(c,box=>host.append(box));
     };
 
     openLineComposer=meta=>{
@@ -4976,11 +5045,9 @@
         hunk_id:meta.hunkId||null,quote:meta.text};
       const ref=placementFor(anchor);
       if(!ref||lineDraft(meta)){ openOrFocusDraft(meta); return; }
-      closeBox();
-      const c=makeComposer('Comment on this line',text=>({anchor,text}),closeBox,closeBox,directDraftFor(anchor));
-      openBox=c.box;
-      insertAfterThreads(ref,c.box);
-      c.ta.focus();
+      if(composerBusy()) return;
+      const c=makeComposer('Comment on this line',text=>({anchor,text}),closeComposer,closeComposer,directDraftFor(anchor));
+      openComposer(c,box=>insertAfterThreads(ref,box));
     };
 
     function loadQa(){
