@@ -845,16 +845,14 @@
     padding:10px 16px;font-size:var(--fs-sm);color:var(--text)}
 
   #cw-dock{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
-    display:flex;align-items:center;gap:8px}
-  #hr-comments-btn,#cw-agent-seg{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
+    display:flex}
+  #hr-comments-btn{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:999px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;user-select:none;-webkit-user-select:none;
     box-shadow:0 6px 20px rgba(0,0,0,.35);transition:transform .15s,border-color .15s}
-  #hr-comments-btn:hover,#cw-agent-seg:hover{border-color:var(--accent)}
-  #hr-comments-btn:active,#cw-agent-seg:active{transform:scale(.97)}
-  #hr-comments-btn:focus-visible,#cw-agent-seg:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #hr-comments-btn.cw-dock-ask,#cw-agent-seg{background:var(--purple);border-color:var(--purple);color:var(--bg)}
-  #cw-agent-seg[hidden]{display:none}
+  #hr-comments-btn:hover{border-color:var(--accent)}
+  #hr-comments-btn:active{transform:scale(.97)}
+  #hr-comments-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-dock-badge{border-radius:999px;padding:1px 8px;font:600 var(--fs-xs) system-ui;
     background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
   .cw-dock-badge.purple{background:color-mix(in srgb,var(--purple) 18%,transparent);color:var(--purple)}
@@ -967,56 +965,28 @@
   .cw-ref-dot-btn:hover::after{box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 30%,transparent)}
   .cw-ref-dot-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:50%}
   .cw-ref-dot:not(.dline){box-shadow:inset 3px 0 0 var(--purple)}
-  #cw-ref-toast{position:fixed;right:16px;bottom:calc(64px + var(--cw-bar-h,0px));z-index:40;max-width:min(320px,calc(100vw - 32px));
+  #cw-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(64px + var(--cw-bar-h,0px));z-index:52;
+    display:flex;align-items:center;gap:10px;box-sizing:border-box;width:max-content;max-width:min(420px,calc(100vw - 32px));
     padding:8px 12px;border:1px solid var(--purple);border-radius:8px;background:var(--panel2);color:var(--text);
     font-size:var(--fs-sm);box-shadow:0 6px 20px rgba(0,0,0,.35)}
-  #cw-ref-toast:empty{display:none}
+  #cw-toast:empty{display:none}
+  .cw-toast-act{flex:none;background:none;border:0;padding:2px 4px;color:var(--accent);font:600 var(--fs-sm) system-ui;
+    cursor:pointer;text-decoration:underline}
+  .cw-toast-act:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #cw-selbar{position:absolute;left:0;top:0;z-index:52;display:flex;align-items:center;gap:8px;box-sizing:border-box;
+    width:max-content;max-width:calc(100vw - 16px);padding:6px 8px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:8px;color:var(--text);font:var(--fs-sm) system-ui;box-shadow:0 6px 20px rgba(0,0,0,.35)}
+  #cw-selbar[hidden]{display:none}
+  #cw-selbar-what{font-weight:600;white-space:nowrap}
+  #cw-selbar-target{min-width:0;max-width:200px;background:var(--panel);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:4px 6px;font:inherit}
+  #cw-selbar button{border-radius:6px;padding:4px 12px;font:600 var(--fs-sm) system-ui;cursor:pointer;white-space:nowrap}
+  #cw-selbar-add{background:var(--purple);border:1px solid var(--purple);color:var(--bg)}
+  #cw-selbar-add:hover{background:color-mix(in srgb,var(--purple) 85%,var(--text))}
+  #cw-selbar-pr{background:none;border:1px solid var(--yellow);color:var(--yellow)}
+  #cw-selbar-pr:hover{background:var(--yellow);color:var(--bg)}
+  #cw-selbar :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-flash{outline:2px solid var(--purple);outline-offset:2px}
-  #cw-agent-drawer{position:fixed;top:0;right:0;bottom:calc(var(--cw-bar-h,0px) + 70px);z-index:39;
-    display:flex;flex-direction:column;box-sizing:border-box;width:min(360px,92vw);
-    background:var(--panel);border-left:1px solid var(--border);color:var(--text);
-    box-shadow:-8px 0 24px rgba(0,0,0,.35)}
-  #cw-agent-drawer[hidden]{display:none}
-  #cw-agent-head{display:flex;align-items:center;gap:8px;padding:12px 14px;
-    border-bottom:1px solid var(--border);font-weight:600}
-  .cw-agent-count{margin-right:auto;font:400 var(--fs-xs) system-ui;color:var(--muted)}
-  #cw-agent-close{background:var(--panel2);border:1px solid var(--border);color:var(--text);
-    border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1}
-  #cw-agent-refs{list-style:none;margin:0;padding:10px 14px;display:flex;flex-direction:column;gap:6px;
-    flex:1 1 auto;min-height:0;overflow-y:auto}
-  #cw-agent-refs:empty{display:none}
-  .cw-agent-empty{flex:1 1 auto;margin:0;padding:14px;color:var(--muted);font-size:var(--fs-sm)}
-  .cw-agent-chip{display:flex;gap:6px;align-items:stretch}
-  .cw-agent-go{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px;
-    text-align:left;background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--purple);
-    color:var(--text);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit;font-size:var(--fs-sm)}
-  .cw-agent-go:hover{border-color:var(--accent);border-left-color:var(--purple)}
-  .cw-agent-lbl,.cw-agent-quote{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .cw-agent-lbl{font-weight:600}
-  .cw-agent-quote{font-size:var(--fs-xs);color:var(--muted)}
-  .cw-agent-x{flex:none;width:28px;background:var(--panel2);border:1px solid var(--border);color:var(--text);
-    border-radius:6px;cursor:pointer;font-size:14px;line-height:1}
-  .cw-agent-x:hover{border-color:var(--red)}
-  #cw-agent-drawer .cw-compose{flex:none;margin:0;padding:10px 14px;border-left:0;
-    border-top:1px solid var(--border);background:none}
-  #cw-agent-drawer .cw-compose-head{display:none}
-  #cw-agent-drawer .cw-send{background:var(--purple);border-color:var(--purple)}
-  #cw-agent-drawer .cw-send:hover:not(:disabled){background:color-mix(in srgb,var(--purple) 85%,var(--text))}
-  @media (min-width:601px) and (pointer:fine){
-    .cw-agent-open #cw-ref-toast{right:calc(min(360px,92vw) + 16px)}
-  }
-  @media (max-width:600px),(pointer:coarse){
-    #cw-agent-drawer{top:auto;left:0;right:0;bottom:var(--cw-bar-h,0px);width:auto;height:min(90vh,calc(100vh - var(--cw-bar-h,0px) - 12px));
-      height:min(90dvh,calc(100dvh - var(--cw-bar-h,0px) - 12px));
-      z-index:45;border-left:0;border-top:1px solid var(--border);border-radius:12px 12px 0 0;
-      box-shadow:0 -8px 24px rgba(0,0,0,.35)}
-  }
-  /* Stacked above the dock row: beside the 82px Agent segment it sat 2px away at 390px. */
-  @media (max-width:480px){
-    #cw-live-reload{bottom:calc(16px + var(--cw-bar-h,0px) + 44px + 8px)}
-    #cw-ref-toast{bottom:calc(16px + var(--cw-bar-h,0px) + 44px + 8px + 44px + 8px)}
-  }
-  .cw-compose-text[hidden]{display:none}
     #plan-content ::selection{background:color-mix(in srgb,var(--purple) 30%,transparent);color:inherit}
   /* Lives inside <pre class="diff">, so it inherits its monospace and its white-space:pre.
      The font is reset because this is prose, and white-space for the same reason: left on pre a
@@ -1026,10 +996,7 @@
   .dline-note{display:block;margin:6px 0;white-space:normal;line-height:1.6;
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
 
-  #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
-    font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:var(--bg);
-    box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
-  #cw-comment-btn:focus-visible,#cw-agent-drawer button:focus-visible,#cw-panel button:focus-visible,
+  #cw-panel button:focus-visible,
   .cw-thread button:focus-visible,.cw-compose button:focus-visible,
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   :root{--cw-panel-w:clamp(300px,26vw,360px)}
@@ -1072,7 +1039,8 @@
   #cw-panel-compose{flex:none}
   #cw-panel .cw-thread{margin:0;padding:0;border-left:0;background:none}
   @media (min-width:601px) and (pointer:fine){
-    .cw-panel-open #cw-dock,.cw-panel-open #cw-ref-toast{right:calc(var(--cw-panel-w) + 16px)}
+    .cw-panel-open #cw-dock{right:calc(var(--cw-panel-w) + 16px)}
+    .cw-panel-open #cw-toast{left:calc(50% - var(--cw-panel-w)/2)}
   }
   @media (min-width:1100px) and (pointer:fine){
     .cw-panel-open body{padding-right:calc(var(--cw-panel-w) + 20px)}
@@ -1224,10 +1192,6 @@
   .cw-compose .cw-send{background:var(--mode-color);border-color:var(--mode-color)}
   .cw-compose .cw-send:hover:not(:disabled){background:color-mix(in srgb,var(--mode-color) 88%,#000)}
   .cw-compose-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 6px;font-size:var(--fs-xs);color:var(--muted)}
-  .cw-modes{display:inline-flex;margin-left:auto;border:1px solid var(--border);border-radius:6px;overflow:hidden}
-  .cw-mode-tab{min-height:24px;padding:0 10px;border:0;background:var(--panel2);color:var(--muted);
-    font:inherit;font-size:var(--fs-xs);cursor:pointer}
-  .cw-mode-tab[aria-selected="true"]{background:var(--mode-color);color:var(--bg)}
   .cw-compose-note{margin:6px 0 0;font-size:var(--fs-xs);color:var(--muted)}
   .cw-compose-hint::before{content:" ";white-space:pre}
   .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
@@ -1305,16 +1269,16 @@
     .vd-level-toggle,.wt-tab{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
-    #hr-comments-btn,#cw-agent-seg,#cw-live-reload{height:44px}
-    #cw-agent-close{width:44px;height:44px;font-size:16px}
-    .cw-agent-x{width:44px}
-    .cw-agent-go{min-height:44px}
+    #hr-comments-btn,#cw-live-reload{height:44px}
     .cw-typing #cw-dock,.cw-typing #cw-drafts-bar{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-comment-btn{display:none!important}
-    .cw-mode-tab{min-height:44px;padding:0 14px}
+    #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:calc(var(--cw-bar-h,0px) + 68px);width:auto;max-width:none;
+      flex-wrap:wrap}
+    #cw-selbar-what{flex:1 1 100%}
+    #cw-selbar-target{flex:1 1 0;min-height:44px;max-width:none}
+    #cw-selbar button{min-height:44px;padding:0 14px}
     .cw-compose-hint{display:none}
     .cw-ed{min-height:88px}
     .cw-ref-tag,.cw-ref-acts button{min-height:44px}
@@ -2544,7 +2508,7 @@
   let touchRevealedSpan=null;
 
   // set by wireAsk on a live page; a static page has no daemon, so wireLine falls back to the plain draft row
-  let openLineComposer=null;
+  let onGutter=null;
   let openThreadAsk=null;
   const outcomeHooks={oidFor:()=>null,published:()=>{}};
 
@@ -2558,7 +2522,7 @@
     const badge=document.createElement('span'); badge.className='dline-num';
     badge.textContent=meta.line; badge.setAttribute('aria-hidden','true');
     span.insertBefore(badge,span.firstChild);
-    const open=()=>{ if(openLineComposer) openLineComposer(meta); else openOrFocusDraft(meta); };
+    const open=()=>{ if(onGutter) onGutter(meta); else openOrFocusDraft(meta); };
     const plus=document.createElement('button');
     plus.type='button'; plus.className='dline-plus'; plus.tabIndex=-1;
     plus.setAttribute('aria-label','Add comment on '+meta.path+':'+meta.line+' ('+meta.side+')');
@@ -4150,18 +4114,27 @@
       return p?(p.n?p.section+' · ¶'+p.n:p.section):sectionHeadingOf(el);
     }
 
-    function buildAskAnchor(sel){
-      const quote=sel.toString();
-      const range=sel.getRangeAt(0);
-      const sm=lineMetaBySpan.get(closestDline(range.startContainer));
-      const em=lineMetaBySpan.get(selectionEndRow(range));
-      if(sm&&em){
-        return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
-          end_line:em.line!==sm.line?em.line:null,hunk_id:sm.hunkId||null,quote};
+    function lineRangeAnchor(startSpan,endSpan){
+      const sm=lineMetaBySpan.get(startSpan), rows=[];
+      let on=false;
+      for(const c of startSpan.parentElement.children){
+        if(c===startSpan) on=true;
+        const m=lineMetaBySpan.get(c);
+        if(on&&m) rows.push(m);
+        if(c===endSpan) break;
       }
+      const last=rows.filter(m=>m.side===sm.side).pop();
+      return {kind:'line',path:sm.path,side:sm.side,line:sm.line,
+        end_line:last.line!==sm.line?last.line:null,hunk_id:sm.hunkId||null,quote:rows.map(m=>m.text).join('\n')};
+    }
+
+    function buildAskAnchor(sel){
+      const range=sel.getRangeAt(0);
+      const ss=closestDline(range.startContainer), es=selectionEndRow(range);
+      if(lineMetaBySpan.get(ss)&&lineMetaBySpan.get(es)) return lineRangeAnchor(ss,es);
       const b=blockOf(range.startContainer);
       if(!b) return null;
-      return {kind:'block',block:blockKey(b),section:sectionHeadingOf(b),quote};
+      return {kind:'block',block:blockKey(b),section:sectionHeadingOf(b),quote:sel.toString()};
     }
 
     function placementFor(anchor){
@@ -4209,75 +4182,32 @@
       };
     }
 
-    const MODE_TEXT={
-      pr:{tab:'PR comment',btn:'Add to review',ph:'Comment for the PR review',
-        note:'Saved as a draft. Posts to the PR when you Submit review.'},
-      note:{tab:'Note',btn:'Save note',ph:'Write a note',note:'Saved as a note on this page.'},
-      agent:{tab:'Agent',btn:'Send to agent',ph:'Ask, or tell the agent what to change',
-        note:'To the agent. Ask, or tell it what to change. A code change comes back as a plan you review and Run.'},
-      prose:{tab:'Agent',btn:'Send to agent',ph:'Ask, or tell the agent how to change this page',
-        note:'Page edits apply at once, with Undo.'},
-    };
-
-    function makeComposer({modes,header,prose,ph,payload,onSent,onCancel,onDraft,onRef,refWhat,canSend}){
+    function makeComposer({header,onDraft,onCancel}){
       const hasPr=!!(state.meta&&state.meta.pr!=null);
-      const textFor=m=>MODE_TEXT[m==='agent'&&prose?'prose':m==='pr'&&!hasPr?'note':m];
-      const box=mk('div','cw-compose');
+      const tx=hasPr?{btn:'Add to review',ph:'Comment for the PR review',
+        note:'Saved as a draft. Posts to the PR when you Submit review.'}
+        :{btn:'Save note',ph:'Write a note',note:'Saved as a note on this page.'};
+      const box=mk('div','cw-compose'); box.dataset.mode='pr';
       const head=mk('div','cw-compose-head');
       head.append(mk('span','cw-compose-title',header));
-      const tabs=new Map();
-      if(modes.length>1){
-        const list=mk('div','cw-modes'); list.setAttribute('role','tablist'); list.setAttribute('aria-label','Comment mode');
-        for(const m of modes){
-          const t=mkBtn(textFor(m).tab,'cw-mode-tab'); t.setAttribute('role','tab');
-          t.addEventListener('click',()=>setMode(m,true));
-          t.addEventListener('keydown',e=>{
-            if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight') return;
-            e.preventDefault();
-            setMode(modes[(modes.indexOf(m)+(e.key==='ArrowRight'?1:modes.length-1))%modes.length],true);
-          });
-          tabs.set(m,t); list.append(t);
-        }
-        head.append(list);
-      }
       const ta=mk('textarea','cw-compose-text');
-      const send=mkBtn('','cw-send fb-primary');
+      ta.placeholder=tx.ph; ta.setAttribute('aria-label',tx.ph);
+      const send=mkBtn(tx.btn,'cw-send fb-primary');
       const row=mk('div','fb-actions'); row.append(send);
-      const cancelBtn=onCancel?mkBtn('Cancel','cw-cancel fb-ghost'):null;
-      if(cancelBtn) row.append(cancelBtn);
-      const noteText=mk('span'), hint=mk('span','cw-compose-hint',onCancel?'Esc closes, Ctrl+Enter sends':'Ctrl+Enter sends');
-      const note=mk('p','cw-compose-note'); note.append(noteText,hint);
+      const cancelBtn=mkBtn('Cancel','cw-cancel fb-ghost'); row.append(cancelBtn);
+      const hint=mk('span','cw-compose-hint','Esc closes, Ctrl+Enter saves');
+      const note=mk('p','cw-compose-note'); note.append(mk('span',null,tx.note),hint);
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       const prompt=mk('div','fb-actions cw-discard'); prompt.hidden=true;
       const keepBtn=mkBtn('Keep editing','fb-ghost'), dropBtn=mkBtn('Discard','fb-danger');
       const btns=mk('div','cw-discard-btns'); btns.append(keepBtn,dropBtn);
       prompt.append(mk('span','cw-discard-q','Discard this comment?'),btns);
       box.append(head,ta,note,row,prompt,status);
-      let mode=modes[0], busy=false;
       const isEmpty=()=>!ta.value.trim();
       const prompting=()=>!prompt.hidden;
-      const refMode=()=>!!onRef&&mode==='agent';
-      const refNote=()=>refs.length>=REF_CAP?REF_FULL
-        :'Adds '+refWhat+' to the agent thread. Nothing is sent yet. '+plural(refs.length,'reference')+' so far.';
-      const sync=()=>{
-        send.disabled=refMode()?refs.length>=REF_CAP:busy||isEmpty()||(!!canSend&&!canSend());
-        if(refMode()) noteText.textContent=refNote();
-      };
-      function setMode(m,focusTab){
-        mode=m; box.dataset.mode=m;
-        const tx=textFor(m);
-        const phText=ph||tx.ph;
-        ta.placeholder=phText; ta.setAttribute('aria-label',phText);
-        noteText.textContent=tx.note; send.textContent=tx.btn; status.textContent='';
-        ta.hidden=hint.hidden=refMode();
-        if(refMode()) send.textContent='Add to agent';
-        for(const [k,t] of tabs){ t.setAttribute('aria-selected',String(k===m)); t.tabIndex=k===m?0:-1; }
-        sync();
-        if(focusTab) tabs.get(m).focus();
-      }
+      const sync=()=>{ send.disabled=isEmpty(); };
       function keepEditing(){ prompt.hidden=true; row.hidden=false; ta.focus(); }
       function cancel(){
-        if(!onCancel) return;
         if(isEmpty()){ onCancel(); return; }
         row.hidden=true; prompt.hidden=false; keepBtn.focus();
       }
@@ -4287,80 +4217,32 @@
         box.classList.remove('cw-nudge'); void box.offsetWidth; box.classList.add('cw-nudge');
         setTimeout(()=>box.classList.remove('cw-nudge'),900);
       }
-      function submit(){
-        busy=true; sync(); status.textContent='Sending…';
-        const sent=payload(ta.value.trim());
-        fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(sent)})
-          .then(r=>r.json().catch(()=>({})).then(body=>({ok:r.ok,body})))
-          .then(({ok,body})=>{
-            busy=false;
-            if(!ok){ sync(); status.textContent=(body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''); return; }
-            ta.value=''; sync(); status.textContent='';
-            onSent(body,sent);
-          })
-          .catch(()=>{ busy=false; sync(); status.textContent='Request failed -- check the daemon is still running.'; });
-      }
-      function saveDraft(){
-        if(isEmpty()) return;
-        onDraft(ta.value);
-        if(onCancel) onCancel();
-      }
       const act=()=>{
         if(send.disabled) return;
-        if(refMode()){ if(onRef().ok) onCancel(); else sync(); return; }
-        (mode==='pr'?saveDraft:submit)();
+        onDraft(ta.value);
+        onCancel();
       };
       send.addEventListener('click',act);
-      if(cancelBtn) cancelBtn.addEventListener('click',cancel);
+      cancelBtn.addEventListener('click',cancel);
       keepBtn.addEventListener('click',keepEditing);
-      if(onCancel) dropBtn.addEventListener('click',()=>onCancel());
+      dropBtn.addEventListener('click',()=>onCancel());
       ta.addEventListener('input',sync);
       ta.addEventListener('keydown',e=>{
         if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); act(); }
       });
-      setMode(mode); sync();
-      const off=(onRef||canSend)?onRefs(sync):()=>{};
-      return {box,ta,send,isEmpty,prompting,keepEditing,cancel,nudge,sync,dispose:off};
+      sync();
+      return {box,ta,send,isEmpty,prompting,keepEditing,cancel,nudge,sync};
     }
 
     function lineComposerOpts(anchor){
-      if(anchor.kind!=='line') return {modes:['agent'],header:'Selection in '+(anchor.section||'this page'),prose:true};
       const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+anchor.line);
       const first=rec&&rec.meta.text?rec.meta.text[0]:' ';
       const kind=anchor.side==='LEFT'?'removed (old file)':first==='+'?'added':'context';
       const lines=anchor.end_line?'Lines '+anchor.line+'-'+anchor.end_line:'Line '+anchor.line;
-      const onDraft=directDraftFor(anchor);
-      return {modes:onDraft?['pr','agent']:['agent'],header:lines+' ('+kind+')',onDraft,
-        onRef:()=>addRef(anchor),refWhat:anchor.end_line?'these lines':'this line'};
+      return lines+' ('+kind+')';
     }
 
     const threads=new Map();
-    const REF_CAP=8, REF_FULL='Agent thread is full ('+REF_CAP+' references). Send or clear it first.';
-    const refsKey=()=>lsKey('cw-agent-refs',state.meta.id);
-    const refListeners=new Set();
-    const onRefs=fn=>{ refListeners.add(fn); return ()=>refListeners.delete(fn); };
-    let refs=[];
-    function loadRefs(){
-      try{ const v=JSON.parse(localStorage.getItem(refsKey())||'[]'); refs=Array.isArray(v)?v.slice(0,REF_CAP):[]; }catch(e){ refs=[]; }
-    }
-    function refsChanged(){
-      try{ localStorage.setItem(refsKey(),JSON.stringify(refs)); }catch(e){}
-      markRefs();
-      refListeners.forEach(fn=>fn());
-    }
-    const refKey=a=>JSON.stringify([a.kind,a.path,a.side,a.line,a.end_line,a.block,a.section,a.quote]);
-    function addRef(a){
-      if(refs.some(r=>refKey(r)===refKey(a))) return {ok:true,dup:true};
-      if(refs.length>=REF_CAP) return {ok:false,full:true};
-      refs.push(a); refsChanged();
-      return {ok:true};
-    }
-    function removeRef(i){ if(i>=0&&i<refs.length){ refs.splice(i,1); refsChanged(); } }
-    function clearRefs(){ if(refs.length){ refs=[]; refsChanged(); } }
-    function markRefs(){
-      document.querySelectorAll('.cw-ref-dot:not([data-cw-sent])').forEach(e=>e.classList.remove('cw-ref-dot'));
-      for(const a of refs){ const el=placementFor(a); if(el) el.classList.add('cw-ref-dot'); }
-    }
     function triageCandidates(notes,turnsByNote){
       return notes.filter(n=>{
         if(n.origin!=='github'||!n.gh_thread_id||n.reply_to||n.in_reply_to||n.resolved) return false;
@@ -5500,8 +5382,9 @@
         c.status.textContent='Too long: keep the text under '+QUESTION_MAX+' characters (references do not count).';
         return;
       }
+      const chips=segs.filter(s=>typeof s!=='string').map(r=>r.anchor);
       const body={text:serializeSegs(segs).trim(),
-        anchors:dedupeAnchors(segs.filter(s=>typeof s!=='string').map(r=>r.anchor)).slice(0,ED_MAX)};
+        anchors:dedupeAnchors(view.seed?[view.seed,...chips]:chips).slice(0,ED_MAX)};
       if(threads.has(view.id)) body.thread_id=view.id;
       c.busy=true; c.sync(); c.status.textContent='Sending…';
       fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(body)})
@@ -5510,7 +5393,7 @@
           c.busy=false;
           if(!ok){ c.sync(); c.status.textContent=(b.error||'Request failed')+(b.remedy?' ('+b.remedy+')':''); return; }
           ed.clear(); c.status.textContent=''; c.sync();
-          if(view===newView) openThreadWhenReady(b.thread_id);
+          if(!threads.has(view.id)) openThreadWhenReady(b.thread_id);
         })
         .catch(()=>{ c.busy=false; c.sync(); c.status.textContent='Request failed -- check the daemon is still running.'; });
     }
@@ -5543,8 +5426,6 @@
       });
     }
 
-    const refLabel=a=>a.kind==='line'?a.path+':'+a.line+(a.end_line?'-'+a.end_line:'')
-      :a.kind==='section'?a.section||'page':(a.section||'page')+' \u00b7 para';
     function threadTitle(t){
       const f=t.turns[0]||{};
       const s=parseRefText(f.comment||f.question||'').map(p=>p.text!=null?p.text:'\u29c9 '+refFromParsed(p).label).join(' ');
@@ -5649,34 +5530,35 @@
       if(snapshots++>0) loadQa();
     };
 
-    const ASK_LABEL='Add to agent';
-    const refToast=mk('p'); refToast.id='cw-ref-toast'; refToast.setAttribute('role','status');
-    document.body.appendChild(refToast);
+    const toastEl=mk('div'); toastEl.id='cw-toast'; toastEl.setAttribute('role','status');
+    document.body.appendChild(toastEl);
     let toastTimer=null;
-    function toast(text){
-      refToast.textContent=text;
-      clearTimeout(toastTimer);
-      toastTimer=setTimeout(()=>{ refToast.textContent=''; },3000);
+    function toast(text,actions){
+      const kids=[mk('span',null,text)];
+      for(const a of actions||[]){
+        const b=mkBtn(a.label,'cw-toast-act');
+        b.addEventListener('click',()=>{ toastEl.replaceChildren(); a.run(); });
+        kids.push(b);
+      }
+      toastEl.replaceChildren(...kids);
+      const arm=()=>{
+        clearTimeout(toastTimer);
+        toastTimer=setTimeout(()=>{ if(toastEl.matches(':focus-within')) arm(); else toastEl.replaceChildren(); },6000);
+      };
+      arm();
     }
-    const commentBtn=mkBtn(ASK_LABEL);
-    commentBtn.id='cw-comment-btn'; commentBtn.hidden=true;
-    commentBtn.addEventListener('mousedown',e=>e.preventDefault());
-    document.body.appendChild(commentBtn);
 
     const staticDock=$('hr-comments-btn');
     const dock=staticDock.cloneNode(true);
     staticDock.replaceWith(dock);
     dock.addEventListener('mousedown',e=>e.preventDefault());
     const coarseQ=matchMedia('(pointer:coarse)');
-    let dockAsk=false, dockView={open:0,waiting:0,label:'Threads'};
+    let dockView={open:0,waiting:0,label:'Threads'};
     function paintDock(){
-      dock.classList.toggle('cw-dock-ask',dockAsk);
-      if(dockAsk){ dock.textContent=ASK_LABEL; dock.setAttribute('aria-label',ASK_LABEL); return; }
       dockSet(dock,'Threads',[{cls:'purple',text:dockView.open},
         dockView.waiting>0&&{cls:'yellow',text:dockView.waiting,full:' waiting'}]);
       dock.setAttribute('aria-label',dockView.label);
     }
-    function setDockAsk(on){ if(on!==dockAsk){ dockAsk=on; paintDock(); } }
     const rootEl=document.documentElement;
     document.addEventListener('focusin',e=>{
       if(coarseQ.matches&&e.target.matches&&e.target.matches('.cw-compose textarea,.cw-ed')) rootEl.classList.add('cw-typing');
@@ -5755,12 +5637,14 @@
     const newView={id:null};
     newView.editor=makeEditor({key:NEW,placeholder:'Ask the agent anything, or paste references'});
     newView.composer=threadComposer(newView);
-    let newDraft=false;
+    let newViewDirty=false;
     {
       const sync=newView.editor.onChange;
-      newView.editor.onChange=()=>{ sync(); if(newDraft!==!newView.editor.isEmpty()) renderPanelList(); };
+      newView.editor.onChange=()=>{ sync(); if(newViewDirty!==!newView.editor.isEmpty()) renderPanelList(); };
     }
-    const newHint=mk('p','hr-comments-empty','Ask the agent anything. References are optional.');
+    newView.hint=mk('p','hr-comments-empty','Ask the agent anything. References are optional.');
+    const seeds=new Map();
+    const viewOf=key=>threads.get(key)||(key===NEW?newView:seeds.get(key))||null;
     let panelView=null, panelOpener=null, panelLabel='Threads';
     const panelOpen=()=>!panel.hidden;
     function setSheet(s){ panel.dataset.sheet=s; grab.setAttribute('aria-expanded',String(s==='expanded')); }
@@ -5769,16 +5653,17 @@
 
     function paintPanelHead(){
       const t=panelView&&threads.get(panelView);
-      pTitle.textContent=panelView===NEW?'New thread':t?threadTitle(t)||'Thread':panelLabel;
+      const v=viewOf(panelView);
+      pTitle.textContent=panelView===NEW?'New thread':t?threadTitle(t)||'Thread':v?'Ask about a review thread':panelLabel;
       grabText.textContent=panelLabel;
     }
     function showView(tid){
-      const t=tid&&threads.get(tid), v=t||(tid===NEW?newView:null);
-      panelView=t?t.id:v?NEW:null;
+      const t=tid&&threads.get(tid), v=viewOf(tid);
+      panelView=v?tid:null;
       pList.hidden=!!v; pThread.hidden=!v; pBack.hidden=!v;
       if(v){
         if(t) renderThread(t);
-        pBody.replaceChildren(t?t.el:newHint); pCompose.replaceChildren(v.composer.box); pBody.scrollTop=pBody.scrollHeight;
+        pBody.replaceChildren(t?t.el:v.hint); pCompose.replaceChildren(v.composer.box); pBody.scrollTop=pBody.scrollHeight;
       }
       else { pBody.replaceChildren(); pCompose.replaceChildren(); }
       renderPanelList();
@@ -5786,14 +5671,13 @@
     function openPanel(view,opts){
       const a=document.activeElement;
       if(a&&a!==document.body&&!panel.contains(a)) panelOpener=a;
-      if(drawerOpen()) closeDrawer(false);
       panel.hidden=false;
       rootEl.classList.add('cw-panel-open');
       dock.setAttribute('aria-expanded','true');
       setSheet('expanded');
       showView(view&&(view.new?NEW:view.thread));
       if(opts&&opts.focus===false) return;
-      const v=panelView===NEW?newView:panelView&&threads.get(panelView);
+      const v=viewOf(panelView);
       (sheetQ.matches?(v?pBack:pClose):v?v.editor:filterBtns.get(panelFilter)).focus();
     }
     function closePanel(){
@@ -5804,7 +5688,7 @@
       const o=panelOpener; panelOpener=null;
       (visible(o)?o:dock).focus();
     }
-    const togglePanel=()=>panelOpen()?closePanel():openPanel(panelView===NEW?{new:true}:panelView?{thread:panelView}:null);
+    const togglePanel=()=>panelOpen()?closePanel():openPanel(panelView?{thread:panelView}:null);
     pClose.addEventListener('click',closePanel);
     pNew.addEventListener('click',()=>openPanel({new:true}));
     pBack.addEventListener('click',()=>{
@@ -5818,13 +5702,16 @@
       if(threads.has(tid)) openPanel({thread:tid}); else pendingOpen=tid;
     }
 
-    function revealEl(el){
-      openAncestorDetails(el);
-      el.scrollIntoView({block:'center'});
+    function flashEl(el){
       const dline=el.classList.contains('dline');
       const cls=dline?'vd-flash-line':'cw-flash';
       el.classList.add(cls);
       setTimeout(()=>el.classList.remove(cls),dline?1400:1200);
+    }
+    function revealEl(el){
+      openAncestorDetails(el);
+      el.scrollIntoView({block:'center'});
+      flashEl(el);
     }
     function revealAnchor(a){
       const el=a&&a.kind!=='free'&&placementFor(a);
@@ -5859,8 +5746,8 @@
       triageBtn.textContent='Triage '+plural(cand,'open thread');
       const focused=pRows.contains(document.activeElement)&&document.activeElement.dataset.key;
       const entries=[];
-      newDraft=!newView.editor.isEmpty();
-      if(newDraft) entries.push({kind:'agent',key:NEW,state:'draft',title:'New thread (draft)',meta:['draft'],
+      newViewDirty=!newView.editor.isEmpty();
+      if(newViewDirty) entries.push({kind:'agent',key:NEW,state:'draft',title:'New thread (draft)',meta:['draft'],
         go:()=>openPanel({new:true})});
       for(const t of all){
         const first=t.turns[0]||{}, st=stateOf(t);
@@ -5918,78 +5805,15 @@
 
     dock.setAttribute('aria-controls','cw-panel'); dock.setAttribute('aria-expanded','false');
     dock.removeAttribute('aria-haspopup');
-    dock.addEventListener('click',()=>{ if(dockAsk) askFromSelection(); else togglePanel(); });
+    dock.addEventListener('click',()=>{ togglePanel(); });
     refreshDraftsBar();
     renderPanelList();
     const refreshInline=refreshCommentsPanel;
     refreshCommentsPanel=()=>{ refreshInline(); renderPanelList(); };
 
-    const agentSeg=mkBtn('','cw-agent-seg'); agentSeg.id='cw-agent-seg'; agentSeg.hidden=true;
-    agentSeg.setAttribute('aria-controls','cw-agent-drawer'); agentSeg.setAttribute('aria-expanded','false');
-    $('cw-dock').prepend(agentSeg);
-    const drawer=mk('aside'); drawer.id='cw-agent-drawer'; drawer.hidden=true;
-    drawer.setAttribute('role','region'); drawer.setAttribute('aria-label','Agent thread');
-    const dHead=mk('div'); dHead.id='cw-agent-head'; dHead.tabIndex=-1;
-    const dCount=mk('span','cw-agent-count');
-    const dClose=mkBtn('\u2715'); dClose.id='cw-agent-close'; dClose.setAttribute('aria-label','Close');
-    dHead.append(mk('span',null,'Agent thread'),dCount,dClose);
-    const chipsEl=mk('ul'); chipsEl.id='cw-agent-refs';
-    const emptyEl=mk('p','cw-agent-empty','No references yet. Press + beside a diff line, or select prose, and choose Add to agent.');
-    const clearBtn=mkBtn('Clear','fb-ghost');
-    const agentC=makeComposer({modes:['agent'],header:'',canSend:()=>refs.length>0,
-      payload:text=>({anchors:refs.slice(),text}),
-      onSent:(body,sent)=>{
-        const keys=new Set(sent.anchors.map(refKey));
-        refs=refs.filter(r=>!keys.has(refKey(r))); refsChanged(); closeDrawer();
-        openThreadWhenReady(body&&body.thread_id);
-      }});
-    agentC.send.after(clearBtn);
-    drawer.append(dHead,chipsEl,emptyEl,agentC.box);
-    document.body.appendChild(drawer);
-
-    const chipText=a=>a.kind==='line'?refLabel(a).replace(/^.*\//,''):refLabel(a);
-    function chipEl(a,i){
-      const li=mk('li','cw-agent-chip');
-      const go=mkBtn(null,'cw-agent-go'); go.title=refLabel(a);
-      go.append(mk('span','cw-agent-lbl',chipText(a)),mk('span','cw-agent-quote',firstLine(a.quote)));
-      go.addEventListener('click',()=>{
-        if(sheetQ.matches) closeDrawer(false);
-        if(!revealAnchor(a)) toast('That spot is no longer on the page.');
-      });
-      const x=mkBtn('\u2715','cw-agent-x'); x.setAttribute('aria-label','Remove '+chipText(a));
-      x.addEventListener('click',()=>removeRef(i));
-      li.append(go,x);
-      return li;
-    }
-    function paintAgent(){
-      const n=refs.length;
-      agentSeg.hidden=!n;
-      agentSeg.textContent='Agent \u00b7 '+n;
-      agentSeg.setAttribute('aria-label','Agent thread, '+plural(n,'reference'));
-      dCount.textContent=plural(n,'reference');
-      emptyEl.hidden=n>0;
-      clearBtn.disabled=!n;
-      chipsEl.replaceChildren(...refs.map(chipEl));
-    }
-    onRefs(paintAgent);
-    const drawerOpen=()=>!drawer.hidden;
-    function openDrawer(){
-      closePanel();
-      drawer.hidden=false; agentSeg.setAttribute('aria-expanded','true'); rootEl.classList.add('cw-agent-open');
-      (sheetQ.matches?dHead:agentC.ta).focus();
-    }
-    function closeDrawer(restore=true){
-      if(!drawerOpen()) return;
-      drawer.hidden=true; agentSeg.setAttribute('aria-expanded','false'); rootEl.classList.remove('cw-agent-open');
-      if(restore) (agentSeg.hidden?dock:agentSeg).focus();
-    }
-    agentSeg.addEventListener('click',()=>drawerOpen()?closeDrawer():openDrawer());
-    dClose.addEventListener('click',()=>closeDrawer());
-    clearBtn.addEventListener('click',clearRefs);
-
     function diffSel(){
       const sel=window.getSelection();
-      if(!sel||sel.isCollapsed||!sel.rangeCount||!sel.toString().trim()) return null;
+      if(!sel||sel.isCollapsed||!sel.rangeCount) return null;
       const r=sel.getRangeAt(0);
       const last=selectionEndRow(r);
       const sm=lineMetaBySpan.get(closestDline(r.startContainer)), em=lineMetaBySpan.get(last);
@@ -6011,44 +5835,118 @@
       else plus.removeAttribute('title');
     }
 
-    function placeCommentButton(range,col){
-      commentBtn.hidden=false;
-      const w=commentBtn.offsetWidth, h=commentBtn.offsetHeight;
-      const rects=range.getClientRects();
-      const r=rects.length?rects[rects.length-1]:range.getBoundingClientRect();
-      const colLeft=col.getBoundingClientRect().left;
-      let left=r.right+8, top=r.top;
-      if(innerWidth-r.right<120){ left=r.right-w; top=r.bottom+4; }
-      left=Math.max(colLeft,Math.min(left,innerWidth-w-4));
-      top=Math.max(4,Math.min(top,innerHeight-h-4));
-      commentBtn.style.left=left+'px';
-      commentBtn.style.top=top+'px';
+    const selBar=mk('div'); selBar.id='cw-selbar'; selBar.hidden=true;
+    selBar.setAttribute('role','toolbar'); selBar.setAttribute('aria-label','Selection');
+    const sbWhat=mk('span'); sbWhat.id='cw-selbar-what';
+    const sbTarget=document.createElement('select'); sbTarget.id='cw-selbar-target';
+    sbTarget.setAttribute('aria-label','Add to thread');
+    const sbAdd=mkBtn('Add'); sbAdd.id='cw-selbar-add';
+    const sbPr=mkBtn('PR comment\u2026'); sbPr.id='cw-selbar-pr';
+    selBar.append(sbWhat,sbTarget,sbAdd,sbPr);
+    document.body.appendChild(selBar);
+    for(const b of [sbAdd,sbPr]) b.addEventListener('mousedown',e=>e.preventDefault());
+    let sbAnchor=null;
+    const selBarShown=()=>!selBar.hidden;
+    function hideSelBar(){ selBar.hidden=true; sbAnchor=null; }
+    function clearSelection(){
+      const sel=window.getSelection();
+      if(sel) sel.removeAllRanges();
+      markSelectedLine(null);
+      hideSelBar();
     }
 
-    function updateCommentButton(){
+    function placeSelBar(range){
+      const s=selBar.style;
+      if(sheetQ.matches){ s.left=s.top=''; return; }
+      const rects=range.getClientRects();
+      const first=rects.length?rects[0]:range.getBoundingClientRect();
+      const last=rects.length?rects[rects.length-1]:first;
+      const w=selBar.offsetWidth, h=selBar.offsetHeight;
+      const rightEdge=(panelOpen()?panel.getBoundingClientRect().left:innerWidth)-8;
+      const reserve=(parseFloat(rootEl.style.getPropertyValue('--cw-bar-h'))||0)+64;
+      let top=last.bottom+6;
+      if(top+h>innerHeight-reserve){
+        const above=first.top-6-h;
+        top=above>=8?above:Math.max(8,innerHeight-reserve-h);
+      }
+      s.left=Math.max(8,Math.min(last.left,rightEdge-w))+'px';
+      s.top=top+scrollY+'px';
+    }
+
+    function showSelBar(anchor,range){
+      sbAnchor=anchor;
+      const keep=selBarShown()?sbTarget.value:null;
+      const open=[...threads.values()].filter(t=>!t.resolved).reverse();
+      const opts=[['New thread',NEW],...open.map(t=>[threadTitle(t)||'Thread',t.id])];
+      sbTarget.replaceChildren(...opts.map(([label,v])=>{ const o=mk('option',null,label); o.value=v; return o; }));
+      const open0=panelOpen()&&panelView;
+      const want=[keep,open0].find(v=>v&&opts.some(o=>o[1]===v));
+      sbTarget.value=want||NEW;
+      sbWhat.textContent=anchor.kind==='line'
+        ?(anchor.end_line?'Lines '+anchor.line+'-'+anchor.end_line:'Line '+anchor.line)
+        :'Selection in '+(anchor.section||'this page');
+      sbPr.hidden=!directDraftFor(anchor);
+      selBar.hidden=false;
+      placeSelBar(range);
+    }
+
+    function updateSelBar(){
+      if(selBar.contains(document.activeElement)) return;
       const d=diffSel();
       markSelectedLine(d);
       const sel=window.getSelection();
-      if(d||!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)||inLiveUi(sel.anchorNode)){
-        commentBtn.hidden=true;
-        setDockAsk(false);
-        return;
-      }
-      setDockAsk(coarseQ.matches);
-      const range=sel.getRangeAt(0);
-      placeCommentButton(range,blockOf(range.endContainer)||planEl);
+      const prose=!d&&sel&&!sel.isCollapsed&&sel.rangeCount&&sel.toString().trim()
+        &&planEl.contains(sel.anchorNode)&&!inLiveUi(sel.anchorNode);
+      const anchor=d||prose?buildAskAnchor(sel):null;
+      if(!anchor||!placementFor(anchor)){ hideSelBar(); return; }
+      showSelBar(anchor,sel.getRangeAt(0));
     }
     let selTimer=null;
     document.addEventListener('selectionchange',()=>{
       if(selTimer) clearTimeout(selTimer);
-      selTimer=setTimeout(updateCommentButton,150);
+      selTimer=setTimeout(updateSelBar,150);
     });
+
+    function addSelection(){
+      const anchor=sbAnchor;
+      if(!anchor) return;
+      const tid=sbTarget.value, existing=tid!==NEW&&threads.get(tid);
+      const view=existing||newView;
+      const phone=sheetQ.matches;
+      openPanel(existing?{thread:tid}:{new:true},{focus:!phone});
+      if(!view.editor.insertRef({anchor,label:refLabelOf(anchor)},true)) return;
+      if(phone){ setSheet('collapsed'); toast('Added to '+(existing?threadTitle(existing)||'thread':'New thread')); }
+      const els=refEls(anchor);
+      clearSelection();
+      els.forEach(flashEl);
+    }
+    sbAdd.addEventListener('click',addSelection);
+    sbPr.addEventListener('click',()=>{
+      const a=sbAnchor;
+      if(!a||a.kind!=='line') return;
+      const rec=spanByLineKey.get(a.path+'\t'+a.side+'\t'+(a.end_line||a.line));
+      clearSelection();
+      if(rec) openLineComposer(a,rec.meta);
+    });
+
+    onGutter=meta=>{
+      const span=spanByLineKey.get(meta.lineKey).span;
+      const d=diffSel();
+      if(!(d&&d.last===span)){
+        const r=document.createRange();
+        r.setStartAfter(span.querySelector('.dline-num'));
+        r.setEndBefore(span.querySelector('.dline-plus'));
+        const sel=window.getSelection();
+        sel.removeAllRanges(); sel.addRange(r);
+      }
+      updateSelBar();
+    };
 
     let openBox=null, openC=null, openFrom=null;
     function closeBox(restore=true){
       if(!openBox) return;
       const from=openFrom;
-      openC.dispose(); openBox.remove(); openBox=openC=openFrom=null;
+      openBox.remove(); openBox=openC=openFrom=null;
       if(restore&&from&&from.isConnected) from.focus();
     }
     const closeComposer=()=>closeBox();
@@ -6064,7 +5962,7 @@
       openC=c; openBox=c.box;
       openFrom=from&&from!==document.body?from:null;
       place(c.box);
-      // Safari/iOS don't focus buttons on click: a tap on a tab blurs the textarea with no relatedTarget.
+      // Safari/iOS don't focus buttons on click: a tap on a button blurs the textarea with no relatedTarget.
       let tapAt=0;
       c.box.addEventListener('pointerdown',()=>{ tapAt=Date.now(); },true);
       c.box.addEventListener('focusout',e=>{
@@ -6073,7 +5971,7 @@
           if(openC===c&&c.isEmpty()&&!c.box.contains(document.activeElement)) closeBox(false);
         },0);
       });
-      (c.ta.hidden?c.send:c.ta).focus();
+      c.ta.focus();
     }
     document.addEventListener('pointerdown',e=>{
       if(!openC||!openC.isEmpty()) return;
@@ -6085,43 +5983,34 @@
     window.cwComposerEsc=()=>{
       if(document.querySelector('dialog[open]')) return false;
       if(openC&&openBox.isConnected){ if(openC.prompting()) openC.keepEditing(); else openC.cancel(); return true; }
-      if(drawerOpen()){ closeDrawer(); return true; }
+      if(selBarShown()){ clearSelection(); return true; }
       if(panelOpen()){ closePanel(); return true; }
       return false;
     };
 
-    function askFromSelection(){
-      const sel=window.getSelection();
-      if(!sel||sel.isCollapsed||!sel.toString().trim()) return;
-      const anchor=buildAskAnchor(sel);
-      if(!anchor||!placementFor(anchor)) return;
-      const r=addRef(anchor);
-      sel.removeAllRanges();
-      commentBtn.hidden=true;
-      setDockAsk(false);
-      toast(r.full?REF_FULL:'Added to agent thread ('+refs.length+' of '+REF_CAP+').');
-    }
-    commentBtn.addEventListener('click',askFromSelection);
-
     openThreadAsk=(root,host,input)=>{
-      if(composerBusy()) return;
-      const anchor={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
-      const c=makeComposer({modes:['agent'],header:'Ask the agent about this thread',payload:text=>({anchor,text}),
-        onSent:body=>{ closeComposer(); openThreadWhenReady(body&&body.thread_id); },onCancel:closeComposer});
-      if(input&&input.value){ c.ta.value=input.value; input.value=''; c.sync(); }
-      openComposer(c,box=>host.append(box));
+      const key='ask:'+root.id;
+      let v=seeds.get(key);
+      if(!v){
+        const seed={kind:'thread',note_id:root.id,quote:String(root.body||'').slice(0,200)};
+        v={id:null,seed,editor:makeEditor({key,placeholder:'Ask the agent about this review thread'}),
+          hint:mk('p','hr-comments-empty','Asking about the review thread: '+(firstLine(seed.quote)||'(no text)'))};
+        v.composer=threadComposer(v);
+        seeds.set(key,v);
+      }
+      if(input&&input.value){
+        const had=v.editor.segs();
+        v.editor.setSegs(v.editor.isEmpty()?[input.value]:had.concat('\n'+input.value));
+        input.value='';
+      }
+      openPanel({thread:key});
     };
 
-    openLineComposer=meta=>{
-      const d=diffSel();
-      const anchor=d&&lineMetaBySpan.get(d.last)===meta?buildAskAnchor(d.sel):
-        {kind:'line',path:meta.path,side:meta.side,line:meta.line,end_line:null,
-        hunk_id:meta.hunkId||null,quote:meta.text};
+    const openLineComposer=(anchor,meta)=>{
       const ref=placementFor(anchor);
       if(!ref||lineDraft(meta)){ openOrFocusDraft(meta); return; }
       if(composerBusy()) return;
-      const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),
-        onSent:body=>{ closeComposer(); openThreadWhenReady(body&&body.thread_id); },onCancel:closeComposer});
+      const c=makeComposer({header:lineComposerOpts(anchor),onDraft:directDraftFor(anchor),onCancel:closeComposer});
       openComposer(c,box=>ref.insertAdjacentElement('afterend',box));
     };
 
@@ -6137,8 +6026,6 @@
         .catch(()=>{});
     }
     loadQa();
-    loadRefs();
-    refsChanged();
   }
 
   document.querySelectorAll('pre.diff').forEach(wireHunk);
