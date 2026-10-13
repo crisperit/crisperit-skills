@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_check  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_store  # noqa: E402
+import notes  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 KNOWN_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -41,12 +42,15 @@ _STDOUT_LOCK = threading.Lock()
 TOOLS = [
     {
         "name": "walkthrough_start",
-        "description": "Start or resume a live code-walkthrough run for a diff and return its URL.",
+        "description": ("Start or resume a live code-walkthrough run for a diff and return its URL. repo is an "
+                        "absolute path of a local checkout, or owner/name. If owner/name is not cloned on this "
+                        "machine the call fails and the error says so: ASK the user before passing clone: true, "
+                        "which clones the repo (blobless) into the walkthrough cache."),
         "inputSchema": {
             "type": "object", "required": ["repo", "base", "head", "target", "slug"],
             "properties": {
                 "repo": {"type": "string"}, "base": {"type": "string"}, "head": {"type": "string"},
-                "target": {"type": "string"}, "slug": {"type": "string"}, "pr": {"type": "integer"},
+                "clone": {"type": "boolean"}, "target": {"type": "string"}, "slug": {"type": "string"}, "pr": {"type": "integer"},
                 "explain": {"type": "boolean"}, "paths": {"type": "array", "items": {"type": "string"}},
                 "title": {"type": "string"}, "diff_file": {"type": "string"},
             },
@@ -265,6 +269,35 @@ OUTCOME_TOOLS.append({
 })
 
 
+DRAFT_COMMENTS_MAX = 30
+DRAFT_BODY_CAP = 4000
+
+OUTCOME_TOOLS.append({
+    "name": "post_draft_comments",
+    "description": ("Put review comments on diff lines as local drafts on the page, for the user to edit, "
+                    "keep or remove. Nothing reaches GitHub until the user submits the review. Each comment "
+                    "needs a path in the diff and a line (and optional end_line) inside one contiguous run "
+                    "of diff lines on that side. suggestion is replacement code for RIGHT-side lines only. "
+                    "One call per turn; any invalid comment rejects the whole call."),
+    "inputSchema": {
+        "type": "object", "required": ["comments"],
+        "properties": {"comments": {
+            "type": "array", "minItems": 1, "maxItems": DRAFT_COMMENTS_MAX,
+            "items": {
+                "type": "object", "required": ["path", "line", "body"],
+                "properties": {
+                    "path": {"type": "string"}, "line": {"type": "integer", "minimum": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
+                    "side": {"enum": ["RIGHT", "LEFT"]},
+                    "body": {"type": "string", "maxLength": DRAFT_BODY_CAP},
+                    "suggestion": {"type": "string", "maxLength": DRAFT_BODY_CAP},
+                },
+            },
+        }},
+    },
+})
+
+
 def task_plan_error(args):
     """Validates a code-task plan; shared by propose_task and the user's edit of a proposal."""
     title = args.get("title")
@@ -378,6 +411,87 @@ def _check_github_draft(anchor_doc, args, already):
     return None
 
 
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _check_reload(anchor_doc, args, already):
+    if anchor_doc.get("mode") != "full":
+        return "reload_walkthrough is only available in Full mode"
+    if "reload" in already:
+        return "already requested a reload in this turn"
+    return None
+
+
+def _check_draft_comments(anchor_doc, args, already):
+    items = args.get("comments")
+    if not isinstance(items, list) or not 1 <= len(items) <= DRAFT_COMMENTS_MAX:
+        return f"comments must be a list of 1 to {DRAFT_COMMENTS_MAX} comments"
+    try:
+        ranges = notes.postable_ranges((Path(anchor_doc["dir"]) / "raw.diff").read_text(errors="replace"))
+    except (KeyError, OSError):
+        return "the diff is unavailable, so no comment can be drafted"
+    for i, item in enumerate(items):
+        error = _draft_item_error(item, ranges)
+        if error:
+            return f"comments[{i}]: {error}"
+    if "draft_comments" in already:
+        return "already posted draft comments in this turn"
+    return None
+
+
+def _draft_item_error(item, ranges):
+    if not isinstance(item, dict):
+        return "must be an object"
+    path, line, end_line = item.get("path"), item.get("line"), item.get("end_line")
+    side = item.get("side", "RIGHT")
+    if side not in ("RIGHT", "LEFT"):
+        return "side must be RIGHT or LEFT"
+    if not isinstance(path, str) or (path, side) not in ranges:
+        return f"{path} is not in the diff"
+    if not _is_int(line) or line < 1:
+        return "line must be a positive integer"
+    if end_line is not None and (not _is_int(end_line) or end_line < line):
+        return "end_line must be an integer at least line"
+    last = line if end_line is None else end_line
+    runs = ranges[(path, side)]
+    if not any(start <= line <= end for start, end in runs):
+        return f"line {line} of {path} ({side}) is not in the diff"
+    if not any(start <= line and last <= end for start, end in runs):
+        return f"lines {line}-{last} of {path} ({side}) are not in one contiguous diff range"
+    body = item.get("body")
+    if not isinstance(body, str) or not body.strip():
+        return "body is required"
+    if len(body.strip()) > DRAFT_BODY_CAP:
+        return f"body must be at most {DRAFT_BODY_CAP} characters"
+    suggestion = item.get("suggestion")
+    if suggestion is not None:
+        if not isinstance(suggestion, str) or len(suggestion) > DRAFT_BODY_CAP:
+            return f"suggestion must be a string of at most {DRAFT_BODY_CAP} characters"
+        if side != "RIGHT":
+            return "a suggestion needs a RIGHT-side line"
+    return None
+
+
+def _draft_comments_payload(args, anchor_doc=None):
+    out, seen = [], set()
+    for item in args["comments"]:
+        suggestion = item.get("suggestion")
+        body = item["body"].strip()
+        if suggestion is not None:
+            fence = "`" * max(3, max((len(m) for m in re.findall(r"`+", suggestion)), default=0) + 1)
+            body += f"\n\n{fence}suggestion\n{suggestion}\n{fence}"
+        end_line = item.get("end_line")
+        row = {"path": item["path"], "line": item["line"],
+               "end_line": end_line if end_line != item["line"] else None,
+               "side": item.get("side", "RIGHT"), "body": body}
+        key = json.dumps(row, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            out.append(row)
+    return {"comments": out}
+
+
 def _resolve_payload(args, anchor_doc=None):
     return {"thread": args["thread"], "why": args["why"].strip()}
 
@@ -404,6 +518,13 @@ def _page_edit_payload(args, anchor_doc=None):
             "block": {"type": block["type"], "text": block["text"].strip()}}
 
 
+FULL_ONLY_TOOLS = [{
+    "name": "reload_walkthrough",
+    "description": ("Show your edits from this turn as a new walkthrough of the agent branch, opened beside "
+                    "this one. The current walkthrough is never rebuilt. Call it once, after your last edit."),
+    "inputSchema": {"type": "object", "properties": {}},
+}]
+
 OUTCOME_KINDS = {
     "propose_task": {
         "outcome": "task", "state": "proposed", "check": _check_task, "payload": _task_payload,
@@ -423,6 +544,16 @@ OUTCOME_KINDS = {
         "outcome": "page_edit", "state": "applied", "check": _check_page_edit, "payload": _page_edit_payload,
         "key": lambda payload: "page_edit", "accepted": "applied to the page; the user can undo it",
     },
+    "post_draft_comments": {
+        "outcome": "draft_comments", "state": "applied", "check": _check_draft_comments,
+        "payload": _draft_comments_payload, "key": lambda payload: "draft_comments",
+        "accepted": "added to the page as local drafts; the user can edit or remove them and nothing was posted to GitHub",
+    },
+    "reload_walkthrough": {
+        "outcome": "reload", "state": "requested", "check": _check_reload,
+        "payload": lambda args, anchor_doc=None: {}, "key": lambda payload: "reload",
+        "accepted": "requested; the walkthrough of your edits opens when this turn ends",
+    },
 }
 
 
@@ -430,7 +561,7 @@ def check_outcome(anchor_doc, name, args, already=()):
     kind = OUTCOME_KINDS.get(name)
     if kind is None:
         return f"unknown tool {name}"
-    if all(r.get("kind") == "free" for r in _refs(anchor_doc)):
+    if name not in ("post_draft_comments", "reload_walkthrough") and all(r.get("kind") == "free" for r in _refs(anchor_doc)):
         return "this comment has no reference (no diff line, prose block or review thread), so this tool cannot be used; reply instead"
     return kind["check"](anchor_doc, args if isinstance(args, dict) else {}, already)
 
@@ -451,12 +582,12 @@ def accept_outcome(d, qid, name, args):
                 pass
     except OSError:
         pass
-    error = check_outcome(anchor_doc, name, args, already)
+    error = check_outcome({**anchor_doc, "dir": str(d)}, name, args, already)
     if error:
         return False, error
     kind = OUTCOME_KINDS[name]
     record = {"oid": "o-" + uuid.uuid4().hex[:8], "name": name,
-              "arguments": kind["payload"](args, anchor_doc), "at": cw_store.now_iso()}
+              "arguments": kind["payload"](args, anchor_doc), "raw_arguments": args, "at": cw_store.now_iso()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(record) + "\n")
@@ -465,9 +596,19 @@ def accept_outcome(d, qid, name, args):
     return True, kind["accepted"]
 
 
-def outcome_mcp_config(d, qid):
-    return {"mcpServers": {"cw": {"type": "stdio", "command": sys.executable, "args": [
-        str(Path(__file__).resolve()), "outcomes", "--dir", str(d), "--qid", qid]}}}
+def outcome_tools(mode="review"):
+    if mode == "review":
+        return OUTCOME_TOOLS
+    if mode == "full":
+        return [t for t in OUTCOME_TOOLS if t["name"] != "propose_task"] + FULL_ONLY_TOOLS
+    raise ValueError(f"unknown outcome mode {mode}")
+
+
+def outcome_mcp_config(d, qid, mode="review"):
+    args = [str(Path(__file__).resolve()), "outcomes", "--dir", str(d), "--qid", qid]
+    if mode != "review":
+        args += ["--mode", mode]
+    return {"mcpServers": {"cw": {"type": "stdio", "command": sys.executable, "args": args}}}
 
 
 RUNNER_TOOLS = [{
@@ -582,6 +723,9 @@ def _outcomes_dispatch(d, qid, req, tools=None, call=None):
         result = {}
     elif method == "tools/call":
         params = req.get("params") or {}
+        if params.get("name") not in {t["name"] for t in tools or OUTCOME_TOOLS}:
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": f"unknown tool {params.get('name')}"}], "isError": True}}
         ok, text = (call or (lambda name, args: accept_outcome(d, qid, name, args)))(
             params.get("name"), params.get("arguments") or {})
         result = {"content": [{"type": "text", "text": text}], "isError": not ok}
@@ -736,6 +880,7 @@ def main(argv=None):
     outcomes_parser = sub.add_parser("outcomes")
     outcomes_parser.add_argument("--dir", required=True)
     outcomes_parser.add_argument("--qid", required=True)
+    outcomes_parser.add_argument("--mode", choices=["review", "full"], default="review")
     runner_parser = sub.add_parser("runner")
     runner_parser.add_argument("--dir", required=True)
     runner_parser.add_argument("--qid", required=True)
@@ -748,7 +893,7 @@ def main(argv=None):
     if args.cmd in (None, "mcp"):
         return cmd_mcp()
     if args.cmd == "outcomes":
-        return cmd_outcomes(args.dir, args.qid)
+        return cmd_outcomes(args.dir, args.qid, outcome_tools(args.mode))
     if args.cmd == "runner":
         return cmd_runner(args.dir, args.qid, args.worktree, args.timeout)
     if args.cmd == "setup":

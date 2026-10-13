@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_agent  # noqa: E402
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_mcp  # noqa: E402
@@ -137,8 +138,9 @@ def test_argv_shapes():
     assert "--safe-mode" not in argv and not any(a.startswith("--add-dir") for a in argv)
     thread = cw_llm.thread_argv(profile, "SYS", mcp_config={"mcpServers": {}}, add_dir="/d/ctx", session_id="u")
     assert "--tools=Read,Grep,Glob" in thread and "--permission-mode" not in thread
-    assert ("--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,"
-            "mcp__cw__propose_github_draft,mcp__cw__propose_task") in thread
+    assert "--allowedTools=" + cw_llm.THREAD_ALLOWED in thread
+    assert cw_llm.THREAD_ALLOWED.split(",") == ["mcp__cw__" + t["name"] for t in cw_mcp.outcome_tools("review")]
+    assert "post_draft_comments" in cw_llm.THREAD_ALLOWED and "post_draft_comments" not in " ".join(argv)
 
 
 # -- the daemon side ----------------------------------------------------------------------------
@@ -445,6 +447,9 @@ def test_prune_removes_every_task_worktree_and_branch():
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, srv.running_daemon() as daemon:
             _task, done = _run_to_done(daemon, d, oid, fc)
         assert done["state"] == "done" and _branches(repo) and len(_worktrees(repo)) == 3
+        meta = cw_store.read_meta(d)
+        cw_agent.ensure_worktree(d, meta)
+        assert (d / "agent").is_dir() and f"cw/{srv.WID}/agent" in _branches(repo) and len(_worktrees(repo)) == 4
         cw_server._remove_walkthrough(cw_store.read_meta(d), d)
         assert not d.exists() and _branches(repo) == [] and len(_worktrees(repo)) == 1
 

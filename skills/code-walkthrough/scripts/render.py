@@ -37,13 +37,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import summary_line  # noqa: E402  one owner for wording a complexity delta
-from sections import _codeify, _diagram_max_button, _wrap_flow_labels  # noqa: E402  one owner for these
-from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
+from sections import _codeify, _diagram_max_button, _wrap_flow_labels, render_symbols  # noqa: E402  one owner for these
+from notes import _walk_hunk_lines  # noqa: E402  one owner for per-side line numbers
+from validate_analysis import check_visuals, parse_hunks  # noqa: E402  one owner for diff parsing
 from walkthrough import render_story, story  # noqa: E402  one owner for the group order
 
 TITLE_PLACEHOLDER = "<!-- DIFF_TITLE -->"
 CONTENT_PLACEHOLDER = "<!-- DIFF_CONTENT -->"
 STATE_PLACEHOLDER = "<!-- HR_STATE -->"
+STORY_CODE_ROWS = 4
+_SIDE_KINDS = {"RIGHT": ("a", "c"), "LEFT": ("d",)}
 
 
 def counts_from(files):
@@ -108,9 +111,72 @@ def _flow_tb(mermaid):
     return mermaid
 
 
+def _sym_rows(node, side, files):
+    """(hunk ids, code rows) for a symbol: every hunk with a row on `side` inside the symbol's
+    range, and the first STORY_CODE_ROWS rows from the first such hit of the first hunk."""
+    start, end = node["range"]
+    kinds = _SIDE_KINDS[side]
+    path, hunk_ids, code = node["file"], [], []
+    for hunk in (files.get(path) or {}).get("hunks", []):
+        rows = [(kind, raw, new if side == "RIGHT" else old)
+                for kind, old, new, raw in _walk_hunk_lines({"hunks": [hunk]}) if kind in kinds]
+        hit = next((i for i, (_, _, line) in enumerate(rows) if start <= line <= end), None)
+        if hit is None:
+            continue
+        hunk_ids.append(f"{path}\t{hunk['prefix']}")
+        if not code:
+            code = [[kind, raw] for kind, raw, _ in rows[hit:hit + STORY_CODE_ROWS]]
+    return hunk_ids, code
+
+
+def story_data(clean, symdelta, complexity, files):
+    """The blob behind #cw-story-data: the clean visuals plus, per symbol they name, what the
+    page script needs to draw a card and jump into the diff. The page never parses the diff."""
+    by_id = {n["id"]: n for n in symdelta.get("nodes", [])}
+    cx_files = (complexity or {}).get("files", {})
+    syms = {}
+    for visual in clean:
+        for act in visual["acts"]:
+            for item in act["flow"]:
+                sid = item.get("sym")
+                if sid is None or sid in syms:
+                    continue
+                node = by_id[sid]
+                side = "LEFT" if node.get("state") == "gone" else "RIGHT"
+                hunks, code = _sym_rows(node, side, files) if node.get("range") else ([], [])
+                start, end = node.get("range") or (0, 0)
+                match = next((s for s in (cx_files.get(node.get("file")) or {}).get("symbols", [])
+                              if s.get("name") == node.get("label")), None)
+                state = node.get("state")
+                if match:
+                    state = "new" if not match["existed"] else "gone" if match["removed"] else "changed"
+                syms[sid] = {
+                    "label": node.get("label"), "file": node.get("file"), "side": side,
+                    "start": start, "end": end, "state": state,
+                    "cx": [match["before"], match["after"]] if match else None,
+                    "code": code, "hunks": hunks,
+                }
+    return {"visuals": clean, "syms": syms}
+
+
+def _story_html(analysis, files, symdelta, complexity, explain=False, order=None):
+    """The hidden Story section; the page script builds the cards and unhides it. Empty when
+    there are no valid visuals, which leaves today's page untouched."""
+    clean, _ = check_visuals(analysis.get("visuals"), symdelta)
+    if not clean:
+        return ""
+    blob = json.dumps(story_data(clean, symdelta, complexity, files)).replace("<", "\\u003c")
+    graph = render_symbols(symdelta, explain, paths=order if explain else (), inline=True)
+    all_syms = ('<details class="cw-allsyms"><summary>All symbols</summary>'
+                f'{graph.rstrip(chr(10))}</details>') if graph else ""
+    return ('<section class="cw-story" id="cw-story" hidden aria-labelledby="cw-story-h">'
+            f'<h2 id="cw-story-h">Story</h2><div id="cw-story-root"></div>{all_syms}'
+            f'<script type="application/json" id="cw-story-data">{blob}</script></section>')
+
+
 def render_html(analysis, files, template, walkthrough="", links=None, title=None,
                 now=None, complexity=None, state=None, explain=False, order=None,
-                structure=""):
+                structure="", symdelta=None):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
@@ -142,6 +208,10 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
         # used to swap between said nothing the field itself didn't already carry.
         body.append("<h2>Overview</h2>")
         body += [_block_html(block) for block in overview]
+
+    story_section = _story_html(analysis, files, symdelta, complexity, explain, order)
+    if story_section:
+        body.append(story_section)
 
     # The story map replaces FLOW once there is more than one group: it IS the reading order,
     # so a diagram redrawing that same shape underneath it would say the same thing twice. A
@@ -216,6 +286,7 @@ def main():
     parser.add_argument("--walkthrough", help="section-walkthrough.html")
     parser.add_argument("--links")
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
+    parser.add_argument("--symdelta", help="symdelta.json, for the story visuals")
     parser.add_argument("--template", required=True, help="the page template")
     parser.add_argument("--structure", help="section-structure.html")
     parser.add_argument("--state", help="state.json, inlined behind HR_STATE")
@@ -230,12 +301,13 @@ def main():
     links = json.loads(Path(args.links).read_text()) if args.links else None
     complexity = json.loads(Path(args.complexity).read_text()) if args.complexity else None
     state = json.loads(Path(args.state).read_text()) if args.state else None
+    symdelta = json.loads(Path(args.symdelta).read_text()) if args.symdelta else None
 
     sys.stdout.write(render_html(
         analysis, files, _read(args.template),
         _read(args.walkthrough), links, args.title,
         complexity=complexity, state=state, explain=args.explain, order=order,
-        structure=_read(args.structure),
+        structure=_read(args.structure), symdelta=symdelta,
     ))
     return 0
 

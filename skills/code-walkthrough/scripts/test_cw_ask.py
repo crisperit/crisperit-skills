@@ -1187,3 +1187,175 @@ def test_github_draft_dismissal_and_edit_reach_the_next_prompt():
         cw_ask.mark_outcome(d, one["oid"], "published")
         assert "published" not in cw_ask.build_prompt(d, dict(ANCHOR_LINE), "next", "q1", resumed=True)
 
+
+
+def test_ensure_ctx_restores_an_edited_copy():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        ctx = cw_ask._ensure_ctx(d)
+        original = (d / "raw.diff").read_text()
+        (ctx / "raw.diff").write_text("tampered")
+        cw_ask._ensure_ctx(d)
+        assert (ctx / "raw.diff").read_text() == original
+
+
+def test_ensure_ctx_replaces_files_atomically():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        ctx = cw_ask._ensure_ctx(d)
+        before = (ctx / "raw.diff").stat().st_ino
+        cw_ask._ensure_ctx(d)
+        assert (ctx / "raw.diff").stat().st_ino != before
+        assert sorted(p.name for p in ctx.iterdir()) == ["analysis.json", "raw.diff"]
+
+
+def _forge_outcomes(d, qid, records):
+    path = d / "turns" / f"{qid}.outcomes.jsonl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+
+def test_sweep_drops_forged_outcome_records():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page")
+        _forge_outcomes(d, "q1", [
+            {"oid": "o-bad1", "name": "post_draft_comments", "arguments": {"comments": "nope"}},
+            {"oid": "o-bad2", "name": "post_draft_comments", "arguments": {"comments": [{"body": "x"}] * 500}},
+            {"oid": "o-bad3", "name": "delete_everything", "arguments": {}},
+        ])
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert cw_ask.read_outcomes(d) == []
+
+
+def test_sweep_uses_the_trusted_anchor_copy_not_the_agent_writable_one():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        _seed_review_threads(d)
+        cw_ask.write_turn_anchor(d, "q1", "q1", ANCHOR_SECTION, "x", "page", mode="review")
+        agent_copy = d / "turns" / "q1.anchor.json"
+        doc = cw_store.read_json(agent_copy)
+        cw_store.write_json(agent_copy, {**doc, "mode": "full", "resolvable": [{"id": "gh-501"}]})
+        _forge_outcomes(d, "q1", [
+            {"oid": "o-f1", "name": "propose_resolve", "arguments": {"thread": "gh-501", "why": "w"}},
+            {"oid": "o-f2", "name": "reload_walkthrough", "arguments": {}}])
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert cw_ask.read_outcomes(d) == []
+
+
+def _full_draft_sweep(records):
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        (d / "raw.diff").write_text("diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n"
+                                    "@@ -1,3 +1,3 @@\n a\n-b\n+X\n c\n")
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page", mode="full")
+        _forge_outcomes(d, "q1", records)
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        return cw_ask.read_outcomes(d)
+
+
+def _draft_record(**over):
+    args = {"comments": [{"path": "foo.py", "line": 2, "body": "b"}]}
+    return {"oid": "o-d1", "name": "post_draft_comments", "arguments": args, "raw_arguments": args, **over}
+
+
+def test_full_sweep_drops_a_propose_task_record():
+    task = {"title": "t", "body": "b"}
+    assert _full_draft_sweep([{"oid": "o-t1", "name": "propose_task", "arguments": task,
+                               "raw_arguments": task}]) == []
+
+
+def test_full_sweep_drops_a_record_without_raw_arguments():
+    assert _full_draft_sweep([_draft_record(raw_arguments=None)]) == []
+    assert len(_full_draft_sweep([_draft_record()])) == 1
+
+
+def test_review_sweep_still_accepts_a_legacy_record_without_raw_arguments():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        (d / "raw.diff").write_text("diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n"
+                                    "@@ -1,3 +1,3 @@\n a\n-b\n+X\n c\n")
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page")
+        record = _draft_record()
+        del record["raw_arguments"]
+        _forge_outcomes(d, "q1", [record])
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert len(cw_ask.read_outcomes(d)) == 1
+
+
+def test_sweep_accepts_draft_comments_whose_body_plus_suggestion_exceeds_the_cap():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        (d / "raw.diff").write_text("diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n"
+                                    "@@ -1,3 +1,3 @@\n a\n-b\n+X\n c\n")
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page")
+        args = {"comments": [{"path": "foo.py", "line": 2, "body": "b" * 3000, "suggestion": "s" * 3000}]}
+        assert cw_mcp.accept_outcome(d, "q1", "post_draft_comments", args)[0]
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        [outcome] = cw_ask.read_outcomes(d)
+        assert outcome["outcome"] == "draft_comments" and len(outcome["payload"]["comments"][0]["body"]) > 6000
+
+
+def test_discarded_edits_reach_the_next_prompt():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        cw_ask.append_outcome(d, "q1", "q1", "edits", "done", {"files": ["a.py"]}, None)
+        oid = cw_ask.read_outcomes(d)[0]["oid"]
+        cw_ask.outcome_action(d, oid, "discard", None)
+        text = cw_ask._outcome_updates_text(d, "q1", since_last_turn=False)
+        assert "discarded your edits to the shared worktree" in text
+
+
+def _full_answer(d, wt):
+    return cw_ask.answer(d, "q-full", cw_ask.validate_anchor(dict(ANCHOR_SECTION)), "fix it", mode="full",
+                         prepare=lambda: wt)
+
+
+def test_full_turn_is_wrapped_in_bwrap_when_available(monkeypatch, tmp_path):
+    import cw_llm
+
+    seen = []
+    monkeypatch.setattr(cw_llm, "confinement_available", lambda: True)
+    monkeypatch.setattr(cw_llm, "git_common_dir", lambda wt: tmp_path / "repo.git")
+    monkeypatch.setattr(cw_llm, "confine_prefix", lambda *a: ["BWRAP", *map(str, a)])
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(cw_ask, "_stream_once", lambda argv, *a, **k: seen.append((argv, k["cwd"])) or 1 / 0)
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _full_answer(d, wt)
+        assert (d / "turns").is_dir()
+    assert cw_llm.project_dir(tmp_path / "home", wt).is_dir()
+    argv, cwd = seen[0]
+    assert argv[:5] == ["BWRAP", str(wt), str(tmp_path / "repo.git"), str(tmp_path / "home"), str(d / "turns")]
+    assert argv[5] == "claude" and cwd == wt
+
+
+def test_unwrapped_full_turn_does_not_create_the_project_dir(monkeypatch, tmp_path):
+    import cw_llm
+
+    monkeypatch.setattr(cw_llm, "confinement_available", lambda: True)
+    monkeypatch.setattr(cw_llm, "git_common_dir", lambda wt: tmp_path / "repo.git")
+    monkeypatch.setattr(cw_llm, "confine_prefix", lambda *a: [])
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(cw_ask, "_stream_once", lambda *a, **k: 1 / 0)
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _full_answer(d, wt)
+    assert not cw_llm.project_dir(tmp_path / "home", wt).exists()
+
+
+def test_full_turn_refused_without_bwrap(monkeypatch, tmp_path):
+    import cw_llm
+
+    monkeypatch.setattr(cw_llm, "confinement_available", lambda: False)
+    monkeypatch.setattr(cw_ask, "_stream_once", lambda *a, **k: pytest.fail("a turn must never run unconfined"))
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        record = _full_answer(d, tmp_path / "never-prepared")
+    assert record["status"] == "error"
+    assert record["error"] == "Full access needs bubblewrap with overlayfs, which this machine lacks"
+    assert record["remedy"] == "install bubblewrap (Linux only); Review mode still works"

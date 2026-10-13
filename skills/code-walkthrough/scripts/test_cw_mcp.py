@@ -232,7 +232,7 @@ def test_outcomes_server_accepts_and_rejects():
         rpc = _Rpc("outcomes", "--dir", str(d), "--qid", "q1")
         try:
             assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == [
-                "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task"]
+                "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task", "post_draft_comments"]
             rpc.proc.stdin.write("garbage{\n")
             rpc.proc.stdin.flush()
             assert rpc.call("ping")["result"] == {}
@@ -250,6 +250,23 @@ def test_outcomes_server_accepts_and_rejects():
             assert len((d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()) == 1
         finally:
             assert rpc.close() == 0
+
+
+def test_outcome_server_lists_tools_by_mode():
+    review = ["propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task", "post_draft_comments"]
+    full = ["propose_resolve", "propose_page_edit", "propose_github_draft", "post_draft_comments",
+            "reload_walkthrough"]
+    assert [t["name"] for t in cw_mcp.outcome_tools()] == review
+    assert [t["name"] for t in cw_mcp.outcome_tools("full")] == full
+    assert "--mode" not in cw_mcp.outcome_mcp_config("/d", "q1")["mcpServers"]["cw"]["args"]
+    assert cw_mcp.outcome_mcp_config("/d", "q1", "full")["mcpServers"]["cw"]["args"][-2:] == ["--mode", "full"]
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        for extra, names in (([], review), (["--mode", "review"], review), (["--mode", "full"], full)):
+            rpc = _Rpc("outcomes", "--dir", tmp, "--qid", "q1", *extra)
+            try:
+                assert [t["name"] for t in rpc.call("tools/list")["result"]["tools"]] == names
+            finally:
+                assert rpc.close() == 0
 
 
 def test_outcomes_server_page_edit_is_stored_stripped_and_once_per_turn():
@@ -379,6 +396,8 @@ def test_free_comment_refuses_every_proposal_tool():
              "propose_github_draft": {"body": "b", "target": NEW}}
     for name, args in calls.items():
         assert "no reference" in cw_mcp.check_outcome(free, name, args), name
+    doc = {**free, "dir": _diff_dir()}
+    assert cw_mcp.check_outcome(doc, "post_draft_comments", {"comments": [_dc()]}) is None
 
 
 def test_github_draft_original_has_no_ref_fences():
@@ -424,3 +443,104 @@ def test_ensure_server_replaces_a_daemon_on_older_code_unless_it_is_busy():
             old.stop()
             if new:
                 new.stop()
+
+
+DIFF = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,4 @@
+ one
+-two
++TWO
++three
+ four
+@@ -20,2 +21,2 @@
+ x
+-y
++Y
+"""
+_DIFF_DIRS = []
+
+
+def _diff_dir():
+    d = tempfile.mkdtemp()
+    _DIFF_DIRS.append(d)
+    (Path(d) / "raw.diff").write_text(DIFF)
+    return d
+
+
+def _dc(**over):
+    return {"path": "a.py", "line": 2, "body": "fix this", **over}
+
+
+def test_check_draft_comments_cases():
+    doc = {**_page_doc(), "dir": _diff_dir()}
+
+    def check(*comments, already=()):
+        return cw_mcp.check_outcome(doc, "post_draft_comments", {"comments": list(comments)}, already)
+
+    assert check(_dc()) is None
+    assert check(_dc(line=1, end_line=4), _dc(side="LEFT", line=2)) is None
+    assert check(_dc(path="b.py")) == "comments[0]: b.py is not in the diff"
+    assert check(_dc(), _dc(line=120)) == "comments[1]: line 120 of a.py (RIGHT) is not in the diff"
+    assert "not in one contiguous" in check(_dc(line=4, end_line=21))
+    assert "end_line" in check(_dc(line=3, end_line=2))
+    assert "suggestion" in check(_dc(side="LEFT", line=2, suggestion="x"))
+    assert "1 to 30" in check(*[_dc()] * 31)
+    assert "1 to 30" in check()
+    assert "body is required" in check(_dc(body="  "))
+    assert "at most 4000" in check(_dc(body="x" * 4001))
+    assert "at most 4000" in check(_dc(suggestion="x" * 4001))
+    assert "already posted" in check(_dc(), already={"draft_comments"})
+
+    payload = cw_mcp._draft_comments_payload({"comments": [
+        _dc(body="a ```b``` c", suggestion="x = 1"), _dc(body="a ```b``` c", suggestion="x = 1"),
+        _dc(line=3, end_line=3, suggestion="```\nz\n```")]})
+    assert len(payload["comments"]) == 2
+    assert payload["comments"][0]["body"] == "a ```b``` c\n\n```suggestion\nx = 1\n```"
+    assert payload["comments"][1]["end_line"] is None
+    assert payload["comments"][1]["body"].endswith("````suggestion\n```\nz\n```\n````")
+    for ticks in (3, 4, 7):
+        text = "`" * ticks
+        body = cw_mcp._draft_comments_payload({"comments": [_dc(suggestion=text)]})["comments"][0]["body"]
+        fence = "`" * (ticks + 1)
+        assert body.endswith(f"{fence}suggestion\n{text}\n{fence}")
+
+
+def test_outcomes_dispatch_rejects_tools_outside_the_mode(tmp_path):
+    req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "propose_task", "arguments": {}}}
+    called = []
+    resp = cw_mcp._outcomes_dispatch(tmp_path, "q1", req, cw_mcp.outcome_tools("full"),
+                                     lambda n, a: called.append(n) or (True, "ok"))
+    assert resp["result"]["isError"] is True and not called
+
+
+def test_accept_draft_comments_once_per_turn_on_free_thread():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        (d / "raw.diff").write_text(DIFF)
+        cw_store.write_json(d / "turns" / "q1.anchor.json", {**_draft_doc(), "anchor": {"kind": "free"}, "anchors": []})
+        assert cw_mcp.accept_outcome(d, "q1", "post_draft_comments", {"comments": [_dc()]})[0]
+        ok, msg = cw_mcp.accept_outcome(d, "q1", "post_draft_comments", {"comments": [_dc()]})
+        assert not ok and "already posted" in msg
+        rec = json.loads((d / "turns" / "q1.outcomes.jsonl").read_text())
+        assert rec["arguments"] == {"comments": [{"path": "a.py", "line": 2, "end_line": None, "side": "RIGHT",
+                                                  "body": "fix this"}]}
+
+
+def test_reload_walkthrough_is_full_only_and_once_per_turn():
+    assert "reload_walkthrough" not in [t["name"] for t in cw_mcp.outcome_tools("review")]
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        cw_store.write_json(d / "turns" / "q1.anchor.json", {**_draft_doc(), "anchor": {"kind": "free"}, "anchors": []})
+        ok, msg = cw_mcp.accept_outcome(d, "q1", "reload_walkthrough", {})
+        assert not ok and "only available in Full mode" in msg
+        assert not (d / "turns" / "q1.outcomes.jsonl").exists()
+        cw_store.write_json(d / "turns" / "q1.anchor.json",
+                            {**_draft_doc(), "mode": "full", "anchor": {"kind": "free"}, "anchors": []})
+        assert cw_mcp.accept_outcome(d, "q1", "reload_walkthrough", {})[0]
+        ok, msg = cw_mcp.accept_outcome(d, "q1", "reload_walkthrough", {})
+        assert not ok and "already requested" in msg
+        assert json.loads((d / "turns" / "q1.outcomes.jsonl").read_text())["arguments"] == {}

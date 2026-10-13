@@ -88,3 +88,15 @@ identifier that has to appear in `raw.diff`, names the hand-off to the NEXT grou
 the last group that isn't a `side` group must not have one, since there is no next stop for it
 to name. `side: true` marks a supporting group (docs, dev setup, anything that doesn't advance
 the story) that the map lists off the main line rather than in the chain.
+
+## Story visuals
+
+It may also write `visuals`: one to three, each telling one thread of the change's story as
+`{title, intro?, acts: [{title, text?, bridge?, flow: [...]}]}`, at most four acts per visual. A
+`flow` is an ordered list of `{"sym": id}` items with an optional `{"edge": label}` between two of
+them; an edge is never first, last or next to another edge. Take every `sym` from the symbol list
+it was handed (or write it as `<file>:<label>`), never invent one, and do not try to cover every
+symbol: a visual follows the few that carry the story. At most six symbols per act and twelve
+distinct per visual. Edge labels are one to three words, verb-led. Everything is plain text, no
+markdown or backticks; titles stay under 80 characters, `text` and `intro` under 300, `bridge`
+under 120. Omit `visuals` for a docs- or config-only change; the page then shows the plain graph.

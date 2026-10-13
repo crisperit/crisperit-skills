@@ -15,6 +15,7 @@ DISTINCTIVE_SENTENCES = {
                 "compile-time constants",
     "comment.md": "Never propose an edit, a patch, or a replacement for the selected code",
     "thread.md": "The path is a signal, not a requirement",
+    "agent.md": "Never push, and do not try to reach a remote.",
 }
 
 

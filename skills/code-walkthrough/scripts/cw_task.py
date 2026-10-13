@@ -31,7 +31,24 @@ REMEDY = "point roles.thread at a claude-code profile"
 
 # Same hardening as head/: no hooks, symlinks as plain files so a checked-out link cannot
 # point Edit/Write outside the worktree.
-_HARDEN = ["-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false"]
+_HARDEN = ["-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false",
+           "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null"]
+
+
+def _filter_off(cwd):
+    """The agent can write the shared .git/config; a filter or fsmonitor it defined there would
+    run as us during add/status. Each configured filter is blanked on every call (an empty
+    command is a no-op to git)."""
+    out = subprocess.run(["git", "-C", str(cwd), "config", "--get-regexp", r"^filter\."],
+                         capture_output=True, text=True, errors="replace",
+                         env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}).stdout
+    names = {line.split(None, 1)[0].rsplit(".", 1)[0] for line in out.splitlines() if line.strip()}
+    args = []
+    for name in sorted(names):
+        for var in ("clean", "smudge", "process"):
+            args += ["-c", f"{name}.{var}="]
+        args += ["-c", f"{name}.required=false"]
+    return args
 
 
 _GIT_ALLOWED = {"worktree", "rev-parse", "status", "checkout", "add", "commit", "diff", "branch",
@@ -45,9 +62,12 @@ def _git(cwd, args):
     sub = words[0] if words else None
     if sub not in _GIT_ALLOWED:
         raise ValueError(f"code tasks do not run git {sub}")
+    env = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1", "GIT_CONFIG_NOSYSTEM": "1"}
+    if sub == "status":
+        env["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(
-        ["git", "-C", str(cwd), *_HARDEN, *args], capture_output=True, text=True, errors="replace",
-        env={**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"})
+        ["git", "-C", str(cwd), *_HARDEN, *_filter_off(cwd), *args], capture_output=True, text=True,
+        errors="replace", env=env)
 
 
 class GitLinkChanged(RuntimeError):
@@ -95,8 +115,10 @@ def remove_all(d, meta):
     """Prune: every task worktree of this walkthrough and its cw/ branches."""
     repo = meta.get("repo")
     tasks = Path(d) / "tasks"
-    if repo and tasks.is_dir():
-        for wt in tasks.iterdir():
+    if repo:
+        if (Path(d) / "agent").exists():
+            remove_worktree(repo, Path(d) / "agent")
+        for wt in tasks.iterdir() if tasks.is_dir() else ():
             remove_worktree(repo, wt)
         shutil.rmtree(tasks, ignore_errors=True)
         refs = _git(repo, ["for-each-ref", "--format=%(refname:short)",
@@ -189,20 +211,24 @@ def build_prompt(d, meta, current):
     return "\n\n".join(parts)
 
 
+def _commit_all(repo, wt, message):
+    """Stage everything in wt and commit it (no hooks, no signing); returns the new HEAD."""
+    name = _git(repo, ["config", "user.name"]).stdout.strip() or "Code Walkthrough"
+    email = _git(repo, ["config", "user.email"]).stdout.strip() or "code-walkthrough@localhost"
+    _git_ok(wt, ["add", "-A"])
+    message = f"{message}\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+    _git_ok(wt, ["-c", f"user.name={name}", "-c", f"user.email={email}",
+                 "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "commit", "--no-verify", "-m", message])
+    return _git_ok(wt, ["rev-parse", "HEAD"]).strip()
+
+
 def _commit(repo, wt, meta, t, title, summary, link):
     """Returns the commit's task fields, or None when the agent changed nothing."""
     _check_git_link(repo, wt, link)
     if not _git_ok(wt, ["status", "--porcelain"]).strip():
         return None
-    name = _git(repo, ["config", "user.name"]).stdout.strip() or "Code Walkthrough"
-    email = _git(repo, ["config", "user.email"]).stdout.strip() or "code-walkthrough@localhost"
-    branch = branch_name(meta, t)
-    _git_ok(wt, ["checkout", "-b", branch])
-    _git_ok(wt, ["add", "-A"])
-    message = f"{title}\n\n{summary}\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
-    _git_ok(wt, ["-c", f"user.name={name}", "-c", f"user.email={email}",
-                 "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "commit", "--no-verify", "-m", message])
-    sha = _git_ok(wt, ["rev-parse", "HEAD"]).strip()
+    _git_ok(wt, ["checkout", "-b", branch_name(meta, t)])
+    sha = _commit_all(repo, wt, f"{title}\n\n{summary}")
     files, added, removed = [], 0, 0
     for line in _git_ok(wt, ["diff", "--numstat", "--no-renames", f"{meta['head']}..{sha}"]).splitlines():
         add, dele, path = line.split("\t", 2)

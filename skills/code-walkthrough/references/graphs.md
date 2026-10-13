@@ -135,6 +135,22 @@ languages -- never from grep or name matching. The LLM tier's edges carry no pos
 schema, so its symbols get no `range`. The range is BASE-side when the node's state is `gone`,
 HEAD-side otherwise, since that's the only ref the symbol is known to still exist on.
 
+## The story block and "All symbols"
+
+`render.py` turns valid `visuals` (see `static.md`) into a hidden `<section class="cw-story">`
+right after the Overview, filled by the template's `wireStory` once the page loads. Each flow
+item is a card; selecting one shows its `file:start-end`, complexity before and after, up to four
+code rows and an "Open in diff" button that scrolls to the symbol's lines (the file when no
+hunk covers them). Hunks that contain a story symbol get an "In graph" chip that jumps back to its
+card. The data comes from `symdelta.json`, `complexity.json` and `raw.diff`, so `pipeline.py render`
+and `partial` now pass `--symdelta` and `--complexity` whenever those files exist (the latter also
+shows the Complexity fact on every page).
+
+With at least one valid visual, `walkthrough.py` drops the per-group call-graph tabs and the story
+section carries the whole graph once in an "All symbols" disclosure, drawn on first open because
+mermaid cannot measure a closed `<details>`. With none, there is no story section and the page
+keeps today's per-group graphs. Explain mode hides the `span.h` markers, so no chips there.
+
 ## `structure.py`: real symbols, not symdelta's own node state
 
 symdelta.json's own node `state` answers "did the LSP see a call edge appear", not "did this

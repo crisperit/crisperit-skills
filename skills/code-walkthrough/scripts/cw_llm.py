@@ -231,6 +231,20 @@ def claude_env():
     return {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_DROP}
 
 
+_NO_PUSH_PROTOCOLS = ("https", "http", "ssh", "git", "file", "ext")
+
+
+def no_push_env():
+    """Env additions that make every git transport fail, so nothing spawned under the agent can
+    push (or fetch). git reads these as config above the repo's own."""
+    keys = ["protocol.allow"] + [f"protocol.{p}.allow" for p in _NO_PUSH_PROTOCOLS]
+    env = {"GIT_CONFIG_COUNT": str(len(keys))}
+    for n, key in enumerate(keys):
+        env[f"GIT_CONFIG_KEY_{n}"] = key
+        env[f"GIT_CONFIG_VALUE_{n}"] = "never"
+    return env
+
+
 def _classify_claude_error(parsed, stderr, profile):
     status = parsed.get("api_error_status")
     text = f"{parsed.get('result') or ''} {stderr or ''}".lower()
@@ -319,14 +333,146 @@ def claude_call(profile, system, prompt, *, cwd, tools, schema=None, timeout=300
     return parsed, usage
 
 
+# cw_mcp imports this module, so the names are literal here; test_cw_task pins them to outcome_tools.
+THREAD_ALLOWED = ",".join(f"mcp__cw__{n}" for n in (
+    "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task", "post_draft_comments"))
+
+
 def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume=None):
     # --safe-mode disables MCP servers; CLAUDE.md verified not loaded under --restricted.
     argv = [
         "claude", "-p", "--restricted", "--tools=Read,Grep,Glob", "--strict-mcp-config",
-        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft,mcp__cw__propose_task",
+        f"--mcp-config={json.dumps(mcp_config)}", f"--allowedTools={THREAD_ALLOWED}",
         "--permission-prompts", "none", f"--model={profile['model']}",
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         f"--system-prompt={system}", f"--add-dir={add_dir}",
+    ]
+    return argv + (["--resume", resume] if resume else ["--session-id", session_id])
+
+
+# Best-effort, not a sandbox: these deny rules and the transport block in no_push_env can both be bypassed.
+FULL_DISALLOWED = ",".join((
+    "Bash(git push:*)", "Bash(rtk git push:*)", "Bash(git -c:*)", "Bash(git --no-pager push:*)",
+    "Bash(env:*)", "Bash(*GIT_CONFIG*)", "Bash(gh pr create:*)", "Bash(gh pr review:*)",
+    "Bash(gh pr merge:*)", "Bash(gh pr comment:*)", "Bash(gh issue:*)", "Bash(gh api:*)",
+    "mcp__code-walkthrough", "mcp__plugin_crisperit-skills_code-walkthrough",
+    "WebFetch", "WebSearch",
+))
+
+
+def _under_tmp(path):
+    real = os.path.realpath(path)
+    return real == "/tmp" or real.startswith("/tmp/")
+
+
+def _docker_sockets():
+    # --ro-bind needs the destination to exist on the read-only root, so only hide sockets that do.
+    found = {os.path.realpath(p) for p in ("/var/run/docker.sock", "/run/docker.sock") if os.path.exists(p)}
+    return sorted(found)
+
+
+def _secret_files():
+    paths = (cw_store.token_path(), cw_store.server_json_path(), cw_store.config_path())
+    return sorted({os.path.realpath(p) for p in paths if os.path.exists(p)})
+
+
+def project_dir(home, cwd):
+    # Claude Code names a cwd's state dir after the path with every non-alphanumeric character replaced by '-'.
+    return Path(home) / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+
+
+def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None, exists=os.path.exists,
+                   secrets=None):
+    """bwrap argv that makes everything but the worktree and turns dir read-only for a Full turn.
+    The main repo root is an overlay: agent writes there succeed and are discarded, the daemon
+    commits the worktree on the host afterwards. ~/.claude stays read-only except the agent cwd's own
+    project dir, so the agent cannot plant hooks, settings, CLAUDE.md or auto-memory the user's other
+    sessions would load; /run stays visible for DNS."""
+    worktree, repo_root, home, turns_dir = map(str, (worktree, repo_root, home, turns_dir))
+    walkthrough = str(Path(turns_dir).parent)
+    if any(_under_tmp(p) for p in (worktree, repo_root, walkthrough)):
+        raise cw_store.CWError("Full access cannot confine a walkthrough stored under /tmp",
+                               remedy="keep CODE_WALKTHROUGH_HOME and the repo outside /tmp")
+    prefix = [
+        "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+        "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
+        "--tmpfs", "/tmp",
+    ]
+    for sock in _docker_sockets() if sockets is None else sockets:
+        prefix += ["--ro-bind", "/dev/null", str(sock)]
+    prefix += ["--overlay-src", repo_root, "--tmp-overlay", repo_root]
+    # After the overlay, which may sit on $HOME; tmpfs needs the mount point to exist on the read-only root.
+    for hidden in ("/run/user", f"{home}/.ssh", f"{home}/.gnupg"):
+        if exists(hidden):
+            prefix += ["--tmpfs", hidden]
+    prefix += [
+        "--ro-bind", walkthrough, walkthrough,
+    ]
+    for secret in _secret_files() if secrets is None else secrets:
+        prefix += ["--ro-bind", "/dev/null", str(secret)]
+    prefix += [
+        "--bind", worktree, worktree, "--bind", turns_dir, turns_dir,
+    ]
+    writable = [str(project_dir(home, worktree))] + [f"{home}/{rel}" for rel in (
+        ".claude/session-env", ".claude/sessions", ".claude/.credentials.json", ".local/share/rtk")]
+    for path in writable:
+        prefix += ["--bind-try", path, path]
+    return prefix + ["--chdir", worktree, "--"]
+
+
+_confined = {"ok": False, "failed_at": None}
+CONFINEMENT_RETRY_S = 60
+
+
+def confinement_available(run=subprocess.run, clock=time.monotonic):
+    # A failed probe may be transient (timeout), so it is retried after a minute; success is final.
+    if _confined["ok"]:
+        return True
+    failed_at = _confined["failed_at"]
+    if failed_at is not None and clock() - failed_at < CONFINEMENT_RETRY_S:
+        return False
+    _confined["ok"] = _probe_confinement(run)
+    _confined["failed_at"] = None if _confined["ok"] else clock()
+    return _confined["ok"]
+
+
+def _probe_confinement(run):
+    # Runs the real prefix so the probe cannot drift from what a turn executes.
+    cache = Path.home() / ".cache"
+    with tempfile.TemporaryDirectory(dir=cache if cache.is_dir() else None) as t:
+        t = Path(t)
+        wt, root, turns = t / "w" / "agent", t / "repo", t / "w" / "turns"
+        for p in (wt, root / ".git", turns):
+            p.mkdir(parents=True)
+        try:
+            prefix = confine_prefix(wt, root, Path.home(), turns)
+            return run(prefix + ["true"], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError, cw_store.CWError):
+            return False
+
+
+def git_common_dir(worktree):
+    out = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
+                         capture_output=True, text=True, timeout=10)
+    if out.returncode != 0:
+        raise OSError(out.stderr.strip() or "git rev-parse failed")
+    return (Path(worktree) / out.stdout.strip()).resolve()
+
+
+def overlay_root(common_dir):
+    common_dir = Path(common_dir)
+    return common_dir.parent if common_dir.name == ".git" else common_dir
+
+
+def full_argv(profile, system, *, mcp_config, allowed, add_dir, session_id=None, resume=None):
+    # No --restricted, --strict-mcp-config or --tools on purpose: the agent is the user's own Claude Code
+    # and --setting-sources user supplies its permissions and MCP servers.
+    argv = [
+        "claude", "-p", "--setting-sources", "user", f"--mcp-config={json.dumps(mcp_config)}",
+        f"--allowedTools={allowed}", f"--disallowedTools={FULL_DISALLOWED}",
+        "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+        f"--model={profile['model']}", "--output-format", "stream-json", "--verbose",
+        "--include-partial-messages", f"--append-system-prompt={system}", f"--add-dir={add_dir}",
     ]
     return argv + (["--resume", resume] if resume else ["--session-id", session_id])
 
@@ -346,16 +492,17 @@ def task_argv(profile, system, *, mcp_config):
     ]
 
 
-def claude_stream(argv, prompt, *, cwd, timeout, on_line, on_spawn=None):
+def claude_stream(argv, prompt, *, cwd, timeout, on_line, on_spawn=None, env=None):
     """Run argv, feeding each parsed stdout JSON line to on_line. Returns (returncode,
-    stderr_tail); a timeout raises LLMError(kind="timeout") like claude_call."""
+    stderr_tail); a timeout raises LLMError(kind="timeout") like claude_call. env overlays
+    claude_env()."""
     sem = _current_semaphore()
     sem.acquire()
     try:
         try:
             proc = subprocess.Popen(
-                argv, cwd=cwd, env=claude_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, start_new_session=True,
+                argv, cwd=cwd, env={**claude_env(), **(env or {})}, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
             )
         except FileNotFoundError as e:
             raise LLMError(

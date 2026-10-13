@@ -11,6 +11,7 @@ Stdlib only except for talking to a model backend through cw_llm.
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_llm  # noqa: E402
+import cw_repo  # noqa: E402
 import cw_store  # noqa: E402
 import fanout  # noqa: E402
 import fanout_threads  # noqa: E402
@@ -32,7 +34,7 @@ import notes  # noqa: E402
 import regen  # noqa: E402
 import state  # noqa: E402
 from symdelta import add_worktree, remove_worktree  # noqa: E402
-from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, parse_hunks, validate  # noqa: E402
+from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, check_visuals, parse_hunks, validate  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
@@ -166,6 +168,21 @@ def _gh(meta, args, *, stdin=None, timeout=60):
         raise cw_store.CWError("gh timed out", remedy="check gh auth status, or raise this call's timeout") from e
 
 
+def own_pr(meta):
+    """True/False when the PR author is / is not the gh viewer; None when either lookup fails."""
+    try:
+        viewer = _gh(meta, ["api", "user"])
+        author = _gh(meta, ["pr", "view", str(meta["pr"]), "--repo", meta["gh_repo"],
+                            "--json", "author"])
+        if viewer.returncode != 0 or author.returncode != 0:
+            return None
+        login = json.loads(viewer.stdout).get("login")
+        pr_author = (json.loads(author.stdout).get("author") or {}).get("login")
+    except (cw_store.CWError, ValueError, AttributeError, OSError):
+        return None
+    return None if not login or not pr_author else login == pr_author
+
+
 def _notes(meta, args, *, stdin=None):
     repo, env = gh_env(meta)
     return subprocess.run([sys.executable, str(SCRIPTS_DIR / "notes.py"), *args],
@@ -297,7 +314,8 @@ def _prose_submit_tool():
             "properties": {
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
                 "flow_mermaid": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "object"}}}}}}
+                "groups": {"type": "array", "items": {"type": "object"}},
+                "visuals": {"type": "array", "items": {"type": "object"}}}}}}
 
 
 def _resolution_submit_tool():
@@ -317,7 +335,35 @@ def _analysis_submit_tool():
                 "files": {"type": "array", "items": {"type": "object"}},
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
                 "flow_mermaid": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "object"}}}}}}
+                "groups": {"type": "array", "items": {"type": "object"}},
+                "visuals": {"type": "array", "items": {"type": "object"}}}}}}
+
+
+SYMBOL_DIGEST_MAX = 150
+
+
+def _symbol_digest(symdelta):
+    """The ids an author may name in `visuals`, one per line, or "" when there are none."""
+    rows = []
+    for n in (symdelta or {}).get("nodes", []):
+        if isinstance(n, dict) and n.get("kind") == "symbol":
+            span = n.get("range")
+            where = f"{n.get('file')}:{span[0]}-{span[1]}" if span else str(n.get("file"))
+            rows.append(f"{n.get('id')} | {where} | {n.get('state')}")
+    return "\n".join(rows[:SYMBOL_DIGEST_MAX])
+
+
+def _symbol_digest_text(digest):
+    return "\n\nSymbols for `visuals` (id | file:lines | state):\n" + digest if digest else ""
+
+
+def _apply_visuals(prose, args, symdelta, digest):
+    """Sets prose["visuals"] to the valid visuals; returns the problem lines worth a repair
+    round, which are none when the author was never shown any symbol ids."""
+    clean, problems = check_visuals(args.get("visuals"), symdelta)
+    if clean:
+        prose["visuals"] = clean
+    return problems if digest else []
 
 
 def _make_on_usage(d, role, on_event, config):
@@ -756,6 +802,8 @@ def _run_prose(d, meta, config, on_event, batch_count):
         user_text += "\n\n```json\n" + json.dumps(
             {"language": symdelta.get("language"), "counts": symdelta.get("counts"),
              "moved": symdelta.get("moved")}, indent=2) + "\n```"
+    digest = _symbol_digest(symdelta)
+    user_text += _symbol_digest_text(digest)
     if raw_diff.count("\n") <= 2000:
         user_text += "\n\n```diff\n" + raw_diff + "\n```"
 
@@ -775,14 +823,15 @@ def _run_prose(d, meta, config, on_event, batch_count):
         }
         if isinstance(args.get("groups"), list):
             prose["groups"] = args["groups"]
+        visual_lines = _apply_visuals(prose, args, symdelta, digest)
         merged, problems = _merge_and_validate(d, fragment_paths, prose)
         prose_lines = [p for p in problems if _classify(p, diff_paths)[0] == "prose"]
         other_lines = [p for p in problems if _classify(p, diff_paths)[0] != "prose"]
         state["prose"] = prose
         state["merged"] = merged
         state["other_lines"] = other_lines
-        if prose_lines and state["attempt"] < 3:
-            return "gate: " + "\n".join(prose_lines) + "\nfix and call submit_prose again"
+        if (prose_lines or visual_lines) and state["attempt"] < 3:
+            return "gate: " + "\n".join(prose_lines + visual_lines) + "\nfix and call submit_prose again"
         return cw_llm.Done({"other_lines": other_lines})
 
     local_handlers = dict(handlers)
@@ -880,6 +929,9 @@ def _run_small(d, meta, config, on_event):
     system_prompt = batch_prompt + "\n\n" + prose_prompt + DELIVERY_SUFFIX.format(tool="submit_analysis")
     user_text = (f"```diff\n{raw_diff}\n```\n\n```json\n{json.dumps(seed, indent=2)}\n```"
                  f"\n\nNumstat:\n{numstat}")
+    symdelta = cw_store.read_json(d / "symdelta.json", default=None)
+    digest = _symbol_digest(symdelta)
+    user_text += _symbol_digest_text(digest)
 
     attempts = 0
     model_used = None
@@ -914,6 +966,7 @@ def _run_small(d, meta, config, on_event):
             }
             if isinstance(args.get("groups"), list):
                 prose["groups"] = args["groups"]
+            visual_lines = _apply_visuals(prose, args, symdelta, digest)
             full = {**{k: v for k, v in prose.items() if k != "target"}, "target": prose["target"],
                     "files": fragment["files"]}
             full_problems = validate(raw_diff, full)
@@ -922,12 +975,13 @@ def _run_small(d, meta, config, on_event):
             state["analysis"] = full
             state["prose"] = prose
             state["problems"] = full_problems
-            if not full_problems:
+            retry = state["attempt"] < 3
+            if not full_problems and not (visual_lines and retry):
                 state["ok"] = True
                 return cw_llm.Done({"ok": True})
-            if state["attempt"] >= 3:
+            if not retry:
                 return cw_llm.Done({"ok": False, "problems": full_problems})
-            return "gate: " + "\n".join(full_problems) + "\nfix and call submit_analysis again"
+            return "gate: " + "\n".join(full_problems + visual_lines) + "\nfix and call submit_analysis again"
 
         local_handlers = dict(handlers)
         local_handlers["submit_analysis"] = handler
@@ -1304,7 +1358,9 @@ def _final_build(d, meta, config, on_event):
         _emit_step(d, on_event, "prepare", "ok")
 
         if meta.get("pr"):
-            sync_pr(d, meta, on_event)
+            if sync_pr(d, meta, on_event):
+                viewer_owns = own_pr(meta)
+                cw_store.update_meta(d, lambda m: m.update({"own_pr": viewer_owns}))
             _resolve_threads(d, meta, config, on_event)
 
         _emit_step(d, on_event, "render", "running")
@@ -1429,11 +1485,30 @@ def _full_clean(d, old_meta, toplevel):
         except Exception:
             pass
         _rm(head_dir)
+    old_meta = old_meta or {}
+    agent = old_meta.get("agent")
+    carry = {k: old_meta[k] for k in ("origin_repo",) if k in old_meta}
+    if agent and (d / "agent").exists():
+        import cw_agent  # noqa: PLC0415  cw_agent imports cw_task, which imports this module
+        if cw_agent.has_edits(d, old_meta) or cw_agent.is_dirty(d):
+            return {**carry, "agent": agent}
+    agent_repo = old_meta.get("repo")
+    if agent_repo and old_meta.get("id") and (agent or (d / "agent").exists()):
+        import cw_task  # noqa: PLC0415  cw_task imports this module
+        try:
+            cw_task.remove_worktree(agent_repo, d / "agent", cw_task.branch_name(old_meta, "agent"))
+        except Exception:
+            pass
+    return carry
 
 
-def prepare_walkthrough(params, is_running=None):
+def prepare_walkthrough(params, is_running=None, edit_guard=None):
+    """`edit_guard(d)` is a context manager held while a rebuild removes or replaces what a Full
+    agent turn edits; it raises when such a turn is running."""
     is_running = is_running or (lambda d: False)
-    repo = params.get("repo")
+    edit_guard = edit_guard or (lambda d: contextlib.nullcontext())
+    config = cw_store.load_config()
+    repo = cw_repo.resolve(params, config)
     base_ref = params.get("base")
     head_ref = params.get("head")
     target = params.get("target")
@@ -1461,7 +1536,6 @@ def prepare_walkthrough(params, is_running=None):
         gh_repo = state._repo_from_links({"repo_url": links.repo_web_url(str(toplevel))})
         if gh_repo is None:
             raise cw_store.CWError("origin is not a GitHub remote", remedy="follow references/static.md of the code-walkthrough skill")
-    config = cw_store.load_config()
     if cw_store.role_profile(config, "analysis") is None or cw_store.role_profile(config, "prose") is None:
         raise cw_store.CWError(
             "no model backend configured",
@@ -1504,30 +1578,31 @@ def prepare_walkthrough(params, is_running=None):
             return d, meta, True
         return d, old_meta, True
 
-    if old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted"):
-        for name in ("prose.json", "analysis.json", "pipeline.json"):
-            _rm(d / name)
-        meta = dict(old_meta)
-    else:
-        _full_clean(d, old_meta, toplevel)
-        meta = {}
+    retry = old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted")
+    with contextlib.nullcontext() if retry else edit_guard(d):
+        if retry:
+            for name in ("prose.json", "analysis.json", "pipeline.json"):
+                _rm(d / name)
+            meta = dict(old_meta)
+        else:
+            meta = _full_clean(d, old_meta, toplevel)
 
-    now = cw_store.now_iso()
-    meta.setdefault("rev", 0)
-    meta.setdefault("route", None)
-    meta.setdefault("batches", 0)
-    meta.setdefault("batches_done", [])
-    meta.setdefault("usage", {})
-    meta.setdefault("steps", {})
-    meta.setdefault("created_at", now)
-    meta.update({
-        "v": 1, "id": wid, "key": key, "repo": str(toplevel), "base": base_sha, "head": head_sha,
-        "base_ref": base_ref, "head_ref": head_ref, "pr": pr, "gh_repo": gh_repo, "target": target,
-        "slug": slug, "title": title, "explain": explain, "paths": paths, "diff_file": diff_file,
-        "sig": sig, "sibling_of": sibling_of, "status": "building", "error": None, "remedy": None, "gate": [], "page": "partial",
-    })
-    meta["updated_at"] = now
-    cw_store.write_json(d / "meta.json", meta)
+        now = cw_store.now_iso()
+        meta.setdefault("rev", 0)
+        meta.setdefault("route", None)
+        meta.setdefault("batches", 0)
+        meta.setdefault("batches_done", [])
+        meta.setdefault("usage", {})
+        meta.setdefault("steps", {})
+        meta.setdefault("created_at", now)
+        meta.update({
+            "v": 1, "id": wid, "key": key, "repo": str(toplevel), "base": base_sha, "head": head_sha,
+            "base_ref": base_ref, "head_ref": head_ref, "pr": pr, "gh_repo": gh_repo, "target": target,
+            "slug": slug, "title": title, "explain": explain, "paths": paths, "diff_file": diff_file,
+            "sig": sig, "sibling_of": sibling_of, "status": "building", "error": None, "remedy": None, "gate": [], "page": "partial",
+        })
+        meta["updated_at"] = now
+        cw_store.write_json(d / "meta.json", meta)
 
     _ensure_capture(d, meta, config)
     meta = cw_store.read_meta(d) or meta

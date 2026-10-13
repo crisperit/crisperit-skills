@@ -132,7 +132,16 @@ the toplevel, `base`/`head` as resolved above (the snapshot commit for the worki
 the target is a PR. A re-call on a PR walkthrough that already finished `done` refreshes its
 comments and resolved threads instead of redoing any batch or prose work.
 
-Any error from the call: read `references/static.md` and follow it, and mention the remedy in
+A PR URL with no local clone still goes live: `gh pr view <url> --json number,baseRefName,headRefOid,title`
+works outside a repo, then call `walkthrough_start` with `repo: "owner/name"`, `pr`,
+`base: "origin/<baseRefName>"` and `head: <headRefOid>`. If it fails with "is not cloned on this
+machine", ask the user the question in the remedy once; on yes call again with `clone: true`, on no
+use the static `gh pr diff` path. Only repos in `trust.repos` clone without asking.
+
+The page can also offer Full access, where a thread edits files in a shared worktree. It is off by
+default and gated by trust config: see "Full access" in `references/live.md`.
+
+Any other error from the call: read `references/static.md` and follow it, and mention the remedy in
 one line at the end of the report.
 
 Success: open `url` with `xdg-open <url>` on Linux, `open <url>` on macOS, `start "" <url>` on

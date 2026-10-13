@@ -58,7 +58,7 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
     font-size:var(--fs-base);line-height:1.6;
-    padding:32px 20px calc(64px + var(--cw-bar-h,0px))}
+    padding:32px 20px 64px}
   .wrap{max-width:min(1400px,92vw);margin:0 auto}
   /* Prose runs the full wrapper width, matching the panels and diagrams, because that is what
      was asked for twice. It puts a line past the 65-80 characters a measure normally wants, so
@@ -544,7 +544,7 @@
     padding:6px 14px;font-size:var(--fs-xs);color:var(--muted);
     font-family:var(--mono);text-align:center}
   #cw-live-banner.failed{color:var(--red)}
-  #cw-live-reload{position:fixed;left:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+  #cw-live-reload{position:fixed;left:16px;bottom:16px;z-index:40;
     display:inline-flex;align-items:center;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--accent);color:var(--text);border-radius:999px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35)}
@@ -844,7 +844,7 @@
     border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;
     padding:10px 16px;font-size:var(--fs-sm);color:var(--text)}
 
-  #cw-dock{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+  #cw-dock{position:fixed;right:16px;bottom:16px;z-index:40;
     display:flex}
   #hr-comments-btn{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:999px;
@@ -968,7 +968,7 @@
   .cw-ref-dot-btn:hover::after{box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 30%,transparent)}
   .cw-ref-dot-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:50%}
   .cw-ref-dot:not(.dline){box-shadow:inset 3px 0 0 var(--purple)}
-  #cw-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(64px + var(--cw-bar-h,0px));z-index:52;
+  #cw-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:64px;z-index:52;
     display:flex;align-items:center;gap:10px;box-sizing:border-box;width:max-content;max-width:min(420px,calc(100vw - 32px));
     padding:8px 12px;border:1px solid var(--purple);border-radius:8px;background:var(--panel2);color:var(--text);
     font-size:var(--fs-sm);box-shadow:0 6px 20px rgba(0,0,0,.35)}
@@ -1002,17 +1002,20 @@
   #cw-panel button:focus-visible,
   .cw-thread button:focus-visible,.cw-compose button:focus-visible,
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  :root{--cw-panel-w:clamp(300px,26vw,360px)}
+  :root{--cw-panel-w:clamp(360px,34vw,560px)}
   /* above #cw-live-banner (z 50); the drafts bar (z 45) stays below */
-  #cw-panel{position:fixed;top:0;right:0;bottom:var(--cw-bar-h,0px);z-index:51;width:var(--cw-panel-w);
+  #cw-panel{position:fixed;top:0;right:0;bottom:0;z-index:51;width:var(--cw-panel-w);
     display:flex;flex-direction:column;box-sizing:border-box;background:var(--panel);color:var(--text);
     border-left:1px solid var(--border);box-shadow:-8px 0 24px rgba(0,0,0,.35)}
   #cw-panel [hidden]{display:none!important}
   #cw-panel[hidden]{display:none}
   #cw-panel-grab{display:none}
+  #cw-panel-resize{position:absolute;left:-4px;top:0;bottom:0;width:8px;z-index:1;cursor:col-resize;touch-action:none}
+  #cw-panel-resize:hover,#cw-panel-resize:focus-visible,#cw-panel-resize.cw-dragging{background:var(--accent);opacity:.5;outline:0}
   #cw-panel-head{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;
     border-bottom:1px solid var(--border);font-weight:600}
-  #cw-panel-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #cw-panel-title{flex:1 1 auto;min-width:0;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;
+    -webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
   .cw-panel-icon{flex:none;width:28px;height:28px;background:var(--panel2);border:1px solid var(--border);
     color:var(--text);border-radius:6px;cursor:pointer;font-size:14px;line-height:1}
   .cw-panel-icon:hover{border-color:var(--accent)}
@@ -1039,7 +1042,7 @@
   #cw-panel-status{flex:1 1 100%;margin:0;font-size:var(--fs-xs);color:var(--muted)}
   #cw-panel-status:empty{display:none}
   #cw-panel-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:10px 14px}
-  #cw-panel-compose{flex:none}
+  #cw-panel-compose{flex:none;min-width:0}
   #cw-panel .cw-thread{margin:0;padding:0;border-left:0;background:none}
   @media (min-width:601px) and (pointer:fine){
     .cw-panel-open #cw-dock{right:calc(var(--cw-panel-w) + 16px)}
@@ -1049,10 +1052,11 @@
     .cw-panel-open body{padding-right:calc(var(--cw-panel-w) + 20px)}
   }
   @media (max-width:600px),(pointer:coarse){
-    #cw-panel{top:auto;left:0;right:0;bottom:var(--cw-bar-h,0px);width:auto;border-left:0;
+    #cw-panel-resize{display:none}
+    #cw-panel{top:auto;left:0;right:0;bottom:0;width:auto;border-left:0;
       border-top:1px solid var(--border);border-radius:12px 12px 0 0;box-shadow:0 -8px 24px rgba(0,0,0,.35);
-      height:min(90vh,calc(100vh - var(--cw-bar-h,0px) - 12px));
-      height:min(90dvh,calc(100dvh - var(--cw-bar-h,0px) - 12px))}
+      height:min(90vh,calc(100vh - 12px));
+      height:min(90dvh,calc(100dvh - 12px))}
     #cw-panel[data-sheet="collapsed"]{height:56px}
     #cw-panel[data-sheet="collapsed"]>:not(#cw-panel-grab){display:none}
     .cw-typing #cw-panel{bottom:var(--cw-kb,0px);height:min(90dvh,calc(var(--cw-vvh,100dvh) - 12px))}
@@ -1107,6 +1111,20 @@
     border:1px solid var(--border);border-radius:6px;background:var(--panel2)}
   .cw-outcome-text{min-width:0;flex:1 1 14em;overflow-wrap:anywhere}
   .cw-outcome-why{display:block;color:var(--muted)}
+  .cw-edits{display:block}
+  .cw-dc[data-state="dismissed"]{color:var(--muted)}
+  .cw-edits-files{margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:var(--fs-xs);overflow-wrap:anywhere}
+  .cw-mode-badge{margin-left:8px;padding:0 6px;border:1px solid var(--accent);border-radius:10px;color:var(--accent);
+    font:600 var(--fs-xs)/1.5 system-ui,sans-serif;vertical-align:middle}
+  .cw-mode-sw{margin:6px 0 0;padding:0;border:0;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px}
+  .cw-mode-sw legend{float:left;margin:0 12px 0 0;padding:0;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-mode-sw label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+  .cw-mode-sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-mode-hint{flex:1 1 100%;margin:2px 0 0;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-queued{color:var(--muted);font-size:var(--fs-xs)}
+  .cw-denied{margin:6px 0 0;padding:4px 8px;border-left:3px solid var(--yellow);font-size:var(--fs-xs)}
+  .cw-denied-title{margin:0;color:var(--yellow);font-weight:600}
+  .cw-denied ul{margin:2px 0 0;padding-left:18px;color:var(--muted);overflow-wrap:anywhere}
   .cw-outcome-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
   .cw-ghdraft{display:block;border-color:var(--yellow);border-left:3px dashed var(--yellow);
     background:color-mix(in srgb,var(--yellow) 8%,transparent);white-space:normal;overflow-wrap:anywhere}
@@ -1157,7 +1175,7 @@
   .cw-task textarea{min-height:64px}
   .cw-task-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px}
   .cw-task-actions .cw-task-run{border-color:var(--purple);color:var(--purple)}
-  .cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
+  .cw-edits button:focus-visible,.cw-reload button:focus-visible,.cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
   #cw-sibling a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-task-msg{margin:0;font-size:var(--fs-xs);color:var(--red)}
   .cw-task-msg:empty{display:none}
@@ -1167,8 +1185,7 @@
   #cw-sibling .cw-sibling-note{color:var(--muted);font-size:var(--fs-xs)}
   .cw-sibling-chip{margin-left:6px;padding:0 6px;border:1px solid var(--purple);border-radius:999px;
     color:var(--purple);font-size:var(--fs-xs);white-space:nowrap}
-  .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-drafts-bar,
-  .cw-sibling #cw-panel-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
+  .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-panel-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
   .cw-sibling .fb-reply{display:none!important}
   @media (max-width:728px){.cw-ghdraft-cols{grid-template-columns:minmax(0,1fr)}}
   @media (prefers-reduced-motion:no-preference){
@@ -1199,9 +1216,9 @@
   .cw-compose-hint::before{content:" ";white-space:pre}
   .cw-compose-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:4px 0 0}
   #cw-panel-compose .cw-compose{margin:0;padding:10px 14px;border-left:0;border-top:1px solid var(--border);background:none}
-  .cw-ed{display:block;box-sizing:border-box;width:100%;min-height:64px;max-height:40vh;overflow-y:auto;
+  .cw-ed{display:block;box-sizing:border-box;width:100%;min-height:6.5em;max-height:40vh;overflow-x:hidden;overflow-y:auto;
     padding:8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;color:var(--text);
-    font:inherit;font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere;cursor:text}
+    font:inherit;font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;cursor:text}
   .cw-ed:empty::before{content:attr(data-placeholder);color:var(--muted);pointer-events:none}
   .cw-ed:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
   .cw-ref{display:inline-block;vertical-align:baseline;box-sizing:border-box;max-width:100%;margin:0 1px;
@@ -1213,7 +1230,7 @@
   .cw-ref-tag:focus-visible,.cw-ref-acts button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
   .cw-ref-open{display:block}
   .cw-ref-body{display:block;padding:4px 8px 6px;border-top:1px solid color-mix(in srgb,var(--purple) 35%,transparent);
-    font-family:var(--mono);font-size:var(--fs-xs);white-space:pre;overflow-x:auto}
+    font-family:var(--mono);font-size:var(--fs-xs);white-space:pre;max-width:100%;overflow-x:auto}
   .cw-ref-body[hidden]{display:none}
   .cw-ref-lines{display:block}
   .cw-ref-quote{display:block;white-space:pre-wrap;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
@@ -1252,14 +1269,56 @@
   #cw-post-confirm-partial{margin:0 0 12px;font-size:var(--fs-sm)}
   #cw-post-confirm-partial .fb-actions{flex-wrap:wrap}
   #cw-post-confirm-actions[hidden]{display:none}
-  #cw-drafts-bar{position:fixed;left:0;right:0;bottom:0;z-index:45;display:flex;flex-wrap:wrap;
-    align-items:center;gap:8px 12px;padding:8px 16px;background:var(--panel);
-    border-top:1px solid var(--border);font-size:var(--fs-sm)}
-  #cw-drafts-bar[hidden]{display:none}
-  #cw-drafts-text{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
   .fb-review-tag{margin-left:6px;color:var(--accent);font-size:var(--fs-xs)}
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
+
+  .cw-story h3{margin:18px 0 4px}
+  .cw-story h4{margin:14px 0 4px;color:var(--muted);font-size:var(--fs-sm)}
+  .cw-story p{margin:4px 0}
+  .cw-bridge{color:var(--muted);font-style:italic}
+  .cw-flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
+  .cw-card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;
+    background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);
+    padding:8px 12px;font:inherit;cursor:pointer;max-width:100%}
+  .cw-card:hover{border-color:var(--accent)}
+  .cw-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-card[aria-pressed="true"]{border-color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 12%,var(--panel2))}
+  .cw-card-label{font:600 var(--fs-sm) var(--mono);overflow-wrap:anywhere}
+  .cw-card-loc{font:var(--fs-xs) var(--mono);color:var(--muted)}
+  .cw-card-meta{display:flex;gap:6px;align-items:center}
+  .cw-badge{font:600 var(--fs-xs) system-ui;border-radius:999px;padding:1px 8px;
+    background:color-mix(in srgb,var(--muted) 18%,transparent);color:var(--muted)}
+  .cw-badge.new{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
+  .cw-badge.changed{background:color-mix(in srgb,var(--yellow) 18%,transparent);color:var(--yellow)}
+  .cw-badge.gone{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+  .cw-cx{font:var(--fs-xs) var(--mono);color:var(--muted)}
+  .cw-story-detail{margin:10px 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
+    background:var(--panel2);color:var(--muted);font-size:var(--fs-sm)}
+  .cw-story-loc{font:var(--fs-xs) var(--mono);color:var(--text);overflow-wrap:anywhere}
+  .cw-story-cx{font:var(--fs-xs) var(--mono);margin:2px 0}
+  .cw-story-code{margin:6px 0;overflow-x:auto;font:var(--fs-xs) var(--mono);color:var(--text);white-space:pre}
+  .cw-story-open{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border);
+    border-radius:6px;padding:4px 10px;cursor:pointer}
+  .cw-story-open:hover{border-color:var(--accent)}
+  .cw-ingraph{position:relative;margin-left:8px;padding:0 8px;vertical-align:middle;line-height:1.3;
+    font:600 var(--fs-xs) system-ui;color:var(--accent);background:var(--panel2);
+    border:1px solid var(--border);border-radius:999px;cursor:pointer;user-select:none}
+  .cw-ingraph:hover{border-color:var(--accent)}
+  .cw-ingraph:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-story-pulse{outline:2px solid var(--accent);outline-offset:2px}
+  @media (prefers-reduced-motion:no-preference){
+    .cw-story-pulse{animation:cw-story-pulse 1.4s ease-out}
+  }
+  @keyframes cw-story-pulse{0%{outline-offset:8px;outline-color:transparent}30%{outline-offset:2px;outline-color:var(--accent)}100%{outline-color:transparent}}
+  .cw-arrow{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-arrow::before{content:'\2192';font-size:var(--fs-md);color:var(--accent)}
+  @media (max-width:480px){
+    .cw-flow{flex-direction:column;align-items:stretch}
+    .cw-arrow{justify-content:center}
+    .cw-arrow::before{content:'\2193'}
+  }
 
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
      carries an unconditional rule elsewhere (width/height) at this same ID specificity, and a
@@ -1273,30 +1332,35 @@
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
     #hr-comments-btn,#cw-live-reload{height:44px}
-    .cw-typing #cw-dock,.cw-typing #cw-drafts-bar{visibility:hidden;pointer-events:none}
+    .cw-typing #cw-dock{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
+    .cw-dc button{min-height:44px;padding:10px 14px}
+    .cw-edits button,.cw-reload button{min-height:44px;padding:10px 14px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:calc(var(--cw-bar-h,0px) + 68px);width:auto;max-width:none;
+    #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:68px;width:auto;max-width:none;
       flex-wrap:wrap}
     #cw-selbar-what{flex:1 1 100%}
     #cw-selbar-target{flex:1 1 0;min-height:44px;max-width:none}
     #cw-selbar button{min-height:44px;padding:0 14px}
     .cw-compose-hint{display:none}
+    .cw-mode-sw label{min-height:44px;padding:0 8px}
     .cw-ed{min-height:88px}
     .cw-ref-tag,.cw-ref-acts button{min-height:44px}
-    .cw-ref-tag{display:inline-flex;align-items:center}
+    .cw-ref-tag{line-height:42px}
     .cw-panel-icon{width:44px;height:44px;font-size:16px}
     .cw-pr-filter,.cw-pr-row{min-height:44px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     .fb-primary,.fb-ghost,.fb-danger,.fb-reply-input{min-height:44px}
     .stop{min-height:44px}
+    .cw-card{min-height:44px}
+    .cw-story-detail button{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
     /* Hit area grows, visible size doesn't: a 44px button here would overlap the line number
        and the row above/below. ::before extends the tappable region on all sides instead,
        via inset rather than negative margins, so it never adds to .dline-plus's own box and
        can't grow the row's layout height. */
-    .dline-plus::before,.cw-ref-dot-btn::before{content:'';position:absolute;inset:-16px}
+    .dline-plus::before,.cw-ref-dot-btn::before,.cw-ingraph::before{content:'';position:absolute;inset:-16px}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */
@@ -1403,12 +1467,6 @@
     <p id="cw-post-confirm-status" role="status"></p>
   </div>
 </dialog>
-
-<div id="cw-drafts-bar" role="region" aria-label="Drafts" hidden>
-  <span id="cw-drafts-text"></span>
-  <button type="button" id="cw-drafts-jump" class="fb-ghost">Jump to drafts</button>
-  <button type="button" id="cw-drafts-submit" class="fb-primary">Submit review</button>
-</div>
 
 <script><!-- MERMAID_JS --></script>
 <script><!-- HLJS_JS --></script>
@@ -1637,7 +1695,17 @@
       // Either the page-level section (no .wt-panel at all) or a group whose graph is the
       // only diagram it has (a .wt-panel with no tab bar -- see _group_panel): both show
       // their default level in place from the start, so both render here at load.
-      await showLevel(level);
+      // Inside a closed <details> (the story's "All symbols") mermaid measures the labels as
+      // zero and degenerate() would mark the render failed, so it waits for the first open.
+      const closed = root.closest('details');
+      if (closed && !closed.open) {
+        let opened = false;
+        closed.addEventListener('toggle', () => {
+          if (closed.open && !opened) { opened = true; showLevel(level); }
+        });
+      } else {
+        await showLevel(level);
+      }
     }
   }
 })();
@@ -2228,6 +2296,7 @@
   window.__vdZoomOpen=openZoom; // lets the level script's group-graph button, and its in-dialog level toggle, reuse this instead of a second render path
   window.__vdOpenMenu=openMenu; // lets the structure script's own box menu reuse this instead of a second menu implementation
   window.__vdGoToFile=navGoToFile; // ditto, for its "Go to walkthrough" item
+  window.__vdGoToLine=navGoToLine;
 })();
 </script>
 <script>
@@ -2266,7 +2335,7 @@
     }));
   }
   let refreshCommentsPanel=()=>{}; // replaced once wireCommentsPanel() finds its markup
-  let refreshDraftsBar=()=>{}; // replaced by wirePost on a live page with a PR to submit to
+  let refreshPanelSubmit=()=>{}; // replaced by wirePost on a live page with a PR to submit to
   let openSubmitReview=()=>{};
   let resolutionOpener=null; // chip that opened #hr-resolution, so close can focus it back
 
@@ -2325,7 +2394,7 @@
   function persistLocal(){
     try{ localStorage.setItem(lsKey('hr-notes',state.meta.id), JSON.stringify(state.notes)); }catch(e){}
     if(window.CW_LIVE) schedulePutNotes();
-    refreshDraftsBar();
+    refreshPanelSubmit();
   }
 
   let putNotesTimer=null;
@@ -2374,7 +2443,7 @@
   let pendingResolveSet=loadPendingResolve();
   function persistPendingResolve(){
     try{ localStorage.setItem(lsKey('hr-resolve',state.meta.id), JSON.stringify([...pendingResolveSet])); }catch(e){}
-    refreshDraftsBar();
+    refreshPanelSubmit();
   }
   function markPendingResolve(id){ pendingResolveSet.add(id); persistPendingResolve(); }
   function clearPendingResolve(id){ if(pendingResolveSet.delete(id)) persistPendingResolve(); }
@@ -3485,9 +3554,8 @@
       retryBtn=$$('cw-post-retry'), nowBtn=$$('cw-post-send-now'), leaveBtn=$$('cw-post-leave'),
       sendBtn=$$('cw-post-confirm-send'), cancelBtn=$$('cw-post-confirm-cancel'),
       actionsEl=$$('cw-post-confirm-actions'),
-      status=$$('cw-post-confirm-status'), bar=$$('cw-drafts-bar'), barText=$$('cw-drafts-text'),
-      barJump=$$('cw-drafts-jump'), barSubmit=$$('cw-drafts-submit');
-    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!itemsList||!sendBtn||!status||!bar||!summary||!partial) return;
+      status=$$('cw-post-confirm-status');
+    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!itemsList||!sendBtn||!status||!summary||!partial) return;
     postBtn.hidden=!canGhCommand;
     postBtn.textContent='Submit review';
 
@@ -3502,26 +3570,12 @@
     function localDrafts(){
       return state.notes.filter(n=>n.origin==='local'&&n.state==='draft'&&(n.body||'').trim());
     }
-    function updateBar(){
+    function updatePanelSubmit(){
       const d=localDrafts().length, r=pendingResolveSet.size, show=canGhCommand&&(d>0||r>0);
-      bar.hidden=!show;
-      barText.textContent=plural(d,'draft')+', '+plural(r,'resolve')+', only on this machine until you submit';
-      barSubmit.textContent='Submit review ('+plural(d,'draft')+', '+plural(r,'resolve')+')';
       const ths=document.getElementById('cw-panel-submit');
       if(ths){ ths.hidden=!show; ths.textContent='Submit review \u00b7 '+(d+r); }
-      document.documentElement.style.setProperty('--cw-bar-h',show?bar.offsetHeight+'px':'0px');
     }
-    refreshDraftsBar=updateBar;
-    window.addEventListener('resize',updateBar);
-
-    barJump.addEventListener('click',()=>{
-      const n=localDrafts().sort((a,b)=>(a.order||0)-(b.order||0))[0]
-        ||state.notes.find(x=>pendingResolveSet.has(x.id));
-      if(!n) return;
-      const rec=rowById.get(n.id);
-      const target=rec?rec.el:(spanByLineKey.get(n.path+'\t'+n.side+'\t'+n.line)||{}).span;
-      if(target){ openAncestorDetails(target); target.scrollIntoView({block:'center'}); target.focus(); }
-    });
+    refreshPanelSubmit=updatePanelSubmit;
 
     let nonce=null, lastResolves=[], full=[], excluded=new Set(), review={pending:false,comments:0},
       loading=false, posting=false, starting=false, done=false, seq=0, opener=postBtn, progress=new Map(), failedNoteIds=[];
@@ -3588,7 +3642,7 @@
         const m=state.notes.find(x=>x.id===id);
         if(m&&m.state!=='draft'){ m.state='draft'; changed=true; }
       }
-      if(changed){ persistLocal(); renderNotes(); updateBar(); }
+      if(changed){ persistLocal(); renderNotes(); updatePanelSubmit(); }
     }
 
     function preview(narrow){
@@ -3646,8 +3700,7 @@
       },()=>{ from.disabled=false; starting=false; });
     }
     postBtn.addEventListener('click',()=>start(postBtn));
-    barSubmit.addEventListener('click',()=>start(barSubmit));
-    openSubmitReview=from=>start(from||barSubmit);
+    openSubmitReview=from=>start(from||postBtn);
 
     evRadios.forEach(r=>r.addEventListener('change',syncSend));
     summary.addEventListener('input',syncSend);
@@ -3778,7 +3831,7 @@
     }
     sendBtn.addEventListener('click',send);
     nowBtn.addEventListener('click',submitNow);
-    updateBar();
+    updatePanelSubmit();
   }
 
   function wireCommentsPanel(){
@@ -4069,11 +4122,12 @@
     const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
     const asEl=node=>node&&(node.nodeType===1?node:node.parentElement);
     const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose,.cw-pageedit')); };
+    const LIVE_SEL='.cw-thread,.cw-compose,.cw-pageedit,.fb-item,.dline-plus,.cw-ref-dot-btn';
 
     function textOf(el){
-      if(!el.querySelector('.cw-thread,.cw-compose,.cw-pageedit')) return el.textContent;
+      if(!el.querySelector(LIVE_SEL)) return el.textContent;
       const c=el.cloneNode(true);
-      c.querySelectorAll('.cw-thread,.cw-compose,.cw-pageedit').forEach(n=>n.remove());
+      c.querySelectorAll(LIVE_SEL).forEach(n=>n.remove());
       return c.textContent;
     }
 
@@ -4110,7 +4164,7 @@
       blockIdx={list:[],byKey:new Map(),pos:new Map()};
       let section=document.title||'', n=0;
       planEl.querySelectorAll(BLOCK_SEL).forEach(el=>{
-        if(el.closest('.cw-thread,.cw-compose,.cw-pageedit')) return;
+        if(el.closest(LIVE_SEL)) return;
         const k=blockKey(el);
         blockIdx.list.push({el,text:norm(textOf(el))});
         if(!blockIdx.byKey.has(k)) blockIdx.byKey.set(k,el);
@@ -4119,6 +4173,14 @@
       });
       return blockIdx;
     }
+
+    let settleTimer=null;
+    new MutationObserver(()=>{
+      blockIdx=null;
+      clearTimeout(settleTimer);
+      settleTimer=setTimeout(resyncPageEdits,300);
+    }).observe(planEl,{childList:true,subtree:true,characterData:true});
+    if(document.readyState!=='complete') addEventListener('load',()=>resyncPageEdits());
 
     function proseLabel(el){
       const p=blockIndex().pos.get(el);
@@ -4308,6 +4370,8 @@
       if(p.tool==='propose_resolve') return 'Suggesting a resolve';
       if(p.tool==='propose_page_edit') return 'Editing the page';
       if(p.tool==='propose_github_draft') return 'Drafting a GitHub comment';
+      if(p.tool==='queued') return 'Queued behind '+d;
+      if(p.tool==='Bash') return d?'Running '+d:'Running a command';
       return p.tool||'';
     }
     const noteById=id=>state.notes.find(n=>n.id===id);
@@ -4333,7 +4397,9 @@
       const b=mkBtn('Retry','cw-retry fb-ghost');
       b.addEventListener('click',()=>{
         b.disabled=true; t.msg.textContent='';
-        postJson('/comment',{anchors:turnRefs(r),text:r.comment||r.question||'',thread_id:t.id})
+        const body={anchors:turnRefs(r),text:r.comment||r.question||'',thread_id:t.id};
+        if(r.mode==='full') body.mode='full';
+        postJson('/comment',body)
           .then(({ok,body})=>{ if(!ok){ b.disabled=false; t.msg.textContent=body.error||'Request failed'; } })
           .catch(()=>{ b.disabled=false; t.msg.textContent='Request failed -- check the daemon is still running.'; });
       });
@@ -4441,9 +4507,20 @@
       const target=o.payload&&o.payload.target;
       const heading=a.section&&[...planEl.querySelectorAll('h1,h2,h3,h4')].find(x=>x.textContent.trim()===a.section);
       if(a.kind==='section'&&target===a.section) return {el:heading||null,outdated:!heading};
-      const el=target&&blockIndex().byKey.get(target);
+      const idx=blockIndex();
+      const el=target&&idx.byKey.get(target);
       if(el) return {el,outdated:false};
-      return {el:heading||null,outdated:true};
+      const q=norm(a.quote||'').slice(0,60);
+      const hit=q&&idx.list.find(b=>b.text.includes(q));
+      return {el:hit?hit.el:heading||null,outdated:true};
+    }
+
+    function resyncPageEdits(){
+      for(const [oid,cur] of [...pageEdits]){
+        if(!cur.node.isConnected||!cur.outdated) continue;
+        const d=pageEditTarget(cur.o);
+        if(d.el!==cur.destEl||!d.outdated){ removePageEdit(oid); syncPageEdit(cur.o); }
+      }
     }
 
     function pageEditAct(oid,verb,btn,msg){
@@ -4499,8 +4576,8 @@
         orig.classList.add('cw-pageedit-hidden');
       }
       n.append(acts);
-      if(dest.el) dest.el.insertAdjacentElement('afterend',n);
-      pageEdits.set(o.oid,{node:n,orig,sig});
+      if(dest.el) dest.el.insertAdjacentElement('afterend',n); else planEl.prepend(n);
+      pageEdits.set(o.oid,{node:n,orig,sig,o,outdated:dest.outdated,destEl:dest.el});
       n.querySelectorAll('pre.mermaid').forEach(pre=>renderMermaidEdit(pre,pre.textContent));
     }
 
@@ -4715,6 +4792,22 @@
         .catch(()=>{ btns.forEach(x=>{ x.disabled=false; }); setTaskMsg(o.oid,NET_ERR); return null; });
     }
 
+    function openPage(oid,r){
+      if(typeof r.url==='string'&&/^(https?:\/\/|\/[^\/])/.test(r.url)){
+        if(!window.open(r.url,'_blank','noopener')) setTaskMsg(oid,'The browser blocked the new tab. Allow pop-ups, then press the button again.');
+      } else setTaskMsg(oid,'No page to open.');
+    }
+    function showSibling(o,b,btns){
+      const label=b.textContent, oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
+      b.textContent='Opening...';
+      taskAct(o,oidPath('show'),{},btns).then(r=>{
+        b.textContent=label;
+        if(!r) return;
+        openPage(o.oid,r);
+        btns.forEach(x=>{ x.disabled=false; });
+      });
+    }
+
     function copyTask(text,msgOid){
       const ok=()=>setTaskMsg(msgOid,'Copied.');
       const fb=()=>{ if(legacyCopy(text)) ok(); else setTaskMsg(msgOid,'Copy failed in this browser.'); };
@@ -4847,18 +4940,7 @@
         if(task.branch){ const bp=mk('p','cw-task-files','Branch: '); bp.append(mk('code',null,task.branch)); d.append(bp); }
         if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
         { const ce=checksEl(task); if(ce) d.append(ce); }
-        add('Show with this change',null,b=>{
-          const label=b.textContent;
-          b.textContent='Opening...';
-          taskAct(o,oidPath('show'),{},btns).then(r=>{
-            b.textContent=label;
-            if(!r) return;
-            if(typeof r.url==='string'&&/^(https?:\/\/|\/[^\/])/.test(r.url)){
-              if(!window.open(r.url,'_blank','noopener')) setTaskMsg(o.oid,'The browser blocked the new tab. Allow pop-ups, then press the button again.');
-            } else setTaskMsg(o.oid,'No page to open.');
-            btns.forEach(x=>{ x.disabled=false; });
-          });
-        });
+        add('Show with this change',null,b=>showSibling(o,b,btns));
         const cp=cherryPickCommand(task.sha);
         if(cp) add('Copy cherry-pick command',null,()=>copyTask(cp,o.oid));
         add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
@@ -4872,10 +4954,132 @@
       return d;
     }
 
+    function plainOutcomeCard(o,label){
+      const d=mk('div','cw-outcome'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      d.append(mk('span','cw-outcome-text',label+(o.state?' ('+o.state+')':'')));
+      return d;
+    }
+
+    function editsCard(o){
+      const pl=o.payload||{};
+      const files=Array.isArray(pl.files)?pl.files:[];
+      const d=mk('div','cw-outcome cw-edits'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      if(o.state==='discarded'){ d.append(mk('span','cw-outcome-text','Edits discarded')); return d; }
+      const text=mk('span','cw-outcome-text','Agent edited '+files.length+(files.length===1?' file':' files'));
+      const sub=[pl.branch,pl.sha?String(pl.sha).slice(0,7):''].filter(Boolean).join(' @ ');
+      if(sub) text.append(mk('span','cw-outcome-why',sub));
+      d.append(text);
+      if(files.length){
+        const stat=pl.stat&&typeof pl.stat==='object'?pl.stat:{};
+        const ul=mk('ul','cw-edits-files');
+        for(const f of files){
+          const path=typeof f==='string'?f:(f&&f.path)||'';
+          const st=stat[path];
+          ul.append(mk('li',null,path+(st!=null&&typeof st!=='object'?'  '+st:'')));
+        }
+        d.append(ul);
+      }
+      const hex=/^[0-9a-f]{7,40}$/i;
+      const acts=mk('div','cw-task-actions'), btns=[];
+      const add=(label,fn)=>{ const b=mkBtn(label,'fb-ghost'); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); };
+      const oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
+      add('Open updated walkthrough',b=>showSibling(o,b,btns));
+      if(hex.test(String(pl.parent))&&hex.test(String(pl.sha)))
+        add('Copy cherry-pick',()=>copyTask('git cherry-pick '+String(pl.parent).slice(0,7)+'..'+String(pl.sha).slice(0,7),o.oid));
+      add('Discard all agent edits',()=>taskAct(o,oidPath('discard'),{},btns));
+      const msg=mk('p','cw-task-msg',taskMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+      d.append(acts,msg);
+      return d;
+    }
+
+    function reloadCard(o){
+      const d=mk('div','cw-outcome cw-reload'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      if(o.state==='done'){
+        const sb=(o.payload||{}).sibling;
+        const b=mkBtn('Open updated walkthrough','fb-ghost');
+        b.addEventListener('click',()=>openPage(o.oid,sb||{}));
+        const msg=mk('p','cw-task-msg',taskMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+        d.append(b,msg);
+      } else if(o.state==='failed') d.append(mk('span','cw-outcome-why','Nothing to show: '+String((o.payload||{}).reason||'no reason given')));
+      else d.append(mk('span','cw-outcome-text','Opening the updated walkthrough\u2026'));
+      return d;
+    }
+
+    const dcPosted=new Set();
+    const dcItems=o=>{ const c=o.payload&&o.payload.comments; return Array.isArray(c)?c:[]; };
+    const dcId=(o,i)=>'n-'+String(o.oid).replace(/[^0-9a-fA-F]/g,'').slice(0,32)+'-'+i;
+    const dcRec=c=>spanByLineKey.get(c.path+'\t'+(c.side==='LEFT'?'LEFT':'RIGHT')+'\t'+c.line);
+
+    function materialiseDrafts(o){
+      if(o.outcome!=='draft_comments'||o.state!=='applied') return;
+      const ids=[]; let made=false;
+      dcItems(o).forEach((c,i)=>{
+        const rec=dcRec(c);
+        if(!rec) return;
+        const id=dcId(o,i);
+        ids.push(id);
+        if(noteById(id)) return;
+        const m=rec.meta||{};
+        const note=newDraft({
+          id,path:c.path,line:c.line,side:c.side==='LEFT'?'LEFT':'RIGHT',end_line:c.end_line||null,
+          hunk_id:m.hunkId||null,anchor_text:m.text||'',anchor_line:c.line,
+          order:m.order!=null?m.order:Math.max(0,...state.notes.map(x=>x.order||0))+1,
+        });
+        note.body=String(c.body||'');
+        saveNote(note);
+        made=true;
+      });
+      if(made) renderNotes();
+      if(ids.length&&!dcPosted.has(o.oid)){
+        dcPosted.add(o.oid);
+        postJson('/outcomes/'+encodeURIComponent(o.oid)+'/keep',{note_ids:ids})
+          .then(({ok,body})=>{ if(ok&&body.outcome) upsertOutcome(body.outcome); })
+          .catch(()=>{});
+      }
+    }
+
+    function draftCommentsCard(o){
+      const items=dcItems(o);
+      const d=mk('div','cw-outcome cw-dc'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      if(o.state==='dismissed'){ d.append(mk('span','cw-outcome-text','Drafts removed')); return d; }
+      const ids=items.map((c,i)=>dcRec(c)?dcId(o,i):null).filter(Boolean);
+      const skipped=items.length-ids.length;
+      const text=mk('span','cw-outcome-text','Agent added '+ids.length+(ids.length===1?' draft comment':' draft comments'));
+      if(skipped) text.append(mk('span','cw-outcome-why',skipped+' skipped, not on this page'));
+      const msg=mk('span','cw-outcome-why',''); msg.setAttribute('role','status');
+      text.append(msg);
+      d.append(text);
+      const acts=mk('div','cw-outcome-actions');
+      const show=mkBtn('Show','cw-dc-show fb-ghost');
+      show.addEventListener('click',()=>{ const n=ids.map(noteById).find(Boolean); if(n) revealNote(n); });
+      show.disabled=!ids.length;
+      const rm=mkBtn('Remove these drafts','cw-dc-remove fb-ghost');
+      rm.addEventListener('click',()=>{
+        rm.disabled=true; msg.textContent='';
+        postJson('/outcomes/'+encodeURIComponent(o.oid)+'/dismiss',{})
+          .then(({ok,body})=>{
+            if(!ok||!body.outcome){ rm.disabled=false; msg.textContent=errText(body); return; }
+            const left=ids.filter(id=>{ const n=noteById(id); return n&&n.state!=='draft'; });
+            ids.filter(id=>!left.includes(id)).forEach(deleteNote);
+            upsertOutcome(body.outcome);
+            renderNotes();
+            if(left.length) msg.textContent=left.length+' already in your review, left as is';
+          })
+          .catch(()=>{ rm.disabled=false; msg.textContent=NET_ERR; });
+      });
+      acts.append(show,rm);
+      d.append(acts);
+      return d;
+    }
+
     function outcomeEl(t,o){
+      if(o.outcome==='draft_comments') return draftCommentsCard(o);
       if(o.outcome==='task') return taskCard(t,o);
       if(o.outcome==='page_edit') return pageEditCard(t,o);
       if(o.outcome==='github_draft') return ghDraftCard(t,o);
+      if(o.outcome==='edits') return editsCard(o);
+      if(o.outcome==='reload') return reloadCard(o);
+      if(o.outcome!=='resolve') return plainOutcomeCard(o,String(o.outcome||'unknown outcome'));
       const id=o.payload&&o.payload.thread;
       const note=noteById(id);
       const where=note?(note.path+':'+(note.line!=null?note.line:'')+(note.author?' by '+note.author:'')):id;
@@ -4929,6 +5133,7 @@
         if(p.text!=null){ if(p.text) q.append(document.createTextNode(p.text)); }
         else q.append(chipNode(refFromParsed(p),true));
       }
+      if(r.mode==='full') q.append(mk('span','cw-mode-badge','Full'));
       d.append(q);
       if(r.status==='pending'){
         const st=streams.get(r.qid)||{};
@@ -4942,12 +5147,20 @@
         const prog=mk('span','cw-progress',progressText(st.progress)); prog.dataset.qid=r.qid;
         p.append(dots,mk('span',null,'(working)'),stopBtn(t,r),prog);
         d.append(live,p);
+        if(r.queued_behind) d.append(mk('p','cw-turn-a cw-queued','Queued behind '+r.queued_behind));
       } else if(r.status==='error'){
         d.append(mk('p','cw-turn-a cw-turn-err','Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':'')));
       } else {
         const a=mk('p','cw-turn-a',r.answer||'');
         if(r.status==='cancelled') a.append(mk('span','cw-stopped','(stopped)'));
         d.append(a);
+      }
+      if(Array.isArray(r.denied)&&r.denied.length){
+        const dn=mk('div','cw-denied',null);
+        dn.append(mk('p','cw-denied-title','Needs permission'));
+        const ul=mk('ul',null);
+        for(const x of r.denied) ul.append(mk('li',null,String((x&&x.tool)||'')+(x&&x.detail?' '+x.detail:'')));
+        dn.append(ul); d.append(dn);
       }
       if((r.status==='error'||r.status==='cancelled')&&isLast) d.append(retryBtn(t,r));
       for(const o of (outcomesByQid.get(r.qid)||new Map()).values()) d.append(outcomeEl(t,o));
@@ -4960,6 +5173,7 @@
       if(!m){ m=new Map(); outcomesByQid.set(o.qid,m); }
       m.set(o.oid,o);
       if(o.outcome==='page_edit') syncPageEdit(o);
+      materialiseDrafts(o);
       const t=threads.get(o.thread_id);
       if(t) renderThread(t);
       renderPanelList();
@@ -5401,7 +5615,27 @@
       const note=mk('p','cw-compose-note'); note.append(mk('span','cw-compose-hint','Ctrl+Enter sends'));
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       box.append(ed.el,row,note,status);
-      const c={box,send,status,busy:false,sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
+      const c={box,send,status,busy:false,mode:()=>'review',syncMode:()=>{},sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
+      if(window.CW_LIVE.agent&&window.CW_LIVE.agent.full&&!window.CW_LIVE.sibling){
+        const sw=mk('fieldset','cw-mode-sw'); sw.append(mk('legend',null,'Mode'));
+        const hint=mk('p','cw-mode-hint','Full runs your own Claude Code in a shared worktree and can edit files. Your PR author\u2019s settings are not loaded. Push commands are denied by rule, but your own allow rules still apply.');
+        const radios={};
+        let touched=false;
+        for(const [v,txt] of [['review','Review'],['full','Full']]){
+          const lab=mk('label'), r=document.createElement('input');
+          r.type='radio'; r.name='cw-mode-'+view.id; r.value=v; r.checked=v==='review'; radios[v]=r;
+          r.addEventListener('change',()=>{ touched=true; hint.hidden=!radios.full.checked; });
+          lab.append(r,document.createTextNode(txt)); sw.append(lab);
+        }
+        hint.hidden=true; sw.append(hint);
+        box.insertBefore(sw,row);
+        c.mode=()=>radios.full.checked?'full':'review';
+        c.syncMode=()=>{
+          if(touched) return;
+          const last=(view.turns||[]).slice(-1)[0];
+          radios[last&&last.mode==='full'?'full':'review'].checked=true; hint.hidden=!radios.full.checked;
+        };
+      }
       ed.onChange=c.sync;
       ed.onSend=()=>sendView(view);
       ed.say=m=>{ if(m||!c.busy) status.textContent=m; };
@@ -5422,6 +5656,7 @@
       const anchors=dedupeAnchors(view.seed?[view.seed,...chips]:chips);
       if(anchors.length>ED_MAX){ c.status.textContent='Too many references: '+ED_MAX+' max in total.'; return; }
       const body={text:serializeSegs(segs).trim(),anchors};
+      if(c.mode()==='full') body.mode='full';
       if(threads.has(view.id)) body.thread_id=view.id;
       c.busy=true; c.sync(); ed.lock(true); c.status.textContent='Sending…';
       fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(body)})
@@ -5476,6 +5711,7 @@
       t.badge.hidden=!t.resolved;
       t.triageTag.hidden=first.source!=='triage';
       t.turnsEl.replaceChildren(...t.turns.map((r,i)=>turnEl(r,t,i===t.turns.length-1)));
+      t.composer.syncMode();
     }
 
     function refEls(a){
@@ -5677,6 +5913,47 @@
     pThread.append(pBody,pCompose);
     panel.append(grab,pHead,pList,pThread);
     $('cw-dock').after(panel);
+
+    const resizer=mk('div'); resizer.id='cw-panel-resize'; resizer.tabIndex=0;
+    resizer.setAttribute('role','separator'); resizer.setAttribute('aria-orientation','vertical');
+    resizer.setAttribute('aria-label','Resize threads panel');
+    panel.prepend(resizer);
+    const PW_MIN=320, pwMax=()=>Math.min(innerWidth*0.7,760);
+    const pwKey=lsKey('cw-panel-w',state.meta.id);
+    function setPanelW(w,save){
+      w=Math.round(Math.max(PW_MIN,Math.min(pwMax(),w)));
+      rootEl.style.setProperty('--cw-panel-w',w+'px');
+      resizer.setAttribute('aria-valuenow',String(w));
+      if(save){ try{ localStorage.setItem(pwKey,String(w)); }catch(e){} }
+    }
+    try{
+      const saved=parseInt(localStorage.getItem(pwKey),10);
+      if(saved>0) setPanelW(saved,false);
+    }catch(e){}
+    resizer.addEventListener('pointerdown',e=>{
+      e.preventDefault(); resizer.setPointerCapture(e.pointerId); resizer.classList.add('cw-dragging');
+    });
+    resizer.addEventListener('pointermove',e=>{
+      if(resizer.hasPointerCapture(e.pointerId)) setPanelW(innerWidth-e.clientX,false);
+    });
+    const endDrag=e=>{
+      if(!resizer.hasPointerCapture(e.pointerId)) return;
+      resizer.classList.remove('cw-dragging');
+      setPanelW(panel.getBoundingClientRect().width,true);
+    };
+    resizer.addEventListener('pointerup',endDrag);
+    resizer.addEventListener('pointercancel',endDrag);
+    resizer.addEventListener('keydown',e=>{
+      const cur=panel.getBoundingClientRect().width;
+      if(e.key==='ArrowLeft') setPanelW(cur+24,true);
+      else if(e.key==='ArrowRight') setPanelW(cur-24,true);
+      else if(e.key==='Home'){
+        rootEl.style.removeProperty('--cw-panel-w');
+        try{ localStorage.removeItem(pwKey); }catch(x){}
+        resizer.removeAttribute('aria-valuenow');
+      } else return;
+      e.preventDefault();
+    });
     panel.addEventListener('copy',edCopyCut);
     panel.addEventListener('cut',edCopyCut);
 
@@ -5800,7 +6077,7 @@
         const first=t.turns[0]||{}, st=stateOf(t);
         const w=waitingCount(outcomes.filter(o=>o.thread_id===t.id));
         entries.push({kind:'agent',key:t.id,state:st,title:threadTitle(t),
-          meta:[st],badge:w?w+' waiting':'',
+          meta:[st],badge:w?w+' waiting':'',full:(t.turns[t.turns.length-1]||{}).mode==='full',
           go:()=>{ openPanel({thread:t.id}); revealAnchor((first.anchors&&first.anchors[0])||first.anchor); }});
       }
       const byId=new Map(state.notes.map(n=>[n.id,n]));
@@ -5830,6 +6107,7 @@
         const go=mkBtn(null,'cw-pr-row'); go.dataset.key=e.key; go.dataset.kind=e.kind; go.dataset.state=e.state;
         const meta=mk('span','cw-pr-meta',e.meta.join(' \u00b7 '));
         if(e.badge) meta.append(mk('span','cw-dock-badge yellow',e.badge));
+        if(e.full) meta.append(mk('span','cw-mode-badge','Full'));
         go.append(mk('span','cw-pr-title',e.title||'(no text)'),meta);
         go.addEventListener('click',e.go);
         const li=document.createElement('li'); li.append(go);
@@ -5853,7 +6131,7 @@
     dock.setAttribute('aria-controls','cw-panel'); dock.setAttribute('aria-expanded','false');
     dock.removeAttribute('aria-haspopup');
     dock.addEventListener('click',()=>{ togglePanel(); });
-    refreshDraftsBar();
+    refreshPanelSubmit();
     renderPanelList();
     const refreshInline=refreshCommentsPanel;
     refreshCommentsPanel=()=>{ refreshInline(); renderPanelList(); };
@@ -5929,7 +6207,7 @@
       const last=rects.length?rects[rects.length-1]:first;
       const w=selBar.offsetWidth, h=selBar.offsetHeight;
       const rightEdge=(panelOpen()?panel.getBoundingClientRect().left:innerWidth)-8;
-      const reserve=(parseFloat(rootEl.style.getPropertyValue('--cw-bar-h'))||0)+64;
+      const reserve=64;
       let top=last.bottom+6;
       if(top+h>innerHeight-reserve){
         const above=first.top-6-h;
@@ -6133,16 +6411,17 @@
       openComposer(c,box=>ref.insertAdjacentElement('afterend',box));
     };
 
-    function loadQa(){
+    function loadQa(retry=true){
+      const each=(xs,f)=>(xs||[]).forEach(x=>{ try{ f(x); }catch(e){ console.error('code-walkthrough: replay failed',e); } });
       fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
         .then(r=>r.ok?r.json():null)
         .then(data=>{
-          if(!data||!Array.isArray(data.turns)) return;
-          data.turns.forEach(x=>upsertTurn(x,true));
-          (data.resolved||[]).forEach(tid=>applyResolve(tid,true));
-          (data.outcomes||[]).forEach(upsertOutcome);
+          if(!data||!Array.isArray(data.turns)){ if(retry) setTimeout(()=>loadQa(false),1500); return; }
+          each(data.turns,x=>upsertTurn(x,true));
+          each(data.resolved,tid=>applyResolve(tid,true));
+          each(data.outcomes,upsertOutcome);
         })
-        .catch(()=>{});
+        .catch(()=>{ if(retry) setTimeout(()=>loadQa(false),1500); });
     }
     loadQa();
   }
@@ -6159,7 +6438,8 @@
     document.documentElement.classList.add('cw-sibling');
     const box=document.createElement('aside'); box.id='cw-sibling'; box.setAttribute('aria-label','Task revision');
     const line=document.createElement('p');
-    line.textContent='Showing PR head with task '+(sb.title||'')+' (branch '+(sb.branch||'')+') ';
+    const edits=String(sb.task_id||'').startsWith('e-');
+    line.textContent=(edits?'Showing PR head with the agent edits':'Showing PR head with task '+(sb.title||''))+' (branch '+(sb.branch||'')+') ';
     box.append(line);
     if(typeof sb.parent_url==='string'&&/^(https?:\/\/|\/[^\/])/.test(sb.parent_url)){
       const a=document.createElement('a'); a.href=sb.parent_url; a.textContent='Back to PR head';
@@ -6174,7 +6454,7 @@
     const changed=new Set(Array.isArray(sb.changed_files)?sb.changed_files:[]);
     document.querySelectorAll('.hunk-path').forEach(el=>{
       if(!changed.has(el.textContent.trim())) return;
-      const chip=document.createElement('span'); chip.className='cw-sibling-chip'; chip.textContent='changed by task';
+      const chip=document.createElement('span'); chip.className='cw-sibling-chip'; chip.textContent=edits?'changed by agent':'changed by task';
       el.insertAdjacentElement('afterend',chip);
     });
   }
@@ -6725,6 +7005,141 @@ document.querySelectorAll('summary a').forEach(a => {
     // ResizeObserver and the pan/zoom listeners wireModalPanZoom bound to the shared body.
     return { disconnect(){ ro.disconnect(); pz.controller.abort(); } };
   };
+})();
+</script>
+<script>
+(function(){
+  function storyNextIndex(i,n,key){
+    if(n<=0) return -1;
+    if(key==='ArrowRight'||key==='ArrowDown') return Math.min(i+1,n-1);
+    if(key==='ArrowLeft'||key==='ArrowUp') return Math.max(i-1,0);
+    if(key==='Home') return 0;
+    if(key==='End') return n-1;
+    return -1;
+  }
+  function storyHunkKey(path,headerText){
+    const m=/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.exec(headerText);
+    return m?path+'\t'+m[0]:null;
+  }
+  function wireStory(){
+    const sec=document.getElementById('cw-story'), blob=document.getElementById('cw-story-data');
+    const root=document.getElementById('cw-story-root');
+    if(!sec||!blob||!root) return;
+    let data;
+    try{ data=JSON.parse(blob.textContent); }catch(e){ return; }
+    if(!data||!Array.isArray(data.visuals)||!data.syms) return;
+    const mk=(tag,cls,text)=>{
+      const e=document.createElement(tag);
+      if(cls) e.className=cls;
+      if(text!=null) e.textContent=text;
+      return e;
+    };
+    const firstCard=new Map();
+    const card=id=>{
+      const s=data.syms[id], b=mk('button','cw-card');
+      b.type='button';
+      b.setAttribute('aria-pressed','false');
+      b.dataset.sym=id;
+      b.append(mk('span','cw-card-label',s.label),
+        mk('span','cw-card-loc',String(s.file).split('/').pop()+':'+s.start));
+      const meta=mk('span','cw-card-meta');
+      meta.append(mk('span','cw-badge '+s.state,s.state));
+      if(s.cx) meta.append(mk('span','cw-cx',s.cx[0]+'\u2192'+s.cx[1]));
+      b.append(meta);
+      return b;
+    };
+    for(const v of data.visuals){
+      const vis=mk('section','cw-visual');
+      const detail=mk('div','cw-story-detail','Select a symbol to see its code');
+      detail.setAttribute('aria-live','polite');
+      const cards=[];
+      const select=b=>{
+        cards.forEach(c=>{
+          const on=c===b;
+          c.setAttribute('aria-pressed',on?'true':'false');
+          c.tabIndex=on?0:-1;
+        });
+        const s=data.syms[b.dataset.sym];
+        detail.replaceChildren(mk('div','cw-story-loc',s.file+':'+s.start+'-'+s.end));
+        if(s.cx) detail.append(mk('div','cw-story-cx','complexity '+s.cx[0]+' \u2192 '+s.cx[1]+' branches'));
+        const code=mk('div','cw-story-code diff');
+        for(const [k,t] of (s.code||[]).slice(0,4)) code.append(mk('span',k,t));
+        if(code.childNodes.length) detail.append(code);
+        const open=mk('button','cw-story-open','Open in diff');
+        open.type='button';
+        open.addEventListener('click',()=>{
+          const sp=window.__vdSymbolSpan(s.file,s.side,s.start,Math.max(s.end,s.start));
+          if(sp) window.__vdGoToLine(sp); else window.__vdGoToFile(s.file);
+        });
+        detail.append(open);
+      };
+      vis.append(mk('h3',null,v.title));
+      if(v.intro) vis.append(mk('p',null,v.intro));
+      v.acts.forEach((act,ai)=>{
+        if(ai>0&&v.acts[ai-1].bridge) vis.append(mk('p','cw-bridge',v.acts[ai-1].bridge));
+        vis.append(mk('h4',null,act.title));
+        if(act.text) vis.append(mk('p',null,act.text));
+        const flow=mk('div','cw-flow');
+        let pendingEdge=null, seen=false;
+        for(const item of act.flow){
+          if(item.edge!=null){ pendingEdge=item.edge; continue; }
+          if(!data.syms[item.sym]) continue;
+          if(seen){
+            const a=mk('span','cw-arrow');
+            if(pendingEdge) a.append(mk('span',null,pendingEdge));
+            flow.append(a);
+          }
+          pendingEdge=null; seen=true;
+          const c=card(item.sym);
+          c.tabIndex=-1;
+          c.addEventListener('click',()=>select(c));
+          c.addEventListener('keydown',e=>{
+            const i=storyNextIndex(cards.indexOf(c),cards.length,e.key);
+            if(i<0) return;
+            e.preventDefault();
+            cards[i].focus();
+            select(cards[i]);
+          });
+          cards.push(c);
+          if(!firstCard.has(item.sym)) firstCard.set(item.sym,{c,select});
+          flow.append(c);
+        }
+        vis.append(flow);
+      });
+      if(cards.length) cards[0].tabIndex=0;
+      vis.append(detail);
+      root.append(vis);
+    }
+    const byHunk=new Map();
+    for(const [id,e] of firstCard) for(const h of data.syms[id].hunks||[]) if(!byHunk.has(h)) byHunk.set(h,{id,...e});
+    let pulseT=0;
+    const stop=e=>e.stopPropagation();
+    for(const d of document.querySelectorAll('details.hunk')){
+      const pe=d.querySelector('.hunk-path'), path=pe?pe.textContent.trim():'';
+      for(const h of d.querySelectorAll('span.h')){
+        const t=byHunk.get(storyHunkKey(path,h.textContent));
+        if(!t) continue;
+        const chip=mk('button','cw-ingraph','In graph');
+        chip.type='button';
+        chip.setAttribute('aria-label','Show '+data.syms[t.id].label+' in the story');
+        // summary toggles on click and the gutter starts a selection on pointer/mouse down.
+        for(const ev of ['pointerdown','pointerup','mousedown','mouseup']) chip.addEventListener(ev,stop);
+        chip.addEventListener('click',e=>{
+          e.stopPropagation();
+          t.c.scrollIntoView({block:'center'});
+          t.select(t.c);
+          t.c.focus({preventScroll:true});
+          clearTimeout(pulseT);
+          document.querySelectorAll('.cw-story-pulse').forEach(x=>x.classList.remove('cw-story-pulse'));
+          t.c.classList.add('cw-story-pulse');
+          pulseT=setTimeout(()=>t.c.classList.remove('cw-story-pulse'),1400);
+        });
+        h.append(chip);
+      }
+    }
+    sec.hidden=false;
+  }
+  wireStory();
 })();
 </script>
 <script>

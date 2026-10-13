@@ -86,6 +86,8 @@ DEFAULTS = {
     "max_conversation_tokens": 200000,
     "small_diff_lines": 1500,
     "batch_max_lines": 400,
+    "trust": {"repos": [], "orgs": []},
+    "repos": {},
 }
 
 _META_LOCKS = {}

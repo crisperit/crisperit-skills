@@ -162,6 +162,11 @@ def test_merge_carries_prose_keys():
         assert result["verdict"] == "v"
         assert result["section_notes"] == notes
         assert result["groups"] == groups
+        assert "visuals" not in result
+
+        visuals = [{"title": "t", "acts": []}]
+        carried = merge(DIFF, [str(frag)], {"visuals": visuals})
+        assert carried["visuals"] == visuals
 
 
 def test_merge_defaults_prose_keys():

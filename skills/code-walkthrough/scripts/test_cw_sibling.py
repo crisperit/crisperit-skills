@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_agent  # noqa: E402
+import cw_ask  # noqa: E402
 import cw_run  # noqa: E402
 import cw_server  # noqa: E402
 import cw_store  # noqa: E402
@@ -185,3 +187,63 @@ def test_show_route_guards_reuse_and_publishing_is_off():
             assert (status, err) == (409, {"error": "publishing is off in this view",
                                            "remedy": "go back to the PR head"})
 
+
+
+def _agent_commit(pd, meta, name, text):
+    wt = cw_agent.ensure_worktree(pd, meta)
+    (wt / name).write_text(text)
+    return cw_agent.commit(pd, meta, "agent", "q-00000009")
+
+
+def test_edits_show_and_reload_start_a_sibling_on_the_agent_sha():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp, _stub() as stub:
+        repo, _base, head, _task_sha, pd = _setup(home, tmp, stub)
+        meta = cw_store.read_meta(pd)
+        key, wid = pd.parent.name, pd.name
+        edits = _agent_commit(pd, meta, "b.py", B_BASE.replace("b2", "E2"))
+        edits_rec = cw_ask.append_outcome(pd, "q-00000009", "q-00000009", "edits", "done", edits)
+        with cw_testlib.running_daemon() as daemon:
+            status, out = srv._post(daemon, f"/api/walkthrough/{key}/{wid}/outcomes/{edits_rec['oid']}/show")
+            assert status == 200 and out["reused"] is False, (status, out)
+            smeta = _wait_done(cw_store.walkthrough_dir(key, out["id"]))
+            assert smeta["head"] == edits["sha"] and smeta["pr"] is None
+            assert smeta["target"] == meta["target"] + "+e-" + edits["sha"][:7]
+            assert smeta["sibling_of"]["task_id"] == "e-" + edits["sha"][:7]
+            assert smeta["sibling_of"]["parent_head"] == head and smeta["sibling_of"]["branch"] == edits["branch"]
+
+            second = _agent_commit(pd, cw_store.read_meta(pd), "a.py", A_BASE.replace("a2", "E2"))
+            rec = cw_ask.append_outcome(pd, "q-00000010", "q-00000010", "reload", "requested", {})
+            record = {"qid": "q-00000010", "thread_id": "q-00000010", "comment": "reload"}
+            started = []
+
+            def start(**kw):
+                started.append(kw)
+                return cw_server.start_sibling(daemon, key, wid, cw_store.read_meta(pd), **kw)
+
+            assert cw_agent.after_turn(pd, cw_store.read_meta(pd), record, start_sibling=start) is None
+            assert [k["sha"] for k in started] == [second["sha"]]
+            done = next(o for o in cw_ask.read_outcomes(pd) if o["oid"] == rec["oid"])
+            assert done["state"] == "done"
+            sib = done["payload"]["sibling"]
+            assert sib["key"] == key and sib["id"] != wid and "/walkthrough/" in sib["url"]
+            assert _wait_done(cw_store.walkthrough_dir(key, sib["id"]))["head"] == second["sha"]
+
+
+def test_reload_without_edits_fails():
+    cw_testlib.require_git((2, 31))
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        repo, _base, head = cw_testlib.make_repo(tmp, {"a.py": "x = 1\n"}, {"a.py": "x = 2\n"})
+        d = Path(tmp) / "wd"
+        d.mkdir()
+        meta = {"id": "cmp-12345678", "repo": str(repo), "head": head}
+        cw_store.write_json(d / "meta.json", meta)
+        cw_agent.ensure_worktree(d, meta)
+        rec = cw_ask.append_outcome(d, "q-1", "q-1", "reload", "requested", {})
+
+        def start(**kw):
+            raise AssertionError("no sibling without edits")
+
+        record = {"qid": "q-1", "thread_id": "q-1", "comment": "reload"}
+        assert cw_agent.after_turn(d, cw_store.read_meta(d), record, start_sibling=start) is None
+        done = next(o for o in cw_ask.read_outcomes(d) if o["oid"] == rec["oid"])
+        assert (done["state"], done["payload"]) == ("failed", {"reason": "no edits to show"})

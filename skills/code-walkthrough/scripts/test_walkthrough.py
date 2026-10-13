@@ -17,6 +17,7 @@ from walkthrough import (  # noqa: E402
     rename_index,
     rename_note,
     story,
+    _graph_symdelta,
 )
 from validate_analysis import parse_hunks, check_rendered  # noqa: E402
 
@@ -1017,3 +1018,16 @@ def test_explain_file_stat_counts_lines_instead_of_adds_and_removes():
     assert '<span class="hunk-stat">1 line</span>' in out
 
 
+def test_valid_visuals_drop_the_per_group_graph_and_invalid_ones_keep_it():
+    visuals = [{"title": "T", "acts": [{"title": "A", "flow": [
+        {"sym": "p:Handle"}, {"edge": "calls"}, {"sym": "p:HandleCallee"}]}]}]
+    bad = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "p:nope"}]}]}]
+
+    assert _graph_symdelta({"visuals": visuals}, GRAPH_SYMDELTA) is None
+    assert _graph_symdelta({"visuals": bad}, GRAPH_SYMDELTA) is GRAPH_SYMDELTA
+    assert _graph_symdelta({}, GRAPH_SYMDELTA) is GRAPH_SYMDELTA
+
+    files = _chain_files("src/api.py", "src/store.py")
+    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]}], None)
+    out = render_html(groups, files, {}, symdelta=_graph_symdelta({"visuals": visuals}, GRAPH_SYMDELTA))
+    assert "vd-symbols" not in out and "call graph" not in out

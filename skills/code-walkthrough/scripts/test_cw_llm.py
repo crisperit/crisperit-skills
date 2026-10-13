@@ -5,9 +5,12 @@ cw_testlib, never a real network. conftest.py zeroes BACKOFF_S so the retry test
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -418,7 +421,7 @@ def test_thread_argv_first_turn_and_follow_up():
     assert argv[argv.index("--session-id") + 1] == "uuid-1"
     assert "--resume" not in argv
     for flag in ("--restricted", "--strict-mcp-config", "--verbose", "--include-partial-messages",
-                 "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft,mcp__cw__propose_task", "--add-dir=/d/ctx", "--model=sonnet"):
+                 "--allowedTools=" + cw_llm.THREAD_ALLOWED, "--add-dir=/d/ctx", "--model=sonnet"):
         assert flag in argv
     assert "stream-json" in argv
     assert "--safe-mode" not in argv and "--no-session-persistence" not in argv
@@ -503,3 +506,175 @@ time.sleep(60)
 def test_reply_is_not_an_allowed_tool_of_a_turn():
     argv = cw_llm.thread_argv({"model": "sonnet"}, "SYS", mcp_config={"mcpServers": {}}, add_dir="/d", session_id="u")
     assert not any("walkthrough_reply" in a for a in argv)
+    full = cw_llm.full_argv({"model": "sonnet"}, "SYS", mcp_config={"mcpServers": {}}, allowed="mcp__cw__propose_resolve",
+                            add_dir="/d", session_id="u")
+    assert not any("walkthrough_reply" in a and not a.startswith("--disallowedTools=") for a in full)
+    disallowed = next(a for a in full if a.startswith("--disallowedTools=")).split("=", 1)[1].split(",")
+    assert "mcp__code-walkthrough" in disallowed and "mcp__plugin_crisperit-skills_code-walkthrough" in disallowed
+
+
+def test_full_argv_is_pinned():
+    mcp = {"mcpServers": {"cw": {"args": ["cw_mcp.py", "outcomes", "--mode", "full"]}}}
+    allowed = "mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft"
+    kwargs = dict(mcp_config=mcp, allowed=allowed, add_dir="/d/ctx")
+    expected = [
+        "claude", "-p", "--setting-sources", "user", f"--mcp-config={json.dumps(mcp)}",
+        f"--allowedTools={allowed}",
+        f"--disallowedTools={cw_llm.FULL_DISALLOWED}",
+        "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--model=sonnet",
+        "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "--append-system-prompt=SYS", "--add-dir=/d/ctx",
+    ]
+    first = cw_llm.full_argv({"model": "sonnet"}, "SYS", session_id="uuid-1", **kwargs)
+    assert first == expected + ["--session-id", "uuid-1"]
+    follow = cw_llm.full_argv({"model": "sonnet"}, "SYS", resume="sid-9", **kwargs)
+    assert follow == expected + ["--resume", "sid-9"]
+    for absent in ("--restricted", "--strict-mcp-config", "--safe-mode"):
+        assert absent not in first
+    assert not any(a.startswith("--tools") for a in first)
+
+
+def test_full_disallows_web_tools():
+    assert {"WebFetch", "WebSearch"} <= set(cw_llm.FULL_DISALLOWED.split(","))
+
+
+def test_confine_prefix():
+    h = "/home/u"
+    assert cw_llm.confine_prefix("/w/d/agent", "/r", h, "/w/d/turns", sockets=["/run/docker.sock"],
+                                 exists=lambda p: True, secrets=["/w/d/token"]) == [
+        "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+        "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
+        "--tmpfs", "/tmp",
+        "--ro-bind", "/dev/null", "/run/docker.sock",
+        "--overlay-src", "/r", "--tmp-overlay", "/r",
+        "--tmpfs", "/run/user", "--tmpfs", "/home/u/.ssh", "--tmpfs", "/home/u/.gnupg",
+        "--ro-bind", "/w/d", "/w/d",
+        "--ro-bind", "/dev/null", "/w/d/token",
+        "--bind", "/w/d/agent", "/w/d/agent", "--bind", "/w/d/turns", "/w/d/turns",
+        "--bind-try", "/home/u/.claude/projects/-w-d-agent", "/home/u/.claude/projects/-w-d-agent",
+        "--bind-try", "/home/u/.claude/session-env", "/home/u/.claude/session-env",
+        "--bind-try", "/home/u/.claude/sessions", "/home/u/.claude/sessions",
+        "--bind-try", "/home/u/.claude/.credentials.json", "/home/u/.claude/.credentials.json",
+        "--bind-try", "/home/u/.local/share/rtk", "/home/u/.local/share/rtk",
+        "--chdir", "/w/d/agent", "--",
+    ]
+
+
+def test_project_dir_matches_claude_codes_encoding():
+    assert cw_llm.project_dir("/home/u", "/home/u/.t3/work_trees/a b") == Path(
+        "/home/u/.claude/projects/-home-u--t3-work-trees-a-b")
+
+
+def test_confine_prefix_masks_only_existing_paths():
+    argv = cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns", sockets=[],
+                                 exists=lambda p: p == "/home/u/.ssh")
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == "--tmpfs"] == ["/tmp", "/home/u/.ssh"]
+
+
+def test_confine_prefix_masks_existing_secret_files_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_WALKTHROUGH_HOME", str(tmp_path))
+    (tmp_path / "token").write_text("t")
+    (tmp_path / "config.json").write_text("{}")
+    argv = cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns", sockets=[])
+    masked = [argv[i + 2] for i, a in enumerate(argv) if a == "--ro-bind" and argv[i + 1] == "/dev/null"]
+    assert masked == [str(tmp_path / "config.json"), str(tmp_path / "token")]
+
+
+def test_confine_prefix_skips_missing_docker_socket(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: False)
+    assert "docker.sock" not in " ".join(cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns"))
+
+
+def test_confine_prefix_refuses_tmp_paths():
+    for wt, root, turns in (("/tmp/x/agent", "/r", "/w/turns"), ("/w/agent", "/tmp/r", "/w/turns"),
+                            ("/w/agent", "/r", "/tmp/w/turns")):
+        with pytest.raises(cw_llm.cw_store.CWError, match="under /tmp"):
+            cw_llm.confine_prefix(wt, root, "/home/u", turns, sockets=[])
+    cw_llm.confine_prefix("/var/tmp/w/agent", "/r", "/home/u", "/var/tmp/w/turns", sockets=[])
+
+
+def test_overlay_root():
+    assert cw_llm.overlay_root("/r/.git") == Path("/r")
+    assert cw_llm.overlay_root("/r/bare.git") == Path("/r/bare.git")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_confinement_cache():
+    cw_llm._confined.update(ok=False, failed_at=None)
+    yield
+    cw_llm._confined.update(ok=False, failed_at=None)
+
+
+def test_confinement_available_probes_the_real_prefix():
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    assert cw_llm.confinement_available(run=run) is True
+    argv = seen[0]
+    assert "--overlay-src" in argv and argv[-1] == "true"
+    wt = argv[argv.index("--chdir") + 1]
+    assert ["--bind", wt, wt] == argv[argv.index("--bind"):argv.index("--bind") + 3]
+
+
+def test_confinement_available():
+    def ok(argv, **kw):
+        assert argv[0] == "bwrap" and "--tmp-overlay" in argv
+        return subprocess.CompletedProcess(argv, 0)
+
+    def missing(argv, **kw):
+        raise FileNotFoundError("bwrap")
+
+    def failing(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1)
+
+    def timing_out(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 10)
+
+    verdicts = []
+    for run in (ok, missing, failing, timing_out):
+        cw_llm._confined.update(ok=False, failed_at=None)
+        verdicts.append(cw_llm.confinement_available(run=run))
+    assert verdicts == [True, False, False, False]
+
+
+def test_confinement_failure_is_retried_after_a_minute_and_success_is_final():
+    now = [1000.0]
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(argv, 10)
+        return subprocess.CompletedProcess(argv, 0)
+
+    clock = lambda: now[0]
+    assert cw_llm.confinement_available(run=run, clock=clock) is False
+    now[0] += 59
+    assert cw_llm.confinement_available(run=run, clock=clock) is False and len(calls) == 1
+    now[0] += 2
+    assert cw_llm.confinement_available(run=run, clock=clock) is True and len(calls) == 2
+    assert cw_llm.confinement_available(run=run, clock=clock) is True and len(calls) == 2
+
+
+def test_no_push_env_blocks_git_transports(tmp_path):
+    cw_testlib.require_posix()
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    url = f"file://{bare}"
+    base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    assert subprocess.run(["git", "ls-remote", url], env=base, capture_output=True).returncode == 0
+    blocked = subprocess.run(["git", "ls-remote", url], env={**base, **cw_llm.no_push_env()},
+                             capture_output=True, text=True)
+    assert blocked.returncode != 0 and "not allowed" in blocked.stderr
+
+
+def test_claude_stream_env_overlays_claude_env(tmp_path):
+    cw_testlib.require_posix()
+    out = tmp_path / "env.json"
+    argv = _script(tmp_path, f"sys.stdin.read()\nopen({str(out)!r}, 'w').write(json.dumps(dict(os.environ)))\n")
+    cw_llm.claude_stream(argv, "", cwd=tmp_path, timeout=10, on_line=lambda o: None, env={"CW_X": "1"})
+    seen = json.loads(out.read_text())
+    assert seen["CW_X"] == "1" and "PATH" in seen

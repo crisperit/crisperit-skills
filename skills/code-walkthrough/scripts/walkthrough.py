@@ -34,7 +34,7 @@ from sections import _codeify  # noqa: E402  one owner for backtick-to-<code> co
 from sections import _diagram_max_button  # noqa: E402  one owner for the diagram header icon
 from sections import _wrap_flow_labels  # noqa: E402  one owner for mermaid long-label wrapping
 from sections import render_symbols  # noqa: E402  one owner for the symbol-delta diagram
-from validate_analysis import is_test_path  # noqa: E402  one owner for test-path classification
+from validate_analysis import check_visuals, is_test_path  # noqa: E402  one owner for test-path classification
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 
 DEFAULT_OPEN = 3
@@ -558,6 +558,12 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
     return "\n".join(out) + "\n"
 
 
+def _graph_symdelta(analysis, symdelta):
+    """symdelta for the per-group call-graph tabs: None once valid visuals exist, because
+    render.py then shows the graph once under "All symbols" instead."""
+    return None if check_visuals(analysis.get("visuals"), symdelta)[0] else symdelta
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis", required=True)
@@ -590,7 +596,7 @@ def main():
     groups = story(order, files, analysis.get("groups"), symdelta)
     complexity = optional(args.complexity)
     sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity, renames,
-                                 args.explain, symdelta))
+                                 args.explain, _graph_symdelta(analysis, symdelta)))
     return 0
 
 

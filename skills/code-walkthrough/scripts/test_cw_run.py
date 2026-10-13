@@ -255,6 +255,47 @@ def test_small_diff_makes_one_prose_conversation_and_no_batch_calls():
         assert stub.count("prose-m") >= 1
 
 
+def _small_run_with_visuals(visuals):
+    """Runs _run_small against a symdelta.json holding one symbol and a stub that always
+    submits `visuals`; returns (ok, the dir, the stub's requests)."""
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\nc\n"}, {"foo.py": "a\nX\nc\n"})
+        with cw_testlib.StubLLM({}) as stub:
+            cw_testlib.write_config(home, {"p": stub.profile("prose-m")}, {"analysis": "p", "prose": "p"},
+                                    small_diff_lines=1000000, batch_max_lines=1)
+            d, meta, _reused = cw_run.prepare_walkthrough({
+                "repo": str(repo), "base": base, "head": head, "target": "main...HEAD", "slug": "t"})
+            seed = json.loads((d / "batches" / "fragment-1.seed.json").read_text())
+            files = [{"path": f["path"], "role": "r",
+                      "hunks": [{"header": h["header"], "note": "n"} for h in f["hunks"]]}
+                     for f in seed["files"]]
+            args = {"files": files, "overview": "o", "verdict": "v", "flow_mermaid": "", "visuals": visuals}
+            stub.script = {"prose-m": [cw_testlib.tool_call("submit_analysis", args)] * 10}
+            (d / "symdelta.json").write_text(json.dumps({"language": "python", "nodes": [
+                {"id": "foo.py:run", "label": "run", "kind": "symbol", "file": "foo.py",
+                 "state": "changed", "range": [2, 2]}]}))
+            ok = cw_run._run_small(d, meta, cw_store.load_config(), None)
+            analysis = cw_store.read_json(d / "analysis.json", default=None)
+            return ok, analysis, list(stub.requests)
+
+
+def test_small_route_repairs_then_drops_an_unknown_visual_symbol():
+    bad = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "foo.py:nope"}]}]}]
+    ok, analysis, requests = _small_run_with_visuals(bad)
+    assert ok
+    assert "visuals" not in analysis
+    assert "foo.py:run | foo.py:2-2 | changed" in cw_testlib.last_user_text(requests[0])
+    gate = [m["content"] for m in requests[1]["messages"] if m.get("role") == "tool"][-1]
+    assert gate.startswith("gate:") and "visuals[0]" in gate
+
+
+def test_small_route_keeps_valid_visuals():
+    good = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "foo.py:run"}]}]}]
+    ok, analysis, requests = _small_run_with_visuals(good)
+    assert ok and len(requests) == 1
+    assert analysis["visuals"][0]["acts"][0]["flow"] == [{"sym": "foo.py:run"}]
+
+
 @pytest.mark.parametrize("route, small_diff_lines, generic", [
     ("small", 1000000, "small route failed the fragment gate"),
     ("fanout", 0, "batch 1 failed the fragment gate"),
