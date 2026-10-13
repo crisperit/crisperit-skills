@@ -593,7 +593,8 @@ def check_visuals(visuals, symdelta):
         return [], ["visuals: dropped, symdelta.json has no symbols"]
     if not isinstance(visuals, list):
         return [], ["visuals must be a list"]
-    by_id = {n["id"]: n for n in nodes if "id" in n}
+    nodes = [n for n in nodes if isinstance(n.get("id"), str)]
+    by_id = {n["id"]: n for n in nodes}
     by_file_label = {}
     for n in nodes:
         if n.get("kind") == "symbol":

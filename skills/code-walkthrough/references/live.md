@@ -161,13 +161,20 @@ only repos you accept that for. The PR author's `.claude` settings, hooks, `.mcp
 `CLAUDE.md` are not loaded.
 
 All Full turns of a walkthrough share one worktree at `agent/` in its store directory, on the branch
-`cw/<id>/agent`, created on the first Full turn from the walkthrough's head. Only one Full turn runs
+`cw/<id>/agent`, created on the first Full turn from the head the walkthrough had then. Only one Full turn runs
 at a time per walkthrough: a second waits and shows "Queued behind <thread>", and Stop cancels it
 while it waits. Review turns never wait. After each turn the daemon commits what changed and records
 an `edits` card with the files and line counts. Show opens a sibling walkthrough on that commit;
 Discard drops the worktree, the branch and every agent edit at once, and answers 409 while a Full
 turn is running. If the daemon restarts mid-turn it leaves a dirty worktree, and the next Full turn
 commits it. A Full turn can run long, so you may need to raise `timeout_s`.
+
+When the PR gets new commits, a refresh keeps the agent's edits (and a dirty worktree) instead of
+discarding them, and marks them stale (`agent.stale` in the live payload). The next Full turn first
+merges the new head into the agent branch; if that conflicts the turn fails and asks you to discard
+the agent edits and ask again. Until then Show and Reload refuse with "The PR changed since these
+edits were made". A refresh, or any walkthrough_start that rebuilds, answers an error while a Full
+turn is running on that walkthrough; re-opening an unchanged one still works.
 
 Two tools exist only for the thread agent. `post_draft_comments` puts up to 30 review comments on
 diff lines of the page as local drafts (an invalid comment rejects the whole call; nothing reaches
@@ -325,6 +332,8 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | Full access needs a claude-code thread profile (400) | point `roles.thread` at a claude-code profile |
 | Full access is off on an updated walkthrough (409) | use the original walkthrough |
 | A Full turn is running, Discard refused (409) | try again when it ends |
+| The PR changed since these edits were made (Show/Reload) | ask the agent again, or discard the edits |
+| The PR changed since the agent edited it and the changes conflict | discard the agent edits and ask again |
 | Ask selection too large | select a smaller range |
 | No thread role | set `roles.thread` or `roles.ask` in `config.json` |
 | The outcome server did not start | see `server.log`; check `python3` is on PATH and `cw_mcp.py` runs |

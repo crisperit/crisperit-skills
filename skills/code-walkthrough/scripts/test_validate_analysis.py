@@ -688,6 +688,13 @@ def test_no_symbols_drops_everything_with_one_line():
     assert check_visuals([_visual()], None)[0] == []
 
 
+def test_visuals_skip_symbol_nodes_without_a_str_id():
+    nodes = [{"kind": "symbol", "file": "a.py", "label": "f"}, {"kind": "symbol", "id": 3}]
+    assert check_visuals([_visual()], {"nodes": nodes + SYMDELTA["nodes"]})[0] != []
+    clean, _ = check_visuals([_visual()], {"nodes": nodes})
+    assert clean == []
+
+
 def test_visuals_never_fail_the_gate():
     analysis = copy.deepcopy(GOOD)
     analysis["visuals"] = "junk"

@@ -400,6 +400,8 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
     if not isinstance(anchor_doc, dict):
         return
     anchor_doc = {**anchor_doc, "dir": str(d)}
+    full = anchor_doc.get("mode") == "full"
+    allowed = {t["name"] for t in cw_mcp.outcome_tools("full")} if full else None
     known = {r.get("oid") for r in _read_records(d) if r.get("type") == "outcome"}
     already = set()
     for line in lines:
@@ -407,6 +409,8 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
             rec = json.loads(line)
             oid, kind = rec["oid"], cw_mcp.OUTCOME_KINDS[rec["name"]]
             raw = rec.get("raw_arguments")
+            if full and (not isinstance(raw, dict) or rec["name"] not in allowed):
+                continue
             checked = raw if isinstance(raw, dict) else rec["arguments"]
             if not isinstance(checked, dict):
                 continue

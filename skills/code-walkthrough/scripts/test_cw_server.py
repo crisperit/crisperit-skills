@@ -38,7 +38,7 @@ class FakeRunner:
         self.started = threading.Event()
         self.release = threading.Event()
 
-    def prepare_walkthrough(self, params, is_running=lambda d: False):
+    def prepare_walkthrough(self, params, is_running=lambda d: False, edit_guard=None):
         d = cw_store.walkthrough_dir(params["key"], params["wid"], create=True)
         meta = cw_store.read_meta(d)
         reused = is_running(d)

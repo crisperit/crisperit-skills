@@ -1243,6 +1243,46 @@ def test_sweep_uses_the_trusted_anchor_copy_not_the_agent_writable_one():
         assert cw_ask.read_outcomes(d) == []
 
 
+def _full_draft_sweep(records):
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        (d / "raw.diff").write_text("diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n"
+                                    "@@ -1,3 +1,3 @@\n a\n-b\n+X\n c\n")
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page", mode="full")
+        _forge_outcomes(d, "q1", records)
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        return cw_ask.read_outcomes(d)
+
+
+def _draft_record(**over):
+    args = {"comments": [{"path": "foo.py", "line": 2, "body": "b"}]}
+    return {"oid": "o-d1", "name": "post_draft_comments", "arguments": args, "raw_arguments": args, **over}
+
+
+def test_full_sweep_drops_a_propose_task_record():
+    task = {"title": "t", "body": "b"}
+    assert _full_draft_sweep([{"oid": "o-t1", "name": "propose_task", "arguments": task,
+                               "raw_arguments": task}]) == []
+
+
+def test_full_sweep_drops_a_record_without_raw_arguments():
+    assert _full_draft_sweep([_draft_record(raw_arguments=None)]) == []
+    assert len(_full_draft_sweep([_draft_record()])) == 1
+
+
+def test_review_sweep_still_accepts_a_legacy_record_without_raw_arguments():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        (d / "raw.diff").write_text("diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n"
+                                    "@@ -1,3 +1,3 @@\n a\n-b\n+X\n c\n")
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page")
+        record = _draft_record()
+        del record["raw_arguments"]
+        _forge_outcomes(d, "q1", [record])
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert len(cw_ask.read_outcomes(d)) == 1
+
+
 def test_sweep_accepts_draft_comments_whose_body_plus_suggestion_exceeds_the_cap():
     with cw_testlib.temp_home() as home:
         d = _claude_done(home)

@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import subprocess
@@ -38,12 +39,12 @@ def test_trust_levels(monkeypatch):
 def test_live_payload_agent_defaults_off(tmp_path, monkeypatch):
     monkeypatch.setenv("CODE_WALKTHROUGH_HOME", str(tmp_path / "home"))
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b"}, tmp_path, "tok", 1)
-    assert live["agent"] == {"full": False, "own_pr": None}
+    assert live["agent"] == {"full": False, "own_pr": None, "stale": False}
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
-    assert live["agent"] == {"full": True, "own_pr": True}
+    assert live["agent"] == {"full": True, "own_pr": True, "stale": False}
     monkeypatch.setattr(cw_server.cw_llm, "confinement_available", lambda: False)
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
-    assert live["agent"] == {"full": False, "own_pr": True}
+    assert live["agent"] == {"full": False, "own_pr": True, "stale": False}
 
 
 def test_repo_name_reads_origin_for_non_pr_targets(tmp_path):
@@ -308,25 +309,68 @@ def test_rebuild_clean_removes_an_unused_agent_worktree_but_keeps_edits():
         assert cw_testlib.git(repo, "rev-parse", branch).strip() == edits["sha"]
 
 
-def test_refresh_refused_while_a_full_turn_runs(monkeypatch):
-    prepared = []
-
+def test_rebuild_refused_while_a_full_turn_runs_but_an_unchanged_reopen_is_not(monkeypatch):
     class Runner:
-        def prepare_walkthrough(self, params, is_running):
-            prepared.append(params)
-            return Path("/x"), {"key": "k", "id": "w", "status": "done"}, is_running(Path("/x"))
+        rebuild = True
 
-    monkeypatch.setattr(cw_server, "runner", Runner())
+        def prepare_walkthrough(self, params, is_running, edit_guard):
+            if self.rebuild:
+                with edit_guard(Path("/x")):
+                    pass
+            return Path("/x"), {"key": "k", "id": "w", "status": "done"}, not self.rebuild
+
+    runner = Runner()
+    monkeypatch.setattr(cw_server, "runner", runner)
     with cw_testlib.temp_home(), cw_testlib.running_daemon() as daemon:
         lock = daemon.edit_lock(Path("/x"))
         lock.acquire()
         try:
-            with pytest.raises(cw_store.CWError, match="Full agent turn is running") as err:
+            with pytest.raises(cw_agent.CWBusy, match="Full agent turn is running") as err:
                 cw_server._tool_walkthrough_start(daemon, {})
+            assert "run walkthrough_start again" in err.value.remedy
+            runner.rebuild = False
+            assert cw_server._tool_walkthrough_start(daemon, {})["reused"] is True
         finally:
             lock.release()
-        assert "run walkthrough_start again" in err.value.remedy
+        runner.rebuild = True
         assert cw_server._tool_walkthrough_start(daemon, {})["reused"] is False
+        assert not lock.locked()
+
+
+def _prepare_params(tmp, home):
+    repo, base, _head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\n"}, {"foo.py": "a\nX\n"})
+    cw_testlib.write_config(home, {"p": {"base_url": "http://127.0.0.1:1", "model": "m"}},
+                            {"analysis": "p", "prose": "p"}, small_diff_lines=0, batch_max_lines=1)
+    return repo, {"repo": str(repo), "base": base, "head": "HEAD", "target": "main...HEAD", "slug": "t"}
+
+
+def test_prepare_walkthrough_holds_the_edit_guard_only_while_it_cleans_and_rebuilds():
+    import cw_run
+
+    calls = []
+
+    @contextlib.contextmanager
+    def guard(d):
+        calls.append(d)
+        yield
+
+    def busy(d):
+        raise cw_agent.CWBusy("busy")
+
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        repo, params = _prepare_params(tmp, home)
+        d, meta, _ = cw_run.prepare_walkthrough(params, edit_guard=guard)
+        assert calls == [d]
+        sig = meta["sig"]
+        cw_store.update_meta(d, lambda m: m.update(status="done"))
+        assert cw_run.prepare_walkthrough(params, edit_guard=busy)[2] is True
+        cw_store.update_meta(d, lambda m: m.update(status="failed"))
+        assert cw_run.prepare_walkthrough(params, edit_guard=busy)[2] is True
+        (repo / "foo.py").write_text("a\nY\n")
+        cw_testlib.git(repo, "commit", "-q", "-a", "--no-verify", "-m", "new head")
+        with pytest.raises(cw_agent.CWBusy):
+            cw_run.prepare_walkthrough(params, edit_guard=busy)
+        assert cw_store.read_meta(d)["sig"] == sig
 
 
 def test_commit_ignores_fsmonitor_and_filters_the_agent_configured():
@@ -468,3 +512,87 @@ def test_discard_registers_a_holder_and_a_holderless_lock_queues_with_a_label(mo
             ask._wait_final(d, 1)
         queued = next(e[1] for e in events if e[0] == "progress" and e[1].get("tool") == "queued")
         assert queued["detail"] == "another Full turn"
+
+
+def _stale_fixture(tmp, conflict=False, edit=True):
+    """An agent branch (optionally with one edit) whose walkthrough then moved to a new head."""
+    d, repo, meta, marker = _agent_fixture(tmp)
+    wt = cw_agent.ensure_worktree(d, meta)
+    if edit:
+        (wt / "a.py").write_text("x = 3\n")
+        cw_agent.commit(d, meta, "t", "q-1")
+    old_head = meta["head"]
+    (repo / ("a.py" if conflict else "b.py")).write_text("x = 9\n")
+    cw_testlib.git(repo, "add", "-A")
+    cw_testlib.git(repo, "commit", "-q", "--no-verify", "-m", "new head")
+    new_head = cw_testlib.git(repo, "rev-parse", "HEAD").strip()
+    import cw_run
+    carried = cw_run._full_clean(d, cw_store.read_meta(d), repo) if edit else {}
+    cw_store.update_meta(d, lambda m: m.update(head=new_head))
+    meta = cw_store.read_meta(d)
+    return d, repo, meta, wt, old_head, new_head, carried, marker
+
+
+def test_refresh_keeps_edits_and_marks_stale_then_the_next_turn_merges_the_new_head():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, wt, old_head, new_head, carried, marker = _stale_fixture(tmp)
+        assert carried["agent"]["base"] == old_head and wt.exists()
+        assert cw_agent.agent_stale(meta) and cw_agent.has_edits(d, meta)
+        assert cw_agent.ensure_worktree(d, meta) == wt
+        assert not cw_agent.agent_stale(meta) and cw_agent.agent_stale(cw_store.read_meta(d)) is False
+        assert (wt / "b.py").exists() and (wt / "a.py").read_text() == "x = 3\n"
+        assert cw_testlib.git(wt, "status", "--porcelain") == ""
+        assert cw_testlib.git(wt, "rev-parse", "HEAD").strip() == meta["agent"]["sha"]
+        assert cw_agent.has_edits(d, meta) and not marker.exists()
+
+
+def test_conflicting_new_head_raises_and_leaves_the_worktree_clean():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, wt, old_head, new_head, _c, _m = _stale_fixture(tmp, conflict=True)
+        sha = meta["agent"]["sha"]
+        with pytest.raises(cw_store.CWError, match="changes conflict") as err:
+            cw_agent.ensure_worktree(d, meta)
+        assert "Discard all agent edits" in err.value.remedy
+        assert cw_testlib.git(wt, "status", "--porcelain") == ""
+        assert cw_testlib.git(wt, "rev-parse", "HEAD").strip() == sha
+        assert cw_agent.agent_stale(cw_store.read_meta(d))
+
+
+def test_show_and_reload_refuse_while_stale():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, wt, *_ = _stale_fixture(tmp)
+        branch = meta["agent"]["branch"]
+        with pytest.raises(cw_store.CWError, match="PR changed since these edits"):
+            cw_server.start_sibling(None, "k", "w", meta, "o-1", meta["agent"]["sha"], "e-1", branch, "Agent edits")
+        cw_ask.append_outcome(d, "q-1", "t-1", "reload", "requested", None)
+        o = next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "reload")
+        cw_agent._answer_reload(d, meta, o, None, None,
+                                lambda **kw: cw_server.start_sibling(None, "k", "w", meta, **kw))
+        o = next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "reload")
+        assert o["state"] == "failed" and "PR changed since these edits" in o["payload"]["reason"]
+
+
+def test_a_clean_merge_of_a_new_head_with_no_agent_changes_has_no_edits_so_reload_fails():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, wt, *_ = _stale_fixture(tmp, edit=False)
+        assert not cw_agent.has_edits(d, meta)
+        cw_agent.ensure_worktree(d, meta)
+        assert not cw_agent.agent_stale(meta) and not cw_agent.has_edits(d, meta)
+        cw_ask.append_outcome(d, "q-1", "t-1", "reload", "requested", None)
+        o = next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "reload")
+        cw_agent._answer_reload(d, meta, o, None, None, lambda **kw: pytest.fail("no sibling expected"))
+        o = next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "reload")
+        assert o["state"] == "failed" and o["payload"]["reason"] == "no edits to show"
+
+
+def test_a_dirty_worktree_at_the_head_survives_a_refresh():
+    import cw_run
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        wt = cw_agent.ensure_worktree(d, meta)
+        (wt / "a.py").write_text("x = 3\n")
+        old = cw_store.read_meta(d)
+        assert not cw_agent.has_edits(d, old) and cw_agent.is_dirty(d)
+        assert cw_run._full_clean(d, old, repo) == {"agent": old["agent"]}
+        assert (wt / "a.py").read_text() == "x = 3\n"

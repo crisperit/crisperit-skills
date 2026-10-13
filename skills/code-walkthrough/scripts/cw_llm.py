@@ -371,12 +371,18 @@ def _docker_sockets():
     return sorted(found)
 
 
+def _secret_files():
+    paths = (cw_store.token_path(), cw_store.server_json_path(), cw_store.config_path())
+    return sorted({os.path.realpath(p) for p in paths if os.path.exists(p)})
+
+
 def project_dir(home, cwd):
     # Claude Code names a cwd's state dir after the path with every non-alphanumeric character replaced by '-'.
     return Path(home) / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
 
 
-def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None, exists=os.path.exists):
+def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None, exists=os.path.exists,
+                   secrets=None):
     """bwrap argv that makes everything but the worktree and turns dir read-only for a Full turn.
     The main repo root is an overlay: agent writes there succeed and are discarded, the daemon
     commits the worktree on the host afterwards. ~/.claude stays read-only except the agent cwd's own
@@ -401,6 +407,10 @@ def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None, exists=os
             prefix += ["--tmpfs", hidden]
     prefix += [
         "--ro-bind", walkthrough, walkthrough,
+    ]
+    for secret in _secret_files() if secrets is None else secrets:
+        prefix += ["--ro-bind", "/dev/null", str(secret)]
+    prefix += [
         "--bind", worktree, worktree, "--bind", turns_dir, turns_dir,
     ]
     writable = [str(project_dir(home, worktree))] + [f"{home}/{rel}" for rel in (

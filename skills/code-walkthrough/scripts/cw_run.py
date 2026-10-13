@@ -11,6 +11,7 @@ Stdlib only except for talking to a model backend through cw_llm.
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -1487,8 +1488,10 @@ def _full_clean(d, old_meta, toplevel):
     old_meta = old_meta or {}
     agent = old_meta.get("agent")
     carry = {k: old_meta[k] for k in ("origin_repo",) if k in old_meta}
-    if agent and agent.get("sha") != old_meta.get("head") and (d / "agent").exists():
-        return {**carry, "agent": agent}
+    if agent and (d / "agent").exists():
+        import cw_agent  # noqa: PLC0415  cw_agent imports cw_task, which imports this module
+        if cw_agent.has_edits(d, old_meta) or cw_agent.is_dirty(d):
+            return {**carry, "agent": agent}
     agent_repo = old_meta.get("repo")
     if agent_repo and old_meta.get("id") and (agent or (d / "agent").exists()):
         import cw_task  # noqa: PLC0415  cw_task imports this module
@@ -1499,8 +1502,11 @@ def _full_clean(d, old_meta, toplevel):
     return carry
 
 
-def prepare_walkthrough(params, is_running=None):
+def prepare_walkthrough(params, is_running=None, edit_guard=None):
+    """`edit_guard(d)` is a context manager held while a rebuild removes or replaces what a Full
+    agent turn edits; it raises when such a turn is running."""
     is_running = is_running or (lambda d: False)
+    edit_guard = edit_guard or (lambda d: contextlib.nullcontext())
     config = cw_store.load_config()
     repo = cw_repo.resolve(params, config)
     base_ref = params.get("base")
@@ -1572,29 +1578,31 @@ def prepare_walkthrough(params, is_running=None):
             return d, meta, True
         return d, old_meta, True
 
-    if old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted"):
-        for name in ("prose.json", "analysis.json", "pipeline.json"):
-            _rm(d / name)
-        meta = dict(old_meta)
-    else:
-        meta = _full_clean(d, old_meta, toplevel)
+    retry = old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted")
+    with contextlib.nullcontext() if retry else edit_guard(d):
+        if retry:
+            for name in ("prose.json", "analysis.json", "pipeline.json"):
+                _rm(d / name)
+            meta = dict(old_meta)
+        else:
+            meta = _full_clean(d, old_meta, toplevel)
 
-    now = cw_store.now_iso()
-    meta.setdefault("rev", 0)
-    meta.setdefault("route", None)
-    meta.setdefault("batches", 0)
-    meta.setdefault("batches_done", [])
-    meta.setdefault("usage", {})
-    meta.setdefault("steps", {})
-    meta.setdefault("created_at", now)
-    meta.update({
-        "v": 1, "id": wid, "key": key, "repo": str(toplevel), "base": base_sha, "head": head_sha,
-        "base_ref": base_ref, "head_ref": head_ref, "pr": pr, "gh_repo": gh_repo, "target": target,
-        "slug": slug, "title": title, "explain": explain, "paths": paths, "diff_file": diff_file,
-        "sig": sig, "sibling_of": sibling_of, "status": "building", "error": None, "remedy": None, "gate": [], "page": "partial",
-    })
-    meta["updated_at"] = now
-    cw_store.write_json(d / "meta.json", meta)
+        now = cw_store.now_iso()
+        meta.setdefault("rev", 0)
+        meta.setdefault("route", None)
+        meta.setdefault("batches", 0)
+        meta.setdefault("batches_done", [])
+        meta.setdefault("usage", {})
+        meta.setdefault("steps", {})
+        meta.setdefault("created_at", now)
+        meta.update({
+            "v": 1, "id": wid, "key": key, "repo": str(toplevel), "base": base_sha, "head": head_sha,
+            "base_ref": base_ref, "head_ref": head_ref, "pr": pr, "gh_repo": gh_repo, "target": target,
+            "slug": slug, "title": title, "explain": explain, "paths": paths, "diff_file": diff_file,
+            "sig": sig, "sibling_of": sibling_of, "status": "building", "error": None, "remedy": None, "gate": [], "page": "partial",
+        })
+        meta["updated_at"] = now
+        cw_store.write_json(d / "meta.json", meta)
 
     _ensure_capture(d, meta, config)
     meta = cw_store.read_meta(d) or meta

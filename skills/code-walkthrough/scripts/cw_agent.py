@@ -1,6 +1,8 @@
-"""Trust and the shared edit worktree for the thread agent's Full mode. Imported only by
-cw_server: cw_task and cw_ask must never import it back."""
+"""Trust and the shared edit worktree for the thread agent's Full mode. Imported by cw_server
+and, lazily, by cw_run's rebuild: cw_task and cw_ask must never import it back."""
 
+import os
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -55,6 +57,32 @@ class BranchChanged(RuntimeError):
     pass
 
 
+class CWBusy(cw_store.CWError):
+    """The walkthrough's edit lock is held by a Full turn or a discard."""
+
+
+def agent_stale(meta):
+    """The agent branch was last based on a head the walkthrough has since moved past."""
+    agent = meta.get("agent")
+    return bool(agent) and agent.get("base") != meta.get("head")
+
+
+def has_edits(d, meta):
+    """The agent's tree differs from what it was based on. A stale branch is compared with its own
+    base: the PR's new commits are not agent edits. A git failure counts as edits (keep)."""
+    agent = meta.get("agent")
+    if not agent:
+        return False
+    ref = agent.get("base") or meta["head"]
+    return cw_task._git(meta["repo"], ["diff", "--quiet", ref, agent["sha"]]).returncode != 0
+
+
+def is_dirty(d):
+    """Uncommitted work in the worktree, e.g. a daemon crash mid-turn."""
+    result = cw_task._git(Path(d) / "agent", ["status", "--porcelain"])
+    return result.returncode != 0 or bool(result.stdout.strip())
+
+
 def _adopt(repo, wt, branch):
     """The worktree record of a directory left behind without meta['agent'], or None when it is
     not a valid worktree of this repo on the agent branch."""
@@ -72,6 +100,8 @@ def ensure_worktree(d, meta):
     """The one worktree every Full turn of this walkthrough edits, created on first use."""
     wt = Path(d) / "agent"
     if meta.get("agent") and wt.exists():
+        if agent_stale(meta):
+            _merge_head(d, meta, wt)
         return wt
     repo, branch = meta["repo"], cw_task.branch_name(meta, "agent")
     cw_task._git(repo, ["worktree", "prune"])
@@ -85,9 +115,36 @@ def ensure_worktree(d, meta):
         cw_task._git_ok(repo, args)
         agent = {"branch": branch, "sha": cw_task._git_ok(wt, ["rev-parse", "HEAD"]).strip(),
                  "link": (wt / ".git").read_text()}
+    agent["base"] = meta["head"]
     cw_store.update_meta(d, lambda m: m.update(agent=agent))
     meta["agent"] = agent
     return wt
+
+
+def _merge_head(d, meta, wt):
+    """Bring the agent branch up to the walkthrough's new head, so a Full turn never runs on stale
+    code. A conflict is aborted, leaving the worktree as it was."""
+    repo, agent = meta["repo"], meta["agent"]
+    cw_task._check_git_link(repo, wt, agent["link"])
+    if cw_task._git_ok(wt, ["rev-parse", "--abbrev-ref", "HEAD"]).strip() != agent["branch"]:
+        raise BranchChanged("the agent worktree is no longer on its branch")
+    if cw_task._git_ok(wt, ["status", "--porcelain"]).strip():
+        cw_task._commit_all(repo, wt, "agent edits left uncommitted")
+    name = cw_task._git(repo, ["config", "user.name"]).stdout.strip() or "Code Walkthrough"
+    email = cw_task._git(repo, ["config", "user.email"]).stdout.strip() or "code-walkthrough@localhost"
+    # cw_task._git allows no merge, so this repeats its hardening.
+    git = ["git", "-C", str(wt), *cw_task._HARDEN, *cw_task._filter_off(wt),
+           "-c", f"user.name={name}", "-c", f"user.email={email}", "-c", "commit.gpgsign=false"]
+    env = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1", "GIT_CONFIG_NOSYSTEM": "1"}
+    merged = subprocess.run([*git, "merge", "--no-edit", meta["head"]], capture_output=True, text=True,
+                            errors="replace", env=env)
+    if merged.returncode != 0:
+        subprocess.run([*git, "merge", "--abort"], capture_output=True, env=env)
+        raise cw_store.CWError("The PR changed since the agent edited it and the changes conflict",
+                               remedy="discard the agent edits (Discard all agent edits) and ask again")
+    sha, head = cw_task._git_ok(wt, ["rev-parse", "HEAD"]).strip(), meta["head"]
+    cw_store.update_meta(d, lambda m: m["agent"].update(sha=sha, base=head))
+    agent.update(sha=sha, base=head)
 
 
 def discard_all(d, meta):
@@ -177,7 +234,7 @@ def fail_interrupted_reloads(d):
 
 def _answer_reload(d, meta, o, edits, on_event, start_sibling):
     agent = meta["agent"]
-    sha = edits["sha"] if edits else (agent["sha"] if agent["sha"] != meta["head"] else None)
+    sha = edits["sha"] if edits else (agent["sha"] if has_edits(d, meta) else None)
     if not sha or not start_sibling:
         cw_ask.mark_outcome(d, o["oid"], "failed", on_event, {"reason": "no edits to show"})
         return

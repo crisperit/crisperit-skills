@@ -8,6 +8,7 @@ Usage: cw_server.py serve
 Stdlib only. Binds 127.0.0.1 only; see references/live.md for the localhost guard.
 """
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -129,7 +130,7 @@ def _live_payload(key, wid, meta, d, token, port):
         "usage": meta.get("usage", {}), "total": cw_store.usage_total(meta),
         "drafts": drafts, "sibling": sibling,
         "agent": {"full": cw_llm.confinement_available() and cw_agent.trust(meta, cw_store.load_config(), d),
-                  "own_pr": meta.get("own_pr")},
+                  "own_pr": meta.get("own_pr"), "stale": cw_agent.agent_stale(meta)},
     }
 
 
@@ -145,14 +146,19 @@ def _first_unreported_remedy(meta):
 
 
 def _tool_walkthrough_start(daemon, args):
-    def guarded_is_running(d):
-        if daemon.edit_lock(d).locked():
-            raise cw_store.CWError("a Full agent turn is running on this walkthrough",
-                                   remedy="wait for the turn to finish, then run walkthrough_start again")
-        return daemon.is_running(d)
+    @contextlib.contextmanager
+    def edit_guard(d):
+        lock = daemon.edit_lock(d)
+        if not lock.acquire(blocking=False):
+            raise cw_agent.CWBusy("a Full agent turn is running on this walkthrough",
+                                  remedy="wait for the turn to finish, then run walkthrough_start again")
+        try:
+            yield
+        finally:
+            lock.release()
 
     with START_LOCK:
-        d, meta, reused = _runner().prepare_walkthrough(args, is_running=guarded_is_running)
+        d, meta, reused = _runner().prepare_walkthrough(args, is_running=daemon.is_running, edit_guard=edit_guard)
         key, wid = meta["key"], meta["id"]
         if meta.get("status") == "building" and not daemon.is_running(d):
             daemon.start_run(key, wid, d)
@@ -162,6 +168,10 @@ def _tool_walkthrough_start(daemon, args):
 
 def start_sibling(daemon, key, wid, meta, oid, sha, task_id, branch, title):
     """Starts (or reuses) the sibling walkthrough of `sha`, a commit on top of this walkthrough's head."""
+    agent = meta.get("agent")
+    if agent and branch == agent.get("branch") and cw_agent.agent_stale(meta):
+        raise cw_store.CWError("The PR changed since these edits were made",
+                               remedy="ask the agent again to bring them up to date, or discard them")
     args = {
         "repo": meta["repo"], "base": meta["base"], "head": sha, "explain": meta.get("explain", False),
         "paths": meta.get("paths") or [], "title": meta.get("title"), "pr": None,
@@ -813,8 +823,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(status, body)
             return
         except cw_store.CWError as e:
-            locked = "in use" in str(e) or "locked" in str(e)
-            self._send_json(409 if locked else 500, {"error": str(e), "remedy": e.remedy})
+            self._send_json(409 if isinstance(e, cw_agent.CWBusy) else 500, {"error": str(e), "remedy": e.remedy})
             return
         self._send_json(200, {"ok": True, "outcome": folded})
 

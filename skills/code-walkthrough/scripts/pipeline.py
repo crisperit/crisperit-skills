@@ -212,7 +212,8 @@ def cmd_prepare(args):
     if analysis.get("visuals") is not None:
         symdelta = json.loads(symdelta_path.read_text()) if symdelta_path.exists() else None
         clean, problems = check_visuals(analysis["visuals"], symdelta)
-        print(f"visuals: {len(clean)} kept, {len(analysis['visuals']) - len(clean)} dropped")
+        total = len(analysis["visuals"]) if isinstance(analysis["visuals"], list) else 0
+        print(f"visuals: {len(clean)} kept, {total - len(clean)} dropped")
         for problem in problems:
             print(f"visuals: {problem}")
 

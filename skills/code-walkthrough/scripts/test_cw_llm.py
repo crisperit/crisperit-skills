@@ -541,7 +541,7 @@ def test_full_disallows_web_tools():
 def test_confine_prefix():
     h = "/home/u"
     assert cw_llm.confine_prefix("/w/d/agent", "/r", h, "/w/d/turns", sockets=["/run/docker.sock"],
-                                 exists=lambda p: True) == [
+                                 exists=lambda p: True, secrets=["/w/d/token"]) == [
         "bwrap", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
         "--die-with-parent", "--unshare-pid", "--new-session", "--cap-drop", "ALL",
         "--tmpfs", "/tmp",
@@ -549,6 +549,7 @@ def test_confine_prefix():
         "--overlay-src", "/r", "--tmp-overlay", "/r",
         "--tmpfs", "/run/user", "--tmpfs", "/home/u/.ssh", "--tmpfs", "/home/u/.gnupg",
         "--ro-bind", "/w/d", "/w/d",
+        "--ro-bind", "/dev/null", "/w/d/token",
         "--bind", "/w/d/agent", "/w/d/agent", "--bind", "/w/d/turns", "/w/d/turns",
         "--bind-try", "/home/u/.claude/projects/-w-d-agent", "/home/u/.claude/projects/-w-d-agent",
         "--bind-try", "/home/u/.claude/session-env", "/home/u/.claude/session-env",
@@ -568,6 +569,15 @@ def test_confine_prefix_masks_only_existing_paths():
     argv = cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns", sockets=[],
                                  exists=lambda p: p == "/home/u/.ssh")
     assert [argv[i + 1] for i, a in enumerate(argv) if a == "--tmpfs"] == ["/tmp", "/home/u/.ssh"]
+
+
+def test_confine_prefix_masks_existing_secret_files_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODE_WALKTHROUGH_HOME", str(tmp_path))
+    (tmp_path / "token").write_text("t")
+    (tmp_path / "config.json").write_text("{}")
+    argv = cw_llm.confine_prefix("/w/d/agent", "/r", "/home/u", "/w/d/turns", sockets=[])
+    masked = [argv[i + 2] for i, a in enumerate(argv) if a == "--ro-bind" and argv[i + 1] == "/dev/null"]
+    assert masked == [str(tmp_path / "config.json"), str(tmp_path / "token")]
 
 
 def test_confine_prefix_skips_missing_docker_socket(monkeypatch):

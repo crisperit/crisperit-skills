@@ -191,6 +191,20 @@ def test_prepare_reports_kept_and_dropped_visuals(capsys):
     assert "visuals: visuals: dropped, symdelta.json has no symbols" in out
 
 
+def test_prepare_survives_non_list_visuals(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head)
+        analysis = json.loads((d / "analysis.json").read_text())
+        analysis["visuals"] = True
+        (d / "analysis.json").write_text(json.dumps(analysis))
+
+        assert pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
+                              "--head", head]) == 0
+
+    assert "visuals: 0 kept, 0 dropped" in capsys.readouterr().out
+
+
 def test_links_cached_leaves_a_pre_placed_links_json_untouched():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
