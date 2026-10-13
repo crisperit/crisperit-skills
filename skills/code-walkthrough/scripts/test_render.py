@@ -638,6 +638,21 @@ if (JSON.stringify(c) !== JSON.stringify({all:4, agent:2, pr:1, drafts:1})) thro
     assert "+counts[k]" in panel and "all.filter(t=>!t.resolved)" not in panel
 
 
+def test_gutter_plus_opens_the_composer_directly_and_only_ranges_raise_the_selection_bar():
+    ask = _wire_ask()
+    gutter = _between(ask, "onGutter=(meta,e)=>{", "let openBox=null")
+    shift, plain = gutter.split("clearSelection();", 1)
+    assert "e.shiftKey" in shift and "setRowRange(gutterAnchor,span)" in shift and "updateSelBar()" in shift
+    assert "openLineComposer(lineRangeAnchor(span,span),meta)" in plain
+    assert "updateSelBar" not in plain and "addRange" not in plain
+    tpl = _real_template()
+    wire_line = _between(tpl, "function wireLine(span,meta){", "// Extension (no dot)")
+    assert "span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(e); } });" in wire_line
+    assert "plus.addEventListener('click',e=>{ e.stopPropagation(); open(e); });" in wire_line
+    update = _between(ask, "function updateSelBar(){", "let selTimer=null;")
+    assert "buildAskAnchor(sel)" in update and "planEl.contains(sel.anchorNode)" in update
+
+
 def test_copy_for_agent_is_gone():
     tpl = _real_template()
     for gone in ("Copy for agent", "hr-comments-agent-btn", "cw-panel-copy", "agentFeedbackText", "notesForAgent"):

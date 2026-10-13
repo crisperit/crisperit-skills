@@ -6058,7 +6058,7 @@
         return li;
       });
       if(!rows.length) rows.push(mk('li','hr-comments-empty',panelFilter==='all'
-        ?'No threads yet. Press + beside a diff line, or select prose, to start one.'
+        ?'No threads yet. Press + beside a diff line to comment, or select lines or prose to ask the agent.'
         :'Nothing here yet.'));
       pRows.replaceChildren(...rows);
       if(focused){ const r=pRows.querySelector('button[data-key="'+focused+'"]'); if(r) r.focus(); }
@@ -6268,18 +6268,12 @@
       const span=spanByLineKey.get(meta.lineKey).span;
       if(e&&e.shiftKey&&gutterAnchor&&gutterAnchor!==span&&gutterAnchor.parentNode===span.parentNode){
         setRowRange(gutterAnchor,span);
-      }else{
-        gutterAnchor=span;
-        const d=diffSel();
-        if(!(d&&d.last===span)){
-          const r=document.createRange();
-          r.setStartAfter(span.querySelector('.dline-num'));
-          r.setEndBefore(span.querySelector('.dline-plus'));
-          const sel=window.getSelection();
-          sel.removeAllRanges(); sel.addRange(r);
-        }
+        updateSelBar();
+        return;
       }
-      updateSelBar();
+      clearSelection();
+      gutterAnchor=span;
+      openLineComposer(lineRangeAnchor(span,span),meta);
     };
 
     let openBox=null, openC=null, openFrom=null;
