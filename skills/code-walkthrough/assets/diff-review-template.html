@@ -544,10 +544,10 @@
     padding:6px 14px;font-size:var(--fs-xs);color:var(--muted);
     font-family:var(--mono);text-align:center}
   #cw-live-banner.failed{color:var(--red)}
-  #cw-live-reload{position:fixed;left:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;border:none;
-    background:var(--accent);color:var(--bg);border-radius:999px;padding:10px 18px;
-    font:600 var(--fs-sm) system-ui;cursor:pointer;
-    box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent)}
+  #cw-live-reload{position:fixed;left:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+    display:inline-flex;align-items:center;height:38px;padding:0 14px;white-space:nowrap;
+    background:var(--panel2);border:1px solid var(--accent);color:var(--text);border-radius:999px;
+    font:600 var(--fs-sm) system-ui;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35)}
   #cw-live-reload:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Brief highlight so "Go to file" is visible arriving at the hunk, not just landing on it. */
   details.hunk.vd-flash{border-color:var(--accent)}
@@ -844,20 +844,20 @@
     border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;
     padding:10px 16px;font-size:var(--fs-sm);color:var(--text)}
 
-  /* Floating entry point for the comments panel, replacing the removed top banner and the
-     removed per-note Post to PR mark. Fixed bottom-right so it never sits over the diff's own
-     content, even on a narrow screen where the diff already scrolls sideways under it.
-     .fb-primary supplies the accent fill; only shape, placement and feedback states are added
-     here. Shadow is tinted with the accent hue rather than plain black, so it reads as part of
-     this palette instead of a generic drop shadow. */
-  #hr-comments-btn{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;border:none;
-    border-radius:999px;padding:10px 18px;font:600 var(--fs-sm) system-ui;cursor:pointer;
-    box-shadow:0 6px 20px color-mix(in srgb,var(--accent) 35%,transparent);
-    transition:transform .15s,box-shadow .15s}
-  #hr-comments-btn:hover{background:color-mix(in srgb,var(--accent) 88%,#000);
-    box-shadow:0 8px 24px color-mix(in srgb,var(--accent) 45%,transparent)}
+  #hr-comments-btn{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+    display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:999px;
+    font:600 var(--fs-sm) system-ui;cursor:pointer;user-select:none;-webkit-user-select:none;
+    box-shadow:0 6px 20px rgba(0,0,0,.35);transition:transform .15s,border-color .15s}
+  #hr-comments-btn:hover{border-color:var(--accent)}
   #hr-comments-btn:active{transform:scale(.97)}
   #hr-comments-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #hr-comments-btn.cw-dock-ask{background:var(--purple);border-color:var(--purple);color:var(--bg)}
+  .cw-dock-badge{border-radius:999px;padding:1px 8px;font:600 var(--fs-xs) system-ui;
+    background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+  .cw-dock-badge.purple{background:color-mix(in srgb,var(--purple) 18%,transparent);color:var(--purple)}
+  .cw-dock-badge.yellow{background:color-mix(in srgb,var(--yellow) 18%,transparent);color:var(--yellow)}
+  @media (max-width:480px){.cw-dock-full{display:none}}
 
   /* Same dialog idiom as #mermaid-zoom, sized for a list rather than a diagram. */
   #hr-comments{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
@@ -968,10 +968,7 @@
   #cw-comment-btn{position:fixed;z-index:50;border:none;border-radius:6px;padding:4px 10px;
     font:600 var(--fs-xs) system-ui;cursor:pointer;background:var(--purple);color:var(--bg);
     box-shadow:0 4px 12px color-mix(in srgb,var(--purple) 35%,transparent)}
-  #cw-threads-btn{position:fixed;right:16px;bottom:calc(62px + var(--cw-bar-h,0px));z-index:40;border:1px solid var(--border);
-    border-radius:999px;padding:8px 16px;font:600 var(--fs-sm) system-ui;cursor:pointer;
-    background:var(--panel2);color:var(--text)}
-  #cw-comment-btn:focus-visible,#cw-threads-btn:focus-visible,#cw-threads-close:focus-visible,
+  #cw-comment-btn:focus-visible,#cw-threads-close:focus-visible,
   .cw-thread button:focus-visible,.cw-compose button:focus-visible,
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   #cw-threads{position:fixed;inset:0;margin:auto;width:min(560px,92vw);max-height:82vh;padding:0;background:var(--panel);
@@ -1192,11 +1189,11 @@
     .vd-level-toggle,.wt-tab{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
-    #hr-comments-btn{min-height:44px}
+    #hr-comments-btn,#cw-live-reload{height:44px}
+    .cw-typing #hr-comments-btn,.cw-typing #cw-drafts-bar{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-threads-btn{min-height:44px}
     #cw-comment-btn{display:none!important}
     .cw-mode-tab{min-height:44px;padding:0 14px}
     .cw-compose-hint{display:none}
@@ -1232,7 +1229,7 @@
 
 <!-- Ahead of #plan-content in source order (fixed visual position is unchanged) so a keyboard
      user reaches this button without tabbing through every commentable diff line first. -->
-<button type="button" id="hr-comments-btn" class="fb-primary" aria-haspopup="dialog">Comments (0)</button>
+<button type="button" id="hr-comments-btn" aria-haspopup="dialog">Comments <span class="cw-dock-badge">0</span></button>
 <dialog id="hr-comments" aria-label="Your comments">
   <div id="hr-comments-head">
     <span>Your comments</span>
@@ -2166,6 +2163,13 @@
   };
   const detailsByPath=new Map(); // path -> its <details.hunk>, for the per-file comment-count badge
   let docOrder=0;
+  function dockSet(btn,label,badges){
+    btn.replaceChildren(label+' ',...badges.filter(Boolean).map(b=>{
+      const s=document.createElement('span'); s.className='cw-dock-badge '+(b.cls||''); s.append(String(b.text));
+      if(b.full){ const f=document.createElement('span'); f.className='cw-dock-full'; f.textContent=b.full; s.append(f); }
+      return s;
+    }));
+  }
   let refreshCommentsPanel=()=>{}; // replaced once wireCommentsPanel() finds its markup
   let refreshDraftsBar=()=>{}; // replaced by wirePost on a live page with a PR to submit to
   let openSubmitReview=()=>{};
@@ -3687,7 +3691,7 @@
 
     function renderList(){
       const notes=myNotesForPanel();
-      btn.textContent='Comments ('+notes.length+')';
+      dockSet(btn,'Comments',[{text:notes.length}]);
       list.innerHTML='';
       if(!notes.length){
         const li=document.createElement('li'); li.className='hr-comments-empty';
@@ -4943,9 +4947,25 @@
     commentBtn.addEventListener('mousedown',e=>e.preventDefault());
     document.body.appendChild(commentBtn);
 
-    const threadsBtn=mkBtn('Threads (0)');
-    threadsBtn.id='cw-threads-btn'; threadsBtn.setAttribute('aria-haspopup','dialog');
-    document.body.appendChild(threadsBtn);
+    const staticDock=$('hr-comments-btn');
+    const dock=staticDock.cloneNode(true);
+    staticDock.replaceWith(dock);
+    dock.addEventListener('mousedown',e=>e.preventDefault());
+    const coarseQ=matchMedia('(pointer:coarse)');
+    let dockAsk=false, dockView={open:0,waiting:0,label:'Threads'};
+    function paintDock(){
+      dock.classList.toggle('cw-dock-ask',dockAsk);
+      if(dockAsk){ dock.textContent=ASK_LABEL; dock.setAttribute('aria-label',ASK_LABEL); return; }
+      dockSet(dock,'Threads',[{cls:'purple',text:dockView.open},
+        dockView.waiting>0&&{cls:'yellow',text:dockView.waiting,full:' waiting'}]);
+      dock.setAttribute('aria-label',dockView.label);
+    }
+    function setDockAsk(on){ if(on!==dockAsk){ dockAsk=on; paintDock(); } }
+    const rootEl=document.documentElement;
+    document.addEventListener('focusin',e=>{
+      if(coarseQ.matches&&e.target.matches&&e.target.matches('.cw-compose textarea')) rootEl.classList.add('cw-typing');
+    });
+    document.addEventListener('focusout',()=>rootEl.classList.remove('cw-typing'));
 
     const dlg=document.createElement('dialog');
     dlg.id='cw-threads'; dlg.setAttribute('aria-label','Threads');
@@ -4987,8 +5007,6 @@
         .catch(()=>{ triageBtn.disabled=false; triageMsg.textContent='Request failed -- check the daemon is still running.'; });
     });
     const thTop=mk('div','cw-threads-top'); thTop.append(thCopy,triageBtn,thSubmit,thCopyMsg,triageMsg);
-    const commentsBtn=$('hr-comments-btn');
-    if(commentsBtn) commentsBtn.hidden=true;
     dlgBody.append(thTop,listEl,unplacedWrap);
     refreshDraftsBar();
     dlg.append(dlgHead,dlgBody);
@@ -4998,7 +5016,8 @@
       const all=[...threads.values()];
       const waiting=waitingCount([...outcomesByQid.values()].flatMap(m=>[...m.values()]));
       const label='Threads ('+all.filter(t=>!t.resolved).length+')'+(waiting?' \u00b7 '+waiting+' wait for you':'');
-      threadsBtn.textContent=label; dlgTitle.textContent=label;
+      dlgTitle.textContent=label;
+      dockView={open:all.filter(t=>!t.resolved).length,waiting,label}; paintDock();
       const turnsByNote=new Map();
       for(const t of all){
         const a=(t.turns[0]||{}).anchor;
@@ -5031,10 +5050,10 @@
       for(const t of unplaced) if(t.el.parentElement!==unplacedBox) unplacedBox.appendChild(t.el);
     }
 
-    threadsBtn.addEventListener('click',()=>{ renderList(); dlg.showModal(); });
+    dock.addEventListener('click',()=>{ if(dockAsk) askFromSelection(); else { renderList(); dlg.showModal(); } });
     dlgClose.addEventListener('click',()=>dlg.close());
     dlg.addEventListener('click',e=>{ if(e.target===dlg) dlg.close(); });
-    dlg.addEventListener('close',()=>{ threadsBtn.focus(); });
+    dlg.addEventListener('close',()=>{ dock.focus(); });
     renderList();
 
     function diffSel(){
@@ -5081,8 +5100,10 @@
       const sel=window.getSelection();
       if(d||!sel||sel.isCollapsed||!sel.toString().trim()||!planEl.contains(sel.anchorNode)||inLiveUi(sel.anchorNode)){
         commentBtn.hidden=true;
+        setDockAsk(false);
         return;
       }
+      setDockAsk(coarseQ.matches);
       const range=sel.getRangeAt(0);
       placeCommentButton(range,blockOf(range.endContainer)||planEl);
     }
@@ -5133,7 +5154,7 @@
       return true;
     };
 
-    commentBtn.addEventListener('click',()=>{
+    function askFromSelection(){
       const sel=window.getSelection();
       if(!sel||sel.isCollapsed||!sel.toString().trim()) return;
       const anchor=buildAskAnchor(sel);
@@ -5143,7 +5164,9 @@
       const c=makeComposer({...lineComposerOpts(anchor),payload:text=>({anchor,text}),onSent:closeComposer,onCancel:closeComposer});
       openComposer(c,box=>insertAfterThreads(ref,box));
       commentBtn.hidden=true;
-    });
+      setDockAsk(false);
+    }
+    commentBtn.addEventListener('click',askFromSelection);
 
     openThreadAsk=(root,host,input)=>{
       if(composerBusy()) return;
