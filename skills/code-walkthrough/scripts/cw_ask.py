@@ -327,9 +327,26 @@ def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user", an
     path = Path(d) / "turns" / f"{qid}.anchor.json"
     path.parent.mkdir(exist_ok=True)
     refs = anchors or [anchor]
-    cw_store.write_json(path, _with_anchors(
+    doc = _with_anchors(
         {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment, "source": source,
-         "mode": mode, "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs)}, anchors))
+         "mode": mode, "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs)}, anchors)
+    cw_store.write_json(path, doc)
+    trusted = _trusted_anchor_path(d, qid)
+    trusted.parent.mkdir(exist_ok=True)
+    cw_store.write_json(trusted, doc)
+
+
+def _trusted_anchor_path(d, qid):
+    return Path(d) / "anchors" / f"{qid}.json"
+
+
+def read_trusted_anchor(d, qid):
+    """The turns/ copy is agent-writable; the daemon reads the copy beside it, which the sandbox mounts read-only.
+    Turns recorded before that copy existed fall back to the turns/ one."""
+    doc = cw_store.read_json(_trusted_anchor_path(d, qid))
+    if not isinstance(doc, dict):
+        doc = cw_store.read_json(Path(d) / "turns" / f"{qid}.anchor.json")
+    return doc
 
 
 def _folded_outcome(r):
@@ -364,13 +381,22 @@ def read_outcomes(d):
     return list(folded.values())
 
 
+def _uncapped_draft_bodies(payload):
+    items = payload.get("comments")
+    if not isinstance(items, list):
+        return payload
+    cap = cw_mcp.DRAFT_BODY_CAP
+    return {**payload, "comments": [{**i, "body": i["body"][:cap]} if isinstance(i, dict)
+                                    and isinstance(i.get("body"), str) else i for i in items]}
+
+
 def sweep_outcomes(d, qid, thread_id, on_event=None):
     try:
         lines = (Path(d) / "turns" / f"{qid}.outcomes.jsonl").read_text().splitlines()
     except OSError:
         return
     # The file is writable by a Full agent, so each record is re-checked as the MCP server checks it.
-    anchor_doc = cw_store.read_json(Path(d) / "turns" / f"{qid}.anchor.json")
+    anchor_doc = read_trusted_anchor(d, qid)
     if not isinstance(anchor_doc, dict):
         return
     anchor_doc = {**anchor_doc, "dir": str(d)}
@@ -380,11 +406,15 @@ def sweep_outcomes(d, qid, thread_id, on_event=None):
         try:
             rec = json.loads(line)
             oid, kind = rec["oid"], cw_mcp.OUTCOME_KINDS[rec["name"]]
-            payload = rec["arguments"]
-            if not isinstance(payload, dict):
+            raw = rec.get("raw_arguments")
+            checked = raw if isinstance(raw, dict) else rec["arguments"]
+            if not isinstance(checked, dict):
                 continue
-            if oid not in known and cw_mcp.check_outcome(anchor_doc, rec["name"], payload, already):
+            if not isinstance(raw, dict) and rec["name"] == "post_draft_comments":
+                checked = _uncapped_draft_bodies(checked)
+            if oid not in known and cw_mcp.check_outcome(anchor_doc, rec["name"], checked, already):
                 continue
+            payload = kind["payload"](raw, anchor_doc) if isinstance(raw, dict) else rec["arguments"]
             key = kind["key"](payload)
         except (ValueError, KeyError, TypeError):
             continue
@@ -458,7 +488,7 @@ def _outcome_action(d, oid, action, payload, on_event):
             raise OutcomeError(error, "invalid", remedy="fix the plan and try again")
         event["payload"] = {**cw_mcp._task_payload(payload), "edited": True}
     elif action == "edit":
-        anchor_doc = cw_store.read_json(d / "turns" / f"{current['qid']}.anchor.json") or {}
+        anchor_doc = read_trusted_anchor(d, current["qid"]) or {}
         already = {f"resolve:{o['payload']['thread']}" for o in outcomes
                    if o["outcome"] == "resolve" and o["qid"] == current["qid"] and o["oid"] != oid}
         error = cw_mcp.check_outcome(anchor_doc, "propose_resolve", payload, already)

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -285,16 +286,47 @@ def test_ensure_worktree_readopts_or_recreates_a_leftover_directory():
         assert cw_testlib.git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "cw/cmp-12345678/agent"
 
 
-def test_rebuild_clean_removes_the_agent_worktree_and_branch():
+def test_rebuild_clean_removes_an_unused_agent_worktree_but_keeps_edits():
     import cw_run
 
     with tempfile.TemporaryDirectory() as tmp:
         d, repo, meta, _marker = _agent_fixture(tmp)
-        cw_agent.ensure_worktree(d, meta)
-        cw_run._full_clean(d, cw_store.read_meta(d), repo)
+        branch = "cw/cmp-12345678/agent"
+        wt = cw_agent.ensure_worktree(d, meta)
+        assert cw_run._full_clean(d, cw_store.read_meta(d), repo) == {}
         assert not (d / "agent").exists()
-        assert cw_testlib.git(repo, "branch", "--list", "cw/cmp-12345678/agent").strip() == ""
-        cw_agent.ensure_worktree(d, {k: v for k, v in meta.items() if k != "agent"})
+        assert cw_testlib.git(repo, "branch", "--list", branch).strip() == ""
+
+        meta.pop("agent")
+        wt = cw_agent.ensure_worktree(d, meta)
+        (wt / "a.py").write_text("x = 3\n")
+        edits = cw_agent.commit(d, meta, "t", "q-1")
+        cw_store.update_meta(d, lambda m: m.update(origin_repo="a/b"))
+        carried = cw_run._full_clean(d, cw_store.read_meta(d), repo)
+        assert carried == {"origin_repo": "a/b", "agent": cw_store.read_meta(d)["agent"]}
+        assert carried["agent"]["sha"] == edits["sha"] and wt.exists()
+        assert cw_testlib.git(repo, "rev-parse", branch).strip() == edits["sha"]
+
+
+def test_refresh_refused_while_a_full_turn_runs(monkeypatch):
+    prepared = []
+
+    class Runner:
+        def prepare_walkthrough(self, params, is_running):
+            prepared.append(params)
+            return Path("/x"), {"key": "k", "id": "w", "status": "done"}, is_running(Path("/x"))
+
+    monkeypatch.setattr(cw_server, "runner", Runner())
+    with cw_testlib.temp_home(), cw_testlib.running_daemon() as daemon:
+        lock = daemon.edit_lock(Path("/x"))
+        lock.acquire()
+        try:
+            with pytest.raises(cw_store.CWError, match="Full agent turn is running") as err:
+                cw_server._tool_walkthrough_start(daemon, {})
+        finally:
+            lock.release()
+        assert "run walkthrough_start again" in err.value.remedy
+        assert cw_server._tool_walkthrough_start(daemon, {})["reused"] is False
 
 
 def test_commit_ignores_fsmonitor_and_filters_the_agent_configured():
@@ -408,3 +440,31 @@ def test_discard_cwerror_is_a_clean_json_error(monkeypatch):
             monkeypatch.setattr(cw_agent, "discard_all", boom)
             status, raw = _discard(daemon, d, edits["oid"])
         assert status == 500 and "does not name" in json.loads(raw)["error"]
+
+
+def test_discard_registers_a_holder_and_a_holderless_lock_queues_with_a_label(monkeypatch):
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, _repo = _full_fixture(tmp, home)
+        entry = cw_testlib.claude_stream_entry(["done"], writes={"a.py": "x = 3\n"})
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), cw_testlib.running_daemon() as daemon:
+            seen = []
+            monkeypatch.setattr(cw_agent, "discard_edits",
+                                lambda *a, **k: seen.append(daemon._edit_holders.get(str(d))) or {})
+            daemon._discard_edits(d, {}, "o-1", lambda *a: None)
+            assert seen == ["discard"] and str(d) not in daemon._edit_holders
+
+            events = []
+            monkeypatch.setattr(daemon.hub, "emit", lambda k, w, ev, data: events.append((ev, data)))
+            lock = daemon.edit_lock(d)
+            lock.acquire()
+            try:
+                assert _comment(ask, daemon, d, "full")[0] == 202
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not any(
+                        e[0] == "progress" and e[1].get("tool") == "queued" for e in events):
+                    time.sleep(0.02)
+            finally:
+                lock.release()
+            ask._wait_final(d, 1)
+        queued = next(e[1] for e in events if e[0] == "progress" and e[1].get("tool") == "queued")
+        assert queued["detail"] == "another Full turn"

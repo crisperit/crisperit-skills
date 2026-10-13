@@ -505,7 +505,7 @@ def test_composer_mode_switch_is_gated_and_sent_only_for_full():
     assert "r.type='radio'" in composer and "r.checked=v==='review'" in composer
     assert "mk('legend',null,'Mode')" in composer
     assert "last.mode==='full'" in composer
-    assert "Pushing is blocked, but your own allow rules still apply." in composer and "hint.hidden=true" in composer
+    assert "Push commands are denied by rule, but your own allow rules still apply." in composer and "hint.hidden=true" in composer
     send = _between(wire_ask, "function sendView(view){", "function buildThread(t){")
     assert "if(c.mode()==='full') body.mode='full';" in send
     assert "fetch(window.CW_LIVE.api+'/comment'" in send

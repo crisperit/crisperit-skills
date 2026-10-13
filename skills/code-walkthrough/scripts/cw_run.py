@@ -1484,13 +1484,19 @@ def _full_clean(d, old_meta, toplevel):
         except Exception:
             pass
         _rm(head_dir)
-    agent_repo = (old_meta or {}).get("repo")
-    if agent_repo and (old_meta or {}).get("id") and (old_meta.get("agent") or (d / "agent").exists()):
+    old_meta = old_meta or {}
+    agent = old_meta.get("agent")
+    carry = {k: old_meta[k] for k in ("origin_repo",) if k in old_meta}
+    if agent and agent.get("sha") != old_meta.get("head") and (d / "agent").exists():
+        return {**carry, "agent": agent}
+    agent_repo = old_meta.get("repo")
+    if agent_repo and old_meta.get("id") and (agent or (d / "agent").exists()):
         import cw_task  # noqa: PLC0415  cw_task imports this module
         try:
             cw_task.remove_worktree(agent_repo, d / "agent", cw_task.branch_name(old_meta, "agent"))
         except Exception:
             pass
+    return carry
 
 
 def prepare_walkthrough(params, is_running=None):
@@ -1571,8 +1577,7 @@ def prepare_walkthrough(params, is_running=None):
             _rm(d / name)
         meta = dict(old_meta)
     else:
-        _full_clean(d, old_meta, toplevel)
-        meta = {}
+        meta = _full_clean(d, old_meta, toplevel)
 
     now = cw_store.now_iso()
     meta.setdefault("rev", 0)

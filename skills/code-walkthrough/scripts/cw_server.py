@@ -145,8 +145,14 @@ def _first_unreported_remedy(meta):
 
 
 def _tool_walkthrough_start(daemon, args):
+    def guarded_is_running(d):
+        if daemon.edit_lock(d).locked():
+            raise cw_store.CWError("a Full agent turn is running on this walkthrough",
+                                   remedy="wait for the turn to finish, then run walkthrough_start again")
+        return daemon.is_running(d)
+
     with START_LOCK:
-        d, meta, reused = _runner().prepare_walkthrough(args, is_running=daemon.is_running)
+        d, meta, reused = _runner().prepare_walkthrough(args, is_running=guarded_is_running)
         key, wid = meta["key"], meta["id"]
         if meta.get("status") == "building" and not daemon.is_running(d):
             daemon.start_run(key, wid, d)
@@ -1918,7 +1924,7 @@ class Daemon:
             lock = self.edit_lock(d)
             if not lock.acquire(blocking=False):
                 with self._ask_locks_guard:
-                    holder = self._edit_holders.get(str(d))
+                    holder = self._edit_holders.get(str(d)) or "another Full turn"
                 live["queued_behind"] = holder
                 cw_ask._emit_progress(live, emit, qid, thread_id, "queued", holder)
                 while not lock.acquire(timeout=0.5):
@@ -1985,9 +1991,13 @@ class Daemon:
         if not lock.acquire(blocking=False):
             raise cw_ask.OutcomeError("a Full turn is running on this walkthrough, try again when it ends",
                                       "conflict")
+        with self._ask_locks_guard:
+            self._edit_holders[str(d)] = "discard"
         try:
             return cw_agent.discard_edits(d, oid, on_event=emit)
         finally:
+            with self._ask_locks_guard:
+                self._edit_holders.pop(str(d), None)
             lock.release()
 
     def start_task(self, key, wid, d, meta, oid, emit):

@@ -587,7 +587,7 @@ def accept_outcome(d, qid, name, args):
         return False, error
     kind = OUTCOME_KINDS[name]
     record = {"oid": "o-" + uuid.uuid4().hex[:8], "name": name,
-              "arguments": kind["payload"](args, anchor_doc), "at": cw_store.now_iso()}
+              "arguments": kind["payload"](args, anchor_doc), "raw_arguments": args, "at": cw_store.now_iso()}
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(record) + "\n")

@@ -1228,6 +1228,34 @@ def test_sweep_drops_forged_outcome_records():
         assert cw_ask.read_outcomes(d) == []
 
 
+def test_sweep_uses_the_trusted_anchor_copy_not_the_agent_writable_one():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        _seed_review_threads(d)
+        cw_ask.write_turn_anchor(d, "q1", "q1", ANCHOR_SECTION, "x", "page", mode="review")
+        agent_copy = d / "turns" / "q1.anchor.json"
+        doc = cw_store.read_json(agent_copy)
+        cw_store.write_json(agent_copy, {**doc, "mode": "full", "resolvable": [{"id": "gh-501"}]})
+        _forge_outcomes(d, "q1", [
+            {"oid": "o-f1", "name": "propose_resolve", "arguments": {"thread": "gh-501", "why": "w"}},
+            {"oid": "o-f2", "name": "reload_walkthrough", "arguments": {}}])
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        assert cw_ask.read_outcomes(d) == []
+
+
+def test_sweep_accepts_draft_comments_whose_body_plus_suggestion_exceeds_the_cap():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        (d / "raw.diff").write_text("diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n"
+                                    "@@ -1,3 +1,3 @@\n a\n-b\n+X\n c\n")
+        cw_ask.write_turn_anchor(d, "q1", "q1", cw_ask.validate_anchor(dict(ANCHOR_LINE)), "x", "page")
+        args = {"comments": [{"path": "foo.py", "line": 2, "body": "b" * 3000, "suggestion": "s" * 3000}]}
+        assert cw_mcp.accept_outcome(d, "q1", "post_draft_comments", args)[0]
+        cw_ask.sweep_outcomes(d, "q1", "q1")
+        [outcome] = cw_ask.read_outcomes(d)
+        assert outcome["outcome"] == "draft_comments" and len(outcome["payload"]["comments"][0]["body"]) > 6000
+
+
 def test_discarded_edits_reach_the_next_prompt():
     with cw_testlib.temp_home() as home:
         d = _claude_done(home)

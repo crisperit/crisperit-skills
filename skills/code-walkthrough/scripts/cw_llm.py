@@ -350,7 +350,7 @@ def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume
     return argv + (["--resume", resume] if resume else ["--session-id", session_id])
 
 
-# Best-effort: the transport block in no_push_env is the real push guard.
+# Best-effort, not a sandbox: these deny rules and the transport block in no_push_env can both be bypassed.
 FULL_DISALLOWED = ",".join((
     "Bash(git push:*)", "Bash(rtk git push:*)", "Bash(git -c:*)", "Bash(git --no-pager push:*)",
     "Bash(env:*)", "Bash(*GIT_CONFIG*)", "Bash(gh pr create:*)", "Bash(gh pr review:*)",
