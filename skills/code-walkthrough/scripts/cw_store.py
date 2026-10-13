@@ -8,6 +8,7 @@ Stdlib only, no network.
 
 import copy
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -24,6 +25,21 @@ sys.path.insert(0, str(Path(__file__).parent))
 from state import _stable_id  # noqa: E402  one owner of the localStorage id
 
 PROTOCOL = 1
+
+
+@functools.lru_cache(maxsize=1)
+def code_id():
+    """Tells a daemon from an older install apart from the bridge's own code; a path would break when the same version is installed in two places."""
+    root = Path(__file__).resolve().parent.parent
+    digest = hashlib.sha256()
+    for sub in ("scripts", "assets", "prompts"):
+        for f in sorted((root / sub).rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts and not f.name.startswith("test_"):
+                digest.update(f.relative_to(root).as_posix().encode())
+                digest.update(f.read_bytes())
+    return digest.hexdigest()[:16]
+
+
 ID_RE = re.compile(r"^(pr-\d+-[0-9a-f]{4}|cmp-[0-9a-f]{8})$")
 KEY_RE = re.compile(r"^[A-Za-z0-9._-]+-[0-9a-f]{6}$")
 SLUG_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")  # the slug becomes a filename
