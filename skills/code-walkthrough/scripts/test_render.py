@@ -430,9 +430,8 @@ def test_live_code_is_gated_behind_cw_live_and_calls_real_daemon_routes():
     for gate in ("if(window.CW_LIVE) wireAsk();", "if(window.CW_LIVE){", "wirePost(canGhCommand);",
                  "window.CW_LIVE&&window.CW_LIVE.sibling"):
         assert gate in template
-    # a static page must show no publish bar
-    bar = template.split('<div id="cw-drafts-bar"')[1].split("</div>")[0]
-    assert " hidden" in bar.split(">")[0]
+    assert "cw-drafts-bar" not in template
+    assert "id='cw-panel-submit'" in template
     assert "canGhCommand&&(d>0||r>0)" in _wire_post()
 
     for fragment, path, regex in _CLIENT_ROUTES:
@@ -522,7 +521,7 @@ _CSS_RULES = [
     (r"\.cw-caret\{([^}]*)\}", [], ["animation"]),
     (r"@media \(prefers-reduced-motion:no-preference\)\{\s*\.cw-caret\{([^}]*)\}",
      ["animation:cw-caret"], []),
-    (r"\.cw-sibling \.fb-publish-one[^{]*\.cw-sibling #cw-drafts-bar[^{]*\.cw-sibling \.fb-reply\{([^}]*)\}",
+    (r"\.cw-sibling \.fb-publish-one[^{]*\.cw-sibling #cw-panel-submit[^{]*\.cw-sibling \.fb-reply\{([^}]*)\}",
      ["display:none!important"], []),
 ]
 

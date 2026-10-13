@@ -58,7 +58,7 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
     font-size:var(--fs-base);line-height:1.6;
-    padding:32px 20px calc(64px + var(--cw-bar-h,0px))}
+    padding:32px 20px 64px}
   .wrap{max-width:min(1400px,92vw);margin:0 auto}
   /* Prose runs the full wrapper width, matching the panels and diagrams, because that is what
      was asked for twice. It puts a line past the 65-80 characters a measure normally wants, so
@@ -544,7 +544,7 @@
     padding:6px 14px;font-size:var(--fs-xs);color:var(--muted);
     font-family:var(--mono);text-align:center}
   #cw-live-banner.failed{color:var(--red)}
-  #cw-live-reload{position:fixed;left:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+  #cw-live-reload{position:fixed;left:16px;bottom:16px;z-index:40;
     display:inline-flex;align-items:center;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--accent);color:var(--text);border-radius:999px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35)}
@@ -844,7 +844,7 @@
     border:1px solid var(--border);border-left:3px solid var(--yellow);border-radius:8px;
     padding:10px 16px;font-size:var(--fs-sm);color:var(--text)}
 
-  #cw-dock{position:fixed;right:16px;bottom:calc(16px + var(--cw-bar-h,0px));z-index:40;
+  #cw-dock{position:fixed;right:16px;bottom:16px;z-index:40;
     display:flex}
   #hr-comments-btn{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:999px;
@@ -968,7 +968,7 @@
   .cw-ref-dot-btn:hover::after{box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 30%,transparent)}
   .cw-ref-dot-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:50%}
   .cw-ref-dot:not(.dline){box-shadow:inset 3px 0 0 var(--purple)}
-  #cw-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(64px + var(--cw-bar-h,0px));z-index:52;
+  #cw-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:64px;z-index:52;
     display:flex;align-items:center;gap:10px;box-sizing:border-box;width:max-content;max-width:min(420px,calc(100vw - 32px));
     padding:8px 12px;border:1px solid var(--purple);border-radius:8px;background:var(--panel2);color:var(--text);
     font-size:var(--fs-sm);box-shadow:0 6px 20px rgba(0,0,0,.35)}
@@ -1004,7 +1004,7 @@
   .cw-compose textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   :root{--cw-panel-w:clamp(300px,26vw,360px)}
   /* above #cw-live-banner (z 50); the drafts bar (z 45) stays below */
-  #cw-panel{position:fixed;top:0;right:0;bottom:var(--cw-bar-h,0px);z-index:51;width:var(--cw-panel-w);
+  #cw-panel{position:fixed;top:0;right:0;bottom:0;z-index:51;width:var(--cw-panel-w);
     display:flex;flex-direction:column;box-sizing:border-box;background:var(--panel);color:var(--text);
     border-left:1px solid var(--border);box-shadow:-8px 0 24px rgba(0,0,0,.35)}
   #cw-panel [hidden]{display:none!important}
@@ -1049,10 +1049,10 @@
     .cw-panel-open body{padding-right:calc(var(--cw-panel-w) + 20px)}
   }
   @media (max-width:600px),(pointer:coarse){
-    #cw-panel{top:auto;left:0;right:0;bottom:var(--cw-bar-h,0px);width:auto;border-left:0;
+    #cw-panel{top:auto;left:0;right:0;bottom:0;width:auto;border-left:0;
       border-top:1px solid var(--border);border-radius:12px 12px 0 0;box-shadow:0 -8px 24px rgba(0,0,0,.35);
-      height:min(90vh,calc(100vh - var(--cw-bar-h,0px) - 12px));
-      height:min(90dvh,calc(100dvh - var(--cw-bar-h,0px) - 12px))}
+      height:min(90vh,calc(100vh - 12px));
+      height:min(90dvh,calc(100dvh - 12px))}
     #cw-panel[data-sheet="collapsed"]{height:56px}
     #cw-panel[data-sheet="collapsed"]>:not(#cw-panel-grab){display:none}
     .cw-typing #cw-panel{bottom:var(--cw-kb,0px);height:min(90dvh,calc(var(--cw-vvh,100dvh) - 12px))}
@@ -1167,8 +1167,7 @@
   #cw-sibling .cw-sibling-note{color:var(--muted);font-size:var(--fs-xs)}
   .cw-sibling-chip{margin-left:6px;padding:0 6px;border:1px solid var(--purple);border-radius:999px;
     color:var(--purple);font-size:var(--fs-xs);white-space:nowrap}
-  .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-drafts-bar,
-  .cw-sibling #cw-panel-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
+  .cw-sibling .fb-publish-one,.cw-sibling .cw-gh-publish,.cw-sibling #cw-panel-submit,.cw-sibling #hr-comments-post-btn,.cw-sibling .cw-draft,
   .cw-sibling .fb-reply{display:none!important}
   @media (max-width:728px){.cw-ghdraft-cols{grid-template-columns:minmax(0,1fr)}}
   @media (prefers-reduced-motion:no-preference){
@@ -1252,11 +1251,6 @@
   #cw-post-confirm-partial{margin:0 0 12px;font-size:var(--fs-sm)}
   #cw-post-confirm-partial .fb-actions{flex-wrap:wrap}
   #cw-post-confirm-actions[hidden]{display:none}
-  #cw-drafts-bar{position:fixed;left:0;right:0;bottom:0;z-index:45;display:flex;flex-wrap:wrap;
-    align-items:center;gap:8px 12px;padding:8px 16px;background:var(--panel);
-    border-top:1px solid var(--border);font-size:var(--fs-sm)}
-  #cw-drafts-bar[hidden]{display:none}
-  #cw-drafts-text{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
   .fb-review-tag{margin-left:6px;color:var(--accent);font-size:var(--fs-xs)}
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
@@ -1273,11 +1267,11 @@
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
     #hr-comments-btn,#cw-live-reload{height:44px}
-    .cw-typing #cw-dock,.cw-typing #cw-drafts-bar{visibility:hidden;pointer-events:none}
+    .cw-typing #cw-dock{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
-    #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:calc(var(--cw-bar-h,0px) + 68px);width:auto;max-width:none;
+    #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:68px;width:auto;max-width:none;
       flex-wrap:wrap}
     #cw-selbar-what{flex:1 1 100%}
     #cw-selbar-target{flex:1 1 0;min-height:44px;max-width:none}
@@ -1403,12 +1397,6 @@
     <p id="cw-post-confirm-status" role="status"></p>
   </div>
 </dialog>
-
-<div id="cw-drafts-bar" role="region" aria-label="Drafts" hidden>
-  <span id="cw-drafts-text"></span>
-  <button type="button" id="cw-drafts-jump" class="fb-ghost">Jump to drafts</button>
-  <button type="button" id="cw-drafts-submit" class="fb-primary">Submit review</button>
-</div>
 
 <script><!-- MERMAID_JS --></script>
 <script><!-- HLJS_JS --></script>
@@ -2266,7 +2254,7 @@
     }));
   }
   let refreshCommentsPanel=()=>{}; // replaced once wireCommentsPanel() finds its markup
-  let refreshDraftsBar=()=>{}; // replaced by wirePost on a live page with a PR to submit to
+  let refreshPanelSubmit=()=>{}; // replaced by wirePost on a live page with a PR to submit to
   let openSubmitReview=()=>{};
   let resolutionOpener=null; // chip that opened #hr-resolution, so close can focus it back
 
@@ -2325,7 +2313,7 @@
   function persistLocal(){
     try{ localStorage.setItem(lsKey('hr-notes',state.meta.id), JSON.stringify(state.notes)); }catch(e){}
     if(window.CW_LIVE) schedulePutNotes();
-    refreshDraftsBar();
+    refreshPanelSubmit();
   }
 
   let putNotesTimer=null;
@@ -2374,7 +2362,7 @@
   let pendingResolveSet=loadPendingResolve();
   function persistPendingResolve(){
     try{ localStorage.setItem(lsKey('hr-resolve',state.meta.id), JSON.stringify([...pendingResolveSet])); }catch(e){}
-    refreshDraftsBar();
+    refreshPanelSubmit();
   }
   function markPendingResolve(id){ pendingResolveSet.add(id); persistPendingResolve(); }
   function clearPendingResolve(id){ if(pendingResolveSet.delete(id)) persistPendingResolve(); }
@@ -3485,9 +3473,8 @@
       retryBtn=$$('cw-post-retry'), nowBtn=$$('cw-post-send-now'), leaveBtn=$$('cw-post-leave'),
       sendBtn=$$('cw-post-confirm-send'), cancelBtn=$$('cw-post-confirm-cancel'),
       actionsEl=$$('cw-post-confirm-actions'),
-      status=$$('cw-post-confirm-status'), bar=$$('cw-drafts-bar'), barText=$$('cw-drafts-text'),
-      barJump=$$('cw-drafts-jump'), barSubmit=$$('cw-drafts-submit');
-    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!itemsList||!sendBtn||!status||!bar||!summary||!partial) return;
+      status=$$('cw-post-confirm-status');
+    if(!postBtn||!dlg||!close||!notesList||!resolvesList||!itemsList||!sendBtn||!status||!summary||!partial) return;
     postBtn.hidden=!canGhCommand;
     postBtn.textContent='Submit review';
 
@@ -3502,26 +3489,12 @@
     function localDrafts(){
       return state.notes.filter(n=>n.origin==='local'&&n.state==='draft'&&(n.body||'').trim());
     }
-    function updateBar(){
+    function updatePanelSubmit(){
       const d=localDrafts().length, r=pendingResolveSet.size, show=canGhCommand&&(d>0||r>0);
-      bar.hidden=!show;
-      barText.textContent=plural(d,'draft')+', '+plural(r,'resolve')+', only on this machine until you submit';
-      barSubmit.textContent='Submit review ('+plural(d,'draft')+', '+plural(r,'resolve')+')';
       const ths=document.getElementById('cw-panel-submit');
       if(ths){ ths.hidden=!show; ths.textContent='Submit review \u00b7 '+(d+r); }
-      document.documentElement.style.setProperty('--cw-bar-h',show?bar.offsetHeight+'px':'0px');
     }
-    refreshDraftsBar=updateBar;
-    window.addEventListener('resize',updateBar);
-
-    barJump.addEventListener('click',()=>{
-      const n=localDrafts().sort((a,b)=>(a.order||0)-(b.order||0))[0]
-        ||state.notes.find(x=>pendingResolveSet.has(x.id));
-      if(!n) return;
-      const rec=rowById.get(n.id);
-      const target=rec?rec.el:(spanByLineKey.get(n.path+'\t'+n.side+'\t'+n.line)||{}).span;
-      if(target){ openAncestorDetails(target); target.scrollIntoView({block:'center'}); target.focus(); }
-    });
+    refreshPanelSubmit=updatePanelSubmit;
 
     let nonce=null, lastResolves=[], full=[], excluded=new Set(), review={pending:false,comments:0},
       loading=false, posting=false, starting=false, done=false, seq=0, opener=postBtn, progress=new Map(), failedNoteIds=[];
@@ -3588,7 +3561,7 @@
         const m=state.notes.find(x=>x.id===id);
         if(m&&m.state!=='draft'){ m.state='draft'; changed=true; }
       }
-      if(changed){ persistLocal(); renderNotes(); updateBar(); }
+      if(changed){ persistLocal(); renderNotes(); updatePanelSubmit(); }
     }
 
     function preview(narrow){
@@ -3646,8 +3619,7 @@
       },()=>{ from.disabled=false; starting=false; });
     }
     postBtn.addEventListener('click',()=>start(postBtn));
-    barSubmit.addEventListener('click',()=>start(barSubmit));
-    openSubmitReview=from=>start(from||barSubmit);
+    openSubmitReview=from=>start(from||postBtn);
 
     evRadios.forEach(r=>r.addEventListener('change',syncSend));
     summary.addEventListener('input',syncSend);
@@ -3778,7 +3750,7 @@
     }
     sendBtn.addEventListener('click',send);
     nowBtn.addEventListener('click',submitNow);
-    updateBar();
+    updatePanelSubmit();
   }
 
   function wireCommentsPanel(){
@@ -5853,7 +5825,7 @@
     dock.setAttribute('aria-controls','cw-panel'); dock.setAttribute('aria-expanded','false');
     dock.removeAttribute('aria-haspopup');
     dock.addEventListener('click',()=>{ togglePanel(); });
-    refreshDraftsBar();
+    refreshPanelSubmit();
     renderPanelList();
     const refreshInline=refreshCommentsPanel;
     refreshCommentsPanel=()=>{ refreshInline(); renderPanelList(); };
@@ -5929,7 +5901,7 @@
       const last=rects.length?rects[rects.length-1]:first;
       const w=selBar.offsetWidth, h=selBar.offsetHeight;
       const rightEdge=(panelOpen()?panel.getBoundingClientRect().left:innerWidth)-8;
-      const reserve=(parseFloat(rootEl.style.getPropertyValue('--cw-bar-h'))||0)+64;
+      const reserve=64;
       let top=last.bottom+6;
       if(top+h>innerHeight-reserve){
         const above=first.top-6-h;
