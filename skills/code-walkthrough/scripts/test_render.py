@@ -519,9 +519,23 @@ def test_gutter_plus_opens_the_composer_directly_and_only_ranges_raise_the_selec
     tpl = _real_template()
     wire_line = _between(tpl, "function wireLine(span,meta){", "// Extension (no dot)")
     assert "span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(e); } });" in wire_line
-    assert "plus.addEventListener('click',e=>{ e.stopPropagation(); open(e); });" in wire_line
+    assert re.search(r"plus\.addEventListener\('click',e=>\{\s*e\.stopPropagation\(\);.*open\(e\);\s*\}\);", wire_line)
     update = _between(ask, "function updateSelBar(){", "let selTimer=null;")
     assert "buildAskAnchor(sel)" in update and "planEl.contains(sel.anchorNode)" in update
+
+
+def test_a_click_right_after_a_range_drag_is_swallowed_but_ordinary_clicks_are_not():
+    tpl = _real_template()
+    wire_line = _between(tpl, "function wireLine(span,meta){", "// Extension (no dot)")
+    for handler in ("plus", "badge"):
+        line = next(l for l in wire_line.splitlines() if l.strip().startswith(f"{handler}.addEventListener('click'"))
+        assert re.search(r"if\(gutterSwallow\)\s*\{\s*gutterSwallow=false;\s*return;\s*\}\s*open\(e\)", line)
+    ask = _wire_ask()
+    drag_end = _between(ask, "function dragEnd(){", "gutterDown=")
+    assert re.search(r"if\(!stopDrag\(\)\)\s*return;", drag_end) and "gutterSwallow=true" in drag_end
+    assert "setTimeout" in drag_end
+    down = _between(ask, "gutterDown=(e,span)=>{", "stopDrag();")
+    assert "gutterSwallow=false" in down
 
 
 def test_copy_for_agent_is_gone():
@@ -960,8 +974,8 @@ def test_cw_vis_sets_its_own_line_height_and_font_against_inherited_diff_values(
 
 def test_the_global_svg_text_restyle_leaves_pictures_alone():
     template = _real_template()
-    assert "svg:not(.cw-vis svg) text{" in template
-    assert "\n  svg text{" not in template
+    assert re.search(r"svg:not\(\s*\.cw-vis\s+svg\s*\)\s+text\s*\{", template)
+    assert not re.search(r"^\s*svg\s+text\s*\{", template, re.M)
 
 
 def test_pictures_are_never_wired_as_zoomable_diagrams():
@@ -977,9 +991,35 @@ def test_template_carries_nothing_of_the_removed_story_and_flow_features(gone):
     assert gone not in _real_template()
 
 
-def test_a_rendered_picture_reaches_the_page_untouched_by_the_template_script():
+def test_a_rendered_picture_reaches_the_page_inside_its_cw_vis_wrapper():
     out = pics({"pr": PR_PIC, "groups": {}})
 
-    assert '<div class="cw-vis" role="group" aria-label="Before &amp; after"><p>pr-picture</p></div>' in out
-    script = "\n".join(re.findall(r"<script>(.*?)</script>", _real_template(), re.S))
-    assert "cw-vis" not in script and "cw-pr-picture" not in script
+    wrapper = re.search(r'<div class="cw-vis"[^>]*>(.*?)</div>', out, re.S)
+    assert wrapper and wrapper.group(1) == PR_PIC["html"]
+
+
+@pytest.mark.parametrize("explain, heading", [(False, "The PR in one picture"), (True, "This code in one picture")])
+def test_the_picture_heading_follows_the_mode(explain, heading):
+    out = pics({"pr": PR_PIC, "groups": {}}, explain=explain)
+
+    assert f'<h2 id="cw-pr-picture-h">{heading}</h2>' in out
+
+
+def test_load_visuals_survives_pathologically_deep_json(tmp_path):
+    path = tmp_path / "visuals.json"
+    path.write_text("[" * 100000)
+
+    clean, lines = load_visuals(path, 2)
+
+    assert clean is None and lines == ["visuals: unreadable (RecursionError)"]
+
+
+@pytest.mark.parametrize("raw, reason", [([1], 'expected an object with "pr" and "groups"'),
+                                         ({"pr": {"title": "t", "html": "<p>" + "x" * 400000 + "</p>"}, "groups": []},
+                                          "in total, over the")])
+def test_a_rejected_visuals_file_reads_as_ignored_not_zero_kept(tmp_path, raw, reason):
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), 2)
+
+    assert clean == {"pr": None, "groups": {}}
+    assert len(lines) == 1 and lines[0].startswith("visuals: ignored, ") and reason in lines[0]
+    assert "kept" not in lines[0] and "visuals: visuals:" not in lines[0]

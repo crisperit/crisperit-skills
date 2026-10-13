@@ -332,10 +332,9 @@ Report what actually ran:
 - Name the HTML page's path, say whether it was opened, and add: click a diff
   line in the walkthrough to comment on it, reply inline under an existing thread (the persistent
   box under it, no button needed), click Resolve to mark a thread done, and open the
-  Comments button (bottom right) to review every comment and copy either a `gh` command to post
-  them (and any resolved threads) directly, or the agent payload, see step 6.
-- When the diffed target was a PR, add that every comment in the panel can be turned into a
-  review comment once its payload is pasted back, see step 6.
+  Comments button (bottom right) to review every comment and draft. Comments and drafts live in
+  the panel; a static page has no hand-back path. When there is a pushed PR, Copy gh command
+  copies a `gh` command that posts them (and any resolved threads) directly, see step 6.
 - When step 4b uploaded the page, give the URL on its own line and repeat that commenting is
   local-file only.
 

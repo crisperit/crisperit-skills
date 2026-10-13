@@ -144,32 +144,65 @@ def test_title_quote_breakout_is_escaped():
     assert ' onclick=' not in out.replace("&quot; onclick=", "")
 
 
-@pytest.mark.parametrize("css", [
-    "background:url(x.png)", "background:URL(x.png)", "background:u&#114;l(x.png)",
-    "background:u&#x72;l(x.png)", "background:\\75 rl(x.png)", "width:expression(alert(1))",
-    "background:image-set(x 1x)", "color:rgb(1,2,3)", "color:hsl(1,2%,3%)",
-    "color:attr(x)", "width:env(safe-area-inset-top)",
+@pytest.mark.parametrize("css,needle", [
+    ("background:url(x.png)", "url"), ("background:URL(x.png)", "url"), ("background:u&#114;l(x.png)", "url"),
+    ("background:u&#x72;l(x.png)", "url"), ("background:\\75 rl(x.png)", "style"),
+    ("width:expression(alert(1))", "expression"), ("background:image-set(x 1x)", "image-set"),
+    ("color:rgb(1,2,3)", "rgb"), ("color:hsl(1,2%,3%)", "hsl"), ("color:attr(x)", "attr"),
+    ("width:env(safe-area-inset-top)", "env"),
 ])
-def test_style_functions_rejected(css):
-    rejected(styled(css), "")
+def test_style_functions_rejected(css, needle):
+    rejected(styled(css), needle)
+
+
+@pytest.mark.parametrize("css,needle", [
+    ("@import 'x'", "style"), ("behavior:url(x)", "behavior"), ("-moz-binding:url(x)", "-moz-binding"),
+    ("position:fixed", "'position'"), ("position:absolute", "'position'"),
+    ("top:0", "'top'"), ("inset:0", "'inset'"), ("z-index:9999", "'z-index'"),
+    ("transform:scale(9)", "'transform'"), ("cursor:pointer", "'cursor'"), ("content:x", "'content'"),
+    ("animation:x 1s", "'animation'"), ("transition:all 1s", "'transition'"), ("filter:blur(2px)", "'filter'"),
+    ("--x:1", "--x"), ("pointer-events:none", "'pointer-events'"),
+    ("color:red", "red"), ("color:#fff", "color"), ("color:#ffffff", "color"), ("background:blue", "blue"),
+    ("color:var(--bg)", "var()"), ("color:var(--BACKGROUND)", "var()"),
+    ("color:var(--foreground, red)", "var()"), ("margin:-4px", "out of range"),
+    ("margin-left:-1px", "out of range"), ("width:3000px", "out of range"),
+    ("font-size:10px", "font-size"), ("font-size:33px", "font-size"), ("font-size:0.5rem", "font-size"),
+    ("font-size:300%", "font-size"), ("font-size:small", "font-size"),
+    ("color:/**/red", "style"), ("width:5px/*c*/", "style"), ("width:5px!important", "style"),
+    ("width:5px;;;color:red", "red"),
+    ("font-family:Arial", "arial"), ("font-family:var(--font-mono),Arial", "arial"),
+    ("overflow:scroll", "overflow"), ("opacity:2", "opacity"),
+    ("width:5pt", "unit"), ("width:1e3px", "width"), ("width:calc(100% - var(--x))", "var()"),
+    ("color:color-mix(in srgb, red 20%, transparent)", "color"),
+    ("color: color-mix(in srgb, var(--accent) 20%, transparent", "color"),
+    ("width", "style"), ("width:", "malformed"), (":5px", "style"),
+    ("background:é", "style"), ("width:5px;" * 21, "style"),
+    ("color:var(--foreground)" + ";" + "x" * 500, "500"),
+    ("display:flex" + ";gap:1px" * 20, "style"),
+    ("margin-top:calc(0px - 2000px * 2000)", "not allowed inside calc"),
+    ("width:calc(2000px * 2000px)", "not allowed inside calc"),
+    ("width:calc(100% / 0.0001)", "not allowed inside calc"),
+    ("width:min(2000px * 2000, 5px)", "not allowed inside calc"),
+    ("width:max(1px, 2000px * 2000)", "not allowed inside calc"),
+    ("width:clamp(1px, 5px, 2000px * 2000)", "not allowed inside calc"),
+    ("margin-top:calc(1px + 2px + 3px + 4px + 5px + 6px + 7px + 8px + 9px)", "more than 8"),
+])
+def test_style_abuse(css, needle):
+    rejected(styled(css), needle)
 
 
 @pytest.mark.parametrize("css", [
-    "@import 'x'", "behavior:url(x)", "-moz-binding:url(x)", "position:fixed", "position:absolute",
-    "top:0", "inset:0", "z-index:9999", "transform:scale(9)", "cursor:pointer", "content:x",
-    "animation:x 1s", "transition:all 1s", "filter:blur(2px)", "--x:1", "pointer-events:none",
-    "color:red", "color:#fff", "color:#ffffff", "background:blue", "color:var(--bg)", "color:var(--BACKGROUND)",
-    "color:var(--foreground, red)", "margin:-4px", "margin-left:-1px", "width:3000px",
-    "font-size:10px", "font-size:33px", "font-size:0.5rem", "font-size:300%", "font-size:small",
-    "color:/**/red", "width:5px/*c*/", "width:5px!important", "width:5px;;;color:red",
-    "font-family:Arial", "font-family:var(--font-mono),Arial", "overflow:scroll", "opacity:2",
-    "width:5pt", "width:1e3px", "width:calc(100% - var(--x))", "color:color-mix(in srgb, red 20%, transparent)",
-    "color: color-mix(in srgb, var(--accent) 20%, transparent", "width", "width:", ":5px",
-    "background:é", "width:5px;" * 21, "color:var(--foreground)" + ";" + "x" * 500,
-    "display:flex" + ";gap:1px" * 20,
+    "width:calc(100% - 20px)", "width:clamp(100px, 50%, 300px)", "width:min(100%, 320px)",
+    "width:max(10%, 20px)", "gap:calc(1rem + 2px)",
 ])
-def test_style_abuse(css):
-    rejected(styled(css), "")
+def test_style_math_without_multiply_or_divide_passes(css):
+    out, probs = san(styled(css))
+    assert probs == [] and out
+
+
+def test_style_problem_messages_escape_model_supplied_names():
+    _, probs = san('<div style="x" \x1b[31m="1">a</div><\x1b[2Jb>c</div>')
+    assert all("\x1b" not in p for p in probs)
 
 
 def test_style_allowed_forms_are_normalised():

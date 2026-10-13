@@ -9,7 +9,7 @@ The only thing a model contributes is `analysis.json` (schema in `static.md` ste
 in it follows the caller's style rule: apply the no-ai-slop skill if available, otherwise plain
 sentences, no dashes, no filler.
 
-The template carries all CSS, the line-commenting UI and the copy-for-Claude mechanism.
+The template carries all CSS, the line-commenting UI and the Comments panel.
 `render.py` replaces `<!-- DIFF_TITLE -->` and `<!-- DIFF_CONTENT -->` and touches nothing else.
 
 ## Two independent rules apply to mermaid source, not one
@@ -86,7 +86,8 @@ Notes on the rows that look arbitrary:
   escaping again renders `&amp;lt;` on the page, and retyping a diagram is how a legend drifts
   from its arrows. `validate_analysis.py --sections` checks each one's marker survived.
 - **The zoom modal needs no markup help.** `wire()` sets `tabindex` and `role` on every
-  `.svgbox` it finds; the copies in the generated markup only matter before the JS has run.
+  diagram box it finds (`.vd-symbols .mermaid` and `.vds-sys`); the copies in the
+  generated markup only matter before the JS has run.
 - **The vendored mermaid script is spliced in conditionally.** `splice_assets.py` fills the
   page's one JS placeholder only when the output contains a `class="mermaid"` block; a page with
   none keeps the placeholder as an inert comment and stays small.

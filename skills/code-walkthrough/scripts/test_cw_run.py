@@ -320,6 +320,18 @@ def test_visuals_pass_keeps_the_clean_part_on_the_final_attempt():
             assert stub.count("prose-m") == 3
 
 
+def test_visuals_pass_fails_when_nothing_clean_survives_the_final_attempt():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            bad = {"pr": {"title": "T", "html": "<img src='x'>"}, "groups": []}
+            stub.script = {"prose-m": [_submit(bad)]}
+            assert not cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            assert not (d / "visuals.json").exists()
+            step = cw_store.read_meta(d)["steps"]["visuals"]
+            assert step["status"] == "failed" and "<img> is not allowed" in step["error"]
+
+
 def test_visuals_pass_skips_when_visuals_json_exists_unless_forced():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM({}) as stub:

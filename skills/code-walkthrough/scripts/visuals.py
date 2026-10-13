@@ -92,8 +92,9 @@ _PROP_FAMILY = re.compile(
 _CSS_BAD = re.compile(r"[\\@{}<>\"'!]|/\*|\*/|[^\x20-\x7e]")
 _TOK = re.compile(r"\s*(?:(-?(?:\d+\.?\d*|\.\d+))([A-Za-z%]*)|(--[A-Za-z0-9_-]+)|([A-Za-z][A-Za-z0-9-]*)(\()?|([,/()+*-]))")
 
+_MATH = frozenset({"calc", "min", "max", "clamp"})
 _VAR_ARG = re.compile(r"\s*(--[A-Za-z0-9_-]+)\s*\)")
-_NUM = re.compile(r"-?(?:\d+\.?\d*|\.\d+)")
+_NUM = re.compile(r"-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)")
 _PAINT_VAR = r"var\((--[a-z0-9-]+)\)"
 _PAINT = re.compile(rf"none|currentcolor|{_PAINT_VAR}|color-mix\(in srgb, {_PAINT_VAR} (\d{{1,3}}(?:\.\d+)?)%, transparent\)",
                     re.I)
@@ -101,6 +102,10 @@ _ID = re.compile(r"[a-z][a-z0-9-]{0,24}")
 _URL_REF = re.compile(r"url\(#([a-z0-9-]+)\)")
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _ROLES = {"img", "list", "listitem", "group", "note", "figure", "presentation", "none"}
+
+
+def _esc(s):
+    return repr(s[:30])[1:-1]
 
 
 class _Bad(Exception):
@@ -120,7 +125,7 @@ def _number(v, lo=None, hi=2000, neg=False, pct=True):
 
 def _css_value(prop, value):
     """Validate one declaration value; returns it whitespace-collapsed."""
-    pos, stack, toks = 0, [], []
+    pos, stack, toks, terms = 0, [], [], 0
     while pos < len(value):
         m = _TOK.match(value, pos)
         if not m:
@@ -136,6 +141,10 @@ def _css_value(prop, value):
                 raise _Bad(f"unit {unit!r} is not allowed in {prop}")
             if num.startswith("-") or abs(float(num)) > 2000:
                 raise _Bad(f"{num}{unit} is out of range in {prop}")
+            if _MATH.intersection(stack):
+                terms += 1
+                if terms > 8:
+                    raise _Bad(f"{prop} math has more than 8 numbers")
             toks.append((num, unit.lower()))
         elif var:
             raise _Bad(f"{var} is only allowed inside var()")
@@ -165,6 +174,8 @@ def _css_value(prop, value):
             stack.pop()
             toks.append(")")
         else:
+            if punct in "*/" and _MATH.intersection(stack):
+                raise _Bad(f"{punct} is not allowed inside calc, min, max or clamp in {prop}")
             toks.append(punct)
     if stack or not toks:
         raise _Bad(f"{prop} value is empty or unbalanced")
@@ -388,10 +399,10 @@ class _Emit:
     def element(self, n, parent):
         tag = n.tag
         if tag not in _ALLOWED_TAGS:
-            self.bad(f"<{tag}> is not allowed")
+            self.bad(f"<{_esc(tag)}> is not allowed")
             return ""
         if tag not in _CHILDREN.get(parent, ()):
-            self.bad(f"<{tag}> is not allowed " + (f"inside <{parent}>" if parent else "at the top level"))
+            self.bad(f"<{_esc(tag)}> is not allowed " + (f"inside <{parent}>" if parent else "at the top level"))
             return ""
         parts, seen = [], set()
         for name, val in n.attrs:
@@ -402,7 +413,7 @@ class _Emit:
             try:
                 out = self.attr(tag, name, val)
             except _Bad as e:
-                self.bad(f"<{tag}> {name[:30]}: {e}")
+                self.bad(f"<{tag}> {_esc(name)}: {e}")
                 continue
             if out is not None:
                 parts.append(f' {_CANON.get(name, name)}="{_html.escape(out, quote=True)}"')

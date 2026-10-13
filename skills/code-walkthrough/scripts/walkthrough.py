@@ -285,8 +285,7 @@ def rename_note(old, new):
 
 def _group_color(index):
     """The palette variable for a group at this 0-based index, cycling through --g1..--g6.
-    Shared by render_html's group heading and render_story's stop so the two colour the same
-    group identically -- the whole point of the two-way nav between them."""
+    Shared by every place a group is coloured so each shows the same group in the same colour."""
     return f"var(--g{(index % GROUP_PALETTE_SIZE) + 1})"
 
 

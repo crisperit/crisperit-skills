@@ -137,8 +137,9 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
     clean = visuals or {}
     pr_picture = clean.get("pr")
     if pr_picture:
+        heading = "This code in one picture" if explain else "The PR in one picture"
         body.append('<section class="cw-pr-picture" id="cw-pr-picture"'
-                    ' aria-labelledby="cw-pr-picture-h"><h2 id="cw-pr-picture-h">The PR in one picture</h2>'
+                    f' aria-labelledby="cw-pr-picture-h"><h2 id="cw-pr-picture-h">{escape(heading)}</h2>'
                     f'<div class="cw-vis" role="group" aria-label="{escape(pr_picture["title"])}">'
                     f'{pr_picture["html"]}</div></section>')
 
@@ -196,9 +197,11 @@ def load_visuals(path, n_groups, placed=None):
     visuals.check_visuals here; `lines` are the `visuals:` report lines pipeline.py echoes."""
     try:
         raw = json.loads(Path(path).read_text())
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         return None, [f"visuals: unreadable ({exc.__class__.__name__})"]
     clean, problems = visuals_mod.check_visuals(raw, n_groups)
+    if problems and problems[0].startswith("visuals: "):
+        return clean, [f"visuals: ignored, {problems[0][len('visuals: '):]}"]
     if placed is not None:
         for idx in sorted(set(clean["groups"]) - set(placed)):
             del clean["groups"][idx]

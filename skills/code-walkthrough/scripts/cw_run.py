@@ -881,7 +881,7 @@ def _run_visuals(d, meta, config, on_event, force=False):
     try:
         analysis = cw_store.read_json(d / "analysis.json", default=None) or {}
         symdelta = cw_store.read_json(d / "symdelta.json", default=None)
-        n_groups = len([g for g in analysis.get("groups") or [] if isinstance(g, dict)])
+        n_groups = len(analysis.get("groups") or [])
         if not analysis or (not n_groups and not visuals.symbol_digest(symdelta)):
             _emit_step(d, on_event, "visuals", "skipped")
             return False
@@ -903,19 +903,21 @@ def _run_visuals(d, meta, config, on_event, force=False):
             clean, problems = visuals.check_visuals(args, n_groups)
             if problems and state["attempt"] < 3:
                 return "gate: " + "\n".join(problems) + "\nfix and call submit_visuals again"
-            state["clean"] = clean
+            state["clean"], state["problems"] = clean, problems
             return cw_llm.Done({"ok": True})
 
         local_handlers = dict(handlers)
         local_handlers["submit_visuals"] = handler
         try:
             cw_llm.run_tools(
-                profile, messages, tools + [_visuals_submit_tool()], local_handlers, max_rounds=3,
+                profile, messages, tools + [_visuals_submit_tool()], local_handlers, max_rounds=8,
                 max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
                 on_usage=_make_on_usage(d, role, on_event, config), cwd=d / "head")
         finally:
             _write_transcript(d, "visuals", profile, messages, result="clean" in state)
         clean = state["clean"]
+        if not clean["pr"] and not clean["groups"]:
+            raise RuntimeError("no usable pictures; dropped: " + "; ".join(state["problems"])[:500])
         out.write_text(json.dumps({
             "pr": clean["pr"],
             "groups": [{"index": i, "html": h} for i, h in sorted(clean["groups"].items())]}, indent=2))
