@@ -984,3 +984,55 @@ def test_level_script_defers_a_graph_inside_a_closed_details_to_its_first_toggle
     script = _between(_real_template(), "querySelectorAll('.vd-symbols')", "\n})();")
 
     assert "root.closest('details')" in script and "addEventListener('toggle'" in script
+
+
+def test_reply_row_is_a_compact_one_row_input_with_a_round_send_and_quiet_actions():
+    template = _real_template()
+    row = _between(template, "function buildReplyRow(root){", "function wireReplyBox(")
+    assert "input.rows=1" in row and "'fb-reply-send'" in row
+    assert "btn.setAttribute('aria-label','Reply on GitHub')" in row and "btn.hidden=true" in row
+    assert "'fb-quiet cw-reply-ask'" in row and "'Ask the agent'" in row
+    assert "fb-primary" not in row and "fb-ghost" not in row
+    resolve = _between(template, "function buildResolveButton(root){", "const threadWrapByRoot")
+    assert "'fb-quiet'" in resolve and "btn.textContent='Resolve'" in resolve
+    assert "setAttribute('aria-label','Resolve conversation')" in resolve and "markPendingResolve(root.id)" in resolve
+    wire = _between(template, "function wireReplyBox(", "function buildResolveButton(")
+    assert "e.key==='Enter'&&!e.shiftKey" in wire and "btn.hidden=!can" in wire
+    for sel, must in ((r"\.fb-reply-input\{([^}]*)\}", ["resize:none", "max-height:"]),
+                      (r"\.fb-reply-box:focus-within\{([^}]*)\}", ["outline:2px solid var(--accent)"]),
+                      (r"\.fb-reply-box \.fb-reply-send::before\{([^}]*)\}", ["position:absolute", "inset:-9px"]),
+                      (r"\.fb-item \.fb-quiet,\.fb-actions \.fb-quiet\{min-height:44px\}", [])):
+        m = re.search(sel, template)
+        assert m, sel
+        for frag in must:
+            assert frag in m.group(1), frag
+
+
+def test_quiet_actions_and_reply_input_do_not_inherit_the_diff_line_height_or_mono_font():
+    template = _real_template()
+    sans = "font-family:system-ui,-apple-system"
+    quiet = re.search(r"\.fb-item \.fb-quiet,\.fb-actions \.fb-quiet\{([^}]*)\}", template).group(1)
+    assert "line-height:1.4" in quiet and sans in quiet and "font-size:var(--fs-xs)" in quiet
+    acts = re.search(r"\.fb-reply-acts\{([^}]*)\}", template).group(1)
+    assert "line-height:1.4" in acts and sans in acts
+    inp = re.search(r"\.fb-reply-input\{([^}]*)\}", template).group(1)
+    assert sans in inp and "font-size:var(--fs-sm)" in inp and "var(--mono)" not in inp
+
+
+def test_ask_the_agent_from_a_thread_seeds_a_line_chip_from_the_root_comment():
+    template = _real_template()
+    ask = _between(template, "openThreadAsk=(root,host,input)=>{", "const openLineComposer=")
+    assert "threadRef(root)" in ask and "v.editor.setSegs([ref,' '])" in ask
+    ref = _between(template, "function threadRef(root){", "function chipNode(")
+    assert "kind:'line'" in ref and "root.path" in ref and "root.side" in ref and "root.body" in ref and "validRef(ref)" in ref
+
+
+def test_reply_box_helpers_gate_sending_and_cap_the_grown_height():
+    src = _between(_real_template(), "const REPLY_MAX_H=160;", "function buildReplyRow(")
+    _node(src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq([replyCanSend(''), replyCanSend(' \\n\\t'), replyCanSend(' a '), replyCanSend(null)], [false, false, true, true]);
+eq(replyFit(30, 160), {h: 30, over: false});
+eq(replyFit(160, 160), {h: 160, over: false});
+eq(replyFit(400, 160), {h: 160, over: true});
+""")

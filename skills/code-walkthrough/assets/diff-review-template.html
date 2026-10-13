@@ -764,11 +764,23 @@
      around an avatar. */
   .fb-item.fb-reply{display:flex;align-items:flex-start;gap:8px}
   .fb-item.fb-reply .fb-av{float:none;flex:none}
-  .fb-reply-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
-  .fb-reply-input{width:100%;box-sizing:border-box;min-height:34px;resize:vertical;background:var(--panel2);border:1px solid var(--border);
-    color:var(--text);border-radius:6px;padding:6px 10px;font:inherit;font-size:var(--fs-sm)}
-  .fb-reply-input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .fb-reply-col button{border:none;border-radius:6px;padding:6px 12px;margin-left:0;cursor:pointer}
+  .fb-reply-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+  .fb-reply-box{width:100%;box-sizing:border-box;display:flex;align-items:flex-end;gap:6px;padding:3px 4px 3px 10px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:6px}
+  .fb-reply-box:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+  .fb-reply-input{flex:1;min-width:0;box-sizing:border-box;min-height:26px;max-height:160px;resize:none;overflow-y:hidden;
+    background:none;border:0;outline:0;color:var(--text);padding:4px 0;font:inherit;
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:var(--fs-sm);line-height:18px}
+  .fb-reply-box .fb-reply-send{position:relative;flex:none;width:26px;height:26px;margin:0;padding:0;border-radius:50%;
+    border:0;background:var(--accent);color:var(--bg);font-size:14px;line-height:1;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center}
+  .fb-reply-box .fb-reply-send[hidden]{display:none}
+  .fb-reply-box .fb-reply-send:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .fb-reply-acts{display:flex;flex-wrap:wrap;gap:12px;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;line-height:1.4}
+  .fb-item .fb-quiet,.fb-actions .fb-quiet{margin:0;padding:4px 0;border:0;background:none;color:var(--muted);
+    font:inherit;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:var(--fs-xs);line-height:1.4;cursor:pointer}
+  .fb-item .fb-quiet:hover,.fb-actions .fb-quiet:hover{color:var(--text);text-decoration:underline}
+  .fb-quiet:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .fb-item.fb-own-draft{border-left:3px dashed var(--yellow)}
   .fb-draft-tag{margin-left:6px;color:var(--yellow);font-size:var(--fs-xs)}
 
@@ -1148,7 +1160,6 @@
   .cw-ghdraft button:focus-visible,.fb-publish-one:focus-visible,.cw-ghdraft textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-ghdraft-msg,.fb-publish-msg{margin:4px 0 0;font-size:var(--fs-xs);color:var(--red)}
   .cw-ghdraft-msg:empty,.fb-publish-msg:empty{display:none}
-  .cw-reply-ask{margin:6px 0 0}
   .cw-task{display:block;border-color:var(--purple);border-left:3px solid var(--purple);
     background:color-mix(in srgb,var(--purple) 7%,transparent);white-space:normal;overflow-wrap:anywhere}
   .cw-task[data-state="done"]{border-color:var(--green);background:color-mix(in srgb,var(--green) 7%,transparent)}
@@ -1351,7 +1362,10 @@
     .cw-panel-icon{width:44px;height:44px;font-size:16px}
     .cw-pr-filter,.cw-pr-row{min-height:44px}
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
-    .fb-primary,.fb-ghost,.fb-danger,.fb-reply-input{min-height:44px}
+    .fb-primary,.fb-ghost,.fb-danger{min-height:44px}
+    .fb-reply-input{min-height:36px}
+    .fb-reply-box .fb-reply-send::before{content:'';position:absolute;inset:-9px}
+    .fb-item .fb-quiet,.fb-actions .fb-quiet{min-height:44px}
     .stop{min-height:44px}
     .cw-card{min-height:44px}
     .cw-story-detail button{min-height:44px}
@@ -2924,35 +2938,49 @@
     return groups;
   }
 
+  const REPLY_MAX_H=160;
+  const replyCanSend=v=>/\S/.test(String(v));
+  function replyFit(scrollH,maxH){ return {h:Math.min(scrollH,maxH),over:scrollH>maxH}; }
+
   function buildReplyRow(root){
     const d=document.createElement('div'); d.className='fb-item fb-reply';
     const av=document.createElement('span'); av.className='fb-av'; av.setAttribute('aria-hidden','true');
     av.style.background='hsl(210,45%,30%)'; av.textContent='Y';
     const input=document.createElement('textarea'); input.className='fb-reply-input'; input.rows=1;
     input.placeholder='Reply...'; input.setAttribute('aria-label','Reply to this conversation');
-    const btn=document.createElement('button'); btn.type='button'; btn.className='fb-primary';
-    btn.textContent='Reply on GitHub';
+    const btn=document.createElement('button'); btn.type='button'; btn.className='fb-reply-send';
+    btn.textContent='\u2191'; btn.setAttribute('aria-label','Reply on GitHub'); btn.title='Reply on GitHub (Enter)';
+    btn.hidden=true; btn.disabled=true;
+    const box=document.createElement('div'); box.className='fb-reply-box';
+    box.append(input,btn);
     const col=document.createElement('div'); col.className='fb-reply-col';
-    col.append(input,btn);
+    col.append(box);
     if(window.CW_LIVE){
-      const ask=document.createElement('button'); ask.type='button'; ask.className='fb-ghost cw-reply-ask';
+      const acts=document.createElement('div'); acts.className='fb-reply-acts';
+      const ask=document.createElement('button'); ask.type='button'; ask.className='fb-quiet cw-reply-ask';
       ask.textContent='Ask the agent';
       ask.addEventListener('mousedown',e=>e.preventDefault());
       ask.addEventListener('click',()=>{ if(openThreadAsk) openThreadAsk(root,col,input); });
-      col.append(ask);
+      acts.append(ask);
+      col.append(acts);
     }
     d.append(av,col);
     wireReplyBox(input,root,btn);
     return d;
   }
 
-  // Commits on blur or Cmd/Ctrl+Enter only -- unlike a draft's own debounced autosave, a reply
-  // in progress must not turn into a posted-looking row on every keystroke. Cmd/Ctrl+Enter
-  // blurs afterwards too, which re-fires this handler harmlessly against an already-cleared box.
   function wireReplyBox(input,root,btn){
+    function sync(){
+      const can=replyCanSend(input.value);
+      btn.hidden=!can; btn.disabled=!can;
+      input.style.height='auto';
+      const f=replyFit(input.scrollHeight,REPLY_MAX_H);
+      if(f.h>0) input.style.height=f.h+'px';
+      input.style.overflowY=f.over?'auto':'hidden';
+    }
     function commit(){
       const body=input.value;
-      if(!body.trim()) return;
+      if(!replyCanSend(body)) return;
       // Sorts after every existing note (root and prior replies alike), never root.order --
       // copying the root's own order would tie-break a fresh reply ahead of an older sibling
       // reply whose order is already higher.
@@ -2965,20 +2993,22 @@
       draft.body=body;
       saveNote(draft);
       input.value='';
+      sync();
       renderNotes();
     }
+    input.addEventListener('input',sync);
     input.addEventListener('blur',commit);
     btn.addEventListener('mousedown',e=>e.preventDefault());
     btn.addEventListener('click',()=>{ commit(); input.blur(); });
     input.addEventListener('keydown',e=>{
-      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); commit(); input.blur(); }
+      if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){ e.preventDefault(); commit(); input.blur(); }
     });
   }
 
   function buildResolveButton(root){
     const d=document.createElement('div'); d.className='fb-actions';
-    const btn=document.createElement('button'); btn.type='button'; btn.className='fb-ghost';
-    btn.textContent='Resolve conversation';
+    const btn=document.createElement('button'); btn.type='button'; btn.className='fb-quiet';
+    btn.textContent='Resolve'; btn.setAttribute('aria-label','Resolve conversation');
     btn.addEventListener('click',()=>{ markPendingResolve(root.id); renderNotes(); });
     d.appendChild(btn);
     return d;
@@ -5451,6 +5481,14 @@
       chip.classList.toggle('cw-ref-open',open);
     }
 
+    function threadRef(root){
+      if(!root||!root.path||!root.line) return null;
+      const anchor={kind:'line',path:root.path,side:root.side==='LEFT'?'LEFT':'RIGHT',line:root.line,end_line:null,
+        hunk_id:root.hunk_id||null,quote:String(root.body||'').slice(0,200)||root.path+':'+root.line};
+      const ref={anchor,label:refLabelOf(anchor)};
+      return validRef(ref)?ref:null;
+    }
+
     function chipNode(ref,ro){
       const c=mk('span','cw-ref'+(ro?' cw-ref-ro':''));
       c.setAttribute('contenteditable','false'); c.draggable=false;
@@ -6330,12 +6368,13 @@
         v={id:null,seed,editor:makeEditor({key,placeholder:'Ask the agent about this review thread'}),
           hint:mk('p','hr-comments-empty','Asking about the review thread: '+(firstLine(seed.quote)||'(no text)'))};
         v.editor.max=ED_MAX-1;
+        const ref=threadRef(root);
+        if(ref&&!v.editor.refs().length) v.editor.setSegs([ref,' ']);
         v.composer=threadComposer(v);
         seeds.set(key,v);
       }
       if(input&&input.value){
-        const had=v.editor.segs();
-        v.editor.setSegs(v.editor.isEmpty()?[input.value]:had.concat('\n'+input.value));
+        v.editor.setSegs(v.editor.segs().concat(input.value));
         input.value='';
       }
       openPanel({thread:key});

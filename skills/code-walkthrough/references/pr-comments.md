@@ -4,7 +4,7 @@
 
 The page has no server to post a click to: the user opens the Comments button and either runs
 the `gh` command Copy gh command printed -- one heredoc per postable comment plus one
-`resolveReviewThread` mutation per thread marked Resolve conversation, posting straight to
+`resolveReviewThread` mutation per thread marked Resolve, posting straight to
 GitHub, in which case this step is already done. Without a PR the user hands feedback back in
 conversation, or uses live mode, where comments go to the agent as threads (Add to thread).
 When a PR exists and the user wants a comment posted, use its own `path:line` with a fresh
@@ -77,5 +77,5 @@ gh api graphql -f query='
 
 When the user asks to refresh the comments, re-run both passes above, then reload the page to
 see them: nothing pushes an update to a page that is already open. A thread the reader marked
-Resolve conversation shows as resolved for real once this confirms it; until then the page
+Resolve shows as resolved for real once this confirms it; until then the page
 shows it as pending.

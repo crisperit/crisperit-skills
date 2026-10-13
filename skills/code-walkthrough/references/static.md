@@ -335,7 +335,7 @@ Report what actually ran:
 
 - Name the HTML page's path, say whether it was opened, and add: click a diff
   line in the walkthrough to comment on it, reply inline under an existing thread (the persistent
-  box under it, no button needed), click Resolve conversation to mark a thread done, and open the
+  box under it, no button needed), click Resolve to mark a thread done, and open the
   Comments button (bottom right) to review every comment and copy either a `gh` command to post
   them (and any resolved threads) directly, or the agent payload, see step 6.
 - When the diffed target was a PR, add that every comment in the panel can be turned into a
@@ -350,7 +350,7 @@ comments to be delivered, step 6.
 
 The page has no server to post a click to. When there is a pushed PR, the user runs the `gh`
 command Copy gh command printed -- one heredoc per postable comment plus one
-`resolveReviewThread` mutation per thread marked Resolve conversation -- in which case posting is
+`resolveReviewThread` mutation per thread marked Resolve -- in which case posting is
 already done. Explain mode never has a PR, so the page offers no export there; feedback goes back
 through live-mode threads or in conversation.
 

@@ -238,7 +238,7 @@ that ended in error or was stopped. A thread has a soft cap of 20 turns. A tab t
 catches up from the server's in-flight buffers.
 
 On a PR the agent may suggest resolving the GitHub review thread on the commented line. Keep adds it
-to the pending resolves exactly like the Resolve conversation button, and Submit review still
+to the pending resolves exactly like the Resolve button, and Submit review still
 previews and posts it. Dismiss tells the agent not to propose it again.
 
 When a comment asks to change what the page shows, the agent may also add or replace a prose, list
