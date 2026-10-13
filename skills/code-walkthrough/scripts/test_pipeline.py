@@ -5,6 +5,8 @@ subprocesses."""
 
 import hashlib
 import json
+from html import escape
+from html.parser import HTMLParser
 import re
 import sys
 import tempfile
@@ -175,34 +177,60 @@ def test_render_passes_symdelta_and_complexity_only_when_present():
     assert full[full.index("--complexity") + 1] == str(d / "complexity.json")
 
 
-def test_prepare_reports_kept_and_dropped_visuals(capsys):
+VIS_OK = '<p>picture</p>'
+
+
+def _write_visuals(d):
+    analysis = json.loads((d / "analysis.json").read_text())
+    analysis["groups"] = [{"title": "Widget", "paths": ["foo.py"]}]
+    (d / "analysis.json").write_text(json.dumps(analysis))
+    (d / "visuals.json").write_text(json.dumps({
+        "pr": {"title": "The <PR> & co", "html": VIS_OK},
+        "groups": [{"index": 0, "html": "<div>group zero</div>"}, {"index": 5, "html": VIS_OK}]}))
+
+
+def test_render_passes_visuals_only_when_present():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
         d = _scratch(tmp, repo, base, head)
-        analysis = json.loads((d / "analysis.json").read_text())
-        analysis["visuals"] = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "x"}]}]}]
-        (d / "analysis.json").write_text(json.dumps(analysis))
-
         assert pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
                               "--head", head]) == 0
+        _, bare = _render_and_capture_argv(d, "test")
+        _write_visuals(d)
+        _, full = _render_and_capture_argv(d, "test")
+
+    assert "--visuals" not in bare
+    assert full[full.index("--visuals") + 1] == str(d / "visuals.json")
+
+
+def test_render_reports_kept_and_dropped_pictures_and_places_them(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head)
+        _write_visuals(d)
+
+        assert pipeline.main(["all", "--dir", str(d), "--repo", str(repo), "--base", base,
+                              "--head", head, "--slug", "test"]) == 0
+        page = (d / "test.html").read_text()
 
     out = capsys.readouterr().out
-    assert "visuals: 0 kept, 1 dropped" in out
-    assert "visuals: visuals: dropped, symdelta.json has no symbols" in out
+    assert "visuals: 2 kept, 1 dropped" in out
+    assert "visuals: visuals.groups[1]: index 5 is not a group index" in out
+    assert 'aria-label="The &lt;PR&gt; &amp; co"' in page
+    assert page.count('class="cw-vis cw-vis-group"') == 1 and "group zero" in page
 
 
-def test_prepare_survives_non_list_visuals(capsys):
+def test_no_visuals_json_means_no_visuals_output_and_no_pictures(capsys):
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
         d = _scratch(tmp, repo, base, head)
-        analysis = json.loads((d / "analysis.json").read_text())
-        analysis["visuals"] = True
-        (d / "analysis.json").write_text(json.dumps(analysis))
 
-        assert pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
-                              "--head", head]) == 0
+        assert pipeline.main(["all", "--dir", str(d), "--repo", str(repo), "--base", base,
+                              "--head", head, "--slug", "test"]) == 0
+        page = (d / "test.html").read_text()
 
-    assert "visuals: 0 kept, 0 dropped" in capsys.readouterr().out
+    assert "visuals:" not in capsys.readouterr().out
+    assert 'class="cw-vis' not in page and '<section class="cw-pr-picture"' not in page
 
 
 def test_links_cached_leaves_a_pre_placed_links_json_untouched():
@@ -250,9 +278,10 @@ def _symdelta(path, label, line):
 def _render_with_text(repo, base, head, d, payload):
     """Two files, two groups, so verdict, overview, top-level and group flow_mermaid, group
     title/why/hop, role and note are all exercised, each carrying `payload` -- wrapped in just
-    enough scaffolding (a real identifier for note/hop, a flowchart header for group
-    flow_mermaid) to pass validate_analysis.py's content gate regardless of what `payload` is.
-    Returns the rendered page."""
+    enough scaffolding (a real identifier for note/hop) to pass validate_analysis.py's content
+    gate regardless of what `payload` is. visuals.json carries it in the title, in fragment
+    text and in a title= attribute (all of which must stay inert), and as a whole second
+    fragment (which the sanitiser must drop when it is markup). Returns the rendered page."""
     d.mkdir()
     diff_text = cw_testlib.git(repo, "diff", f"{base}...{head}")
     headers = HUNK_HEADER.findall(diff_text)
@@ -264,7 +293,7 @@ def _render_with_text(repo, base, head, d, payload):
         "flow_mermaid": payload,
         "groups": [
             {"title": payload, "why": payload, "hop": f"`foo_helper` {payload}",
-             "flow_mermaid": f'flowchart LR\n  A["{payload}"] --> B["x"]', "paths": ["foo.py"]},
+             "paths": ["foo.py"]},
             {"title": payload, "paths": ["bar.py"]},
         ],
         "files": [
@@ -274,11 +303,11 @@ def _render_with_text(repo, base, head, d, payload):
              "hunks": [{"header": headers[1], "note": f"bar_helper {payload}"}]},
         ],
     }
-    # Only intro and act text take the payload: title/edge/bridge caps reject it, and a
-    # rejected visual would leave nothing to render.
-    analysis["visuals"] = [{"title": "Story", "intro": payload, "acts": [{
-        "title": "Act", "text": payload,
-        "flow": [{"sym": "p:foo_helper"}, {"edge": "calls"}, {"sym": "p:bar_helper"}]}]}]
+    text = escape(payload)
+    (d / "visuals.json").write_text(json.dumps({
+        "pr": {"title": " ".join(payload.split())[:80],
+               "html": f'<p>{text} &lt;!-- HR_STATE --&gt;</p><span title="{text}">x</span>'},
+        "groups": [{"index": 0, "html": f"<p>{text}</p>"}, {"index": 1, "html": f"<p>{payload}</p>"}]}))
     (d / "analysis.json").write_text(json.dumps(analysis))
     (d / "symdelta.json").write_text(json.dumps({"language": "python", "nodes": [
         _symdelta("foo.py", "foo_helper", 4), _symdelta("bar.py", "bar_helper", 4)]}))
@@ -336,6 +365,23 @@ def test_hostile_strings_in_every_model_written_field_render_inert():
     assert "<img src=x onerror=alert(1)>" not in hostile
     assert hostile.count("<script") == clean.count("<script")
     assert 'href="javascript:' not in hostile
+    assert "<!-- HR_STATE -->" not in hostile and "evil()</script>" not in hostile
+    assert hostile.count('class="cw-vis cw-vis-group"') == 1
+
+    class Tags(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.bad = []
+
+        def handle_starttag(self, tag, attrs):
+            self.bad += [(tag, k) for k, v in attrs
+                         if k.startswith("on") or (v or "").strip().lower().startswith("javascript:")]
+            if tag in ("img", "script"):
+                self.bad.append(tag)
+
+    page = Tags()
+    page.feed(hostile[hostile.index('id="cw-pr-picture"'):hostile.index('<div class="foot">')])
+    assert page.bad == []
 
 
 # ---- partial ----------------------------------------------------------------------------

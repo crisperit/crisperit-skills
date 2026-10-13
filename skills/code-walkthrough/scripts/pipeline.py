@@ -36,7 +36,6 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
 
 sys.path.insert(0, str(SCRIPTS_DIR))
-from validate_analysis import check_visuals  # noqa: E402  one owner for the visuals spec
 import fanout  # noqa: E402  in-process merge, per the phase 2 import convention (section 0)
 
 
@@ -51,13 +50,17 @@ def run(name, *args, capture=False):
     )
 
 
-def _run_to_file(name, args, out_path):
-    """Run a script whose real output is on stdout, saving it to out_path on success."""
+def _run_to_file(name, args, out_path, echo="visuals:"):
+    """Run a script whose real output is on stdout, saving it to out_path on success. Its
+    stderr lines that start with `echo` (render.py's visuals report) are passed on to stdout."""
     result = run(name, *args, capture=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         return False
     out_path.write_text(result.stdout)
+    for line in result.stderr.splitlines():
+        if line.startswith(echo):
+            print(line)
     return True
 
 
@@ -209,23 +212,16 @@ def cmd_prepare(args):
     analysis = json.loads(analysis_path.read_text())
     if not (analysis.get("verdict") or "").strip():
         print("warning: verdict is blank")
-    if analysis.get("visuals") is not None:
-        symdelta = json.loads(symdelta_path.read_text()) if symdelta_path.exists() else None
-        clean, problems = check_visuals(analysis["visuals"], symdelta)
-        total = len(analysis["visuals"]) if isinstance(analysis["visuals"], list) else 0
-        print(f"visuals: {len(clean)} kept, {total - len(clean)} dropped")
-        for problem in problems:
-            print(f"visuals: {problem}")
-
     (d / "pipeline.json").write_text(json.dumps({"explain": args.explain, "links_ok": links_ok},
                                                  indent=2))
     return 0
 
 
 def _optional_data_flags(d):
-    """render.py's --symdelta/--complexity for whichever of the two files exist. Passing
+    """render.py's --symdelta/--complexity/--visuals for whichever of the files exist. Passing
     --complexity also turns on the Complexity fact in the facts strip."""
-    return [arg for flag, name in (("--symdelta", "symdelta.json"), ("--complexity", "complexity.json"))
+    return [arg for flag, name in (("--symdelta", "symdelta.json"), ("--complexity", "complexity.json"),
+                                   ("--visuals", "visuals.json"))
             if (d / name).exists() for arg in (flag, str(d / name))]
 
 

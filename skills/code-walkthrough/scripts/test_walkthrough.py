@@ -13,11 +13,9 @@ from walkthrough import (  # noqa: E402
     caller_depth,
     depth_chip,
     render_html,
-    render_story,
     rename_index,
     rename_note,
     story,
-    _graph_symdelta,
 )
 from validate_analysis import parse_hunks, check_rendered  # noqa: E402
 
@@ -349,7 +347,7 @@ def test_a_call_cycle_still_terminates_and_places_every_file():
 
 def test_a_file_symdelta_never_saw_sorts_after_every_placed_one():
     files = _chain_files("src/api.py", "src/service.py", "src/store.py", "notes.md")
-    [(_title, _why, ordered, _flow, _hop, _side)] = story(list(files), files, None, SYMDELTA)
+    [(_title, _why, ordered)] = story(list(files), files, None, SYMDELTA)
 
     assert ordered[-1] == "notes.md"
 
@@ -359,7 +357,7 @@ def test_symdelta_bailing_on_the_language_degrades_to_no_reordering():
     same fallback a run with no symdelta.json ever had."""
     files = _chain_files("b.py", "a.py")
     symdelta = {"language": None, "reason": "unsupported language: rb"}
-    [(_title, _why, ordered, _flow, _hop, _side)] = story(list(files), files, None, symdelta)
+    [(_title, _why, ordered)] = story(list(files), files, None, symdelta)
 
     assert ordered == ["a.py", "b.py"]
 
@@ -371,7 +369,7 @@ def test_tests_sink_inside_their_own_group_not_to_the_bottom_of_the_page():
         {"title": "The store", "paths": ["src/store.py"]},
     ], SYMDELTA)
 
-    assert [paths for _t, _w, paths, _f, _h, _s in groups] == [["src/api.py", "src/api_test.py"],
+    assert [paths for _t, _w, paths in groups] == [["src/api.py", "src/api_test.py"],
                                                   ["src/store.py"]]
 
 
@@ -380,14 +378,14 @@ def test_group_order_is_the_analysis_order_not_the_diff_order():
     groups = story(["a.py", "b.py"], files, [{"title": "Second thing", "paths": ["b.py"]},
                                              {"title": "First thing", "paths": ["a.py"]}], None)
 
-    assert [title for title, _w, _p, _f, _h, _s in groups] == ["Second thing", "First thing"]
+    assert [title for title, _w, _p in groups] == ["Second thing", "First thing"]
 
 
 def test_a_file_no_group_claimed_lands_in_a_trailing_catch_all():
     files = _chain_files("a.py", "orphan.py")
     groups = story(["a.py", "orphan.py"], files, [{"title": "Known", "paths": ["a.py"]}], None)
 
-    assert groups[-1] == ("Everything else", "", ["orphan.py"], "", "", False)
+    assert groups[-1] == ("Everything else", "", ["orphan.py"])
 
 
 def test_a_group_claiming_a_file_twice_renders_it_once():
@@ -395,7 +393,7 @@ def test_a_group_claiming_a_file_twice_renders_it_once():
     groups = story(["a.py"], files, [{"title": "One", "paths": ["a.py"]},
                                      {"title": "Two", "paths": ["a.py"]}], None)
 
-    assert [paths for _t, _w, paths, _f, _h, _s in groups] == [["a.py"]]
+    assert [paths for _t, _w, paths in groups] == [["a.py"]]
 
 
 def test_a_group_naming_a_file_outside_the_diff_does_not_invent_a_block():
@@ -403,7 +401,7 @@ def test_a_group_naming_a_file_outside_the_diff_does_not_invent_a_block():
     groups = story(["a.py"], files, [{"title": "Stale", "paths": ["deleted-long-ago.py"]},
                                      {"title": "Real", "paths": ["a.py"]}], None)
 
-    assert [title for title, _w, _p, _f, _h, _s in groups] == ["Real"]
+    assert [title for title, _w, _p in groups] == ["Real"]
 
 
 def test_no_groups_at_all_renders_one_untitled_block_with_no_heading():
@@ -441,275 +439,63 @@ def test_every_hunk_summary_carries_a_viewed_checkbox():
     assert out.count('<input type="checkbox" class="hunk-viewed-cb">') == 2
 
 
-# ---- story map ----
+# ---- group headings and picture slots ----
 
-def test_group_heading_gets_an_id_and_a_badge_wrapped_in_a_story_back_link():
+def test_group_heading_gets_an_id_and_colour_but_no_story_badge_or_back_link():
     order, files = parsed()
     groups = story(order, files, [{"title": "Session handling", "paths": ["src/auth.py"]},
                                    {"title": "Docs", "paths": ["README.md"]}], None)
     out = render_html(groups, files, {})
 
     assert 'id="wt-group-1"' in out and 'id="wt-group-2"' in out
-    assert '<a class="wt-badge-link" href="#story-1"' in out
-    assert '<a class="wt-badge-link" href="#story-2"' in out
-    assert '<span class="wt-badge">1</span></a>' in out
-    assert '<span class="wt-badge">2</span></a>' in out
-    assert 'aria-label="Back to stop 1 in the story"' in out
-    assert 'aria-label="Back to stop 2 in the story"' in out
-    assert "wt-storylink" not in out
+    assert "wt-badge" not in out and "story-1" not in out
 
 
-def test_a_single_group_heading_gets_no_id_badge_or_back_link():
-    # Same rule render_story itself follows: no map with one group, so nothing here should
-    # point at a map that doesn't exist.
+def test_a_single_group_heading_gets_no_id_or_badge():
     order, files = parsed()
     groups = story(order, files, [{"title": "Everything",
                                    "paths": ["src/auth.py", "README.md"]}], None)
     out = render_html(groups, files, {})
 
-    assert "wt-group-" not in out
-    assert "wt-badge" not in out
-    assert "wt-storylink" not in out
+    assert "wt-group-" not in out and "wt-badge" not in out
 
 
-def test_render_story_returns_nothing_for_a_single_group():
+def test_each_group_has_one_picture_slot_between_its_why_line_and_its_first_file():
     order, files = parsed()
-    groups = story(order, files, [{"title": "Everything",
-                                   "paths": ["src/auth.py", "README.md"]}], None)
+    groups = story(order, files, [{"title": "Session handling", "why": "the point",
+                                   "paths": ["src/auth.py"]},
+                                  {"title": "Docs", "paths": ["README.md"]}], None)
+    out = render_html(groups, files, {})
 
-    assert render_story(groups) == ""
+    assert re.findall(r"<!-- cw-picture:(\d+) -->", out) == ["0", "1"]
+    why = out.index('<p class="wt-why">')
+    assert why < out.index("<!-- cw-picture:0 -->") < out.index('<details class="hunk"')
+    assert out.index("<!-- cw-picture:1 -->") > out.index('id="wt-group-2"')
 
 
-def test_render_story_stops_link_to_their_group_and_carry_the_story_id():
+def test_the_catch_all_group_gets_no_picture_slot_and_a_skipped_group_keeps_later_indices():
     order, files = parsed()
-    groups = story(order, files, [{"title": "Session handling", "paths": ["src/auth.py"]},
-                                   {"title": "Docs", "paths": ["README.md"]}], None)
-    out = render_story(groups)
 
-    assert '<a class="stop" id="story-1" href="#wt-group-1"' in out
-    assert '<a class="stop" id="story-2" href="#wt-group-2"' in out
-    assert "Session handling" in out and "Docs" in out
+    assert "cw-picture:" not in render_html(flat(order, files), files, {})
 
+    groups = story(order, files, [{"title": "Gone", "paths": ["deleted.py"]},
+                                  {"title": "Docs", "paths": ["README.md"]}], None)
+    out = render_html(groups, files, {})
 
-def test_render_story_puts_a_hop_between_consecutive_main_line_stops():
-    order, files = parsed()
-    groups = story(order, files, [
-        {"title": "Session handling", "paths": ["src/auth.py"], "hop": "feeds `README`"},
-        {"title": "Docs", "paths": ["README.md"]},
-    ], None)
-    out = render_story(groups)
-
-    stop1 = out.index('id="story-1"')
-    hop = out.index("<code>README</code>")
-    stop2 = out.index('id="story-2"')
-    assert stop1 < hop < stop2
+    assert [g.idx for g in groups] == [1, None]
+    assert re.findall(r"<!-- cw-picture:(\d+) -->", out) == ["1"]
 
 
-def test_render_story_lists_a_side_group_off_the_main_line():
-    order, files = parsed()
-    groups = story(order, files, [
-        {"title": "Session handling", "paths": ["src/auth.py"]},
-        {"title": "Docs setup", "paths": ["README.md"], "side": True},
-    ], None)
-    out = render_story(groups)
-
-    main_spine, side_block = out.split('<div class="side">')
-    assert "Docs setup" not in main_spine
-    assert "Docs setup" in side_block
-    assert "Supports the story" in side_block
-
-
-# ---- group flow diagrams ----
-
-def test_group_flow_mermaid_renders_after_why_and_before_the_symbols_graph():
+def test_no_group_diagram_or_tab_markup_is_emitted_even_when_the_analysis_has_flow_mermaid():
     files = _chain_files("src/api.py", "src/store.py")
     groups = story(list(files), files, [
-        {"title": "API", "why": "the entry point", "paths": ["src/api.py"],
-         "flow_mermaid": 'flowchart LR\n  A["call"] --> B["reply"]'},
-        {"title": "Store", "paths": ["src/store.py"]},
-    ], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-
-    why_end = out.index('<p class="wt-why">the entry point</p>') + len(
-        '<p class="wt-why">the entry point</p>')
-    flow_start = out.index('<pre class="mermaid">flowchart LR')
-    ctl_start = out.index("vd-symbols-group")
-    assert why_end < flow_start < ctl_start
-    assert 'class="panel svgbox svgbox-flow"' in out
-
-
-def test_group_flow_mermaid_is_not_rewritten_from_lr_to_tb():
-    # render.py's top-level FLOW forces LR to TB for phone width; a group's own small diagram
-    # gets no such rewrite (see walkthrough.render_html).
-    files = _chain_files("src/api.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"],
-                                         "flow_mermaid": 'flowchart LR\n  A --> B'}], None)
+        {"title": "API", "paths": ["src/api.py"], "flow_mermaid": 'flowchart LR\n  A --> B',
+         "hop": "feeds `x`", "side": True},
+        {"title": "Store", "paths": ["src/store.py"]}], None)
     out = render_html(groups, files, {})
 
-    assert "flowchart LR" in out
-    assert "flowchart TB" not in out
-
-
-def test_group_with_no_flow_mermaid_renders_no_flow_box():
-    files = _chain_files("src/api.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]}], None)
-    out = render_html(groups, files, {})
-
-    assert "svgbox-flow" not in out
-
-
-# ---- per-group graphs ----
-
-# Two symbols per file, each with its own edge, so a group scoped to one file draws a graph
-# that does not mention the other file's symbols -- proof the scoping actually happened rather
-# than both groups happening to render the same thing.
-GRAPH_SYMDELTA = {
-    "nodes": [
-        {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
-        {"id": "p:Handle", "label": "Handle", "kind": "symbol", "parent": "p", "depth": 1,
-         "state": "new", "file": "src/api.py"},
-        {"id": "p:HandleCallee", "label": "HandleCallee", "kind": "symbol", "parent": "p",
-         "depth": 1, "state": "new", "file": "src/api.py"},
-        {"id": "p:Get", "label": "Get", "kind": "symbol", "parent": "p", "depth": 1,
-         "state": "new", "file": "src/store.py"},
-        {"id": "p:GetCallee", "label": "GetCallee", "kind": "symbol", "parent": "p", "depth": 1,
-         "state": "new", "file": "src/store.py"},
-    ],
-    "edges": [
-        {"id": "e0", "source": "p:Handle", "target": "p:HandleCallee", "state": "new"},
-        {"id": "e1", "source": "p:Get", "target": "p:GetCallee", "state": "new"},
-    ],
-}
-
-
-def test_symdelta_past_one_group_draws_each_group_its_own_scoped_graph():
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
-                                        {"title": "Store", "paths": ["src/store.py"]}], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-
-    assert out.count("vd-symbols-group") == 2
-    api_chunk, store_chunk = out.split('<h3 class="wt-group"')[1:3]
-    assert "HandleCallee" in api_chunk and "GetCallee" not in api_chunk
-    assert "GetCallee" in store_chunk and "HandleCallee" not in store_chunk
-    assert 'data-symbols="2"' in api_chunk
-    assert 'data-symbols="2"' in store_chunk
-
-
-def test_symdelta_with_a_single_group_still_draws_its_graph():
-    # There is no page-level graph any more to duplicate, so a single group draws its own
-    # scoped graph the same as any other group would.
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, None, None)
-
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-
-    assert "vd-symbols-group" in out
-
-
-def test_a_group_with_no_symbols_in_scope_gets_no_graph():
-    files = _chain_files("src/api.py", "docs.md")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
-                                        {"title": "Docs", "paths": ["docs.md"]}], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-
-    api_chunk, docs_chunk = out.split('<h3 class="wt-group"')[1:3]
-    assert "vd-symbols-group" in api_chunk
-    assert "vd-symbols-group" not in docs_chunk
-
-
-def test_without_symdelta_no_per_group_graph_at_all():
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
-                                        {"title": "Store", "paths": ["src/store.py"]}], None)
-
-    assert "vd-symbols-group" not in render_html(groups, files, {})
-
-
-# ---- group panel tabs ----
-
-def test_group_panel_has_a_tab_bar_with_both_flow_and_graph():
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [
-        {"title": "API", "paths": ["src/api.py"], "flow_mermaid": 'flowchart LR\n  A --> B'},
-        {"title": "Store", "paths": ["src/store.py"]},
-    ], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-    api_chunk = out.split('<h3 class="wt-group"')[1]
-
-    assert 'role="tablist"' in api_chunk
-    assert api_chunk.count('role="tab"') == 2
-    assert 'id="wt-tab-flow-0" data-tab="flow" aria-selected="true"' in api_chunk
-    assert ('id="wt-tab-graph-0" data-tab="graph" aria-selected="false"' in api_chunk
-            and 'tabindex="-1"' in api_chunk)
-    assert 'role="tabpanel" id="wt-tabpanel-flow-0" aria-labelledby="wt-tab-flow-0"' in api_chunk
-    assert ('role="tabpanel" id="wt-tabpanel-graph-0" aria-labelledby="wt-tab-graph-0" hidden>'
-            in api_chunk)
-    # Static markup, not an inline style: the level script is what replaces this with the
-    # off-screen technique once it wires the tabs (see test_state.py's off-screen checks).
-    assert "style=" not in api_chunk.split("</h3>", 1)[1].split("<details", 1)[0]
-
-
-def test_group_panel_has_no_tab_bar_with_flow_only():
-    files = _chain_files("src/api.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"],
-                                         "flow_mermaid": 'flowchart LR\n  A --> B'}], None)
-    out = render_html(groups, files, {})
-
-    assert 'class="wt-panel"' in out
-    assert "svgbox-flow" in out
-    assert "wt-tabs" not in out and 'role="tab"' not in out
-
-
-def test_group_panel_has_no_tab_bar_with_graph_only():
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]},
-                                        {"title": "Store", "paths": ["src/store.py"]}], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-    api_chunk = out.split('<h3 class="wt-group"')[1]
-
-    assert 'class="wt-panel"' in api_chunk
-    assert "vd-symbols-group" in api_chunk
-    assert "wt-tabs" not in api_chunk and 'role="tab"' not in api_chunk
-
-
-# ---- group panel maximise icon ----
-
-def test_group_panel_with_tabs_puts_the_maximise_icon_beside_the_tab_strip_not_the_heading():
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [
-        {"title": "API", "paths": ["src/api.py"], "flow_mermaid": 'flowchart LR\n  A --> B'},
-        {"title": "Store", "paths": ["src/store.py"]},
-    ], None)
-    out = render_html(groups, files, {}, symdelta=GRAPH_SYMDELTA)
-    heading, rest = out.split('<h3 class="wt-group"')[1].split("</h3>", 1)
-
-    assert "vd-max-btn" not in heading
-    row_start = rest.index('class="wt-tabs-row"')
-    tabs_start = rest.index('class="wt-tabs"', row_start)
-    btn_start = rest.index("vd-max-btn", row_start)
-    tabpanel_start = rest.index('class="wt-tabpanel"', row_start)
-    assert row_start < tabs_start < btn_start < tabpanel_start
-
-
-def test_group_panel_with_one_diagram_puts_the_maximise_icon_in_the_heading():
-    files = _chain_files("src/api.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"],
-                                         "flow_mermaid": 'flowchart LR\n  A --> B'}], None)
-    out = render_html(groups, files, {})
-    heading = out.split('<h3 class="wt-group"')[1].split("</h3>", 1)[0]
-
-    assert "vd-max-btn" in heading
-    assert "wt-tabs-row" not in out
-
-
-def test_group_with_neither_diagram_gets_no_maximise_icon():
-    files = _chain_files("src/api.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]}], None)
-    out = render_html(groups, files, {})
-    heading = out.split('<h3 class="wt-group"')[1].split("</h3>", 1)[0]
-
-    assert "vd-max-btn" not in heading
+    for gone in ("mermaid", "svgbox", "wt-tab", "vd-symbols", "vd-max-btn", 'class="map"'):
+        assert gone not in out
 
 
 # ---- complexity ----
@@ -1016,18 +802,3 @@ def test_explain_file_stat_counts_lines_instead_of_adds_and_removes():
     assert '<span class="add">' not in out
     assert '<span class="hunk-stat">3 lines</span>' in out
     assert '<span class="hunk-stat">1 line</span>' in out
-
-
-def test_valid_visuals_drop_the_per_group_graph_and_invalid_ones_keep_it():
-    visuals = [{"title": "T", "acts": [{"title": "A", "flow": [
-        {"sym": "p:Handle"}, {"edge": "calls"}, {"sym": "p:HandleCallee"}]}]}]
-    bad = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "p:nope"}]}]}]
-
-    assert _graph_symdelta({"visuals": visuals}, GRAPH_SYMDELTA) is None
-    assert _graph_symdelta({"visuals": bad}, GRAPH_SYMDELTA) is GRAPH_SYMDELTA
-    assert _graph_symdelta({}, GRAPH_SYMDELTA) is GRAPH_SYMDELTA
-
-    files = _chain_files("src/api.py", "src/store.py")
-    groups = story(list(files), files, [{"title": "API", "paths": ["src/api.py"]}], None)
-    out = render_html(groups, files, {}, symdelta=_graph_symdelta({"visuals": visuals}, GRAPH_SYMDELTA))
-    assert "vd-symbols" not in out and "call graph" not in out

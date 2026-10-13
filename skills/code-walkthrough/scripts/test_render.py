@@ -15,11 +15,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_server  # noqa: E402
 from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
-    render_html, story_data, counts_from, _flow_tb, _wrap_flow_labels,
+    render_html, load_visuals, counts_from, _flow_tb, _wrap_flow_labels,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
 from sections import ZWSP  # noqa: E402
 from state import build  # noqa: E402
+from walkthrough import render_html as walkthrough_html, story  # noqa: E402
 from validate_analysis import parse_hunks  # noqa: E402
 
 DIFF = """diff --git a/src/auth.py b/src/auth.py
@@ -291,35 +292,16 @@ def test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic():
     assert "<b>Summary</b>" in out and "<b>Verdict</b>" not in out
 
 
-# ---- story map ----
+# ---- structure and flow placement ----
 
-def test_story_map_replaces_flow_and_lands_right_after_overview():
+def test_structure_section_lands_between_the_overview_and_the_walkthrough():
+    # render.py adds nothing around section-structure.html's own content, only places it.
     order, files = parsed()
-    analysis = {**ANALYSIS,
-                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
-                           {"title": "Docs", "paths": ["README.md"]}]}
-    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
-
-    assert "<h2>Story map</h2>" in out
-    assert "<h2>Flow</h2>" not in out
-    assert "svgbox-flow" not in out
-    assert '<div class="map">' in out
-    assert out.index("<h2>Overview</h2>") < out.index("<h2>Story map</h2>")
-
-
-def test_structure_section_lands_between_the_story_map_and_the_walkthrough():
-    # render.py adds nothing around section-structure.html's own content, only places it --
-    # between the story map and the walkthrough, per render_html's own ordering.
-    order, files = parsed()
-    analysis = {**ANALYSIS,
-                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
-                           {"title": "Docs", "paths": ["README.md"]}]}
     structure = '<!-- code-walkthrough:structure -->\n<div class="vd-structure"><h2>System change</h2></div>'
-    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order, structure=structure,
+    out = render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, structure=structure,
                       walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
 
-    assert '<div class="vd-structure">' in out
-    assert out.index("<h2>Story map</h2>") < out.index('<div class="vd-structure">') \
+    assert out.index("<h2>Overview</h2>") < out.index('<div class="vd-structure">') \
         < out.index("wt-body")
 
 
@@ -329,29 +311,24 @@ def test_an_empty_structure_section_inserts_nothing():
     assert "vd-structure" not in out
 
 
-def test_a_single_group_keeps_the_flow_diagram():
-    # No map to draw with one group (see walkthrough.render_story), so FLOW stays exactly as
-    # it did before the story map existed.
+def test_no_story_map_is_rendered_however_many_groups_there_are():
     order, files = parsed()
     analysis = {**ANALYSIS,
-                "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
+                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
+                           {"title": "Docs", "paths": ["README.md"]}]}
     out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
 
-    assert '<h2 class="h2-row"><span>Flow</span>' in out
-    assert "<h2>Story map</h2>" not in out
-    assert '<div class="map">' not in out
+    assert "Story map" not in out and '<div class="map">' not in out
+    assert "cw-story" not in out
 
 
 def test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox():
-    order, files = parsed()
-    analysis = {**ANALYSIS,
-                "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
-    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
+    out = html()
     heading = out.split('<span>Flow</span>')[1].split("</h2>")[0]
 
     assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in heading
     assert out.index("</h2>") < out.index("svgbox-flow")
-    # svgbox-flow lets the template size FLOW apart from the capped per-group symbol graphs.
+    # svgbox-flow lets the template size FLOW apart from the capped symbol graph.
     assert 'class="panel svgbox svgbox-flow"' in out
 
 
@@ -882,78 +859,7 @@ if (storyHunkKey('x.py', 'not a header') !== null) throw new Error('expected nul
 """)
 
 
-# ---- story visuals ----
-
-SYMDELTA = {"nodes": [
-    {"id": "p:load", "label": "load", "kind": "symbol", "file": "src/auth.py", "range": [40, 42],
-     "state": "changed"},
-    {"id": "p:old", "label": "old", "kind": "symbol", "file": "src/auth.py", "range": [41, 41],
-     "state": "gone"},
-]}
-VISUALS = [{"title": "T", "acts": [{"title": "A", "flow": [
-    {"sym": "p:load"}, {"edge": "calls"}, {"sym": "src/auth.py:old"}]}]}]
-
-
-CLEAN = [{"title": "T", "acts": [{"title": "A", "flow": [
-    {"sym": "p:load"}, {"edge": "calls"}, {"sym": "p:old"}]}]}]
-
-
-def story_html(visuals=VISUALS, symdelta=SYMDELTA, complexity=None, **kw):
-    order, files = parsed()
-    return render_html({**ANALYSIS, "visuals": visuals, **kw}, files, TEMPLATE, now=FROZEN,
-                       order=order, symdelta=symdelta, complexity=complexity)
-
-
-def test_story_section_sits_between_overview_and_story_map_and_carries_the_blob():
-    out = story_html(groups=[{"title": "Auth", "paths": ["src/auth.py"]},
-                             {"title": "Docs", "paths": ["README.md"]}])
-
-    assert '<section class="cw-story" id="cw-story" hidden' in out
-    assert out.index("<h2>Overview</h2>") < out.index('id="cw-story"') < out.index("<h2>Story map</h2>")
-    blob = out.split('id="cw-story-data">')[1].split("</script>")[0]
-    assert "<" not in blob
-    data = json.loads(blob)
-    assert data["visuals"][0]["acts"][0]["flow"][2] == {"sym": "p:old"}
-    assert set(data["syms"]) == {"p:load", "p:old"}
-
-
-def test_no_valid_visuals_means_no_story_section():
-    assert "cw-story" not in story_html(visuals=[{"title": "T", "acts": []}])
-    assert "cw-story" not in story_html(visuals=VISUALS, symdelta=None)
-    assert "cw-story" not in story_html(visuals=None)
-
-
-def test_story_syms_carry_hunks_capped_code_and_the_state_hunk_id():
-    order, files = parsed()
-    data = story_data(CLEAN, SYMDELTA, None, files)
-    sym = data["syms"]["p:load"]
-
-    prefix = files["src/auth.py"]["hunks"][0]["prefix"]
-    assert sym["side"] == "RIGHT" and sym["hunks"] == [f"src/auth.py\t{prefix}"]
-    assert [kind for kind, _ in sym["code"]] == ["c", "a", "c"]
-    assert sym["cx"] is None and sym["state"] == "changed"
-
-
-def test_story_code_is_capped_at_four_rows():
-    diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n@@ -1,0 +1,6 @@\n" + "".join(
-        f"+l{i}\n" for i in range(6))
-    _, files = parse_hunks(diff)
-    sd = {"nodes": [{"id": "f", "label": "f", "kind": "symbol", "file": "f.py", "range": [1, 6],
-                     "state": "new"}]}
-    visuals = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "f"}]}]}]
-
-    assert len(story_data(visuals, sd, None, files)["syms"]["f"]["code"]) == 4
-
-
-def test_gone_symbol_reads_the_left_side_and_complexity_overrides_state():
-    order, files = parsed()
-    cx = {"files": {"src/auth.py": {"symbols": [
-        {"name": "old", "before": 3, "after": 0, "existed": True, "removed": True}]}}}
-    sym = story_data(CLEAN, SYMDELTA, cx, files)["syms"]["p:old"]
-
-    assert sym["side"] == "LEFT" and sym["state"] == "gone" and sym["cx"] == [3, 0]
-    assert sym["hunks"] == [] and sym["code"] == []
-
+# ---- pictures and All symbols ----
 
 GRAPH_SD = {"nodes": [
     {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
@@ -962,22 +868,138 @@ GRAPH_SD = {"nodes": [
       for n, r in (("load", [40, 42]), ("old", [41, 41]))],
 ], "edges": [{"id": "e0", "source": "p:load", "target": "p:old", "state": "new"}]}
 
-
-def test_all_symbols_disclosure_holds_the_graph_once_inside_the_story():
-    out = story_html(symdelta=GRAPH_SD)
-    section = out.split('id="cw-story"')[1].split("</section>")[0]
-
-    assert out.count('<details class="cw-allsyms"><summary>All symbols</summary>') == 1
-    assert section.index('id="cw-story-root"') < section.index("cw-allsyms") < section.index("vd-symbols")
-    assert section.count('class="vd-symbols') == 1
+WALK = ('<!-- code-walkthrough:walkthrough -->\n<h3 class="wt-group">One</h3>\n'
+        '<!-- cw-picture:0 -->\n<details class="hunk">a</details>\n'
+        '<h3 class="wt-group">Two</h3>\n<!-- cw-picture:1 -->\n<details class="hunk">b</details>\n')
+PR_PIC = {"title": "Before & after", "html": "<p>pr-picture</p>"}
+ALL_SYMS = '<details class="cw-allsyms"><summary>All symbols</summary>'
 
 
-def test_page_without_valid_visuals_is_unchanged_by_the_symdelta():
-    bare = story_html(visuals=None, symdelta=None)
+def pics(clean=None, symdelta=None, walkthrough=WALK, **kw):
+    order, files = parsed()
+    return render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, symdelta=symdelta,
+                       walkthrough=walkthrough, visuals=clean, **kw)
 
-    assert story_html(visuals=None, symdelta=GRAPH_SD) == bare
-    assert story_html(visuals=[{"title": "T", "acts": []}], symdelta=GRAPH_SD) == bare
-    assert "cw-allsyms" not in bare
+
+def test_pr_picture_section_sits_after_overview_before_the_walkthrough_with_an_escaped_label():
+    out = pics({"pr": PR_PIC, "groups": {}})
+
+    assert ('<section class="cw-pr-picture" id="cw-pr-picture" aria-labelledby="cw-pr-picture-h">'
+            '<h2 id="cw-pr-picture-h">The PR in one picture</h2>'
+            '<div class="cw-vis" role="group" aria-label="Before &amp; after"><p>pr-picture</p>'
+            '</div></section>') in out
+    assert out.index("<h2>Overview</h2>") < out.index('id="cw-pr-picture"') \
+        < out.index("<span>Walkthrough</span>")
+    assert out.count('class="cw-vis') == 1
+
+
+def test_a_hostile_title_is_escaped_in_the_label():
+    out = pics({"pr": {"title": '"><script>x</script>', "html": "<p>a</p>"}, "groups": {}})
+
+    assert 'aria-label="&quot;&gt;&lt;script&gt;x&lt;/script&gt;"' in out
+    assert "<script>x" not in out
+
+
+@pytest.mark.parametrize("clean, pr_sections, group_pictures", [
+    (None, 0, 0),
+    ({"pr": None, "groups": {}}, 0, 0),
+    ({"pr": PR_PIC, "groups": {}}, 1, 0),
+    ({"pr": None, "groups": {1: "<p>g1</p>"}}, 0, 1),
+    ({"pr": PR_PIC, "groups": {0: "<p>g0</p>", 1: "<p>g1</p>"}}, 1, 2),
+])
+def test_layout_with_zero_one_or_two_pictures(clean, pr_sections, group_pictures):
+    out = pics(clean)
+
+    assert out.count('<section class="cw-pr-picture"') == pr_sections
+    assert out.count('class="cw-vis cw-vis-group"') == group_pictures
+    assert "cw-picture:" not in out
+
+
+def test_group_picture_lands_by_index_between_its_heading_and_its_files():
+    out = pics({"pr": None, "groups": {1: "<p>g1</p>"}})
+
+    two = out.index(">Two</h3>")
+    assert two < out.index('<div class="cw-vis cw-vis-group"><p>g1</p></div>') < out.index(">b</details>")
+    assert out.index(">a</details>") < two
+
+
+def test_a_group_picture_out_of_range_renders_nothing():
+    out = pics({"pr": None, "groups": {7: "<p>nope</p>"}})
+
+    assert "nope" not in out and "cw-picture:" not in out
+
+
+def test_all_symbols_is_collapsed_once_after_the_walkthrough_only_with_symbols():
+    out = pics(symdelta=GRAPH_SD)
+
+    assert out.count(ALL_SYMS) == 1 and out.count('class="vd-symbols') == 1
+    assert out.index(">b</details>") < out.index(ALL_SYMS) < out.index('<div class="foot">')
+    assert "<details class=\"cw-allsyms\" open" not in out
+    for none in (None, {"nodes": []}, {"language": None}):
+        assert "cw-allsyms" not in pics(symdelta=none)
+
+
+def test_page_without_pictures_still_has_all_symbols_and_nothing_else_new():
+    out = pics(symdelta=GRAPH_SD)
+
+    assert ALL_SYMS in out
+    assert 'class="cw-vis' not in out and '<section class="cw-pr-picture"' not in out
+
+
+def test_the_old_spec_story_is_gone_even_if_analysis_still_carries_visuals():
+    order, files = parsed()
+    out = render_html({**ANALYSIS, "visuals": [{"title": "T", "acts": []}]}, files, TEMPLATE,
+                      now=FROZEN, order=order, symdelta=GRAPH_SD)
+
+    assert "cw-story" not in out and "cw-story-data" not in out
+
+
+def _visuals_file(tmp_path, raw):
+    path = tmp_path / "visuals.json"
+    path.write_text(json.dumps(raw))
+    return path
+
+
+def test_load_visuals_drops_hostile_fragments_and_reports_them(tmp_path):
+    hostile = '<p>ok</p><script>evil()</script><img src=x onerror=alert(1)>'
+    raw = {"pr": {"title": "t", "html": hostile},
+           "groups": [{"index": 0, "html": "<p>fine</p>"}, {"index": 9, "html": "<p>x</p>"},
+                      {"index": 1, "html": '<p><!-- HR_STATE -->&lt;!-- HR_STATE --&gt;</p>'}]}
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), 2)
+    out = pics(clean)
+
+    assert clean["pr"] is None and set(clean["groups"]) == {0, 1}
+    assert lines[0] == "visuals: 2 kept, 2 dropped"
+    assert any(line.startswith("visuals: visuals.pr:") for line in lines[1:])
+    assert "evil()" not in out and "onerror" not in out and "<script" not in out
+    assert "<!-- HR_STATE -->" not in out
+    assert "&lt;!-- HR_STATE --&gt;" in out
+
+
+def test_a_picture_follows_its_analysis_index_past_a_skipped_group(tmp_path):
+    order, files = parsed()
+    groups = [{"title": "AAA", "paths": ["src/auth.py"]},
+              {"title": "BBB", "paths": ["gone.py"]},
+              {"title": "CCC", "paths": ["README.md"]}]
+    rendered = story(order, files, groups, None)
+    raw = {"pr": None, "groups": [{"index": i, "html": f"<p>pic{i}</p>"} for i in range(3)]}
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), len(groups),
+                                {g.idx for g in rendered})
+    out = pics(clean, walkthrough=walkthrough_html(rendered, files, {}))
+
+    assert lines == ["visuals: 2 kept, 1 dropped",
+                     "visuals: visuals.groups[1]: group has no files on this page"]
+    assert out.index(">AAA ") < out.index("pic0") < out.index(">CCC ") < out.index("pic2")
+    assert "pic1" not in out and out.count('class="cw-vis cw-vis-group"') == 2
+
+
+def test_load_visuals_survives_unreadable_json(tmp_path):
+    path = tmp_path / "visuals.json"
+    path.write_text("{not json")
+
+    clean, lines = load_visuals(path, 2)
+
+    assert clean is None and lines == ["visuals: unreadable (JSONDecodeError)"]
 
 
 def test_level_script_defers_a_graph_inside_a_closed_details_to_its_first_toggle():

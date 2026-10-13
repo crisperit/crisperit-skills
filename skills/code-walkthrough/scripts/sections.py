@@ -53,10 +53,8 @@ def _html_note(text):
 
 _MAX_BUTTON_LABEL = "Expand diagram to full size"
 
-# One button, pasted verbatim into every diagram's header row (this module's own two, plus
-# render.py's page-level FLOW and walkthrough.py's per-group tab strip, which both import this
-# rather than growing a second copy). Icon only, wording carried by aria-label/title alone,
-# reusing wire()'s own label from the template so the two affordances read as one.
+# One button, pasted verbatim into every diagram's header row, icon only, wording carried by
+# aria-label/title alone, reusing wire()'s own label from the template so the two affordances read as one.
 _MAX_BUTTON_HTML = (
     f'<button type="button" class="vd-max-btn" aria-label="{_MAX_BUTTON_LABEL}" '
     f'title="{_MAX_BUTTON_LABEL}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" '
@@ -206,8 +204,7 @@ def _wrap_flow_labels(mermaid):
     `wrap_label`, so a long space-free identifier gets somewhere to break instead of stretching
     its node across the page (see `wrap_label` for why it is zero-width spaces and not `<br/>`).
 
-    Shared by render.py's top-level FLOW and walkthrough.py's per-group flow, one owner for the
-    regex pair rather than two copies drifting apart. Safe to run unconditionally on a
+    Used by render.py's top-level FLOW; one owner for the regex pair. Safe to run unconditionally on a
     `sequenceDiagram` too: its message syntax (`A->>B: text`) never matches either regex, since
     both require the bracket/pipe shapes only a flowchart node or edge label uses."""
     mermaid = _MERMAID_LABEL_RE.sub(lambda m: f'{m.group(1)}"{wrap_label(m.group(2))}"', mermaid)
@@ -848,7 +845,6 @@ def render_symbols(data, explain=False, paths=(), inline=False):
     # is why the slider's caption underneath is gone. No aria-pressed: a label reading
     # "packages" and a state reading "pressed" say different things, so the accessible name
     # spells out both the state and what activating does, and the script keeps it in step.
-    # A class, not an id: a per-group graph puts more than one of these on the page.
     toggle = ('<button type="button" class="vd-level-toggle" '
               f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[here].lower()}.'
               f' Activate to show {LEVEL_NAMES[there].lower()}."'
@@ -1148,9 +1144,8 @@ def _structure_legend(edges, explain):
 def render_structure(data, explain=False):
     """The system-structure view: structure.py's own real components (classes, interfaces,
     functions the diff actually touched -- see its module docstring for why that is not
-    symdelta's node state), laid out in call-depth columns and coloured by story group like the
-    story map above (`walkthrough._group_color`, reused so a component's colour matches its
-    stop's exactly), with call and implements/extends edges drawn over the boxes' real screen
+    symdelta's node state), laid out in call-depth columns and coloured by walkthrough group
+    (`walkthrough._group_color`, reused so a component's colour matches its group heading's), with call and implements/extends edges drawn over the boxes' real screen
     geometry by a small script (see the template) rather than mermaid -- dagre has no notion of
     "column by caller depth", the one layout this view exists to draw.
 

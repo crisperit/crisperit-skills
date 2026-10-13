@@ -225,9 +225,7 @@ def test_symbols_inline_has_legend_slider_and_two_levels():
 
 
 def test_symbols_inline_carries_no_maximise_icon_of_its_own():
-    # inline=True renders no heading at all (see render_symbols's own docstring): the icon for
-    # a group's call-graph tab belongs beside walkthrough.py's own tab strip instead
-    # (_group_panel), not duplicated in here.
+    # inline=True renders no heading at all (see render_symbols's own docstring), so no icon.
     out = render_symbols(SYMDELTA, inline=True)
     assert "vd-max-btn" not in out
 
@@ -948,7 +946,7 @@ def test_structure_group_colouring_matches_group_color():
     assert f"--c:{_group_color(1)}" in out
 
 
-def test_structure_filter_chips_one_per_story_stop():
+def test_structure_filter_chips_one_per_group():
     out = render_structure(STRUCTURE)
     assert 'data-g="all"' in out
     assert 'data-g="0"' in out
