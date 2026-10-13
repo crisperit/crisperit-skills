@@ -1112,6 +1112,7 @@
   .cw-outcome-text{min-width:0;flex:1 1 14em;overflow-wrap:anywhere}
   .cw-outcome-why{display:block;color:var(--muted)}
   .cw-edits{display:block}
+  .cw-dc[data-state="dismissed"]{color:var(--muted)}
   .cw-edits-files{margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:var(--fs-xs);overflow-wrap:anywhere}
   .cw-mode-badge{margin-left:8px;padding:0 6px;border:1px solid var(--accent);border-radius:10px;color:var(--accent);
     font:600 var(--fs-xs)/1.5 system-ui,sans-serif;vertical-align:middle}
@@ -1329,6 +1330,7 @@
     .cw-typing #cw-dock{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
+    .cw-dc button{min-height:44px;padding:10px 14px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
     #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:68px;width:auto;max-width:none;
       flex-wrap:wrap}
@@ -4965,7 +4967,73 @@
       return d;
     }
 
+    const dcPosted=new Set();
+    const dcItems=o=>{ const c=o.payload&&o.payload.comments; return Array.isArray(c)?c:[]; };
+    const dcId=(o,i)=>'n-'+String(o.oid).replace(/[^0-9a-fA-F]/g,'').slice(0,32)+'-'+i;
+    const dcRec=c=>spanByLineKey.get(c.path+'\t'+(c.side==='LEFT'?'LEFT':'RIGHT')+'\t'+c.line);
+
+    function materialiseDrafts(o){
+      if(o.outcome!=='draft_comments'||o.state!=='applied') return;
+      const ids=[]; let made=false;
+      dcItems(o).forEach((c,i)=>{
+        const rec=dcRec(c);
+        if(!rec) return;
+        const id=dcId(o,i);
+        ids.push(id);
+        if(noteById(id)) return;
+        const m=rec.meta||{};
+        const note=newDraft({
+          id,path:c.path,line:c.line,side:c.side==='LEFT'?'LEFT':'RIGHT',end_line:c.end_line||null,
+          hunk_id:m.hunkId||null,anchor_text:m.text||'',anchor_line:c.line,
+          order:m.order!=null?m.order:Math.max(0,...state.notes.map(x=>x.order||0))+1,
+        });
+        note.body=String(c.body||'');
+        saveNote(note);
+        made=true;
+      });
+      if(made) renderNotes();
+      if(ids.length&&!dcPosted.has(o.oid)){
+        dcPosted.add(o.oid);
+        postJson('/outcomes/'+encodeURIComponent(o.oid)+'/keep',{note_ids:ids})
+          .then(({ok,body})=>{ if(ok&&body.outcome) upsertOutcome(body.outcome); })
+          .catch(()=>{});
+      }
+    }
+
+    function draftCommentsCard(o){
+      const items=dcItems(o);
+      const d=mk('div','cw-outcome cw-dc'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      if(o.state==='dismissed'){ d.append(mk('span','cw-outcome-text','Drafts removed')); return d; }
+      const ids=items.map((c,i)=>dcRec(c)?dcId(o,i):null).filter(Boolean);
+      const skipped=items.length-ids.length;
+      const text=mk('span','cw-outcome-text','Agent added '+ids.length+(ids.length===1?' draft comment':' draft comments'));
+      if(skipped) text.append(mk('span','cw-outcome-why',skipped+' skipped, not on this page'));
+      const msg=mk('span','cw-outcome-why',''); msg.setAttribute('role','status');
+      text.append(msg);
+      d.append(text);
+      const acts=mk('div','cw-outcome-actions');
+      const show=mkBtn('Show','cw-dc-show fb-ghost');
+      show.addEventListener('click',()=>{ const n=ids.map(noteById).find(Boolean); if(n) revealNote(n); });
+      show.disabled=!ids.length;
+      const rm=mkBtn('Remove these drafts','cw-dc-remove fb-ghost');
+      rm.addEventListener('click',()=>{
+        rm.disabled=true; msg.textContent='';
+        postJson('/outcomes/'+encodeURIComponent(o.oid)+'/dismiss',{})
+          .then(({ok,body})=>{
+            if(!ok||!body.outcome){ rm.disabled=false; msg.textContent=errText(body); return; }
+            ids.forEach(deleteNote);
+            upsertOutcome(body.outcome);
+            renderNotes();
+          })
+          .catch(()=>{ rm.disabled=false; msg.textContent=NET_ERR; });
+      });
+      acts.append(show,rm);
+      d.append(acts);
+      return d;
+    }
+
     function outcomeEl(t,o){
+      if(o.outcome==='draft_comments') return draftCommentsCard(o);
       if(o.outcome==='task') return taskCard(t,o);
       if(o.outcome==='page_edit') return pageEditCard(t,o);
       if(o.outcome==='github_draft') return ghDraftCard(t,o);
@@ -5064,6 +5132,7 @@
       if(!m){ m=new Map(); outcomesByQid.set(o.qid,m); }
       m.set(o.oid,o);
       if(o.outcome==='page_edit') syncPageEdit(o);
+      materialiseDrafts(o);
       const t=threads.get(o.thread_id);
       if(t) renderThread(t);
       renderPanelList();

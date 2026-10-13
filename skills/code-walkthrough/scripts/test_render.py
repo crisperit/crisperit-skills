@@ -488,6 +488,29 @@ def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds()
     assert "#" not in badge
 
 
+def test_draft_comments_outcome_materialises_local_drafts_once():
+    wire_ask = _wire_ask()
+    upsert = _between(wire_ask, "function upsertOutcome(o){", "const ED_MAX")
+    assert upsert.index("materialiseDrafts(o)") < upsert.index("renderThread(t)")
+    assert "if(o.outcome==='draft_comments') return draftCommentsCard(o);" in wire_ask
+    mat = _between(wire_ask, "function materialiseDrafts(o){", "function draftCommentsCard(")
+    assert "o.outcome!=='draft_comments'||o.state!=='applied'" in mat
+    assert "'kept'" not in mat
+    assert "if(noteById(id)) return;" in mat and "saveNote(note)" in mat and "newDraft({" in mat
+    assert "if(!rec) return;" in mat
+    assert "ids.length&&!dcPosted.has(o.oid)" in mat
+    assert "'/keep',{note_ids:ids}" in mat
+    assert "publishNote" not in mat and "'/post" not in mat
+    ident = _between(wire_ask, "const dcId=", "\n")
+    assert "replace(/[^0-9a-fA-F]/g,'')" in ident
+    assert cw_server.VALID_ID_RE.fullmatch("n-" + "0123abcd" + "-29")
+    card = _between(wire_ask, "function draftCommentsCard(o){", "function outcomeEl(t,o){")
+    assert "'Drafts removed'" in card and "'Agent added '" in card and "skipped, not on this page" in card
+    assert "'Show'" in card and "'Remove these drafts'" in card
+    assert "'/dismiss',{}" in card and "ids.forEach(deleteNote)" in card and "revealNote(n)" in card
+    assert ".cw-dc button{min-height:44px" in _real_template()
+
+
 def test_post_flow_double_submit_guards():
     wire_post = _wire_post()
     send = _between(wire_post, "function send(){", "function retry(){")

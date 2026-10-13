@@ -153,6 +153,18 @@ def _tool_walkthrough_start(daemon, args):
     return {"id": wid, "key": key, "dir": str(d), "url": url, "reused": reused, "status": meta.get("status")}
 
 
+def start_sibling(daemon, key, wid, meta, oid, sha, task_id, branch, title):
+    """Starts (or reuses) the sibling walkthrough of `sha`, a commit on top of this walkthrough's head."""
+    args = {
+        "repo": meta["repo"], "base": meta["base"], "head": sha, "explain": meta.get("explain", False),
+        "paths": meta.get("paths") or [], "title": meta.get("title"), "pr": None,
+        "target": f"{meta['target']}+{task_id}", "slug": f"{meta['slug'][:39]}-{task_id}",
+        "sibling_of": {"key": key, "id": wid, "oid": oid, "task_id": task_id, "branch": branch,
+                       "title": title, "parent_head": meta["head"]},
+    }
+    return _tool_walkthrough_start(daemon, args)
+
+
 def _resolve_key(wid, key):
     if key is not None:
         return key
@@ -279,6 +291,8 @@ def _outcome_summary(o):
         return _cap(p.get("body"), 300)
     if kind == "resolve":
         return _cap(p.get("why"), 300)
+    if kind == "draft_comments":
+        return f"{len(p.get('comments') or [])} draft comments"
     if kind == "page_edit":
         block = p.get("block") if isinstance(p.get("block"), dict) else {}
         return f"{_cap(p.get('op'), 40) or ''} {_cap(block.get('type'), 40) or ''}".strip()
@@ -728,10 +742,16 @@ class _Handler(BaseHTTPRequestHandler):
         if o is None:
             self._send_json(404, {"error": "outcome not found"})
             return
-        task = (o.get("payload") or {}).get("task")
-        task = task if isinstance(task, dict) else {}
-        sha = task.get("sha")
-        if o["outcome"] != "task" or o["state"] != "done" or not isinstance(sha, str) or not sha:
+        payload = o.get("payload") or {}
+        if o["outcome"] == "edits":
+            sha, branch, title = payload.get("sha"), payload.get("branch"), "Agent edits"
+            task_id = f"e-{sha[:7]}" if isinstance(sha, str) else None
+        else:
+            task = payload.get("task")
+            task = task if isinstance(task, dict) else {}
+            sha, branch, title = task.get("sha"), task.get("branch"), payload.get("title") or task.get("title")
+            task_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(task.get("id") or oid))[:40]
+        if o["outcome"] not in ("task", "edits") or o["state"] != "done" or not isinstance(sha, str) or not sha:
             self._send_json(409, {"error": "the task is not finished", "remedy": "wait for the task to finish"})
             return
         meta = cw_store.read_meta(d) or {}
@@ -739,18 +759,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(409, {"error": "this walkthrough is not a finished PR view",
                                    "remedy": "open the PR walkthrough once it is done"})
             return
-        task_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(task.get("id") or oid))[:40]
-        args = {
-            "repo": meta["repo"], "base": meta["base"], "head": sha, "explain": meta.get("explain", False),
-            "paths": meta.get("paths") or [], "title": meta.get("title"), "pr": None,
-            "target": f"{meta['target']}+{task_id}", "slug": f"{meta['slug'][:39]}-{task_id}",
-            "sibling_of": {"key": key, "id": wid, "oid": oid, "task_id": task_id,
-                           "branch": task.get("branch"),
-                           "title": (o.get("payload") or {}).get("title") or task.get("title"),
-                           "parent_head": meta["head"]},
-        }
         try:
-            result = _tool_walkthrough_start(self.server.cw_daemon, args)
+            result = start_sibling(self.server.cw_daemon, key, wid, meta, oid, sha, task_id, branch, title)
         except cw_store.CWError as e:
             self._send_json(409, {"error": str(e), "remedy": e.remedy})
             return
@@ -778,7 +788,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "payload must be an object", "remedy": "send {thread, why}"})
             return
         if action == "keep":
-            payload = {"note_id": body.get("note_id") if isinstance(body, dict) else None}
+            body = body if isinstance(body, dict) else {}
+            payload = {"note_id": body.get("note_id"), "note_ids": body.get("note_ids")}
         daemon = self.server.cw_daemon
         try:
             if action in ("run", "stop", "discard"):
@@ -1925,7 +1936,9 @@ class Daemon:
                         # Fresh meta each time: a turn queued behind another reads it after the lock.
                         full = {"prepare": lambda: cw_agent.ensure_worktree(d, cw_store.read_meta(d)),
                                 "after_turn": lambda record: cw_agent.after_turn(
-                                    d, cw_store.read_meta(d), record, on_event=emit)}
+                                    d, cw_store.read_meta(d), record, on_event=emit,
+                                    start_sibling=lambda **kw: start_sibling(
+                                        self, d.parent.name, d.name, cw_store.read_meta(d), **kw))}
                     cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live,
                                   source=source, anchors=anchors, mode=mode, **full)
             finally:

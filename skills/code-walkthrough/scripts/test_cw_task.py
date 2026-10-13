@@ -138,8 +138,9 @@ def test_argv_shapes():
     assert "--safe-mode" not in argv and not any(a.startswith("--add-dir") for a in argv)
     thread = cw_llm.thread_argv(profile, "SYS", mcp_config={"mcpServers": {}}, add_dir="/d/ctx", session_id="u")
     assert "--tools=Read,Grep,Glob" in thread and "--permission-mode" not in thread
-    assert ("--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,"
-            "mcp__cw__propose_github_draft,mcp__cw__propose_task") in thread
+    assert "--allowedTools=" + cw_llm.THREAD_ALLOWED in thread
+    assert cw_llm.THREAD_ALLOWED.split(",") == ["mcp__cw__" + t["name"] for t in cw_mcp.outcome_tools("review")]
+    assert "post_draft_comments" in cw_llm.THREAD_ALLOWED and "post_draft_comments" not in " ".join(argv)
 
 
 # -- the daemon side ----------------------------------------------------------------------------

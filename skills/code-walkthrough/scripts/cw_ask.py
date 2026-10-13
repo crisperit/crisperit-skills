@@ -407,6 +407,8 @@ _TRANSITIONS = {
     ("github_draft", "verbatim"): ("proposed", "proposed"),
     ("page_edit", "revert"): ("applied", "reverted"),
     ("page_edit", "reapply"): ("reverted", "applied"),
+    ("draft_comments", "keep"): ("applied", "kept"),
+    ("draft_comments", "dismiss"): (("applied", "kept"), "dismissed"),
     ("task", "dismiss"): (("proposed", "handed"), "dismissed"),
     ("task", "edit"): ("proposed", "proposed"),
     ("task", "handover"): ("proposed", "handed"),
@@ -431,6 +433,14 @@ def _outcome_action(d, oid, action, payload, on_event):
     event = {"type": "state", "oid": oid, "by": "user", "at": cw_store.now_iso(), "state": to_state}
     if current["outcome"] == "github_draft" and action in ("edit", "keep", "verbatim"):
         event["payload"] = _github_draft_payload(current["payload"], action, payload, d, current["qid"])
+    elif current["outcome"] == "draft_comments" and action == "keep":
+        note_ids = (payload or {}).get("note_ids")
+        if note_ids is not None:
+            if (not isinstance(note_ids, list) or len(note_ids) > cw_mcp.DRAFT_COMMENTS_MAX
+                    or any(not isinstance(n, str) or not notes.VALID_ID_RE.fullmatch(n) for n in note_ids)):
+                raise OutcomeError(f"note_ids must be a list of at most {cw_mcp.DRAFT_COMMENTS_MAX} note ids",
+                                   "invalid", remedy="send {note_ids}")
+            event["payload"] = {**current["payload"], "note_ids": note_ids}
     elif current["outcome"] == "task" and action == "edit":
         error = cw_mcp.task_plan_error(payload)
         if error:
@@ -541,6 +551,10 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
                 lines.append(f"The user dismissed your proposed code task: {payload['title']}")
             elif r.get("state") == "proposed":
                 lines.append(f"The user edited your proposed code task to: {payload['title']}")
+            continue
+        if o["outcome"] == "draft_comments":
+            if r.get("state") == "dismissed":
+                lines.append(f"The user removed the {len(payload['comments'])} draft comments you posted")
             continue
         if o["outcome"] == "github_draft":
             where = f"{payload['target'].get('path')}:{payload['target'].get('line')}"

@@ -75,10 +75,30 @@ def commit(d, meta, title, qid):
     return {"sha": sha, "parent": parent, "branch": agent["branch"], "files": list(stat), "stat": stat}
 
 
-def after_turn(d, meta, record, on_event=None):
-    """Commit the Full turn's edits and record them as an `edits` outcome; returns the summary or None."""
+def after_turn(d, meta, record, on_event=None, start_sibling=None):
+    """Commit the Full turn's edits and record them as an `edits` outcome; returns the summary or None.
+    A reload the turn requested is answered here: the daemon, not the page, marks it done or failed."""
     lines = (record.get("comment") or "").strip().splitlines()
     edits = commit(d, meta, (lines[0][:72] if lines else "agent edits"), record["qid"])
     if edits:
         cw_ask.append_outcome(d, record["qid"], record["thread_id"], "edits", "done", edits, on_event)
+    for o in cw_ask.read_outcomes(d):
+        if o["outcome"] == "reload" and o["state"] == "requested" and o["qid"] == record["qid"]:
+            _answer_reload(d, meta, o, edits, on_event, start_sibling)
     return edits
+
+
+def _answer_reload(d, meta, o, edits, on_event, start_sibling):
+    agent = meta["agent"]
+    sha = edits["sha"] if edits else (agent["sha"] if agent["sha"] != meta["head"] else None)
+    if not sha or not start_sibling:
+        cw_ask.mark_outcome(d, o["oid"], "failed", on_event, {"reason": "no edits to show"})
+        return
+    try:
+        res = start_sibling(oid=o["oid"], sha=sha, task_id=f"e-{sha[:7]}", branch=agent["branch"],
+                            title="Agent edits")
+    except cw_store.CWError as e:
+        cw_ask.mark_outcome(d, o["oid"], "failed", on_event, {"reason": str(e)})
+        return
+    cw_ask.mark_outcome(d, o["oid"], "done", on_event,
+                        {"sibling": {"key": res["key"], "id": res["id"], "url": res["url"]}})

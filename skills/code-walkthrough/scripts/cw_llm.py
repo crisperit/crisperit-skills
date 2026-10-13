@@ -333,11 +333,16 @@ def claude_call(profile, system, prompt, *, cwd, tools, schema=None, timeout=300
     return parsed, usage
 
 
+# cw_mcp imports this module, so the names are literal here; test_cw_task pins them to outcome_tools.
+THREAD_ALLOWED = ",".join(f"mcp__cw__{n}" for n in (
+    "propose_resolve", "propose_page_edit", "propose_github_draft", "propose_task", "post_draft_comments"))
+
+
 def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume=None):
     # --safe-mode disables MCP servers; CLAUDE.md verified not loaded under --restricted.
     argv = [
         "claude", "-p", "--restricted", "--tools=Read,Grep,Glob", "--strict-mcp-config",
-        f"--mcp-config={json.dumps(mcp_config)}", "--allowedTools=mcp__cw__propose_resolve,mcp__cw__propose_page_edit,mcp__cw__propose_github_draft,mcp__cw__propose_task",
+        f"--mcp-config={json.dumps(mcp_config)}", f"--allowedTools={THREAD_ALLOWED}",
         "--permission-prompts", "none", f"--model={profile['model']}",
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         f"--system-prompt={system}", f"--add-dir={add_dir}",

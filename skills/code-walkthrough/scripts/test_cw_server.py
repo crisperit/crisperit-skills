@@ -1041,3 +1041,38 @@ def test_notes_put_works_while_idle_and_waits_for_the_walkthrough_lock():
             t.join(5)
             assert result == [200]
 
+
+
+DC_OID = "o-0000dc01"
+NOTE_IDS = ["n-0000dc01-0", "n-0000dc01-1"]
+
+
+def _draft_comments_fixture(home):
+    d = _outcome_fixture(home)
+    _append_qa(d, {"type": "outcome", "oid": DC_OID, "qid": OQID, "thread_id": OQID, "outcome": "draft_comments",
+                   "state": "applied", "at": "t",
+                   "payload": {"comments": [{"path": "a.py", "line": 3, "end_line": None, "side": "RIGHT", "body": "b"}]}})
+    return d
+
+
+def test_draft_comments_keep_and_dismiss_routes():
+    with cw_testlib.temp_home() as home:
+        d = _draft_comments_fixture(home)
+        with running_daemon() as daemon:
+            base = f"/api/walkthrough/{KEY}/{WID}/outcomes/{DC_OID}"
+            for bad in ({"note_ids": "n-1"}, {"note_ids": ["bad id"]}, {"note_ids": [5]}, {"note_ids": ["n-1"] * 31}):
+                assert _post(daemon, f"{base}/keep", bad)[0] == 400, bad
+            assert _post(daemon, f"{base}/verbatim")[0] == 400
+            status, body = _post(daemon, f"{base}/keep", {"note_ids": NOTE_IDS})
+            assert status == 200 and body["outcome"]["state"] == "kept"
+            assert body["outcome"]["payload"]["note_ids"] == NOTE_IDS
+            assert _post(daemon, f"{base}/keep", {})[0] == 409
+            status, body = _post(daemon, f"{base}/dismiss")
+            assert status == 200 and body["outcome"]["state"] == "dismissed"
+            assert _post(daemon, f"{base}/dismiss")[0] == 409
+            assert cw_server._outcome_summary(body["outcome"]) == "1 draft comments"
+            assert "removed the 1 draft comments" in cw_ask._outcome_updates_text(d, OQID)
+        d = _draft_comments_fixture(home)
+        with running_daemon() as daemon:
+            status, body = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/outcomes/{DC_OID}/dismiss")
+            assert status == 200 and body["outcome"]["state"] == "dismissed"
