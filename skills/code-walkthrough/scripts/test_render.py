@@ -338,20 +338,13 @@ def test_live_ui_never_uses_html_injection_sinks():
     split = "function splitBackticks(" + _between(template, "function splitBackticks(", "function wireAsk(){")
     wire_ask = _wire_ask()
 
-    story = "function wireStory(){" + _between(template, "function wireStory(){", "wireStory();")
-
-    for scope in (wire_ask, split, sibling, story):
+    for scope in (wire_ask, split, sibling):
         for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
             assert banned not in scope, banned
     # model-authored text only reaches the DOM through mk(..., text)
     mk = _between(wire_ask, "const mk=(tag,cls,text)=>{", "};")
     assert "e.textContent=text" in mk
     assert "window.open(r.url,'_blank','noopener')" in wire_ask
-    assert "window.__vdGoToLine=navGoToLine" in template and "window.__vdGoToLine(sp)" in story
-    chip = _between(story, "const chip=mk(", "h.append(chip)")
-    assert "'cw-story-pulse'" in chip or "cw-story-pulse" in chip
-    assert "chip.setAttribute('aria-label'" in chip and "chip.type='button'" in chip
-    assert "'pointerdown'" in chip and "'mousedown'" in chip and "e.stopPropagation()" in chip
 
 
 def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds():
@@ -475,23 +468,13 @@ def test_live_reload_flushes_notes_before_reloading():
 
 
 # Rules that fix real browser bugs, and no behaviour test can see them without a browser.
-# display:none on a panel mermaid is about to render makes it measure the labels as zero and
-# collapse the diagram for good, so those panels go off-screen instead.
-_OFF_SCREEN = (["position:absolute", "left:-99999px"], ["display:none"])
 _CSS_RULES = [
     (r"details\.hr-thread-resolved\{([^}]*)\}",
      ["white-space:normal", "line-height:1.6", "overflow-wrap:anywhere"], []),
-    (r"body:not\(\.show-notes\) h3\.wt-group ~ \.wt-panel\{([^}]*)\}", *_OFF_SCREEN),
-    (r"\.wt-tabpanel\.wt-tab-off\{([^}]*)\}", *_OFF_SCREEN),
-    (r"\.wt-tabs \.vd-ctl\[hidden\]\{([^}]*)\}", ["display:none"], []),
     (r"body:not\(\.show-notes\) \.hunk-note-hunk,\n\s*body:not\(\.show-notes\) \.wt-why\{([^}]*)\}",
      ["display:none"], []),
-    (r"body:not\(\.show-notes\) h3\.wt-group \.vd-max-btn\{([^}]*)\}", ["display:none"], []),
-    (r"@media \(max-width:480px\)\{\s*\.cw-flow\{([^}]*)\}", ["flex-direction:column"], []),
-    (r"\.cw-story-pulse\{([^}]*)\}", [], ["animation"]),
-    (r"\.dline-plus::before,\.cw-ref-dot-btn::before,\.cw-ingraph::before\{([^}]*)\}",
+    (r"\.dline-plus::before,\.cw-ref-dot-btn::before\{([^}]*)\}",
      ["position:absolute", "inset:-16px"], []),
-    (r"@media \(pointer:coarse\)\{[^@]*?\.cw-story-detail button\{([^}]*)\}", ["min-height:44px"], []),
     (r"\.cw-caret\{([^}]*)\}", [], ["animation"]),
     (r"@media \(prefers-reduced-motion:no-preference\)\{\s*\.cw-caret\{([^}]*)\}",
      ["animation:cw-caret"], []),
@@ -741,35 +724,6 @@ if ({json.dumps(hunk["id"])} !== 'x.py\\t' + p.prefix) throw new Error('id misma
 """)
 
 
-@pytest.mark.parametrize("key, i, n, want", [
-    ("ArrowRight", 0, 3, 1), ("ArrowDown", 1, 3, 2), ("ArrowRight", 2, 3, 2),
-    ("ArrowLeft", 2, 3, 1), ("ArrowUp", 0, 3, 0), ("Home", 2, 3, 0), ("End", 0, 3, 2),
-    ("Tab", 1, 3, -1), ("ArrowRight", 0, 0, -1),
-])
-def test_story_next_index_clamps_and_ignores_other_keys(key, i, n, want):
-    src = "function storyNextIndex(" + _between(_real_template(), "function storyNextIndex(", "function storyHunkKey(")
-    _node(src + f"""
-const got = storyNextIndex({i}, {n}, {json.dumps(key)});
-if (got !== {want}) throw new Error('got ' + got);
-""")
-
-
-@pytest.mark.parametrize("diff_header", [
-    "@@ -10,2 +10,3 @@",
-    "@@ -1 +1 @@ def f():",
-])
-def test_story_hunk_key_matches_state_hunk_id(diff_header):
-    diff = ("diff --git a/x.py b/x.py\nindex aaa1111..bbb2222 100644\n--- a/x.py\n+++ b/x.py\n"
-            f"{diff_header}\n-a\n+b\n")
-    hunk = build({"files": []}, diff)["hunks"][0]
-    src = "function storyHunkKey(" + _between(_real_template(), "function storyHunkKey(", "function wireStory(){")
-
-    _node(src + f"""
-if (storyHunkKey('x.py', {json.dumps(diff_header)}) !== {json.dumps(hunk["id"])}) throw new Error('id mismatch');
-if (storyHunkKey('x.py', 'not a header') !== null) throw new Error('expected null');
-""")
-
-
 # ---- pictures and All symbols ----
 
 GRAPH_SD = {"nodes": [
@@ -969,3 +923,63 @@ eq(replyFit(30, 160), {h: 30, over: false});
 eq(replyFit(160, 160), {h: 160, over: false});
 eq(replyFit(400, 160), {h: 160, over: true});
 """)
+
+
+# ---- picture styling and removed features ----
+
+_VIS_ALIASES = {
+    "--background": "var(--bg)", "--foreground": "var(--text)", "--card": "var(--panel)",
+    "--muted-foreground": "var(--muted)", "--success": "var(--green)",
+    "--warning": "var(--yellow)", "--destructive": "var(--red)",
+    "--chart-1": "var(--accent)", "--chart-2": "var(--green)", "--chart-3": "var(--yellow)",
+    "--chart-4": "var(--purple)", "--chart-5": "var(--cyan)", "--chart-6": "var(--red)",
+    "--code-background": "var(--panel2)", "--font-mono": "var(--mono)", "--radius": "8px",
+}
+
+
+def _vis_rule():
+    return re.search(r"\n  \.cw-vis\{([^}]*)\}", _real_template()).group(1)
+
+
+@pytest.mark.parametrize("name, value", _VIS_ALIASES.items())
+def test_cw_vis_aliases_t3_theme_names_to_page_tokens(name, value):
+    assert f"{name}:{value}" in _vis_rule()
+
+
+def test_cw_vis_surface_aliases_and_font_are_defined():
+    rule = _vis_rule()
+    for name in ("--accent-surface", "--destructive-surface", "--font-sans"):
+        assert name + ":" in rule
+    assert "color-mix(in srgb,var(--red) 14%,var(--panel))" in rule
+
+
+def test_cw_vis_sets_its_own_line_height_and_font_against_inherited_diff_values():
+    rule = _vis_rule()
+    assert "line-height:1.4" in rule and "font-family:var(--font-sans)" in rule
+
+
+def test_the_global_svg_text_restyle_leaves_pictures_alone():
+    template = _real_template()
+    assert "svg:not(.cw-vis svg) text{" in template
+    assert "\n  svg text{" not in template
+
+
+def test_pictures_are_never_wired_as_zoomable_diagrams():
+    sel = re.search(r"const DIAGRAM_SEL='([^']*)'", _real_template()).group(1)
+    assert "cw-vis" not in sel
+
+
+@pytest.mark.parametrize("gone", [
+    "wireStory", "storyNextIndex", "storyHunkKey", "cw-story", "cw-card", "cw-flow",
+    "svgbox", ".hop", ".spine", "In graph", "cw-ingraph", "wt-badge", "wireGroupTabs",
+])
+def test_template_carries_nothing_of_the_removed_story_and_flow_features(gone):
+    assert gone not in _real_template()
+
+
+def test_a_rendered_picture_reaches_the_page_untouched_by_the_template_script():
+    out = pics({"pr": PR_PIC, "groups": {}})
+
+    assert '<div class="cw-vis" role="group" aria-label="Before &amp; after"><p>pr-picture</p></div>' in out
+    script = "\n".join(re.findall(r"<script>(.*?)</script>", _real_template(), re.S))
+    assert "cw-vis" not in script and "cw-pr-picture" not in script

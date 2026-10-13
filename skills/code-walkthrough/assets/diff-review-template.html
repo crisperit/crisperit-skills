@@ -11,10 +11,8 @@
     --text:#e6e9ef; --muted:#9aa3b2; --accent:#7aa2f7; --green:#9ece6a;
     --yellow:#e0af68; --red:#f7768e; --cyan:#7dcfff; --purple:#bb9af7;
     --markbg:rgba(224,175,104,.28);
-    /* The story map's fixed palette (walkthrough.py's _group_color cycles through these by
-       index), built from the six named colours above rather than six new literals, so light
-       mode's redefinition of those below repaints the map too, with no separate light values
-       to keep in sync here. */
+    /* Group colours: walkthrough.py and sections.py cycle through these by index, built from the
+       six named colours so light mode repaints them. */
     --g1:var(--accent); --g2:var(--yellow); --g3:var(--green);
     --g4:var(--purple); --g5:var(--cyan); --g6:var(--red);
     --mono:ui-monospace,'JetBrains Mono','Fira Code',Menlo,Consolas,monospace;
@@ -86,7 +84,7 @@
   .fact b{display:block;font-size:var(--fs-sm);color:var(--accent);margin-bottom:4px}
   .fact span{font-size:var(--fs-sm);color:var(--text)}
   svg{max-width:100%;height:auto;display:block;margin:0 auto}
-  svg text{font-family:var(--mono);fill:var(--text)}
+  svg:not(.cw-vis svg) text{font-family:var(--mono);fill:var(--text)}
   svg .lane{stroke:var(--border);stroke-dasharray:4 4}
   svg .box{fill:var(--panel2);stroke:var(--border)}
   svg .arrow{stroke:var(--muted);fill:none;marker-end:url(#m)}
@@ -211,134 +209,9 @@
   .wt-group{display:flex;gap:8px;align-items:baseline;margin:24px 0 6px;padding:0;border:0;
     font-size:var(--fs-sm);color:var(--text)}
   .wt-group .wt-count,.wt-group .wt-viewed{color:var(--muted);font-size:var(--fs-xs);font-weight:400}
-  /* A single-diagram group carries no tab strip of its own (see .wt-tabs-row below), so its
-     maximise icon lands here instead, pushed to the row's other end same as .vd-ctl is inside
-     .wt-tabs -- .wt-group is already the flex row, no extra wrapper needed. */
-  .wt-group .vd-max-btn{margin-left:auto}
-  /* The group's own number, coloured to match its story-map stop (walkthrough.py sets --c on
-     the h3 itself, from the same palette index render_story used for that stop). */
-  .wt-badge{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;
-    background:var(--c);color:var(--bg);font-weight:700;font-size:var(--fs-xs)}
-  /* Back-link to this group's own stop in the story map above (only exists once has_story is
-     true -- walkthrough.py never emits this wrapper for a single, map-less group). */
-  .wt-badge-link{display:inline-block;border-radius:50%}
-  .wt-badge-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* .wrap>p sets the prose size and outranks a bare class, so this has to name both or
      a group's one-line why renders at full paragraph size. */
   .wrap>p.wt-why{margin:0 0 10px;color:var(--muted);font-size:var(--fs-xs)}
-
-  /* Story map: the reading order's own stops, one per group in story order, main line first
-     with hop labels between consecutive stops, side (supporting) groups listed below it
-     instead of in the chain. Vertical spine by default; a row only kicks in once each card
-     can clear ~200px, which depends on how many 140px-capped hops share the row with it --
-     see the tiered @media rules below rather than one flat breakpoint. */
-  .map{background:var(--panel);border:1px solid var(--border);border-radius:10px;
-    padding:16px;margin-bottom:20px}
-  /* var()-driven so each row-layout tier can flip .spine/.stop/.hop together by setting custom
-     properties on .map once (see the @media rules below), instead of repeating the tier's gate
-     selector per property. Fallbacks reproduce the original vertical/mobile values. */
-  .spine{display:flex;flex-direction:var(--map-dir,column);align-items:var(--map-align,normal);
-    gap:0}
-  .spine .stop{flex:var(--stop-flex,0 1 auto);min-width:var(--stop-minw,auto)}
-  .stop{display:block;text-decoration:none;color:inherit;background:var(--panel2);
-    border:1px solid var(--border);border-left:4px solid var(--c);border-radius:8px;
-    padding:10px 12px;transition:transform .15s}
-  .stop:hover{transform:translateY(-2px);border-color:var(--c)}
-  .stop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  /* The stop a group's own back-link (.wt-badge-link) lands on. A plain, non-animated
-     box-shadow rather than a fade: it needs no reduced-motion override of its own, and it
-     stays lit for as long as the reader is actually looking at this stop (the URL still names
-     it), not just for however long an animation happened to run. */
-  .stop:target{box-shadow:0 0 0 3px var(--c)}
-  .stop .n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;
-    background:var(--c);color:var(--bg);font-weight:700;font-size:var(--fs-xs);
-    margin-right:6px;vertical-align:1px}
-  .stop .t{font-weight:600;font-size:var(--fs-sm)}
-  .stop .m{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:3px}
-  /* The page-wide `code` rule above breaks anywhere the instant a word doesn't fit, even one
-     line short of a clean wrap; break-word only breaks as that last resort, so a card wide
-     enough for `assignSidePanelWindows` gets it whole instead of `applySidePanelC|onfig`.
-     Covers hop labels too, same reasoning. */
-  .map code{overflow-wrap:break-word}
-  .hop{display:flex;flex-direction:var(--hop-dir,row);align-items:var(--hop-align,center);
-    justify-content:var(--hop-justify,normal);text-align:var(--hop-text-align,inherit);
-    flex:var(--hop-flex,0 1 auto);min-width:var(--hop-minw,auto);max-width:var(--hop-maxw,none);
-    gap:8px;padding:var(--hop-pad,4px 0 4px 16px);color:var(--muted);font-size:var(--fs-xs)}
-  .hop::before{content:"";width:var(--hop-before-w,2px);height:var(--hop-before-h,22px);
-    background:var(--border)}
-  /* .hop is a flex container, so this <code> is a blockified flex item; min-width:0 drops its
-     automatic min-size (break-word, unlike anywhere, doesn't shrink that min-size to its own
-     wrap points), or an unbroken identifier holds the hop open past max-width regardless. The
-     row tiers below also set align-items:stretch: .hop's base align-items:center, written for
-     the mobile layout, would otherwise center this item at its natural width instead. */
-  .hop code{font-size:var(--fs-xs);min-width:0}
-  .map .side{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
-  .map .side .lbl{display:block;color:var(--muted);font-size:var(--fs-xs);margin-bottom:6px}
-  /* Row layout for 2-3 main-line stops: at most two hops share the row, and 1000px leaves
-     ~200px+ per card even then. flex-basis is a fixed 140px, not auto: auto sizes a flex item
-     from its own content, and a nowrap identifier used to make that content the width of the
-     whole word -- ~230px, on a real 4-stop map -- before flex-shrink ever ran. A fixed basis
-     plus a wrapping label (see .map code above) keeps the hop a connector, never something
-     competing with the cards for width. */
-  @media(min-width:1000px){
-    .map:not(:has(.spine .stop:nth-of-type(4))){
-      --map-dir:row;--map-align:stretch;--stop-flex:1 1 0;--stop-minw:0;--hop-flex:0 1 140px;
-      --hop-minw:64px;--hop-maxw:140px;--hop-dir:column;--hop-align:stretch;
-      --hop-justify:center;--hop-text-align:center;--hop-pad:0 4px;--hop-before-w:100%;
-      --hop-before-h:2px}
-    .map .side{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-    .map .side .lbl{margin:0;flex:0 0 auto}
-    .map .side .stop{flex:0 1 280px}
-  }
-  /* A 4th stop adds a 4th 140px-capped hop, so the same ~200px-per-card floor needs more total
-     width -- raised rather than folded into the tier above. Same row-mode variables as that
-     tier, just gated one stop-count higher. */
-  @media(min-width:1360px){
-    .map:has(.spine .stop:nth-of-type(4)):not(:has(.spine .stop:nth-of-type(5))){
-      --map-dir:row;--map-align:stretch;--stop-flex:1 1 0;--stop-minw:0;--hop-flex:0 1 140px;
-      --hop-minw:64px;--hop-maxw:140px;--hop-dir:column;--hop-align:stretch;
-      --hop-justify:center;--hop-text-align:center;--hop-pad:0 4px;--hop-before-w:100%;
-      --hop-before-h:2px}
-  }
-  /* 5-6 stops: deliberately no wider tier. Even the page's own 1400px wrap cap can't clear
-     ~200px per card once four 140px hops are subtracted, so the vertical spine above stays the
-     only layout for this many stops. */
-
-  /* One panel per group, directly under its .wt-why: a tab bar switches between the flow
-     diagram and the call graph when a group has both, so the two read as views of one thing
-     rather than two unrelated affordances. Just the one diagram, no tab bar, when a group has
-     only one of them -- a tab bar holding a single tab is noise (see walkthrough.py's
-     _group_panel). */
-  /* Wraps the tab strip together with its maximise icon so the icon always lands at the row's
-     far end, outside .wt-tabs's own flex flow -- .vd-ctl gets appended inside .wt-tabs at
-     runtime (see wireGroupTabs) and pushes itself right with the same margin:auto trick, which
-     would otherwise fight the icon for that same spot depending on DOM order. */
-  .wt-tabs-row{display:flex;align-items:center;gap:8px;margin:0 0 8px}
-  .wt-tabs-row .wt-tabs{margin:0;flex:1 1 auto}
-  .wt-tabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
-  .wt-tab{background:var(--panel2);border:1px solid var(--border);color:var(--muted);
-    border-radius:6px 6px 0 0;padding:6px 12px;cursor:pointer;font-size:var(--fs-xs);
-    font-weight:600}
-  .wt-tab[aria-selected="true"]{background:var(--panel);border-color:var(--accent);
-    color:var(--accent)}
-  .wt-tab:hover{color:var(--text)}
-  .wt-tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  /* The packages/symbols level toggle belongs to the call-graph tab, not a third tab of its
-     own; the level script moves .vd-ctl in here once, and this pushes it to the row's other
-     end so it doesn't read as a third button beside flow/call graph. */
-  .wt-tabs .vd-ctl{margin:0 0 0 auto}
-  /* .vd-ctl's own display:flex is an author-normal rule and always beats the UA stylesheet's
-     [hidden]{display:none}, cascade origin before specificity -- same reason .dl[hidden]
-     above needs its own override. Without this, toggling .hidden on .vd-ctl while the flow
-     tab is active (see wireGroupTabs) would leave the level toggle visible and clickable. */
-  .wt-tabs .vd-ctl[hidden]{display:none}
-  /* JS-controlled counterpart of `hidden` for a tabpanel that may still need to render a
-     mermaid diagram while inactive (see the level script): `display:none` measures every
-     label as zero and collapses the diagram permanently, so the inactive tab goes off-screen
-     instead, same technique as .svgbox-flow's own notes-toggle rule below. `inert`, set
-     alongside by the same script, is what actually drops it from the tab order and the
-     accessibility tree -- off-screen alone does not. */
-  .wt-tabpanel.wt-tab-off{position:absolute;left:-99999px;top:0;width:1200px}
 
   /* Complexity chip. Red for risen (must not be missed), purple for fallen, muted grey for the
      neutral states -- a new function's bare count, no change, and removed. Not green: the +N/-N
@@ -362,11 +235,9 @@
      heading's bottom border stays under both. */
   h2.h2-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
   h2.h2-row .ctl{display:flex;align-items:center;gap:10px}
-  /* Maximise icon, one style shared by every diagram's header row (this h2's .ctl, .wt-tabs-row,
-     and .wt-group when a group's single diagram has no tab strip to sit beside): opens the same
+  /* Maximise icon, one style shared by every diagram's header row (this h2's .ctl): opens the same
      #mermaid-zoom dialog a click on the diagram itself already does (see wire()/openZoom in the
-     template script), just reachable from the header too. align-self:center keeps it centred
-     regardless of the row's own align-items (.wt-group uses baseline, for its text). */
+     template script), just reachable from the header too. */
   .vd-max-btn{width:32px;height:32px;flex:none;align-self:center;display:inline-flex;
     align-items:center;justify-content:center;background:var(--panel2);
     border:1px solid var(--border);color:var(--text);border-radius:6px;cursor:pointer;
@@ -388,24 +259,10 @@
   #wt-notes-toggle:focus-visible,
   .vd-level-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Explanations are on by default; pressing the toggle drops this class and takes every
-     per-hunk note with it, plus a group's own why line and its whole diagram panel.
-     .hunk-note without the -hunk suffix is the file's one-line role, which stays either way.
-     `h3.wt-group ~` keeps this off the page-level FLOW diagram above the Walkthrough heading,
-     which carries no .wt-panel and stays visible either way; that diagram, and a group's own
-     default tab, both render eagerly at load (the startOnLoad loop and the level script run
-     regardless of this toggle), so the panel goes off-screen rather than display:none, or a
-     reader who loaded with explanations off ships it permanently collapsed. */
+     per-hunk note and each group's why line with it. .hunk-note without the -hunk suffix is the
+     file's one-line role, which stays either way. */
   body:not(.show-notes) .hunk-note-hunk,
   body:not(.show-notes) .wt-why{display:none}
-  body:not(.show-notes) h3.wt-group ~ .wt-panel{position:absolute;left:-99999px;top:0;
-    width:1200px}
-  /* A tabbed group's own maximise icon goes with it, off-screen inside that .wt-panel rule
-     above. A single-diagram group's icon lives directly in <h3> instead (no .wt-panel to
-     inherit that from -- see render_html/`_group_panel`), so without this it would keep
-     dangling here, clickable, for a diagram the reader just chose to hide. display:none is
-     fine for the icon itself, unlike the panel rule above: nothing here needs mermaid to
-     keep measuring it. */
-  body:not(.show-notes) h3.wt-group .vd-max-btn{display:none}
   /* The file name is the link to the file on the PR. Text colour is kept and only the
      underline carries the accent: 45 paths repainted blue is a wall of link, and the path is
      still the thing being read. Same muted decoration the note links use. */
@@ -453,32 +310,13 @@
   /* Dragging a graph to pan must never leave a native text selection behind or lose the drag
      to the browser starting one: mermaid renders every label as a real <text> node, and a
      pointerdown that begins a drag also begins selecting that text underneath it. Scoped to
-     the three panning surfaces only -- inline boxes, symbol-delta levels, the zoom modal's
-     clone -- so <pre class="diff"> and prose stay selectable. -webkit- prefix is still
+     the panning surfaces only -- symbol-delta levels, the zoom modal's clone -- so <pre class="diff"> and prose stay selectable. -webkit- prefix is still
      required by Safari on SVG. */
-  .svgbox,.svgbox svg,
   .vd-symbols .mermaid,.vd-symbols .mermaid svg,
   #mermaid-zoom-body,#mermaid-zoom-body svg{
     -webkit-user-select:none;user-select:none}
 
   /* mermaid zoom: full-size click-to-expand for the inline diagram */
-  /* A capped whole-repo module map still comes out around 4500px tall in a flowchart LR, which
-     pushed the note that explains it thousands of pixels below the fold (measured: 5647px down
-     an 794px viewport). Cap the box and let the svg's own preserveAspectRatio letterbox inside
-     it; the zoom modal and the overlay controls are how you get the detail back. FLOW doesn't
-     share that problem (authored at prose scale, ~13 nodes), so it gets its own rule below
-     instead of inheriting a cap sized for a much bigger diagram. */
-  .svgbox{cursor:zoom-in;position:relative;max-height:min(72vh,720px);overflow:hidden}
-  .svgbox:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .svgbox>svg{max-height:min(72vh,720px)}
-  /* FLOW fits rather than stretches: panZoom() sizes its svg from the viewBox, so it never
-     upscales past authored size. This just caps the box so nothing here re-stretches it. */
-  .svgbox.svgbox-flow .mermaid{max-height:min(72vh,720px)}
-  /* Same, before panZoom() runs or if it fails: without this, .mermaid svg{width:100%} above
-     would still upscale FLOW to the panel width. */
-  .svgbox-flow .mermaid svg{width:auto;max-width:100%}
-  /* Same reason, for the symbol-delta levels: they share FLOW's prose-scale sizing in
-     panZoom() (see the giant-label comment there), so need the same pre-panZoom fallback. */
   .vd-symbols .mermaid svg{width:auto;max-width:100%}
   .vd-failed{margin:0;padding:14px 16px;color:var(--yellow)}
   #mermaid-zoom{width:95vw;height:92vh;max-width:95vw;max-height:92vh;padding:0;
@@ -487,12 +325,8 @@
   #mermaid-zoom::backdrop{background:rgba(0,0,0,.6)}
   #mermaid-zoom-controls{position:absolute;top:10px;left:10px;z-index:2;display:flex;
     gap:6px;align-items:center;font-size:var(--fs-xs);color:var(--muted)}
-  /* A group's own .vd-ctl (legend + level toggle) moves in here while its graph is open
-     (see openZoom); its own margin is sized for the off-screen container it normally
-     sits in, not this tight overlay bar. */
-  #mermaid-zoom-controls .vd-ctl{margin:0}
   /* position:relative: the node menu positions itself absolutely inside this element for
-     the fullscreen clone, same as .svgbox already does for the inline graph. */
+     the fullscreen clone. */
   #mermaid-zoom-body{width:100%;height:100%;overflow:hidden;position:relative;
     padding:20px;box-sizing:border-box}
   #mermaid-zoom-body svg{max-width:none;margin:0 auto;display:block}
@@ -586,24 +420,21 @@
     box-shadow:0 0 0 5px var(--panel),0 0 0 6px var(--muted)}
   .mermaid svg span.edgeLabel{background:transparent!important;font-weight:700}
   /* Each level is its own box: only one is ever unhidden at a time (see the level script), so
-     the click-to-expand wiring below treats it exactly like a .svgbox rather than needing a
-     wrapping panel around both. It carries the panel itself rather than the .panel class,
-     which would put one element in two click-to-zoom code paths at once. */
+     the click-to-expand wiring below treats each as its own box. It carries the panel itself
+     rather than the .panel class, which would put one element in two click-to-zoom code paths
+     at once. */
   .vd-symbols .mermaid{cursor:zoom-in;position:relative;max-height:min(72vh,720px);
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px}
   .vd-symbols .mermaid:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-  /* Same alignment idiom as h2.h2-row .ctl. Doubles as the call-graph tab's own control row
-     once the level script moves it into .wt-tabs, and as the dialog's controls row while a
-     group's graph is zoomed: openZoom moves this element into #mermaid-zoom-controls for the
-     duration, then back to wherever it currently lives on close. */
+  /* Same alignment idiom as h2.h2-row .ctl. */
   .vd-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0}
   /* The graph's plain-text moved list, under its note */
   .vd-moved{margin:10px 0 0;padding-left:20px;font-size:var(--fs-sm);color:var(--muted)}
   .vd-moved li{margin:4px 0}
 
   /* System structure view (scripts/sections.py render_structure): real components in call-depth
-     columns, coloured by story group like the story map above, with call/implements edges drawn
+     columns, coloured by story group, with call/implements edges drawn
      over the boxes' own screen geometry by a small script below rather than mermaid -- dagre has
      no notion of "column by caller depth", the one layout this view exists to draw. */
   .vd-structure{margin:0 0 20px}
@@ -617,11 +448,11 @@
   .vds-scroll{overflow-x:auto;background:var(--panel);border:1px solid var(--border);
     border-radius:12px;-webkit-overflow-scrolling:touch}
   .vds-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  /* The diagram container itself is the full-size control, same idiom .svgbox/.vd-symbols
-     .mermaid use above: zoom-in cursor at rest, its own focus-visible ring, click/Enter/Space
+  /* The diagram container itself is the full-size control, same idiom .vd-symbols
+     .mermaid uses above: zoom-in cursor at rest, its own focus-visible ring, click/Enter/Space
      opens #mermaid-zoom (see wire()/openZoom() in the template script). A box's own
      cursor:pointer below wins over this on hover, same as a mermaid node's cursor wins over
-     its ancestor .svgbox there. */
+     its ancestor box there. */
   .vds-sys{position:relative;min-width:640px;padding:16px 48px 20px 26px;cursor:zoom-in}
   .vds-sys:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .vds-sys svg.vds-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
@@ -1284,52 +1115,24 @@
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
 
-  .cw-story h3{margin:18px 0 4px}
-  .cw-story h4{margin:14px 0 4px;color:var(--muted);font-size:var(--fs-sm)}
-  .cw-story p{margin:4px 0}
-  .cw-bridge{color:var(--muted);font-style:italic}
-  .cw-flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
-  .cw-card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;
-    background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);
-    padding:8px 12px;font:inherit;cursor:pointer;max-width:100%}
-  .cw-card:hover{border-color:var(--accent)}
-  .cw-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .cw-card[aria-pressed="true"]{border-color:var(--accent);
-    background:color-mix(in srgb,var(--accent) 12%,var(--panel2))}
-  .cw-card-label{font:600 var(--fs-sm) var(--mono);overflow-wrap:anywhere}
-  .cw-card-loc{font:var(--fs-xs) var(--mono);color:var(--muted)}
-  .cw-card-meta{display:flex;gap:6px;align-items:center}
-  .cw-badge{font:600 var(--fs-xs) system-ui;border-radius:999px;padding:1px 8px;
-    background:color-mix(in srgb,var(--muted) 18%,transparent);color:var(--muted)}
-  .cw-badge.new{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
-  .cw-badge.changed{background:color-mix(in srgb,var(--yellow) 18%,transparent);color:var(--yellow)}
-  .cw-badge.gone{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
-  .cw-cx{font:var(--fs-xs) var(--mono);color:var(--muted)}
-  .cw-story-detail{margin:10px 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
-    background:var(--panel2);color:var(--muted);font-size:var(--fs-sm)}
-  .cw-story-loc{font:var(--fs-xs) var(--mono);color:var(--text);overflow-wrap:anywhere}
-  .cw-story-cx{font:var(--fs-xs) var(--mono);margin:2px 0}
-  .cw-story-code{margin:6px 0;overflow-x:auto;font:var(--fs-xs) var(--mono);color:var(--text);white-space:pre}
-  .cw-story-open{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border);
-    border-radius:6px;padding:4px 10px;cursor:pointer}
-  .cw-story-open:hover{border-color:var(--accent)}
-  .cw-ingraph{position:relative;margin-left:8px;padding:0 8px;vertical-align:middle;line-height:1.3;
-    font:600 var(--fs-xs) system-ui;color:var(--accent);background:var(--panel2);
-    border:1px solid var(--border);border-radius:999px;cursor:pointer;user-select:none}
-  .cw-ingraph:hover{border-color:var(--accent)}
-  .cw-ingraph:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .cw-story-pulse{outline:2px solid var(--accent);outline-offset:2px}
-  @media (prefers-reduced-motion:no-preference){
-    .cw-story-pulse{animation:cw-story-pulse 1.4s ease-out}
-  }
-  @keyframes cw-story-pulse{0%{outline-offset:8px;outline-color:transparent}30%{outline-offset:2px;outline-color:var(--accent)}100%{outline-color:transparent}}
-  .cw-arrow{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-xs)}
-  .cw-arrow::before{content:'\2192';font-size:var(--fs-md);color:var(--accent)}
-  @media (max-width:480px){
-    .cw-flow{flex-direction:column;align-items:stretch}
-    .cw-arrow{justify-content:center}
-    .cw-arrow::before{content:'\2193'}
-  }
+  /* Model-drawn pictures (render.py's cw-pr-picture and per-group cw-vis-group). The fragments
+     are written against T3's theme names, so they are aliased to this page's tokens here and
+     follow its light/dark switch. Explicit font and line-height: .diff sets line-height:0 and
+     the page's mono face, neither of which a picture may inherit. */
+  .cw-vis{--background:var(--bg);--foreground:var(--text);--card:var(--panel);
+    --muted-foreground:var(--muted);--success:var(--green);--warning:var(--yellow);
+    --destructive:var(--red);--chart-1:var(--accent);--chart-2:var(--green);
+    --chart-3:var(--yellow);--chart-4:var(--purple);--chart-5:var(--cyan);--chart-6:var(--red);
+    --accent-surface:color-mix(in srgb,var(--accent) 14%,var(--panel));
+    --destructive-surface:color-mix(in srgb,var(--red) 14%,var(--panel));
+    --code-background:var(--panel2);--font-mono:var(--mono);
+    --font-sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;--radius:8px;
+    margin:12px 0;padding:12px;background:var(--panel);border:1px solid var(--border);
+    border-radius:10px;overflow-x:auto;max-width:100%;font-family:var(--font-sans);
+    font-size:var(--fs-md);line-height:1.4;color:var(--text)}
+  .cw-vis svg{display:block;width:100%;height:auto;max-width:760px;margin:0 auto}
+  .cw-vis img{max-width:100%}
+  .cw-vis-group{margin:8px 0 14px}
 
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
      carries an unconditional rule elsewhere (width/height) at this same ID specificity, and a
@@ -1339,7 +1142,7 @@
   @media (pointer:coarse){
     #mermaid-zoom-close{width:44px;height:44px;font-size:16px}
     .vd-max-btn{width:44px;height:44px}
-    .vd-level-toggle,.wt-tab{min-height:44px;padding:10px 14px}
+    .vd-level-toggle{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
     #wt-notes-toggle{min-height:44px;padding:10px 14px}
     #hr-comments-btn,#cw-live-reload{height:44px}
@@ -1366,15 +1169,12 @@
     .fb-reply-input{min-height:36px}
     .fb-reply-box .fb-reply-send::before{content:'';position:absolute;inset:-9px}
     .fb-item .fb-quiet,.fb-actions .fb-quiet{min-height:44px}
-    .stop{min-height:44px}
-    .cw-card{min-height:44px}
-    .cw-story-detail button{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
     /* Hit area grows, visible size doesn't: a 44px button here would overlap the line number
        and the row above/below. ::before extends the tappable region on all sides instead,
        via inset rather than negative margins, so it never adds to .dline-plus's own box and
        can't grow the row's layout height. */
-    .dline-plus::before,.cw-ref-dot-btn::before,.cw-ingraph::before{content:'';position:absolute;inset:-16px}
+    .dline-plus::before,.cw-ref-dot-btn::before{content:'';position:absolute;inset:-16px}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */
@@ -1545,55 +1345,6 @@
     if (edgeLabels) root.appendChild(edgeLabels);
   }
 
-  // Standard two-tab ARIA pattern for a group's .wt-panel (walkthrough.py's _group_panel):
-  // click or an arrow key selects a tab, shows its panel and pushes the other off-screen
-  // (never display:none -- see .wt-tab-off) rather than removing it, and the call-graph tab
-  // renders its diagram the first time it is actually chosen instead of at load. `ensureShown`
-  // is the enclosing per-root showLevel, passed in rather than looked up, since it closes over
-  // that root's own `level`/`toggle`/`levels` state.
-  function wireGroupTabs(panel, tabs, graphRoot, ensureShown) {
-    const tabEls = [...tabs.querySelectorAll('.wt-tab')];
-    const flowTab = tabEls.find(t => t.dataset.tab === 'flow');
-    const graphTab = tabEls.find(t => t.dataset.tab === 'graph');
-    if (!flowTab || !graphTab) return;
-    const flowPanel = panel.querySelector('#' + flowTab.getAttribute('aria-controls'));
-    const graphPanel = panel.querySelector('#' + graphTab.getAttribute('aria-controls'));
-    if (!flowPanel || !graphPanel) return;
-    // Moved once, permanently, rather than shuttled back and forth on every tab switch: only
-    // its own hidden attribute needs to change after this, driven by which tab is active.
-    const ctl = graphRoot.querySelector('.vd-ctl');
-    if (ctl) tabs.appendChild(ctl);
-    let graphOpened = false;
-
-    function showPanel(tab, tabPanel, active) {
-      tab.setAttribute('aria-selected', String(active));
-      tab.tabIndex = active ? 0 : -1;
-      tabPanel.classList.toggle('wt-tab-off', !active);
-      tabPanel.inert = !active;
-      tabPanel.hidden = false; // JS owns visibility from here on, not the static markup
-    }
-
-    async function activate(tab, focusIt) {
-      const isGraph = tab === graphTab;
-      showPanel(flowTab, flowPanel, !isGraph);
-      showPanel(graphTab, graphPanel, isGraph);
-      if (ctl) ctl.hidden = !isGraph;
-      if (focusIt) tab.focus();
-      if (isGraph && !graphOpened) { graphOpened = true; await ensureShown(); }
-    }
-
-    flowTab.addEventListener('click', () => activate(flowTab, false));
-    graphTab.addEventListener('click', () => activate(graphTab, false));
-    tabEls.forEach((tab, i) => {
-      tab.addEventListener('keydown', e => {
-        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-        e.preventDefault();
-        activate(tabEls[i === 0 ? 1 : 0], true);
-      });
-    });
-    activate(flowTab, false);
-  }
-
   let flowSeq = 0;
   for (const el of document.querySelectorAll('.mermaid:not([data-level])')) {
     try {
@@ -1610,9 +1361,7 @@
   // sizes against the container it's given, and a `hidden`/display:none container measures
   // everything as 0 and collapses the diagram (measured viewBox "-8 -8 16 16" against a correct
   // "0 0 598.157 494"). Each level is unhidden and moved off-screen -- real layout, just not on
-  // screen -- only for the duration of its own render call. A per-group graph draws on its own
-  // schedule too: only once the reader actually picks its call-graph tab, not at load (see
-  // wireGroupTabs above).
+  // screen -- only for the duration of its own render call.
   // Renders still run one at a time, now across every root rather than per root: mermaid's
   // id/def bookkeeping is shared page-wide, so two in-flight calls from different roots
   // collide exactly like two clicks on one toggle did before.
@@ -1655,13 +1404,6 @@
       if (stale) stale.remove();
       const shown = levels.find(el => !el.hidden);
       if (shown && shown.dataset.legend) toggle.insertAdjacentHTML('beforebegin', shown.dataset.legend);
-      // A group's toggle can be sitting inside the zoom dialog right now (openZoom moves
-      // .vd-ctl into #mermaid-zoom-controls while that group's graph is open), so a level
-      // switch made there has to redraw the dialog too, or it's left showing the old level
-      // under a toggle now claiming the other.
-      if (shown && toggle.closest('#mermaid-zoom-controls') && window.__vdZoomOpen) {
-        window.__vdZoomOpen(shown);
-      }
     }
     toggle.addEventListener('click', () => { showLevel(level === 1 ? 2 : 1); });
 
@@ -1699,25 +1441,16 @@
       el.hidden = true; // showLevel() below unhides only the level the slider actually wants
     }
 
-    const panel = root.closest('.wt-panel');
-    const tabs = panel && panel.querySelector('.wt-tabs');
-    if (tabs) {
-      wireGroupTabs(panel, tabs, root, () => showLevel(level));
+    // Inside a closed <details> (the "All symbols" section) mermaid measures the labels as
+    // zero and degenerate() would mark the render failed, so it waits for the first open.
+    const closed = root.closest('details');
+    if (closed && !closed.open) {
+      let opened = false;
+      closed.addEventListener('toggle', () => {
+        if (closed.open && !opened) { opened = true; showLevel(level); }
+      });
     } else {
-      // Either the page-level section (no .wt-panel at all) or a group whose graph is the
-      // only diagram it has (a .wt-panel with no tab bar -- see _group_panel): both show
-      // their default level in place from the start, so both render here at load.
-      // Inside a closed <details> (the story's "All symbols") mermaid measures the labels as
-      // zero and degenerate() would mark the render failed, so it waits for the first open.
-      const closed = root.closest('details');
-      if (closed && !closed.open) {
-        let opened = false;
-        closed.addEventListener('toggle', () => {
-          if (closed.open && !opened) { opened = true; showLevel(level); }
-        });
-      } else {
-        await showLevel(level);
-      }
+      await showLevel(level);
     }
   }
 })();
@@ -1759,7 +1492,7 @@
   // had already dropped vd-nav off it. An element identity can't be serialised.
   function tagNavNodes(box,svg){
     if(navWired.has(svg)) return;
-    if(box.dataset.ids===undefined) return; // no map on this box at all (e.g. FLOW's .svgbox)
+    if(box.dataset.ids===undefined) return; // no map on this box at all
     let ids;
     try{ ids=JSON.parse(box.dataset.ids); }catch(_){ return; }
     // Optional: only the level-2 symbols box carries this (id_to_loc), for "Go to symbol".
@@ -1967,7 +1700,6 @@
     openMenu(container,node,path,items,x,y);
   }
   dlg.addEventListener('close',()=>closeNavMenu());
-  dlg.addEventListener('close',restoreGroupControls);
   // Every opener stopPropagation()s or never fires a 'click' at all (panZoom's own
   // suppressClick already swallows a pan-ending click), so this never eats the click that
   // opened the menu.
@@ -2009,8 +1741,8 @@
     const apply=()=>{ svg.setAttribute('viewBox',view.join(' ')); if(onChange) onChange(); };
     if(mode==='inline'){
       svg.removeAttribute('width'); svg.removeAttribute('height');
-      if(svg.closest('.svgbox-flow, .vd-symbols')){
-        // FLOW and the symbol-delta levels are prose-scale, not container-filling maps: size
+      if(svg.closest('.vd-symbols')){
+        // The symbol-delta levels are prose-scale, not container-filling maps: size
         // from their own viewBox so they shrink to fit a narrow screen but never upscale past
         // authored size (the giant-label bug). maxHeight letterboxes it inside the box's cap.
         svg.style.width=box[2]+'px'; svg.style.maxWidth='100%';
@@ -2020,8 +1752,8 @@
         // Size from the container width and the viewBox ratio, never from a measured pixel
         // width: measuring can capture the svg's overflowed natural size (wider than the panel,
         // the Fit bug) or a pre-layout 0x0 from wire()'s MutationObserver, and pinning to either
-        // breaks the diagram. height:auto (not 100%) is what avoids the collapse .svgbox's
-        // auto height would otherwise cause.
+        // breaks the diagram. height:auto (not 100%) avoids the collapse an auto-height
+        // container would otherwise cause.
         svg.style.width='100%'; svg.style.height='auto'; svg.style.aspectRatio=box[2]+'/'+box[3];
       }
       svg.style.touchAction='pan-y';
@@ -2071,10 +1803,9 @@
     const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
     const mid=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
     const beginDrag=(x,y)=>{ drag={x,y,view:view.slice(),rect:svg.getBoundingClientRect()}; };
-    // Node menu container: the inline graph positions it inside its own .svgbox, or -- for a
-    // symbol-delta level, which has no .svgbox ancestor -- the level's own .mermaid box; both
-    // carry position:relative. The fullscreen clone uses #mermaid-zoom-body instead.
-    const navContainer=()=>mode==='modal'?zbody:svg.closest('.svgbox, .vd-symbols .mermaid');
+    // Node menu container: the level's own .mermaid box, which carries position:relative. The
+    // fullscreen clone uses #mermaid-zoom-body instead.
+    const navContainer=()=>mode==='modal'?zbody:svg.closest('.vd-symbols .mermaid');
     // A lone touch pointer's type has to survive into endPointer, so a pinch that drops to one
     // finger can tell whether to resume a manual drag or leave it to touch-action:pan-y below.
     svg.addEventListener('pointerdown',e=>{
@@ -2153,22 +1884,12 @@
     svg.style.cursor='grab';
     return api;
   }
-  // The svg actually on screen inside `box`: for a FLOW box that's its one .mermaid child, for
+  // The svg actually on screen inside `box`: for a wrapper that's its one .mermaid child, for
   // a graph level box (box IS the .mermaid element, one per detail level, siblings hidden by
   // the level script) it's the box's own svg.
   function visibleSvg(box){
     return box.matches('.mermaid')?box.querySelector('svg')
       :box.querySelector('.mermaid:not([hidden]) svg');
-  }
-  // The group's .vd-ctl currently living in #mermaid-zoom-controls, and where to put it back:
-  // its original next sibling (or null, meaning it was the last child), not just its parent,
-  // so restoring puts it back at the same end of .wt-tabs it was appended to rather than in
-  // front of the tab buttons.
-  let activeGroupCtl=null,activeGroupHome=null,activeGroupNext=null;
-  function restoreGroupControls(){
-    if(!activeGroupCtl) return;
-    activeGroupHome.insertBefore(activeGroupCtl,activeGroupNext);
-    activeGroupCtl=null; activeGroupHome=null; activeGroupNext=null;
   }
   // System structure view (a later, separate script -- see "System structure view" below):
   // it is HTML boxes plus an svg overlay, not one <svg>, so it clones and wires itself rather
@@ -2183,7 +1904,7 @@
     // cloned box elements read as unwired on their own.
     // Strip the container's own zoom-opening semantics from the clone: it sits inside the
     // already-open dialog, so "expand to full size" on it would do nothing useful, same reason
-    // this function otherwise only ever clones the innermost <svg>, never the wired .svgbox
+    // this function otherwise only ever clones the innermost <svg>, never the wired box
     // around it.
     clone.removeAttribute('tabindex'); clone.removeAttribute('role');
     clone.removeAttribute('aria-label'); delete clone.dataset.zoomWired;
@@ -2196,7 +1917,7 @@
     if(cloneCols) cloneCols.style.removeProperty('column-gap');
     zbody.replaceChildren(clone);
     if(!dlg.open) dlg.showModal();
-    zctl.hidden=true; // no group legend/level toggle to show for this diagram type
+    zctl.hidden=true;
     // Torn down on close, not left to the next open to replace: these listeners are bound to
     // the shared #mermaid-zoom-body, not this clone, so they'd otherwise keep intercepting
     // wheel/drag on whatever the dialog shows next.
@@ -2208,28 +1929,13 @@
     closeNavMenu(); // otherwise the inline menu is left open, hidden behind the dialog
     const svg=visibleSvg(box);
     if(!svg) return;
-    tagNavNodes(box,svg); // a group's call-graph tab renders on first pick (see wireGroupTabs), so this can run ahead of wire()'s own MutationObserver pass
-    // .vd-ctl belongs to the call-graph tab only; box.closest('.vd-symbols') is what tells its
-    // mermaid boxes apart from the flow box, which never sits inside .vd-symbols and shares
-    // only the outer .wt-panel with it -- .wt-panel alone would also pull the level toggle
-    // into the dialog when zooming flow.
-    const panel=box.closest('.wt-panel');
-    const ctl=panel&&box.closest('.vd-symbols')&&panel.querySelector('.vd-ctl');
+    tagNavNodes(box,svg);
     if(!dlg.open) dlg.showModal(); // showModal() throws if already open -- the dialog's own level toggle re-opens here to refresh, not to open a second time
     const clone=svg.cloneNode(true);
     clone.__navSource=svg; // focusNavNode/clearNavFocus mirror onto this, so fullscreen focus changes survive the dialog closing
     zbody.replaceChildren(clone);
     const api=panZoom(clone,'modal');
-    // A group's own legend and level toggle sit in its .wt-tabs (see wireGroupTabs), so while
-    // its graph is open here they move into the dialog's own controls row instead -- moved,
-    // not cloned, so the toggle's existing click listener (level script) keeps driving it --
-    // and back out on close, see restoreGroupControls.
-    if(ctl&&ctl.parentNode!==zctl){
-      restoreGroupControls();
-      activeGroupCtl=ctl; activeGroupHome=ctl.parentNode; activeGroupNext=ctl.nextSibling;
-      zctl.insertBefore(ctl,zctl.firstChild);
-    }
-    zctl.hidden=!api&&!ctl;
+    zctl.hidden=!api;
   }
   function wire(box){
     // The structure view's own container: click on empty space or Enter/Space opens the
@@ -2264,7 +1970,7 @@
     if(pzWired.has(svg)) return;
     panZoom(svg,'inline');
   }
-  const DIAGRAM_SEL='.svgbox, .vd-symbols .mermaid, .vds-sys';
+  const DIAGRAM_SEL='.vd-symbols .mermaid, .vds-sys';
   function wireAll(){
     document.querySelectorAll(DIAGRAM_SEL).forEach(wire);
   }
@@ -2275,22 +1981,20 @@
   new MutationObserver(wireAll).observe(document.getElementById('plan-content'),
     {childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   wireAll();
-  // The box a header's maximise icon should open: the same hidden/off-screen signals wire()
-  // and wireGroupTabs already use to mark a diagram "not the one showing" (a level's own
-  // `hidden`, or a tab's `.wt-tab-off`), not a third way of tracking which diagram is active.
+  // The box a header's maximise icon should open: the one not inside a `hidden` level, the same
+  // signal wire() uses to mark a diagram "not the one showing".
   function currentDiagramBox(container){
     if(!container) return null;
     const candidates=container.matches(DIAGRAM_SEL)?[container]:[];
     candidates.push(...container.querySelectorAll(DIAGRAM_SEL));
-    return candidates.find(el=>!el.closest('[hidden]')&&!el.closest('.wt-tab-off'))||null;
+    return candidates.find(el=>!el.closest('[hidden]'))||null;
   }
   // Where a maximise button's own diagram lives: the nearest wrapping container when there is
-  // one (.vd-symbols, .vd-structure, a group's .wt-panel), or -- FLOW's h2 and a single-diagram
-  // group's h3, neither of which wraps its diagram -- the next element after that heading which
-  // actually holds one, stopping at the next heading so a gap between sections can't leak the
+  // one (.vd-symbols, .vd-structure), or -- a heading that does not wrap its diagram -- the next
+  // element after that heading which actually holds one, stopping at the next heading so a gap between sections can't leak the
   // wrong one in.
   function diagramContainerFor(btn){
-    const wrap=btn.closest('.vd-symbols, .vd-structure, .wt-panel');
+    const wrap=btn.closest('.vd-symbols, .vd-structure');
     if(wrap) return wrap;
     const heading=btn.closest('h2, h3');
     for(let el=heading&&heading.nextElementSibling;el;el=el.nextElementSibling){
@@ -6986,145 +6690,10 @@ document.querySelectorAll('summary a').forEach(a => {
 </script>
 <script>
 (function(){
-  function storyNextIndex(i,n,key){
-    if(n<=0) return -1;
-    if(key==='ArrowRight'||key==='ArrowDown') return Math.min(i+1,n-1);
-    if(key==='ArrowLeft'||key==='ArrowUp') return Math.max(i-1,0);
-    if(key==='Home') return 0;
-    if(key==='End') return n-1;
-    return -1;
-  }
-  function storyHunkKey(path,headerText){
-    const m=/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.exec(headerText);
-    return m?path+'\t'+m[0]:null;
-  }
-  function wireStory(){
-    const sec=document.getElementById('cw-story'), blob=document.getElementById('cw-story-data');
-    const root=document.getElementById('cw-story-root');
-    if(!sec||!blob||!root) return;
-    let data;
-    try{ data=JSON.parse(blob.textContent); }catch(e){ return; }
-    if(!data||!Array.isArray(data.visuals)||!data.syms) return;
-    const mk=(tag,cls,text)=>{
-      const e=document.createElement(tag);
-      if(cls) e.className=cls;
-      if(text!=null) e.textContent=text;
-      return e;
-    };
-    const firstCard=new Map();
-    const card=id=>{
-      const s=data.syms[id], b=mk('button','cw-card');
-      b.type='button';
-      b.setAttribute('aria-pressed','false');
-      b.dataset.sym=id;
-      b.append(mk('span','cw-card-label',s.label),
-        mk('span','cw-card-loc',String(s.file).split('/').pop()+':'+s.start));
-      const meta=mk('span','cw-card-meta');
-      meta.append(mk('span','cw-badge '+s.state,s.state));
-      if(s.cx) meta.append(mk('span','cw-cx',s.cx[0]+'\u2192'+s.cx[1]));
-      b.append(meta);
-      return b;
-    };
-    for(const v of data.visuals){
-      const vis=mk('section','cw-visual');
-      const detail=mk('div','cw-story-detail','Select a symbol to see its code');
-      detail.setAttribute('aria-live','polite');
-      const cards=[];
-      const select=b=>{
-        cards.forEach(c=>{
-          const on=c===b;
-          c.setAttribute('aria-pressed',on?'true':'false');
-          c.tabIndex=on?0:-1;
-        });
-        const s=data.syms[b.dataset.sym];
-        detail.replaceChildren(mk('div','cw-story-loc',s.file+':'+s.start+'-'+s.end));
-        if(s.cx) detail.append(mk('div','cw-story-cx','complexity '+s.cx[0]+' \u2192 '+s.cx[1]+' branches'));
-        const code=mk('div','cw-story-code diff');
-        for(const [k,t] of (s.code||[]).slice(0,4)) code.append(mk('span',k,t));
-        if(code.childNodes.length) detail.append(code);
-        const open=mk('button','cw-story-open','Open in diff');
-        open.type='button';
-        open.addEventListener('click',()=>{
-          const sp=window.__vdSymbolSpan(s.file,s.side,s.start,Math.max(s.end,s.start));
-          if(sp) window.__vdGoToLine(sp); else window.__vdGoToFile(s.file);
-        });
-        detail.append(open);
-      };
-      vis.append(mk('h3',null,v.title));
-      if(v.intro) vis.append(mk('p',null,v.intro));
-      v.acts.forEach((act,ai)=>{
-        if(ai>0&&v.acts[ai-1].bridge) vis.append(mk('p','cw-bridge',v.acts[ai-1].bridge));
-        vis.append(mk('h4',null,act.title));
-        if(act.text) vis.append(mk('p',null,act.text));
-        const flow=mk('div','cw-flow');
-        let pendingEdge=null, seen=false;
-        for(const item of act.flow){
-          if(item.edge!=null){ pendingEdge=item.edge; continue; }
-          if(!data.syms[item.sym]) continue;
-          if(seen){
-            const a=mk('span','cw-arrow');
-            if(pendingEdge) a.append(mk('span',null,pendingEdge));
-            flow.append(a);
-          }
-          pendingEdge=null; seen=true;
-          const c=card(item.sym);
-          c.tabIndex=-1;
-          c.addEventListener('click',()=>select(c));
-          c.addEventListener('keydown',e=>{
-            const i=storyNextIndex(cards.indexOf(c),cards.length,e.key);
-            if(i<0) return;
-            e.preventDefault();
-            cards[i].focus();
-            select(cards[i]);
-          });
-          cards.push(c);
-          if(!firstCard.has(item.sym)) firstCard.set(item.sym,{c,select});
-          flow.append(c);
-        }
-        vis.append(flow);
-      });
-      if(cards.length) cards[0].tabIndex=0;
-      vis.append(detail);
-      root.append(vis);
-    }
-    const byHunk=new Map();
-    for(const [id,e] of firstCard) for(const h of data.syms[id].hunks||[]) if(!byHunk.has(h)) byHunk.set(h,{id,...e});
-    let pulseT=0;
-    const stop=e=>e.stopPropagation();
-    for(const d of document.querySelectorAll('details.hunk')){
-      const pe=d.querySelector('.hunk-path'), path=pe?pe.textContent.trim():'';
-      for(const h of d.querySelectorAll('span.h')){
-        const t=byHunk.get(storyHunkKey(path,h.textContent));
-        if(!t) continue;
-        const chip=mk('button','cw-ingraph','In graph');
-        chip.type='button';
-        chip.setAttribute('aria-label','Show '+data.syms[t.id].label+' in the story');
-        // summary toggles on click and the gutter starts a selection on pointer/mouse down.
-        for(const ev of ['pointerdown','pointerup','mousedown','mouseup']) chip.addEventListener(ev,stop);
-        chip.addEventListener('click',e=>{
-          e.stopPropagation();
-          t.c.scrollIntoView({block:'center'});
-          t.select(t.c);
-          t.c.focus({preventScroll:true});
-          clearTimeout(pulseT);
-          document.querySelectorAll('.cw-story-pulse').forEach(x=>x.classList.remove('cw-story-pulse'));
-          t.c.classList.add('cw-story-pulse');
-          pulseT=setTimeout(()=>t.c.classList.remove('cw-story-pulse'),1400);
-        });
-        h.append(chip);
-      }
-    }
-    sec.hidden=false;
-  }
-  wireStory();
-})();
-</script>
-<script>
-(function(){
   if(window.CW_LIVE){
     const LIVE=window.CW_LIVE;
     // Mirrors cw_run.py's STEPS tuple; keep in sync.
-    const STEP_ORDER=['capture','split','skeleton','worktree','complexity','symdelta','small',
+    const STEP_ORDER=['capture','split','skeleton','worktree','complexity','symdelta','visuals','small',
       'prose','routed','comments','threads','thread','prepare','render','run'];
     let liveStatus=LIVE.status, liveError=LIVE.error, liveRemedy=LIVE.remedy;
     let liveSteps=LIVE.steps||{}, liveBatches=LIVE.batches||{done:0,total:0};
