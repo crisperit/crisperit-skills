@@ -1187,3 +1187,23 @@ def test_github_draft_dismissal_and_edit_reach_the_next_prompt():
         cw_ask.mark_outcome(d, one["oid"], "published")
         assert "published" not in cw_ask.build_prompt(d, dict(ANCHOR_LINE), "next", "q1", resumed=True)
 
+
+
+def test_ensure_ctx_restores_an_edited_copy():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        ctx = cw_ask._ensure_ctx(d)
+        original = (d / "raw.diff").read_text()
+        (ctx / "raw.diff").write_text("tampered")
+        cw_ask._ensure_ctx(d)
+        assert (ctx / "raw.diff").read_text() == original
+
+
+def test_discarded_edits_reach_the_next_prompt():
+    with cw_testlib.temp_home() as home:
+        d = _claude_done(home)
+        cw_ask.append_outcome(d, "q1", "q1", "edits", "done", {"files": ["a.py"]}, None)
+        oid = cw_ask.read_outcomes(d)[0]["oid"]
+        cw_ask.outcome_action(d, oid, "discard", None)
+        text = cw_ask._outcome_updates_text(d, "q1", since_last_turn=False)
+        assert "discarded your edits to the shared worktree" in text

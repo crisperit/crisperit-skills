@@ -553,6 +553,10 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
             elif r.get("state") == "proposed":
                 lines.append(f"The user edited your proposed code task to: {payload['title']}")
             continue
+        if o["outcome"] == "edits":
+            if r.get("state") == "discarded":
+                lines.append("The user discarded your edits to the shared worktree; it has been reset")
+            continue
         if o["outcome"] == "draft_comments":
             if r.get("state") == "dismissed":
                 lines.append(f"The user removed the {len(payload['comments'])} draft comments you posted")
@@ -624,7 +628,7 @@ def _thread_text(d, anchor):
 
 def _ensure_ctx(d):
     """Copies, not symlinks: the model reads them through --add-dir and the analysis can be
-    replaced under it. A copy is refreshed only when its source is newer."""
+    replaced under it. Rewritten from the source on every use: the Full agent can write here."""
     ctx = d / "ctx"
     ctx.mkdir(exist_ok=True)
     analysis = d / "analysis.json"
@@ -632,7 +636,7 @@ def _ensure_ctx(d):
         analysis = d / "analysis.partial.json"
     for source, name in ((analysis, "analysis.json"), (d / "raw.diff", "raw.diff")):
         dest = ctx / name
-        if source.exists() and (not dest.exists() or source.stat().st_mtime > dest.stat().st_mtime):
+        if source.exists():
             shutil.copyfile(source, dest)
     return ctx
 

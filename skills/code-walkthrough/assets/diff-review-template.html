@@ -5059,9 +5059,11 @@
         postJson('/outcomes/'+encodeURIComponent(o.oid)+'/dismiss',{})
           .then(({ok,body})=>{
             if(!ok||!body.outcome){ rm.disabled=false; msg.textContent=errText(body); return; }
-            ids.forEach(deleteNote);
+            const left=ids.filter(id=>{ const n=noteById(id); return n&&n.state!=='draft'; });
+            ids.filter(id=>!left.includes(id)).forEach(deleteNote);
             upsertOutcome(body.outcome);
             renderNotes();
+            if(left.length) msg.textContent=left.length+' already in your review, left as is';
           })
           .catch(()=>{ rm.disabled=false; msg.textContent=NET_ERR; });
       });
@@ -5616,7 +5618,7 @@
       const c={box,send,status,busy:false,mode:()=>'review',syncMode:()=>{},sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
       if(window.CW_LIVE.agent&&window.CW_LIVE.agent.full&&!window.CW_LIVE.sibling){
         const sw=mk('fieldset','cw-mode-sw'); sw.append(mk('legend',null,'Mode'));
-        const hint=mk('p','cw-mode-hint','Full runs your own Claude Code in a shared worktree and can edit files. Your PR author\u2019s settings are not loaded. Nothing is pushed.');
+        const hint=mk('p','cw-mode-hint','Full runs your own Claude Code in a shared worktree and can edit files. Your PR author\u2019s settings are not loaded. Pushing is blocked, but your own allow rules still apply.');
         const radios={};
         let touched=false;
         for(const [v,txt] of [['review','Review'],['full','Full']]){

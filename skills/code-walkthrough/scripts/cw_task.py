@@ -31,7 +31,24 @@ REMEDY = "point roles.thread at a claude-code profile"
 
 # Same hardening as head/: no hooks, symlinks as plain files so a checked-out link cannot
 # point Edit/Write outside the worktree.
-_HARDEN = ["-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false"]
+_HARDEN = ["-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false",
+           "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null"]
+
+
+def _filter_off(cwd):
+    """The agent can write the shared .git/config; a filter or fsmonitor it defined there would
+    run as us during add/status. Each configured filter is blanked on every call (an empty
+    command is a no-op to git)."""
+    out = subprocess.run(["git", "-C", str(cwd), "config", "--get-regexp", r"^filter\."],
+                         capture_output=True, text=True, errors="replace",
+                         env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}).stdout
+    names = {line.split(None, 1)[0].rsplit(".", 1)[0] for line in out.splitlines() if line.strip()}
+    args = []
+    for name in sorted(names):
+        for var in ("clean", "smudge", "process"):
+            args += ["-c", f"{name}.{var}="]
+        args += ["-c", f"{name}.required=false"]
+    return args
 
 
 _GIT_ALLOWED = {"worktree", "rev-parse", "status", "checkout", "add", "commit", "diff", "branch",
@@ -45,9 +62,12 @@ def _git(cwd, args):
     sub = words[0] if words else None
     if sub not in _GIT_ALLOWED:
         raise ValueError(f"code tasks do not run git {sub}")
+    env = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1", "GIT_CONFIG_NOSYSTEM": "1"}
+    if sub == "status":
+        env["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(
-        ["git", "-C", str(cwd), *_HARDEN, *args], capture_output=True, text=True, errors="replace",
-        env={**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"})
+        ["git", "-C", str(cwd), *_HARDEN, *_filter_off(cwd), *args], capture_output=True, text=True,
+        errors="replace", env=env)
 
 
 class GitLinkChanged(RuntimeError):

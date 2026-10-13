@@ -479,7 +479,7 @@ def _draft_comments_payload(args, anchor_doc=None):
         suggestion = item.get("suggestion")
         body = item["body"].strip()
         if suggestion is not None:
-            fence = "````" if "```" in suggestion else "```"
+            fence = "`" * max(3, max((len(m) for m in re.findall(r"`+", suggestion)), default=0) + 1)
             body += f"\n\n{fence}suggestion\n{suggestion}\n{fence}"
         end_line = item.get("end_line")
         row = {"path": item["path"], "line": item["line"],
@@ -723,6 +723,9 @@ def _outcomes_dispatch(d, qid, req, tools=None, call=None):
         result = {}
     elif method == "tools/call":
         params = req.get("params") or {}
+        if params.get("name") not in {t["name"] for t in tools or OUTCOME_TOOLS}:
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": f"unknown tool {params.get('name')}"}], "isError": True}}
         ok, text = (call or (lambda name, args: accept_outcome(d, qid, name, args)))(
             params.get("name"), params.get("arguments") or {})
         result = {"content": [{"type": "text", "text": text}], "isError": not ok}

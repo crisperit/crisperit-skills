@@ -500,6 +500,19 @@ def test_check_draft_comments_cases():
     assert payload["comments"][0]["body"] == "a ```b``` c\n\n```suggestion\nx = 1\n```"
     assert payload["comments"][1]["end_line"] is None
     assert payload["comments"][1]["body"].endswith("````suggestion\n```\nz\n```\n````")
+    for ticks in (3, 4, 7):
+        text = "`" * ticks
+        body = cw_mcp._draft_comments_payload({"comments": [_dc(suggestion=text)]})["comments"][0]["body"]
+        fence = "`" * (ticks + 1)
+        assert body.endswith(f"{fence}suggestion\n{text}\n{fence}")
+
+
+def test_outcomes_dispatch_rejects_tools_outside_the_mode(tmp_path):
+    req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "propose_task", "arguments": {}}}
+    called = []
+    resp = cw_mcp._outcomes_dispatch(tmp_path, "q1", req, cw_mcp.outcome_tools("full"),
+                                     lambda n, a: called.append(n) or (True, "ok"))
+    assert resp["result"]["isError"] is True and not called
 
 
 def test_accept_draft_comments_once_per_turn_on_free_thread():

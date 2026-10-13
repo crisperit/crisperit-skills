@@ -518,7 +518,7 @@ def test_full_argv_is_pinned():
     expected = [
         "claude", "-p", "--setting-sources", "user", f"--mcp-config={json.dumps(mcp)}",
         f"--allowedTools={allowed}",
-        "--disallowedTools=Bash(git push:*),mcp__code-walkthrough,mcp__plugin_crisperit-skills_code-walkthrough",
+        f"--disallowedTools={cw_llm.FULL_DISALLOWED}",
         "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--model=sonnet",
         "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         "--append-system-prompt=SYS", "--add-dir=/d/ctx",

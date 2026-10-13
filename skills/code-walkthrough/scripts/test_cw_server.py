@@ -1070,7 +1070,7 @@ def test_draft_comments_keep_and_dismiss_routes():
             status, body = _post(daemon, f"{base}/dismiss")
             assert status == 200 and body["outcome"]["state"] == "dismissed"
             assert _post(daemon, f"{base}/dismiss")[0] == 409
-            assert cw_server._outcome_summary(body["outcome"]) == "1 draft comments"
+            assert cw_server._outcome_summary(body["outcome"]) == "1 draft comment"
             assert "removed the 1 draft comments" in cw_ask._outcome_updates_text(d, OQID)
         d = _draft_comments_fixture(home)
         with running_daemon() as daemon:

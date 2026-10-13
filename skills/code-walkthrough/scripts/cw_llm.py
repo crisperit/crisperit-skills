@@ -350,12 +350,18 @@ def thread_argv(profile, system, *, mcp_config, add_dir, session_id=None, resume
     return argv + (["--resume", resume] if resume else ["--session-id", session_id])
 
 
-FULL_DISALLOWED = (
-    "Bash(git push:*),mcp__code-walkthrough,mcp__plugin_crisperit-skills_code-walkthrough"
-)
+# Best-effort: the transport block in no_push_env is the real push guard.
+FULL_DISALLOWED = ",".join((
+    "Bash(git push:*)", "Bash(rtk git push:*)", "Bash(git -c:*)", "Bash(git --no-pager push:*)",
+    "Bash(env:*)", "Bash(*GIT_CONFIG*)", "Bash(gh pr create:*)", "Bash(gh pr review:*)",
+    "Bash(gh pr merge:*)", "Bash(gh pr comment:*)", "Bash(gh issue:*)", "Bash(gh api:*)",
+    "mcp__code-walkthrough", "mcp__plugin_crisperit-skills_code-walkthrough",
+))
 
 
 def full_argv(profile, system, *, mcp_config, allowed, add_dir, session_id=None, resume=None):
+    # No --restricted, --strict-mcp-config or --tools on purpose: the agent is the user's own Claude Code
+    # and --setting-sources user supplies its permissions and MCP servers.
     argv = [
         "claude", "-p", "--setting-sources", "user", f"--mcp-config={json.dumps(mcp_config)}",
         f"--allowedTools={allowed}", f"--disallowedTools={FULL_DISALLOWED}",

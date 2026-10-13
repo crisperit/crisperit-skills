@@ -1484,6 +1484,13 @@ def _full_clean(d, old_meta, toplevel):
         except Exception:
             pass
         _rm(head_dir)
+    agent_repo = (old_meta or {}).get("repo")
+    if agent_repo and (old_meta or {}).get("id") and (old_meta.get("agent") or (d / "agent").exists()):
+        import cw_task  # noqa: PLC0415  cw_task imports this module
+        try:
+            cw_task.remove_worktree(agent_repo, d / "agent", cw_task.branch_name(old_meta, "agent"))
+        except Exception:
+            pass
 
 
 def prepare_walkthrough(params, is_running=None):

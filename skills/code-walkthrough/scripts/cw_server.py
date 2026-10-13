@@ -128,7 +128,7 @@ def _live_payload(key, wid, meta, d, token, port):
         "batches": {"done": len(meta.get("batches_done") or []), "total": meta.get("batches", 0)},
         "usage": meta.get("usage", {}), "total": cw_store.usage_total(meta),
         "drafts": drafts, "sibling": sibling,
-        "agent": {"full": cw_agent.trust(meta, cw_store.load_config()), "own_pr": meta.get("own_pr")},
+        "agent": {"full": cw_agent.trust(meta, cw_store.load_config(), d), "own_pr": meta.get("own_pr")},
     }
 
 
@@ -292,7 +292,8 @@ def _outcome_summary(o):
     if kind == "resolve":
         return _cap(p.get("why"), 300)
     if kind == "draft_comments":
-        return f"{len(p.get('comments') or [])} draft comments"
+        n = len(p.get("comments") or [])
+        return f"{n} draft comment{'' if n == 1 else 's'}"
     if kind == "page_edit":
         block = p.get("block") if isinstance(p.get("block"), dict) else {}
         return f"{_cap(p.get('op'), 40) or ''} {_cap(block.get('type'), 40) or ''}".strip()
@@ -1976,9 +1977,7 @@ class Daemon:
             raise cw_ask.OutcomeError("a Full turn is running on this walkthrough, try again when it ends",
                                       "conflict")
         try:
-            folded = cw_ask.outcome_action(d, oid, "discard", None, on_event=emit)
-            cw_agent.discard_all(d, meta)
-            return folded
+            return cw_agent.discard_edits(d, oid, on_event=emit)
         finally:
             lock.release()
 

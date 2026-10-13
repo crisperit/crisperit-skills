@@ -102,7 +102,7 @@ def test_failed_clone_leaves_nothing_behind(home):
 
 
 @pytest.mark.parametrize("bad", ["acme", "acme/..", "acme/.", "-acme/x", "acme/-x", "a/b/c", "ac me/x",
-                                 "acme/x;rm", "", None, 5])
+                                 "acme/x;rm", "acme/x\n", "", None, 5])
 def test_bad_names_are_rejected_without_a_call(home, bad):
     run = FakeRun()
     with pytest.raises(cw_store.CWError):
@@ -135,3 +135,36 @@ def test_server_prune_keeps_clone_referenced_by_a_walkthrough(home, monkeypatch)
     monkeypatch.setenv("CW_PRUNE_DAYS", "30")
     cw_server._prune()
     assert ref.exists() and not unref.exists()
+
+
+def test_base_ref_with_trailing_newline_is_rejected(home):
+    cache = cw_repo.cache_root() / "acme" / "widgets"
+    cache.mkdir(parents=True)
+    run = FakeRun()
+    with pytest.raises(cw_store.CWError):
+        cw_repo.resolve({"repo": "acme/widgets", "base": "origin/main\n"}, {}, run)
+    assert run.calls == []
+
+
+def test_clone_and_fetch_run_in_the_cache_root(home):
+    run = FakeRun()
+    cw_repo.resolve({"repo": "acme/widgets", "clone": True, "pr": 4}, {}, run)
+    assert run.calls and all(kw["cwd"] == cw_repo.cache_root() for _, kw in run.calls)
+
+
+def test_prune_survives_a_clone_that_vanishes_mid_scan(home, monkeypatch):
+    root = cw_repo.cache_root()
+    gone, old = root / "a" / "gone", root / "a" / "old"
+    for d in (gone, old):
+        d.mkdir(parents=True)
+        os.utime(d, (1, 1))
+    real = Path.stat
+
+    def flaky(self, *a, **kw):
+        if self == gone:
+            raise FileNotFoundError(str(self))
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", flaky)
+    cw_repo.prune(set(), time.time())
+    assert not old.exists()

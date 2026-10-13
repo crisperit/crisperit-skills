@@ -505,7 +505,7 @@ def test_composer_mode_switch_is_gated_and_sent_only_for_full():
     assert "r.type='radio'" in composer and "r.checked=v==='review'" in composer
     assert "mk('legend',null,'Mode')" in composer
     assert "last.mode==='full'" in composer
-    assert "Nothing is pushed." in composer and "hint.hidden=true" in composer
+    assert "Pushing is blocked, but your own allow rules still apply." in composer and "hint.hidden=true" in composer
     send = _between(wire_ask, "function sendView(view){", "function buildThread(t){")
     assert "if(c.mode()==='full') body.mode='full';" in send
     assert "fetch(window.CW_LIVE.api+'/comment'" in send
@@ -536,7 +536,7 @@ def test_draft_comments_outcome_materialises_local_drafts_once():
     card = _between(wire_ask, "function draftCommentsCard(o){", "function outcomeEl(t,o){")
     assert "'Drafts removed'" in card and "'Agent added '" in card and "skipped, not on this page" in card
     assert "'Show'" in card and "'Remove these drafts'" in card
-    assert "'/dismiss',{}" in card and "ids.forEach(deleteNote)" in card and "revealNote(n)" in card
+    assert "'/dismiss',{}" in card and "filter(id=>!left.includes(id)).forEach(deleteNote)" in card and "already in your review, left as is" in card and "revealNote(n)" in card
     assert ".cw-dc button{min-height:44px" in _real_template()
 
 

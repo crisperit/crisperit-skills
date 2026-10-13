@@ -249,3 +249,101 @@ def test_discard_refused_while_a_full_turn_runs():
         assert status == 409 and "Full turn is running" in json.loads(raw)["error"]
         assert (d / "agent").exists() and "agent" in cw_store.read_meta(d)
         assert next(o for o in cw_ask.read_outcomes(d) if o["oid"] == edits["oid"])["state"] == "done"
+
+
+def test_ensure_worktree_readopts_or_recreates_a_leftover_directory():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        wt = cw_agent.ensure_worktree(d, meta)
+        (wt / "a.py").write_text("x = 3\n")
+        first = cw_agent.commit(d, meta, "t", "q-1")
+        for m in (meta, ):
+            m.pop("agent")
+        cw_store.update_meta(d, lambda m: m.pop("agent"))
+        assert cw_agent.ensure_worktree(d, meta) == wt
+        assert meta["agent"]["sha"] == first["sha"] and cw_store.read_meta(d)["agent"]["sha"] == first["sha"]
+        meta.pop("agent")
+        cw_testlib.git(wt, "checkout", "-q", "-b", "elsewhere")
+        assert cw_agent.ensure_worktree(d, meta) == wt
+        assert cw_testlib.git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "cw/cmp-12345678/agent"
+
+
+def test_rebuild_clean_removes_the_agent_worktree_and_branch():
+    import cw_run
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        cw_agent.ensure_worktree(d, meta)
+        cw_run._full_clean(d, cw_store.read_meta(d), repo)
+        assert not (d / "agent").exists()
+        assert cw_testlib.git(repo, "branch", "--list", "cw/cmp-12345678/agent").strip() == ""
+        cw_agent.ensure_worktree(d, {k: v for k, v in meta.items() if k != "agent"})
+
+
+def test_commit_ignores_fsmonitor_and_filters_the_agent_configured():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        wt = cw_agent.ensure_worktree(d, meta)
+        fs, flt = Path(tmp) / "fsmonitor-ran", Path(tmp) / "filter-ran"
+        cw_testlib.git(repo, "config", "core.fsmonitor", f"touch {fs}; echo")
+        cw_testlib.git(repo, "config", "filter.x.clean", f"touch {flt}; cat")
+        cw_testlib.git(repo, "config", "filter.x.smudge", f"touch {flt}; cat")
+        (wt / ".gitattributes").write_text("* filter=x\n")
+        (wt / "a.py").write_text("x = 3\n")
+        assert "a.py" in cw_agent.commit(d, meta, "t", "q-1")["files"]
+        assert not fs.exists() and not flt.exists()
+
+
+def test_discard_edits_is_retryable_and_marks_sibling_edits_outcomes():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        cw_agent.ensure_worktree(d, meta)
+        branch = meta["agent"]["branch"]
+        oids = [cw_ask.append_outcome(d, f"q-{n}", "t-1", "edits", "done", {"branch": branch, "files": []})["oid"]
+                for n in (1, 2)]
+        other = cw_ask.append_outcome(d, "q-3", "t-1", "edits", "done", {"branch": "cw/other/agent"})["oid"]
+        state_of = lambda: {o["oid"]: o["state"] for o in cw_ask.read_outcomes(d)}  # noqa: E731
+        real = cw_task.remove_worktree
+        cw_task.remove_worktree = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("busy"))
+        try:
+            with pytest.raises(RuntimeError):
+                cw_agent.discard_edits(d, oids[0])
+        finally:
+            cw_task.remove_worktree = real
+        assert state_of()[oids[0]] == "done" and "agent" in cw_store.read_meta(d)
+        cw_agent.discard_edits(d, oids[0])
+        assert state_of() == {oids[0]: "discarded", oids[1]: "discarded", other: "done"}
+        assert "agent" not in cw_store.read_meta(d)
+        with pytest.raises(cw_store.CWError):
+            cw_agent.discard_all(d, {"id": "cmp-12345678", "repo": str(repo),
+                                     "agent": {"branch": "cw/other/agent"}})
+
+
+def test_trust_ignores_malformed_config_and_non_github_hosts(tmp_path):
+    meta = {"gh_repo": "acme/widgets"}
+    for bad in ({"repos": [None, 3]}, {"repos": "acme/widgets"}, {"orgs": {"acme": 1}}, ["x"], "x"):
+        assert cw_agent.trust(meta, {"trust": bad}) is False
+    assert cw_agent.trust(meta, {"trust": {"repos": [None, "acme/widgets"]}}) is True
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", "git@gitlab.example.com:acme/widgets.git"],
+                   check=True)
+    assert cw_agent.repo_name({"repo": str(tmp_path)}) is None
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "set-url", "origin", "git@github.com:Acme/Widgets.git"],
+                   check=True)
+    d = tmp_path / "wd"
+    d.mkdir()
+    meta = {"repo": str(tmp_path)}
+    cw_store.write_json(d / "meta.json", dict(meta))
+    assert cw_agent.repo_name(meta, d) == "Acme/Widgets"
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "remove", "origin"], check=True)
+    assert cw_agent.repo_name(cw_store.read_meta(d), d) == "Acme/Widgets"
+
+
+def test_commit_caps_the_file_list():
+    with tempfile.TemporaryDirectory() as tmp:
+        d, repo, meta, _marker = _agent_fixture(tmp)
+        wt = cw_agent.ensure_worktree(d, meta)
+        for n in range(cw_agent.FILES_CAP + 5):
+            (wt / f"f{n}.txt").write_text("x\n")
+        edits = cw_agent.commit(d, meta, "t", "q-1")
+        assert len(edits["files"]) == len(edits["stat"]) == cw_agent.FILES_CAP and edits["truncated"] is True

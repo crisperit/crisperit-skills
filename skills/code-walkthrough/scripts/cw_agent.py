@@ -2,6 +2,7 @@
 cw_server: cw_task and cw_ask must never import it back."""
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cw_ask
 import cw_store
@@ -10,33 +11,61 @@ import links
 import state
 
 
-def repo_name(meta):
-    """owner/name: gh_repo for a PR, else read from the origin remote (one git call)."""
+def repo_name(meta, d=None):
+    """owner/name on github.com: gh_repo for a PR, else read from the origin remote. With `d` the
+    answer is cached in meta so a status poll does not spawn git each time."""
     if meta.get("gh_repo"):
         return meta["gh_repo"]
+    if "origin_repo" in meta:
+        return meta["origin_repo"] or None
     if not meta.get("repo"):
         return None
-    return state._repo_from_links({"repo_url": links.repo_web_url(meta["repo"])})
+    url = links.repo_web_url(meta["repo"])
+    name = state._repo_from_links({"repo_url": url}) if urlparse(url).hostname == "github.com" else None
+    meta["origin_repo"] = name or ""
+    if d is not None:
+        cw_store.update_meta(d, lambda m: m.update(origin_repo=name or ""))
+    return name
 
 
-def trust(meta, config):
+def _lowered(value):
+    return {x.lower() for x in value if isinstance(x, str)} if isinstance(value, list) else set()
+
+
+def trust(meta, config, d=None):
     """Whether Full is available for this walkthrough's repo. Never calls out; own_pr is the
     value cw_run.run cached in meta."""
     if meta.get("sibling_of"):
         return False
     if meta.get("own_pr") is True:
         return True
-    cfg = config.get("trust") or {}
-    if not cfg.get("repos") and not cfg.get("orgs"):
+    cfg = config.get("trust")
+    cfg = cfg if isinstance(cfg, dict) else {}
+    repos, orgs = _lowered(cfg.get("repos")), _lowered(cfg.get("orgs"))
+    if not repos and not orgs:
         return False
-    repo = (repo_name(meta) or "").lower()
-    if repo in {r.lower() for r in cfg.get("repos") or []}:
-        return True
-    return repo.split("/", 1)[0] in {o.lower() for o in cfg.get("orgs") or []} if repo else False
+    repo = (repo_name(meta, d) or "").lower()
+    return bool(repo) and (repo in repos or repo.split("/", 1)[0] in orgs)
+
+
+FILES_CAP = 200
 
 
 class BranchChanged(RuntimeError):
     pass
+
+
+def _adopt(repo, wt, branch):
+    """The worktree record of a directory left behind without meta['agent'], or None when it is
+    not a valid worktree of this repo on the agent branch."""
+    try:
+        link = (wt / ".git").read_text()
+        cw_task._check_git_link(repo, wt, link)
+        if cw_task._git_ok(wt, ["rev-parse", "--abbrev-ref", "HEAD"]).strip() != branch:
+            return None
+        return {"branch": branch, "sha": cw_task._git_ok(wt, ["rev-parse", "HEAD"]).strip(), "link": link}
+    except (OSError, RuntimeError, cw_task.GitLinkChanged):
+        return None
 
 
 def ensure_worktree(d, meta):
@@ -45,11 +74,16 @@ def ensure_worktree(d, meta):
     if meta.get("agent") and wt.exists():
         return wt
     repo, branch = meta["repo"], cw_task.branch_name(meta, "agent")
-    have_branch = cw_task._git(repo, ["rev-parse", "--verify", "-q", f"refs/heads/{branch}"]).returncode == 0
-    args = ["worktree", "add", str(wt), branch] if have_branch else ["worktree", "add", "-b", branch, str(wt), meta["head"]]
-    cw_task._git_ok(repo, args)
-    agent = {"branch": branch, "sha": cw_task._git_ok(wt, ["rev-parse", "HEAD"]).strip(),
-             "link": (wt / ".git").read_text()}
+    agent = _adopt(repo, wt, branch) if wt.exists() else None
+    if agent is None:
+        if wt.exists():
+            cw_task.remove_worktree(repo, wt)
+        have_branch = cw_task._git(repo, ["rev-parse", "--verify", "-q", f"refs/heads/{branch}"]).returncode == 0
+        args = (["worktree", "add", str(wt), branch] if have_branch
+                else ["worktree", "add", "-b", branch, str(wt), meta["head"]])
+        cw_task._git_ok(repo, args)
+        agent = {"branch": branch, "sha": cw_task._git_ok(wt, ["rev-parse", "HEAD"]).strip(),
+                 "link": (wt / ".git").read_text()}
     cw_store.update_meta(d, lambda m: m.update(agent=agent))
     meta["agent"] = agent
     return wt
@@ -57,14 +91,35 @@ def ensure_worktree(d, meta):
 
 def discard_all(d, meta):
     """Drop every agent edit: the shared worktree, its branch, and the meta record. The user's own
-    checkout is never touched."""
+    checkout is never touched. Callers hold the edit lock."""
     agent = meta.get("agent")
     if agent:
         branch = cw_task.branch_name(meta, "agent")
-        assert agent["branch"] == branch
+        if agent.get("branch") != branch:
+            raise cw_store.CWError("the agent record does not name this walkthrough's branch")
         cw_task.remove_worktree(meta["repo"], Path(d) / "agent", branch)
     cw_store.update_meta(d, lambda m: m.pop("agent", None))
     meta.pop("agent", None)
+
+
+def discard_edits(d, oid, on_event=None):
+    """Discard the agent's edits on behalf of one `edits` outcome. Files go first and the
+    outcomes are marked after, so a failed removal leaves everything retryable. Callers hold the
+    edit lock."""
+    current = next((o for o in cw_ask.read_outcomes(d) if o["oid"] == oid), None)
+    if current is None:
+        raise cw_ask.OutcomeError("outcome not found", "not_found")
+    if current["state"] != "done":
+        raise cw_ask.OutcomeError(f"outcome is {current['state']}, not done", "conflict")
+    meta = cw_store.read_meta(d) or {}
+    branch = (meta.get("agent") or {}).get("branch")
+    discard_all(d, meta)
+    folded = cw_ask.outcome_action(d, oid, "discard", None, on_event=on_event)
+    for o in cw_ask.read_outcomes(d):
+        if (o["outcome"] == "edits" and o["state"] == "done" and o["oid"] != oid
+                and branch and (o["payload"] or {}).get("branch") == branch):
+            cw_ask.outcome_action(d, o["oid"], "discard", None, on_event=on_event)
+    return folded
 
 
 def commit(d, meta, title, qid):
@@ -84,7 +139,10 @@ def commit(d, meta, title, qid):
         stat[path] = f"+{add if add.isdigit() else 0} -{dele if dele.isdigit() else 0}"
     cw_store.update_meta(d, lambda m: m["agent"].update(sha=sha))
     agent["sha"] = sha
-    return {"sha": sha, "parent": parent, "branch": agent["branch"], "files": list(stat), "stat": stat}
+    out = {"sha": sha, "parent": parent, "branch": agent["branch"]}
+    if len(stat) > FILES_CAP:
+        stat, out["truncated"] = dict(list(stat.items())[:FILES_CAP]), True
+    return {**out, "files": list(stat), "stat": stat}
 
 
 def after_turn(d, meta, record, on_event=None, start_sibling=None):
