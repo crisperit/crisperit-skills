@@ -55,6 +55,18 @@ def ensure_worktree(d, meta):
     return wt
 
 
+def discard_all(d, meta):
+    """Drop every agent edit: the shared worktree, its branch, and the meta record. The user's own
+    checkout is never touched."""
+    agent = meta.get("agent")
+    if agent:
+        branch = cw_task.branch_name(meta, "agent")
+        assert agent["branch"] == branch
+        cw_task.remove_worktree(meta["repo"], Path(d) / "agent", branch)
+    cw_store.update_meta(d, lambda m: m.pop("agent", None))
+    meta.pop("agent", None)
+
+
 def commit(d, meta, title, qid):
     """Commit whatever the turn left behind. None when HEAD did not move since the last turn."""
     wt, repo, agent = Path(d) / "agent", meta["repo"], meta["agent"]

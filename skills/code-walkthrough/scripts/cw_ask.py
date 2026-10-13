@@ -412,6 +412,7 @@ _TRANSITIONS = {
     ("task", "dismiss"): (("proposed", "handed"), "dismissed"),
     ("task", "edit"): ("proposed", "proposed"),
     ("task", "handover"): ("proposed", "handed"),
+    ("edits", "discard"): ("done", "discarded"),
 }
 
 

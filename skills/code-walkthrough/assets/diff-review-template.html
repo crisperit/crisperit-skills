@@ -1116,6 +1116,11 @@
   .cw-edits-files{margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:var(--fs-xs);overflow-wrap:anywhere}
   .cw-mode-badge{margin-left:8px;padding:0 6px;border:1px solid var(--accent);border-radius:10px;color:var(--accent);
     font:600 var(--fs-xs)/1.5 system-ui,sans-serif;vertical-align:middle}
+  .cw-mode-sw{margin:6px 0 0;padding:0;border:0;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px}
+  .cw-mode-sw legend{float:left;margin:0 12px 0 0;padding:0;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-mode-sw label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+  .cw-mode-sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-mode-hint{flex:1 1 100%;margin:2px 0 0;color:var(--muted);font-size:var(--fs-xs)}
   .cw-queued{color:var(--muted);font-size:var(--fs-xs)}
   .cw-denied{margin:6px 0 0;padding:4px 8px;border-left:3px solid var(--yellow);font-size:var(--fs-xs)}
   .cw-denied-title{margin:0;color:var(--yellow);font-weight:600}
@@ -1170,7 +1175,7 @@
   .cw-task textarea{min-height:64px}
   .cw-task-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px}
   .cw-task-actions .cw-task-run{border-color:var(--purple);color:var(--purple)}
-  .cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
+  .cw-edits button:focus-visible,.cw-reload button:focus-visible,.cw-task button:focus-visible,.cw-task input:focus-visible,.cw-task textarea:focus-visible,
   #cw-sibling a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-task-msg{margin:0;font-size:var(--fs-xs);color:var(--red)}
   .cw-task-msg:empty{display:none}
@@ -1331,6 +1336,7 @@
     #hr-comments-close{width:44px;height:44px;font-size:16px}
     #hr-comments-list button{min-height:44px}
     .cw-dc button{min-height:44px;padding:10px 14px}
+    .cw-edits button,.cw-reload button{min-height:44px;padding:10px 14px}
     #hr-resolution-close{width:44px;height:44px;font-size:16px}
     #cw-selbar{position:fixed;left:12px;right:12px;top:auto;bottom:68px;width:auto;max-width:none;
       flex-wrap:wrap}
@@ -1338,6 +1344,7 @@
     #cw-selbar-target{flex:1 1 0;min-height:44px;max-width:none}
     #cw-selbar button{min-height:44px;padding:0 14px}
     .cw-compose-hint{display:none}
+    .cw-mode-sw label{min-height:44px;padding:0 8px}
     .cw-ed{min-height:88px}
     .cw-ref-tag,.cw-ref-acts button{min-height:44px}
     .cw-ref-tag{line-height:42px}
@@ -4390,7 +4397,9 @@
       const b=mkBtn('Retry','cw-retry fb-ghost');
       b.addEventListener('click',()=>{
         b.disabled=true; t.msg.textContent='';
-        postJson('/comment',{anchors:turnRefs(r),text:r.comment||r.question||'',thread_id:t.id})
+        const body={anchors:turnRefs(r),text:r.comment||r.question||'',thread_id:t.id};
+        if(r.mode==='full') body.mode='full';
+        postJson('/comment',body)
           .then(({ok,body})=>{ if(!ok){ b.disabled=false; t.msg.textContent=body.error||'Request failed'; } })
           .catch(()=>{ b.disabled=false; t.msg.textContent='Request failed -- check the daemon is still running.'; });
       });
@@ -4783,6 +4792,22 @@
         .catch(()=>{ btns.forEach(x=>{ x.disabled=false; }); setTaskMsg(o.oid,NET_ERR); return null; });
     }
 
+    function openPage(oid,r){
+      if(typeof r.url==='string'&&/^(https?:\/\/|\/[^\/])/.test(r.url)){
+        if(!window.open(r.url,'_blank','noopener')) setTaskMsg(oid,'The browser blocked the new tab. Allow pop-ups, then press the button again.');
+      } else setTaskMsg(oid,'No page to open.');
+    }
+    function showSibling(o,b,btns){
+      const label=b.textContent, oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
+      b.textContent='Opening...';
+      taskAct(o,oidPath('show'),{},btns).then(r=>{
+        b.textContent=label;
+        if(!r) return;
+        openPage(o.oid,r);
+        btns.forEach(x=>{ x.disabled=false; });
+      });
+    }
+
     function copyTask(text,msgOid){
       const ok=()=>setTaskMsg(msgOid,'Copied.');
       const fb=()=>{ if(legacyCopy(text)) ok(); else setTaskMsg(msgOid,'Copy failed in this browser.'); };
@@ -4915,18 +4940,7 @@
         if(task.branch){ const bp=mk('p','cw-task-files','Branch: '); bp.append(mk('code',null,task.branch)); d.append(bp); }
         if(task.summary) d.append(mk('p','cw-task-sum',task.summary));
         { const ce=checksEl(task); if(ce) d.append(ce); }
-        add('Show with this change',null,b=>{
-          const label=b.textContent;
-          b.textContent='Opening...';
-          taskAct(o,oidPath('show'),{},btns).then(r=>{
-            b.textContent=label;
-            if(!r) return;
-            if(typeof r.url==='string'&&/^(https?:\/\/|\/[^\/])/.test(r.url)){
-              if(!window.open(r.url,'_blank','noopener')) setTaskMsg(o.oid,'The browser blocked the new tab. Allow pop-ups, then press the button again.');
-            } else setTaskMsg(o.oid,'No page to open.');
-            btns.forEach(x=>{ x.disabled=false; });
-          });
-        });
+        add('Show with this change',null,b=>showSibling(o,b,btns));
         const cp=cherryPickCommand(task.sha);
         if(cp) add('Copy cherry-pick command',null,()=>copyTask(cp,o.oid));
         add('Discard',null,()=>taskAct(o,oidPath('discard'),{},btns));
@@ -4950,6 +4964,7 @@
       const pl=o.payload||{};
       const files=Array.isArray(pl.files)?pl.files:[];
       const d=mk('div','cw-outcome cw-edits'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      if(o.state==='discarded'){ d.append(mk('span','cw-outcome-text','Edits discarded')); return d; }
       const text=mk('span','cw-outcome-text','Agent edited '+files.length+(files.length===1?' file':' files'));
       const sub=[pl.branch,pl.sha?String(pl.sha).slice(0,7):''].filter(Boolean).join(' @ ');
       if(sub) text.append(mk('span','cw-outcome-why',sub));
@@ -4964,6 +4979,29 @@
         }
         d.append(ul);
       }
+      const hex=/^[0-9a-f]{7,40}$/i;
+      const acts=mk('div','cw-task-actions'), btns=[];
+      const add=(label,fn)=>{ const b=mkBtn(label,'fb-ghost'); b.addEventListener('click',()=>fn(b)); btns.push(b); acts.append(b); };
+      const oidPath=verb=>'/outcomes/'+encodeURIComponent(o.oid)+'/'+verb;
+      add('Open updated walkthrough',b=>showSibling(o,b,btns));
+      if(hex.test(String(pl.parent))&&hex.test(String(pl.sha)))
+        add('Copy cherry-pick',()=>copyTask('git cherry-pick '+String(pl.parent).slice(0,7)+'..'+String(pl.sha).slice(0,7),o.oid));
+      add('Discard all agent edits',()=>taskAct(o,oidPath('discard'),{},btns));
+      const msg=mk('p','cw-task-msg',taskMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+      d.append(acts,msg);
+      return d;
+    }
+
+    function reloadCard(o){
+      const d=mk('div','cw-outcome cw-reload'); d.dataset.oid=o.oid; d.dataset.state=o.state;
+      if(o.state==='done'){
+        const sb=(o.payload||{}).sibling;
+        const b=mkBtn('Open updated walkthrough','fb-ghost');
+        b.addEventListener('click',()=>openPage(o.oid,sb||{}));
+        const msg=mk('p','cw-task-msg',taskMsg.get(o.oid)||''); msg.dataset.oid=o.oid; msg.setAttribute('role','status');
+        d.append(b,msg);
+      } else if(o.state==='failed') d.append(mk('span','cw-outcome-why','Nothing to show: '+String((o.payload||{}).reason||'no reason given')));
+      else d.append(mk('span','cw-outcome-text','Opening the updated walkthrough\u2026'));
       return d;
     }
 
@@ -5038,6 +5076,7 @@
       if(o.outcome==='page_edit') return pageEditCard(t,o);
       if(o.outcome==='github_draft') return ghDraftCard(t,o);
       if(o.outcome==='edits') return editsCard(o);
+      if(o.outcome==='reload') return reloadCard(o);
       if(o.outcome!=='resolve') return plainOutcomeCard(o,String(o.outcome||'unknown outcome'));
       const id=o.payload&&o.payload.thread;
       const note=noteById(id);
@@ -5574,7 +5613,27 @@
       const note=mk('p','cw-compose-note'); note.append(mk('span','cw-compose-hint','Ctrl+Enter sends'));
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       box.append(ed.el,row,note,status);
-      const c={box,send,status,busy:false,sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
+      const c={box,send,status,busy:false,mode:()=>'review',syncMode:()=>{},sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
+      if(window.CW_LIVE.agent&&window.CW_LIVE.agent.full&&!window.CW_LIVE.sibling){
+        const sw=mk('fieldset','cw-mode-sw'); sw.append(mk('legend',null,'Mode'));
+        const hint=mk('p','cw-mode-hint','Full runs your own Claude Code in a shared worktree and can edit files. Your PR author\u2019s settings are not loaded. Nothing is pushed.');
+        const radios={};
+        let touched=false;
+        for(const [v,txt] of [['review','Review'],['full','Full']]){
+          const lab=mk('label'), r=document.createElement('input');
+          r.type='radio'; r.name='cw-mode-'+view.id; r.value=v; r.checked=v==='review'; radios[v]=r;
+          r.addEventListener('change',()=>{ touched=true; hint.hidden=!radios.full.checked; });
+          lab.append(r,document.createTextNode(txt)); sw.append(lab);
+        }
+        hint.hidden=true; sw.append(hint);
+        box.insertBefore(sw,row);
+        c.mode=()=>radios.full.checked?'full':'review';
+        c.syncMode=()=>{
+          if(touched) return;
+          const last=(view.turns||[]).slice(-1)[0];
+          radios[last&&last.mode==='full'?'full':'review'].checked=true; hint.hidden=!radios.full.checked;
+        };
+      }
       ed.onChange=c.sync;
       ed.onSend=()=>sendView(view);
       ed.say=m=>{ if(m||!c.busy) status.textContent=m; };
@@ -5595,6 +5654,7 @@
       const anchors=dedupeAnchors(view.seed?[view.seed,...chips]:chips);
       if(anchors.length>ED_MAX){ c.status.textContent='Too many references: '+ED_MAX+' max in total.'; return; }
       const body={text:serializeSegs(segs).trim(),anchors};
+      if(c.mode()==='full') body.mode='full';
       if(threads.has(view.id)) body.thread_id=view.id;
       c.busy=true; c.sync(); ed.lock(true); c.status.textContent='Sending…';
       fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(body)})
@@ -5649,6 +5709,7 @@
       t.badge.hidden=!t.resolved;
       t.triageTag.hidden=first.source!=='triage';
       t.turnsEl.replaceChildren(...t.turns.map((r,i)=>turnEl(r,t,i===t.turns.length-1)));
+      t.composer.syncMode();
     }
 
     function refEls(a){
@@ -6014,7 +6075,7 @@
         const first=t.turns[0]||{}, st=stateOf(t);
         const w=waitingCount(outcomes.filter(o=>o.thread_id===t.id));
         entries.push({kind:'agent',key:t.id,state:st,title:threadTitle(t),
-          meta:[st],badge:w?w+' waiting':'',
+          meta:[st],badge:w?w+' waiting':'',full:(t.turns[t.turns.length-1]||{}).mode==='full',
           go:()=>{ openPanel({thread:t.id}); revealAnchor((first.anchors&&first.anchors[0])||first.anchor); }});
       }
       const byId=new Map(state.notes.map(n=>[n.id,n]));
@@ -6044,6 +6105,7 @@
         const go=mkBtn(null,'cw-pr-row'); go.dataset.key=e.key; go.dataset.kind=e.kind; go.dataset.state=e.state;
         const meta=mk('span','cw-pr-meta',e.meta.join(' \u00b7 '));
         if(e.badge) meta.append(mk('span','cw-dock-badge yellow',e.badge));
+        if(e.full) meta.append(mk('span','cw-mode-badge','Full'));
         go.append(mk('span','cw-pr-title',e.title||'(no text)'),meta);
         go.addEventListener('click',e.go);
         const li=document.createElement('li'); li.append(go);
@@ -6374,7 +6436,8 @@
     document.documentElement.classList.add('cw-sibling');
     const box=document.createElement('aside'); box.id='cw-sibling'; box.setAttribute('aria-label','Task revision');
     const line=document.createElement('p');
-    line.textContent='Showing PR head with task '+(sb.title||'')+' (branch '+(sb.branch||'')+') ';
+    const edits=String(sb.task_id||'').startsWith('e-');
+    line.textContent=(edits?'Showing PR head with the agent edits':'Showing PR head with task '+(sb.title||''))+' (branch '+(sb.branch||'')+') ';
     box.append(line);
     if(typeof sb.parent_url==='string'&&/^(https?:\/\/|\/[^\/])/.test(sb.parent_url)){
       const a=document.createElement('a'); a.href=sb.parent_url; a.textContent='Back to PR head';
@@ -6389,7 +6452,7 @@
     const changed=new Set(Array.isArray(sb.changed_files)?sb.changed_files:[]);
     document.querySelectorAll('.hunk-path').forEach(el=>{
       if(!changed.has(el.textContent.trim())) return;
-      const chip=document.createElement('span'); chip.className='cw-sibling-chip'; chip.textContent='changed by task';
+      const chip=document.createElement('span'); chip.className='cw-sibling-chip'; chip.textContent=edits?'changed by agent':'changed by task';
       el.insertAdjacentElement('afterend',chip);
     });
   }

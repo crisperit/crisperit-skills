@@ -475,6 +475,15 @@ def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds()
     edits = _between(wire_ask, "function editsCard(o){", "function outcomeEl(t,o){")
     assert "'Agent edited '" in edits and "pl.files" in edits and "pl.stat" in edits and "pl.branch" in edits
     assert ".slice(0,7)" in edits
+    for literal in ("'Open updated walkthrough'", "'Copy cherry-pick'", "'Discard all agent edits'", "'Edits discarded'",
+                    "oidPath('discard')", "'git cherry-pick '", "showSibling(o,b,btns)"):
+        assert literal in edits, literal
+    assert "if(o.outcome==='reload') return reloadCard(o);" in outcome
+    reload = _between(wire_ask, "function reloadCard(o){", "const dcPosted")
+    for literal in ("'Opening the updated walkthrough\\u2026'", "'Nothing to show: '", "'Open updated walkthrough'", "sb||{}"):
+        assert literal in reload, literal
+    assert ".cw-edits button,.cw-reload button{min-height:44px" in _real_template()
+    assert "'changed by agent'" in _real_template() and "startsWith('e-')" in _real_template()
     turn = _between(wire_ask, "function turnEl(r,t,isLast){", "function upsertOutcome(")
     assert "r.mode==='full'" in turn and "'cw-mode-badge'" in turn
     assert "'Queued behind '+r.queued_behind" in turn
@@ -486,6 +495,26 @@ def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds()
     badge = re.search(r"\.cw-mode-badge\{[^}]*\}", template).group(0)
     assert "var(--accent)" in badge
     assert "#" not in badge
+
+
+def test_composer_mode_switch_is_gated_and_sent_only_for_full():
+    wire_ask = _wire_ask()
+    composer = _between(wire_ask, "function threadComposer(view){", "function sendView(view){")
+    gate = "window.CW_LIVE.agent&&window.CW_LIVE.agent.full&&!window.CW_LIVE.sibling"
+    assert gate in composer and composer.index(gate) < composer.index("'fieldset'")
+    assert "r.type='radio'" in composer and "r.checked=v==='review'" in composer
+    assert "mk('legend',null,'Mode')" in composer
+    assert "last.mode==='full'" in composer
+    assert "Nothing is pushed." in composer and "hint.hidden=true" in composer
+    send = _between(wire_ask, "function sendView(view){", "function buildThread(t){")
+    assert "if(c.mode()==='full') body.mode='full';" in send
+    assert "fetch(window.CW_LIVE.api+'/comment'" in send
+    retry = _between(wire_ask, "function retryBtn(t,r){", "const pageEdits=")
+    assert "if(r.mode==='full') body.mode='full';" in retry and "postJson('/comment',body)" in retry
+    panel = _between(wire_ask, "function renderPanelList(){", "const vv=window.visualViewport")
+    assert "(t.turns[t.turns.length-1]||{}).mode==='full'" in panel
+    assert "if(e.full) meta.append(mk('span','cw-mode-badge','Full'))" in panel
+    assert "postJson('/triage',{})" in wire_ask
 
 
 def test_draft_comments_outcome_materialises_local_drafts_once():

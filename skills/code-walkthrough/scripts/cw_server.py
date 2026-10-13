@@ -1958,6 +1958,9 @@ class Daemon:
         emit = lambda ev, data: self.hub.emit(key, wid, ev, data)  # noqa: E731
         meta = cw_store.read_meta(d) or {}
         if action == "discard":
+            current = next((o for o in cw_ask.read_outcomes(d) if o["oid"] == oid), None)
+            if current and current["outcome"] == "edits":
+                return self._discard_edits(d, meta, oid, emit)
             return cw_task.discard(d, meta, oid, emit)
         if action == "stop":
             current = cw_task._task_outcome(d, oid, "stop")
@@ -1966,6 +1969,18 @@ class Daemon:
                 raise cw_ask.OutcomeError("task is not running", "conflict")
             return current
         return self.start_task(key, wid, d, meta, oid, emit)
+
+    def _discard_edits(self, d, meta, oid, emit):
+        lock = self.edit_lock(d)
+        if not lock.acquire(blocking=False):
+            raise cw_ask.OutcomeError("a Full turn is running on this walkthrough, try again when it ends",
+                                      "conflict")
+        try:
+            folded = cw_ask.outcome_action(d, oid, "discard", None, on_event=emit)
+            cw_agent.discard_all(d, meta)
+            return folded
+        finally:
+            lock.release()
 
     def start_task(self, key, wid, d, meta, oid, emit):
         current, profile = cw_task.check_runnable(d, oid)

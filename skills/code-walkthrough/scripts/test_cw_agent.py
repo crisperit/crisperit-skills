@@ -204,3 +204,48 @@ def test_old_records_read_as_review(tmp_path, monkeypatch):
     monkeypatch.setenv("CODE_WALKTHROUGH_HOME", str(tmp_path))
     (tmp_path / "qa.jsonl").write_text(json.dumps({"qid": "q-1", "question": "why", "status": "ok"}) + "\n")
     assert cw_ask.read_qa(tmp_path)[0]["mode"] == "review"
+
+
+def _full_turn_with_edits(ask, daemon, d, tmp):
+    status, raw = _comment(ask, daemon, d, "full")
+    assert status == 202, raw
+    ask._wait_final(d, 1)
+    return next(o for o in cw_ask.read_outcomes(d) if o["outcome"] == "edits")
+
+
+def _discard(daemon, d, oid):
+    return cw_testlib.request(daemon, "POST", f"/api/walkthrough/{d.parent.name}/{d.name}/outcomes/{oid}/discard",
+                              token=daemon.token, body="{}")
+
+
+def test_discard_all_removes_worktree_branch_and_marks_edits_discarded():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, repo = _full_fixture(tmp, home)
+        entry = cw_testlib.claude_stream_entry(["done"], writes={"a.py": "x = 3\n"})
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), cw_testlib.running_daemon() as daemon:
+            edits = _full_turn_with_edits(ask, daemon, d, tmp)
+            branch = cw_store.read_meta(d)["agent"]["branch"]
+            assert (d / "agent").exists()
+            status, raw = _discard(daemon, d, edits["oid"])
+        assert status == 200, raw
+        assert json.loads(raw)["outcome"]["state"] == "discarded"
+        assert not (d / "agent").exists() and "agent" not in cw_store.read_meta(d)
+        assert cw_testlib.git(repo, "branch", "--list", branch).strip() == ""
+        assert cw_testlib.git(repo, "status", "--porcelain") == "" and (repo / "a.py").read_text() == "x = 2\n"
+
+
+def test_discard_refused_while_a_full_turn_runs():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, repo = _full_fixture(tmp, home)
+        entry = cw_testlib.claude_stream_entry(["done"], writes={"a.py": "x = 3\n"})
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), cw_testlib.running_daemon() as daemon:
+            edits = _full_turn_with_edits(ask, daemon, d, tmp)
+            lock = daemon.edit_lock(d)
+            lock.acquire()
+            try:
+                status, raw = _discard(daemon, d, edits["oid"])
+            finally:
+                lock.release()
+        assert status == 409 and "Full turn is running" in json.loads(raw)["error"]
+        assert (d / "agent").exists() and "agent" in cw_store.read_meta(d)
+        assert next(o for o in cw_ask.read_outcomes(d) if o["oid"] == edits["oid"])["state"] == "done"
