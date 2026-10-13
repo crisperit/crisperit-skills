@@ -100,7 +100,7 @@ def test_merge_orders_by_the_diff_and_carries_prose():
         one.write_text(json.dumps({"files": [{"path": "big.py", "role": "r", "hunks": []}]}))
 
         result = merge(DIFF, [str(two), str(one)], {
-            "target": "main...HEAD", "overview": "w", "flow_mermaid": "",
+            "target": "main...HEAD", "overview": "w",
         })
 
         assert [f["path"] for f in result["files"]] == ["a.py", "big.py", "c.py"]
@@ -162,11 +162,10 @@ def test_merge_carries_prose_keys():
         assert result["verdict"] == "v"
         assert result["section_notes"] == notes
         assert result["groups"] == groups
-        assert "visuals" not in result
 
-        visuals = [{"title": "t", "acts": []}]
-        carried = merge(DIFF, [str(frag)], {"visuals": visuals})
-        assert carried["visuals"] == visuals
+        # The page's pictures live in visuals.json now; stale keys in prose.json are dropped.
+        stale = merge(DIFF, [str(frag)], {"visuals": [{"title": "t"}], "flow_mermaid": "flowchart LR"})
+        assert "visuals" not in stale and "flow_mermaid" not in stale
 
 
 def test_merge_defaults_prose_keys():

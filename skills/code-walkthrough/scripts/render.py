@@ -16,9 +16,7 @@ instructions a model had to remember every time, and getting one wrong meant eit
 `<img onerror=...>` from a branch name in someone else's PR, or a diagram replaced by a raw
 mermaid error box. They are now one function with a test.
 
-The judgment stays in analysis.json: `overview`, `flow_mermaid`, `verdict`, `groups` (with
-their `hop`/`side`, which drive the story map -- see walkthrough.story/render_story, reused
-here rather than re-derived) and the per-file `role` and per-hunk `note` that walkthrough.py
+The judgment stays in analysis.json: `overview`, `verdict`, `groups` and the per-file `role` and per-hunk `note` that walkthrough.py
 places.
 
 Prose fields mark identifiers with backticks; HTML promotes them to `<code>` after escaping,
@@ -30,6 +28,7 @@ Stdlib only, no network.
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from html import escape
@@ -37,16 +36,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import summary_line  # noqa: E402  one owner for wording a complexity delta
-from sections import _codeify, _diagram_max_button, _wrap_flow_labels, render_symbols  # noqa: E402  one owner for these
-from notes import _walk_hunk_lines  # noqa: E402  one owner for per-side line numbers
-from validate_analysis import check_visuals, parse_hunks  # noqa: E402  one owner for diff parsing
-from walkthrough import render_story, story  # noqa: E402  one owner for the group order
+from sections import _codeify, render_symbols  # noqa: E402  one owner for these
+import visuals as visuals_mod  # noqa: E402  the sanitiser, the single trust boundary for pictures
+from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
+from walkthrough import story  # noqa: E402  one owner for the group order
 
 TITLE_PLACEHOLDER = "<!-- DIFF_TITLE -->"
 CONTENT_PLACEHOLDER = "<!-- DIFF_CONTENT -->"
 STATE_PLACEHOLDER = "<!-- HR_STATE -->"
-STORY_CODE_ROWS = 4
-_SIDE_KINDS = {"RIGHT": ("a", "c"), "LEFT": ("d",)}
+PICTURE_MARKER = re.compile(r"<!-- cw-picture:(\d+) -->")
 
 
 def counts_from(files):
@@ -101,82 +99,9 @@ def _html_prose(text):
     return _codeify(escape(text))
 
 
-def _flow_tb(mermaid):
-    """Force FLOW to a portrait-friendly top-to-bottom layout, at render time rather than
-    trusting the prose agent to write `flowchart TB` itself: analysis.json is free-form prose
-    output, and the one thing this page cannot afford is a wide `flowchart LR` shrunk to
-    illegibility on a phone."""
-    if mermaid.startswith("flowchart LR"):
-        return "flowchart TB" + mermaid[len("flowchart LR"):]
-    return mermaid
-
-
-def _sym_rows(node, side, files):
-    """(hunk ids, code rows) for a symbol: every hunk with a row on `side` inside the symbol's
-    range, and the first STORY_CODE_ROWS rows from the first such hit of the first hunk."""
-    start, end = node["range"]
-    kinds = _SIDE_KINDS[side]
-    path, hunk_ids, code = node["file"], [], []
-    for hunk in (files.get(path) or {}).get("hunks", []):
-        rows = [(kind, raw, new if side == "RIGHT" else old)
-                for kind, old, new, raw in _walk_hunk_lines({"hunks": [hunk]}) if kind in kinds]
-        hit = next((i for i, (_, _, line) in enumerate(rows) if start <= line <= end), None)
-        if hit is None:
-            continue
-        hunk_ids.append(f"{path}\t{hunk['prefix']}")
-        if not code:
-            code = [[kind, raw] for kind, raw, _ in rows[hit:hit + STORY_CODE_ROWS]]
-    return hunk_ids, code
-
-
-def story_data(clean, symdelta, complexity, files):
-    """The blob behind #cw-story-data: the clean visuals plus, per symbol they name, what the
-    page script needs to draw a card and jump into the diff. The page never parses the diff."""
-    by_id = {n["id"]: n for n in symdelta.get("nodes", [])}
-    cx_files = (complexity or {}).get("files", {})
-    syms = {}
-    for visual in clean:
-        for act in visual["acts"]:
-            for item in act["flow"]:
-                sid = item.get("sym")
-                if sid is None or sid in syms:
-                    continue
-                node = by_id[sid]
-                side = "LEFT" if node.get("state") == "gone" else "RIGHT"
-                hunks, code = _sym_rows(node, side, files) if node.get("range") else ([], [])
-                start, end = node.get("range") or (0, 0)
-                match = next((s for s in (cx_files.get(node.get("file")) or {}).get("symbols", [])
-                              if s.get("name") == node.get("label")), None)
-                state = node.get("state")
-                if match:
-                    state = "new" if not match["existed"] else "gone" if match["removed"] else "changed"
-                syms[sid] = {
-                    "label": node.get("label"), "file": node.get("file"), "side": side,
-                    "start": start, "end": end, "state": state,
-                    "cx": [match["before"], match["after"]] if match else None,
-                    "code": code, "hunks": hunks,
-                }
-    return {"visuals": clean, "syms": syms}
-
-
-def _story_html(analysis, files, symdelta, complexity, explain=False, order=None):
-    """The hidden Story section; the page script builds the cards and unhides it. Empty when
-    there are no valid visuals, which leaves today's page untouched."""
-    clean, _ = check_visuals(analysis.get("visuals"), symdelta)
-    if not clean:
-        return ""
-    blob = json.dumps(story_data(clean, symdelta, complexity, files)).replace("<", "\\u003c")
-    graph = render_symbols(symdelta, explain, paths=order if explain else (), inline=True)
-    all_syms = ('<details class="cw-allsyms"><summary>All symbols</summary>'
-                f'{graph.rstrip(chr(10))}</details>') if graph else ""
-    return ('<section class="cw-story" id="cw-story" hidden aria-labelledby="cw-story-h">'
-            f'<h2 id="cw-story-h">Story</h2><div id="cw-story-root"></div>{all_syms}'
-            f'<script type="application/json" id="cw-story-data">{blob}</script></section>')
-
-
 def render_html(analysis, files, template, walkthrough="", links=None, title=None,
                 now=None, complexity=None, state=None, explain=False, order=None,
-                structure="", symdelta=None):
+                structure="", symdelta=None, visuals=None):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
@@ -209,36 +134,17 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
         body.append("<h2>Overview</h2>")
         body += [_block_html(block) for block in overview]
 
-    story_section = _story_html(analysis, files, symdelta, complexity, explain, order)
-    if story_section:
-        body.append(story_section)
+    clean = visuals or {}
+    pr_picture = clean.get("pr")
+    if pr_picture:
+        heading = "This code in one picture" if explain else "The PR in one picture"
+        body.append('<section class="cw-pr-picture" id="cw-pr-picture"'
+                    f' aria-labelledby="cw-pr-picture-h"><h2 id="cw-pr-picture-h">{escape(heading)}</h2>'
+                    f'<div class="cw-vis" role="group" aria-label="{escape(pr_picture["title"])}">'
+                    f'{pr_picture["html"]}</div></section>')
 
-    # The story map replaces FLOW once there is more than one group: it IS the reading order,
-    # so a diagram redrawing that same shape underneath it would say the same thing twice. A
-    # single group has no story to map (render_story returns "" then), so FLOW stays exactly
-    # as before for that case.
-    groups = story(order or [], files, analysis.get("groups"), None)
-    story_html = render_story(groups)
-    if story_html:
-        body.append("<h2>Story map</h2>")
-        body.append(story_html.rstrip("\n"))
-    else:
-        flow = _wrap_flow_labels(_flow_tb((analysis.get("flow_mermaid") or "").strip()))
-        if flow:
-            body.append('<h2 class="h2-row"><span>Flow</span><span class="ctl">'
-                        f'{_diagram_max_button()}</span></h2>')
-            # tabindex and role give the zoom modal keyboard access before its JS has run;
-            # wire() sets them again on the live element, which is a harmless no-op.
-            # svgbox-flow: tells panZoom() and the CSS to size FLOW from its own viewBox (fit,
-            # never upscale) instead of stretching to the panel like the bigger stacked
-            # diagrams sections.py pastes in below.
-            body.append('<div class="panel svgbox svgbox-flow" tabindex="0" role="button"'
-                        ' aria-label="Expand diagram to full size">'
-                        f'<pre class="mermaid">{escape(flow)}</pre></div>')
-
-    # sections.py's own section (marker, heading, everything): pasted verbatim between the
-    # story map and the walkthrough -- render.py places generated sections, it never rewrites
-    # their markup.
+    # sections.py's own section (marker, heading, everything), pasted verbatim: render.py
+    # places generated sections, it never rewrites their markup.
     if structure.strip():
         body.append(structure.rstrip("\n"))
 
@@ -251,7 +157,19 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                     '<button type="button" id="wt-notes-toggle"'
                     ' aria-label="Explanations shown. Activate to hide them."'
                     '>explanations</button></span></h2>')
-        body.append(walkthrough.rstrip("\n"))
+        group_pictures = clean.get("groups") or {}
+
+        def picture(match):
+            html = group_pictures.get(int(match.group(1)))
+            return f'<div class="cw-vis cw-vis-group">{html}</div>' if html else ""
+
+        body.append(PICTURE_MARKER.sub(picture, walkthrough.rstrip("\n")))
+
+    all_symbols = render_symbols(symdelta, explain, paths=order if explain else (), inline=True) \
+        if symdelta else ""
+    if all_symbols:
+        body.append('<details class="cw-allsyms"><summary>All symbols</summary>'
+                    f'{all_symbols.rstrip(chr(10))}</details>')
 
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
     foot = f"{escape(target)} · generated {stamp}"
@@ -274,6 +192,27 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
     return page
 
 
+def load_visuals(path, n_groups, placed=None):
+    """(clean, lines) for visuals.json. Everything inlined on the page passes through
+    visuals.check_visuals here; `lines` are the `visuals:` report lines pipeline.py echoes."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError, RecursionError) as exc:
+        return None, [f"visuals: unreadable ({exc.__class__.__name__})"]
+    clean, problems = visuals_mod.check_visuals(raw, n_groups)
+    if problems and problems[0].startswith("visuals: "):
+        return clean, [f"visuals: ignored, {problems[0][len('visuals: '):]}"]
+    if placed is not None:
+        for idx in sorted(set(clean["groups"]) - set(placed)):
+            del clean["groups"][idx]
+            problems.append(f"visuals.groups[{idx}]: group has no files on this page")
+    raw = raw if isinstance(raw, dict) else {}
+    total = int(bool(raw.get("pr"))) + (len(raw["groups"]) if isinstance(raw.get("groups"), list) else 0)
+    kept = int(bool(clean["pr"])) + len(clean["groups"])
+    return clean, [f"visuals: {kept} kept, {max(total - kept, 0)} dropped"] + [
+        f"visuals: {problem}" for problem in problems]
+
+
 def _read(path):
     return Path(path).read_text(errors="replace") if path else ""
 
@@ -286,7 +225,8 @@ def main():
     parser.add_argument("--walkthrough", help="section-walkthrough.html")
     parser.add_argument("--links")
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
-    parser.add_argument("--symdelta", help="symdelta.json, for the story visuals")
+    parser.add_argument("--symdelta", help="symdelta.json, for the All symbols graph")
+    parser.add_argument("--visuals", help="visuals.json, re-checked here before anything is inlined")
     parser.add_argument("--template", required=True, help="the page template")
     parser.add_argument("--structure", help="section-structure.html")
     parser.add_argument("--state", help="state.json, inlined behind HR_STATE")
@@ -303,11 +243,17 @@ def main():
     state = json.loads(Path(args.state).read_text()) if args.state else None
     symdelta = json.loads(Path(args.symdelta).read_text()) if args.symdelta else None
 
+    clean = None
+    if args.visuals:
+        placed = {g.idx for g in story(order, files, analysis.get("groups"), None)}
+        clean, lines = load_visuals(args.visuals, len(analysis.get("groups") or []), placed)
+        print("\n".join(lines), file=sys.stderr)
+
     sys.stdout.write(render_html(
         analysis, files, _read(args.template),
         _read(args.walkthrough), links, args.title,
         complexity=complexity, state=state, explain=args.explain, order=order,
-        structure=_read(args.structure), symdelta=symdelta,
+        structure=_read(args.structure), symdelta=symdelta, visuals=clean,
     ))
     return 0
 

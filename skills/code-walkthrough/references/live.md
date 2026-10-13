@@ -41,7 +41,7 @@ never overwrites an existing one; paste a profile in instead.
              "api_key_env": "LITELLM_API_KEY"},
    "local": {"base_url": "http://localhost:11434/v1", "model": "<an Ollama model with tools>"}
  },
- "roles": {"analysis": "claude", "prose": "claude", "ask": "claude", "escalate": "proxy"},
+ "roles": {"analysis": "claude", "prose": "claude", "visuals": "claude", "ask": "claude", "escalate": "proxy"},
  "max_concurrency": 4, "timeout_s": 300, "max_conversation_tokens": 200000,
  "small_diff_lines": 1500, "batch_max_lines": 400,
  "trust": {"repos": ["owner/name"], "orgs": ["owner"]},
@@ -53,6 +53,8 @@ A profile's `kind` is `openai` (the default; needs `base_url` and `model`) or `c
 bounds each profile's call either way, HTTP request or claude process; `max_conversation_tokens`
 and `price_per_mtok` apply to the openai kind only. `roles.escalate` is optional and falls back to
 `roles.prose`; it is the fresh retry a batch gets after failing its fragment gate twice.
+`roles.visuals` is optional and falls back to `roles.prose`, so a stronger model can be mapped to the
+pictures alone; its usage is booked under the "visuals" role.
 `roles.thread` is the optional role for thread turns and falls back to `roles.ask` when unset; its
 usage is booked under the "thread" role. `small_diff_lines` and `batch_max_lines` mirror the fan-out thresholds in `static.md` step 2 and
 step 2a. An openai profile may also carry `price_per_mtok: {"input": x, "output": y}`, which is what
@@ -91,6 +93,14 @@ turn `--session-id`, later turns `--resume`), stored in `~/.claude/projects` for
 a lost session is reseeded from the thread's Q&A. Stop sends SIGTERM to the turn's process group
 (SIGKILL after 3 s) and the session stays resumable. A `ctx/` folder in the walkthrough directory
 holds copies of `analysis.json` and `raw.diff` the agent may read.
+
+## The pictures step
+
+Step `visuals` runs after the analysis and the background steps, authors the PR picture and one
+picture per group into `visuals.json`, and never fails the run: on error the step is marked
+`failed` and the page has no pictures. It skips when `visuals.json` already exists.
+`python3 scripts/cw_run.py visuals --dir <dir> --force` re-runs it, then `pipeline.py render`
+rebuilds the page. What a picture may contain: `references/graphs.md`.
 
 ## Repos without a local clone
 
@@ -196,7 +206,7 @@ others); everything else, including any `ANTHROPIC_*` variable, passes through u
 
 Everything lives under `~/.code-walkthrough/` (override with `CODE_WALKTHROUGH_HOME`):
 `server.json`, `server.lock` and `server.log` for the daemon itself, `config.json`, and one
-`w/<repo-key>/<id>/` directory per walkthrough holding its `meta.json`, read-only `head/`
+`w/<repo-key>/<id>/` directory per walkthrough holding its `meta.json`, `visuals.json`, read-only `head/`
 worktree, the Full-mode `agent/` worktree once one exists, batches, drafts and rendered pages.
 `repos/github.com/<owner>/<name>/` holds the cache clones. The daemon prunes a walkthrough untouched
 for more than 30 days (`CW_PRUNE_DAYS`), skipping any that still carries an unposted local draft; its
@@ -238,7 +248,7 @@ that ended in error or was stopped. A thread has a soft cap of 20 turns. A tab t
 catches up from the server's in-flight buffers.
 
 On a PR the agent may suggest resolving the GitHub review thread on the commented line. Keep adds it
-to the pending resolves exactly like the Resolve conversation button, and Submit review still
+to the pending resolves exactly like the Resolve button, and Submit review still
 previews and posts it. Dismiss tells the agent not to propose it again.
 
 When a comment asks to change what the page shows, the agent may also add or replace a prose, list

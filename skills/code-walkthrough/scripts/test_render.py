@@ -15,11 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_server  # noqa: E402
 from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
-    render_html, story_data, counts_from, _flow_tb, _wrap_flow_labels,
+    render_html, load_visuals, counts_from,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
-from sections import ZWSP  # noqa: E402
 from state import build  # noqa: E402
+from walkthrough import render_html as walkthrough_html, story  # noqa: E402
 from validate_analysis import parse_hunks  # noqa: E402
 
 DIFF = """diff --git a/src/auth.py b/src/auth.py
@@ -42,7 +42,6 @@ ANALYSIS = {
     "verdict": "Session loading gained a refresh fallback.",
     "overview": ("`loadSession` now falls back to the refresh token.\n\nThe title changed."
                 "\n\n`store.get` reads the access token from the cookie jar."),
-    "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]',
     "files": [{"path": "src/auth.py", "role": "r", "hunks": [{"header": "@@", "note": "n"}]}],
 }
 
@@ -111,14 +110,6 @@ def test_html_promotes_backticks_in_every_prose_field():
     assert "`" not in out.split("<body>")[1]
 
 
-def test_html_escapes_the_mermaid_source():
-    flow = {**ANALYSIS, "flow_mermaid": 'flowchart LR\n  A["a < b && c"] --> B'}
-    out = html(flow)
-
-    assert "a &lt; b &amp;&amp; c" in out
-    assert "a < b && c" not in out
-
-
 def test_pasted_sections_are_never_re_escaped():
     # sections.py already escaped these. Escaping again renders "&amp;lt;" on the page, and
     # re-indenting or re-wording them is how a legend drifts from its arrows.
@@ -127,75 +118,6 @@ def test_pasted_sections_are_never_re_escaped():
 
     assert walk in out
     assert "&amp;lt;" not in out
-
-
-def test_an_empty_flow_drops_the_whole_section():
-    out = html({**ANALYSIS, "flow_mermaid": ""})
-
-    assert "<h2>Flow</h2>" not in out
-    assert "pre class=\"mermaid\"" not in out
-    assert "svgbox-flow" not in out
-
-
-@pytest.mark.parametrize("flow, expected", [
-    ('flowchart TB\n  A --> B', 'flowchart TB\n  A --> B'),
-    ('', ''),
-    # Slicing on len("flowchart LR") rather than a blind replace: an LR appearing again later
-    # in the diagram (a node label, say) must survive untouched.
-    ('flowchart LR\n  A["go LR"] --> B', 'flowchart TB\n  A["go LR"] --> B'),
-])
-def test_flow_tb(flow, expected):
-    assert _flow_tb(flow) == expected
-
-
-def test_html_rewrites_a_flowchart_lr_analysis_to_tb():
-    lr = {**ANALYSIS, "flow_mermaid": 'flowchart LR\n  A["load()"] --> B["refresh()"]'}
-
-    html_out = html(lr)
-
-    assert "flowchart TB" in html_out and "flowchart LR" not in html_out
-
-
-def test_wrap_flow_labels_leaves_ids_arrows_edge_counts_and_multiword_labels_alone():
-    # mermaid wraps on spaces by itself, so a label with no over-length word comes back
-    # byte for byte (see sections.wrap_label).
-    for flow in (
-        'flowchart TB\n  A["one two three four five six seven eight"] -->|1| B["ok"]',
-        ('flowchart TB\n  A["short"] --> B["NewRequest sets Request User Id to usrID '
-         'for the MediaGuard lookup"]'),
-    ):
-        assert _wrap_flow_labels(flow) == flow
-
-
-@pytest.mark.parametrize("flow, labels", [
-    ('flowchart TB\n  A["short"] -->|"via resolveSymbolMergesAcrossPackages"| B["ok"]',
-     [('-->|"', '"|', "via resolveSymbolMergesAcrossPackages")]),
-    ('flowchart TB\n  A["short"] -->|via resolveSymbolMergesAcrossPackages| B["ok"]',
-     [('-->|', '|', "via resolveSymbolMergesAcrossPackages")]),
-    ('flowchart TB\n  A["filterUnusableIdentifierThatIsVeryLong"] '
-     '-->|"via resolveSymbolMergesAcrossPackages"| B["ok"]',
-     [('A["', '"]', "filterUnusableIdentifierThatIsVeryLong"),
-      ('-->|"', '"|', "via resolveSymbolMergesAcrossPackages")]),
-])
-def test_wrap_flow_labels_edge_forms(flow, labels):
-    out = _wrap_flow_labels(flow)
-
-    for start, end, original in labels:
-        label = out.split(start, 1)[1].split(end, 1)[0]
-        assert ZWSP in label
-        assert label.replace(ZWSP, "") == original
-
-
-def test_flow_diagram_breaks_a_long_identifier_end_to_end():
-    long_flow = {**ANALYSIS, "flow_mermaid":
-                 'flowchart LR\n  A["short"] --> B["filterUnusableIdentifierThatIsVeryLong"]'}
-
-    html_out = html(long_flow)
-
-    # A zero-width space needs no HTML escaping, so it reaches the page as itself -- unlike the
-    # <br/> this used to emit, which mermaid's sanitiser deleted (see sections.wrap_label).
-    assert ZWSP in html_out
-    assert "&lt;br" not in html_out
 
 
 def test_an_empty_overview_drops_the_whole_section():
@@ -291,35 +213,16 @@ def test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic():
     assert "<b>Summary</b>" in out and "<b>Verdict</b>" not in out
 
 
-# ---- story map ----
+# ---- structure placement ----
 
-def test_story_map_replaces_flow_and_lands_right_after_overview():
+def test_structure_section_lands_between_the_overview_and_the_walkthrough():
+    # render.py adds nothing around section-structure.html's own content, only places it.
     order, files = parsed()
-    analysis = {**ANALYSIS,
-                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
-                           {"title": "Docs", "paths": ["README.md"]}]}
-    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
-
-    assert "<h2>Story map</h2>" in out
-    assert "<h2>Flow</h2>" not in out
-    assert "svgbox-flow" not in out
-    assert '<div class="map">' in out
-    assert out.index("<h2>Overview</h2>") < out.index("<h2>Story map</h2>")
-
-
-def test_structure_section_lands_between_the_story_map_and_the_walkthrough():
-    # render.py adds nothing around section-structure.html's own content, only places it --
-    # between the story map and the walkthrough, per render_html's own ordering.
-    order, files = parsed()
-    analysis = {**ANALYSIS,
-                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
-                           {"title": "Docs", "paths": ["README.md"]}]}
     structure = '<!-- code-walkthrough:structure -->\n<div class="vd-structure"><h2>System change</h2></div>'
-    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order, structure=structure,
+    out = render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, structure=structure,
                       walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
 
-    assert '<div class="vd-structure">' in out
-    assert out.index("<h2>Story map</h2>") < out.index('<div class="vd-structure">') \
+    assert out.index("<h2>Overview</h2>") < out.index('<div class="vd-structure">') \
         < out.index("wt-body")
 
 
@@ -329,30 +232,15 @@ def test_an_empty_structure_section_inserts_nothing():
     assert "vd-structure" not in out
 
 
-def test_a_single_group_keeps_the_flow_diagram():
-    # No map to draw with one group (see walkthrough.render_story), so FLOW stays exactly as
-    # it did before the story map existed.
+def test_no_story_map_is_rendered_however_many_groups_there_are():
     order, files = parsed()
     analysis = {**ANALYSIS,
-                "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
+                "groups": [{"title": "Auth", "paths": ["src/auth.py"]},
+                           {"title": "Docs", "paths": ["README.md"]}]}
     out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
 
-    assert '<h2 class="h2-row"><span>Flow</span>' in out
-    assert "<h2>Story map</h2>" not in out
-    assert '<div class="map">' not in out
-
-
-def test_flow_heading_carries_the_maximise_icon_next_to_the_svgbox():
-    order, files = parsed()
-    analysis = {**ANALYSIS,
-                "groups": [{"title": "Everything", "paths": ["src/auth.py", "README.md"]}]}
-    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order)
-    heading = out.split('<span>Flow</span>')[1].split("</h2>")[0]
-
-    assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in heading
-    assert out.index("</h2>") < out.index("svgbox-flow")
-    # svgbox-flow lets the template size FLOW apart from the capped per-group symbol graphs.
-    assert 'class="panel svgbox svgbox-flow"' in out
+    assert "Story map" not in out and '<div class="map">' not in out
+    assert "cw-story" not in out
 
 
 # ---- the real template: contracts that survive a refactor ----
@@ -450,20 +338,13 @@ def test_live_ui_never_uses_html_injection_sinks():
     split = "function splitBackticks(" + _between(template, "function splitBackticks(", "function wireAsk(){")
     wire_ask = _wire_ask()
 
-    story = "function wireStory(){" + _between(template, "function wireStory(){", "wireStory();")
-
-    for scope in (wire_ask, split, sibling, story):
+    for scope in (wire_ask, split, sibling):
         for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
             assert banned not in scope, banned
     # model-authored text only reaches the DOM through mk(..., text)
     mk = _between(wire_ask, "const mk=(tag,cls,text)=>{", "};")
     assert "e.textContent=text" in mk
     assert "window.open(r.url,'_blank','noopener')" in wire_ask
-    assert "window.__vdGoToLine=navGoToLine" in template and "window.__vdGoToLine(sp)" in story
-    chip = _between(story, "const chip=mk(", "h.append(chip)")
-    assert "'cw-story-pulse'" in chip or "cw-story-pulse" in chip
-    assert "chip.setAttribute('aria-label'" in chip and "chip.type='button'" in chip
-    assert "'pointerdown'" in chip and "'mousedown'" in chip and "e.stopPropagation()" in chip
 
 
 def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds():
@@ -587,23 +468,13 @@ def test_live_reload_flushes_notes_before_reloading():
 
 
 # Rules that fix real browser bugs, and no behaviour test can see them without a browser.
-# display:none on a panel mermaid is about to render makes it measure the labels as zero and
-# collapse the diagram for good, so those panels go off-screen instead.
-_OFF_SCREEN = (["position:absolute", "left:-99999px"], ["display:none"])
 _CSS_RULES = [
     (r"details\.hr-thread-resolved\{([^}]*)\}",
      ["white-space:normal", "line-height:1.6", "overflow-wrap:anywhere"], []),
-    (r"body:not\(\.show-notes\) h3\.wt-group ~ \.wt-panel\{([^}]*)\}", *_OFF_SCREEN),
-    (r"\.wt-tabpanel\.wt-tab-off\{([^}]*)\}", *_OFF_SCREEN),
-    (r"\.wt-tabs \.vd-ctl\[hidden\]\{([^}]*)\}", ["display:none"], []),
     (r"body:not\(\.show-notes\) \.hunk-note-hunk,\n\s*body:not\(\.show-notes\) \.wt-why\{([^}]*)\}",
      ["display:none"], []),
-    (r"body:not\(\.show-notes\) h3\.wt-group \.vd-max-btn\{([^}]*)\}", ["display:none"], []),
-    (r"@media \(max-width:480px\)\{\s*\.cw-flow\{([^}]*)\}", ["flex-direction:column"], []),
-    (r"\.cw-story-pulse\{([^}]*)\}", [], ["animation"]),
-    (r"\.dline-plus::before,\.cw-ref-dot-btn::before,\.cw-ingraph::before\{([^}]*)\}",
+    (r"\.dline-plus::before,\.cw-ref-dot-btn::before\{([^}]*)\}",
      ["position:absolute", "inset:-16px"], []),
-    (r"@media \(pointer:coarse\)\{[^@]*?\.cw-story-detail button\{([^}]*)\}", ["min-height:44px"], []),
     (r"\.cw-caret\{([^}]*)\}", [], ["animation"]),
     (r"@media \(prefers-reduced-motion:no-preference\)\{\s*\.cw-caret\{([^}]*)\}",
      ["animation:cw-caret"], []),
@@ -622,6 +493,55 @@ def test_template_css_rule_pins(selector, must, must_not):
         assert decl in body
     for decl in must_not:
         assert decl not in body
+
+
+def test_panel_counts_cover_every_listed_row_except_resolved():
+    tpl = _real_template()
+    src = "function panelCounts(" + _between(tpl, "function panelCounts(", "function wireAsk(){")
+    _node(src + """
+const e = (kind, state) => ({kind, state});
+const c = panelCounts([e('agent','answered'), e('agent','resolved'), e('agent','draft'),
+  e('draft','draft'), e('pr','open'), e('pr','resolved')]);
+if (JSON.stringify(c) !== JSON.stringify({all:4, agent:2, pr:1, drafts:1})) throw new Error(JSON.stringify(c));
+""")
+    panel = _between(_wire_ask(), "function renderPanelList(){", "const vv=window.visualViewport")
+    assert "const counts=panelCounts(entries), open=counts.all;" in panel
+    assert "+counts[k]" in panel and "all.filter(t=>!t.resolved)" not in panel
+
+
+def test_gutter_plus_opens_the_composer_directly_and_only_ranges_raise_the_selection_bar():
+    ask = _wire_ask()
+    gutter = _between(ask, "onGutter=(meta,e)=>{", "let openBox=null")
+    shift, plain = gutter.split("clearSelection();", 1)
+    assert "e.shiftKey" in shift and "setRowRange(gutterAnchor,span)" in shift and "updateSelBar()" in shift
+    assert "openLineComposer(lineRangeAnchor(span,span),meta)" in plain
+    assert "updateSelBar" not in plain and "addRange" not in plain
+    tpl = _real_template()
+    wire_line = _between(tpl, "function wireLine(span,meta){", "// Extension (no dot)")
+    assert "span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(e); } });" in wire_line
+    assert re.search(r"plus\.addEventListener\('click',e=>\{\s*e\.stopPropagation\(\);.*open\(e\);\s*\}\);", wire_line)
+    update = _between(ask, "function updateSelBar(){", "let selTimer=null;")
+    assert "buildAskAnchor(sel)" in update and "planEl.contains(sel.anchorNode)" in update
+
+
+def test_a_click_right_after_a_range_drag_is_swallowed_but_ordinary_clicks_are_not():
+    tpl = _real_template()
+    wire_line = _between(tpl, "function wireLine(span,meta){", "// Extension (no dot)")
+    for handler in ("plus", "badge"):
+        line = next(l for l in wire_line.splitlines() if l.strip().startswith(f"{handler}.addEventListener('click'"))
+        assert re.search(r"if\(gutterSwallow\)\s*\{\s*gutterSwallow=false;\s*return;\s*\}\s*open\(e\)", line)
+    ask = _wire_ask()
+    drag_end = _between(ask, "function dragEnd(){", "gutterDown=")
+    assert re.search(r"if\(!stopDrag\(\)\)\s*return;", drag_end) and "gutterSwallow=true" in drag_end
+    assert "setTimeout" in drag_end
+    down = _between(ask, "gutterDown=(e,span)=>{", "stopDrag();")
+    assert "gutterSwallow=false" in down
+
+
+def test_copy_for_agent_is_gone():
+    tpl = _real_template()
+    for gone in ("Copy for agent", "hr-comments-agent-btn", "cw-panel-copy", "agentFeedbackText", "notesForAgent"):
+        assert gone not in tpl
 
 
 def test_block_key_is_stable_whitespace_blind_section_aware_and_charset_safe():
@@ -818,107 +738,7 @@ if ({json.dumps(hunk["id"])} !== 'x.py\\t' + p.prefix) throw new Error('id misma
 """)
 
 
-@pytest.mark.parametrize("key, i, n, want", [
-    ("ArrowRight", 0, 3, 1), ("ArrowDown", 1, 3, 2), ("ArrowRight", 2, 3, 2),
-    ("ArrowLeft", 2, 3, 1), ("ArrowUp", 0, 3, 0), ("Home", 2, 3, 0), ("End", 0, 3, 2),
-    ("Tab", 1, 3, -1), ("ArrowRight", 0, 0, -1),
-])
-def test_story_next_index_clamps_and_ignores_other_keys(key, i, n, want):
-    src = "function storyNextIndex(" + _between(_real_template(), "function storyNextIndex(", "function storyHunkKey(")
-    _node(src + f"""
-const got = storyNextIndex({i}, {n}, {json.dumps(key)});
-if (got !== {want}) throw new Error('got ' + got);
-""")
-
-
-@pytest.mark.parametrize("diff_header", [
-    "@@ -10,2 +10,3 @@",
-    "@@ -1 +1 @@ def f():",
-])
-def test_story_hunk_key_matches_state_hunk_id(diff_header):
-    diff = ("diff --git a/x.py b/x.py\nindex aaa1111..bbb2222 100644\n--- a/x.py\n+++ b/x.py\n"
-            f"{diff_header}\n-a\n+b\n")
-    hunk = build({"files": []}, diff)["hunks"][0]
-    src = "function storyHunkKey(" + _between(_real_template(), "function storyHunkKey(", "function wireStory(){")
-
-    _node(src + f"""
-if (storyHunkKey('x.py', {json.dumps(diff_header)}) !== {json.dumps(hunk["id"])}) throw new Error('id mismatch');
-if (storyHunkKey('x.py', 'not a header') !== null) throw new Error('expected null');
-""")
-
-
-# ---- story visuals ----
-
-SYMDELTA = {"nodes": [
-    {"id": "p:load", "label": "load", "kind": "symbol", "file": "src/auth.py", "range": [40, 42],
-     "state": "changed"},
-    {"id": "p:old", "label": "old", "kind": "symbol", "file": "src/auth.py", "range": [41, 41],
-     "state": "gone"},
-]}
-VISUALS = [{"title": "T", "acts": [{"title": "A", "flow": [
-    {"sym": "p:load"}, {"edge": "calls"}, {"sym": "src/auth.py:old"}]}]}]
-
-
-CLEAN = [{"title": "T", "acts": [{"title": "A", "flow": [
-    {"sym": "p:load"}, {"edge": "calls"}, {"sym": "p:old"}]}]}]
-
-
-def story_html(visuals=VISUALS, symdelta=SYMDELTA, complexity=None, **kw):
-    order, files = parsed()
-    return render_html({**ANALYSIS, "visuals": visuals, **kw}, files, TEMPLATE, now=FROZEN,
-                       order=order, symdelta=symdelta, complexity=complexity)
-
-
-def test_story_section_sits_between_overview_and_story_map_and_carries_the_blob():
-    out = story_html(groups=[{"title": "Auth", "paths": ["src/auth.py"]},
-                             {"title": "Docs", "paths": ["README.md"]}])
-
-    assert '<section class="cw-story" id="cw-story" hidden' in out
-    assert out.index("<h2>Overview</h2>") < out.index('id="cw-story"') < out.index("<h2>Story map</h2>")
-    blob = out.split('id="cw-story-data">')[1].split("</script>")[0]
-    assert "<" not in blob
-    data = json.loads(blob)
-    assert data["visuals"][0]["acts"][0]["flow"][2] == {"sym": "p:old"}
-    assert set(data["syms"]) == {"p:load", "p:old"}
-
-
-def test_no_valid_visuals_means_no_story_section():
-    assert "cw-story" not in story_html(visuals=[{"title": "T", "acts": []}])
-    assert "cw-story" not in story_html(visuals=VISUALS, symdelta=None)
-    assert "cw-story" not in story_html(visuals=None)
-
-
-def test_story_syms_carry_hunks_capped_code_and_the_state_hunk_id():
-    order, files = parsed()
-    data = story_data(CLEAN, SYMDELTA, None, files)
-    sym = data["syms"]["p:load"]
-
-    prefix = files["src/auth.py"]["hunks"][0]["prefix"]
-    assert sym["side"] == "RIGHT" and sym["hunks"] == [f"src/auth.py\t{prefix}"]
-    assert [kind for kind, _ in sym["code"]] == ["c", "a", "c"]
-    assert sym["cx"] is None and sym["state"] == "changed"
-
-
-def test_story_code_is_capped_at_four_rows():
-    diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n@@ -1,0 +1,6 @@\n" + "".join(
-        f"+l{i}\n" for i in range(6))
-    _, files = parse_hunks(diff)
-    sd = {"nodes": [{"id": "f", "label": "f", "kind": "symbol", "file": "f.py", "range": [1, 6],
-                     "state": "new"}]}
-    visuals = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "f"}]}]}]
-
-    assert len(story_data(visuals, sd, None, files)["syms"]["f"]["code"]) == 4
-
-
-def test_gone_symbol_reads_the_left_side_and_complexity_overrides_state():
-    order, files = parsed()
-    cx = {"files": {"src/auth.py": {"symbols": [
-        {"name": "old", "before": 3, "after": 0, "existed": True, "removed": True}]}}}
-    sym = story_data(CLEAN, SYMDELTA, cx, files)["syms"]["p:old"]
-
-    assert sym["side"] == "LEFT" and sym["state"] == "gone" and sym["cx"] == [3, 0]
-    assert sym["hunks"] == [] and sym["code"] == []
-
+# ---- pictures and All symbols ----
 
 GRAPH_SD = {"nodes": [
     {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
@@ -927,25 +747,279 @@ GRAPH_SD = {"nodes": [
       for n, r in (("load", [40, 42]), ("old", [41, 41]))],
 ], "edges": [{"id": "e0", "source": "p:load", "target": "p:old", "state": "new"}]}
 
-
-def test_all_symbols_disclosure_holds_the_graph_once_inside_the_story():
-    out = story_html(symdelta=GRAPH_SD)
-    section = out.split('id="cw-story"')[1].split("</section>")[0]
-
-    assert out.count('<details class="cw-allsyms"><summary>All symbols</summary>') == 1
-    assert section.index('id="cw-story-root"') < section.index("cw-allsyms") < section.index("vd-symbols")
-    assert section.count('class="vd-symbols') == 1
+WALK = ('<!-- code-walkthrough:walkthrough -->\n<h3 class="wt-group">One</h3>\n'
+        '<!-- cw-picture:0 -->\n<details class="hunk">a</details>\n'
+        '<h3 class="wt-group">Two</h3>\n<!-- cw-picture:1 -->\n<details class="hunk">b</details>\n')
+PR_PIC = {"title": "Before & after", "html": "<p>pr-picture</p>"}
+ALL_SYMS = '<details class="cw-allsyms"><summary>All symbols</summary>'
 
 
-def test_page_without_valid_visuals_is_unchanged_by_the_symdelta():
-    bare = story_html(visuals=None, symdelta=None)
+def pics(clean=None, symdelta=None, walkthrough=WALK, **kw):
+    order, files = parsed()
+    return render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, symdelta=symdelta,
+                       walkthrough=walkthrough, visuals=clean, **kw)
 
-    assert story_html(visuals=None, symdelta=GRAPH_SD) == bare
-    assert story_html(visuals=[{"title": "T", "acts": []}], symdelta=GRAPH_SD) == bare
-    assert "cw-allsyms" not in bare
+
+def test_pr_picture_section_sits_after_overview_before_the_walkthrough_with_an_escaped_label():
+    out = pics({"pr": PR_PIC, "groups": {}})
+
+    assert ('<section class="cw-pr-picture" id="cw-pr-picture" aria-labelledby="cw-pr-picture-h">'
+            '<h2 id="cw-pr-picture-h">The PR in one picture</h2>'
+            '<div class="cw-vis" role="group" aria-label="Before &amp; after"><p>pr-picture</p>'
+            '</div></section>') in out
+    assert out.index("<h2>Overview</h2>") < out.index('id="cw-pr-picture"') \
+        < out.index("<span>Walkthrough</span>")
+    assert out.count('class="cw-vis') == 1
+
+
+def test_a_hostile_title_is_escaped_in_the_label():
+    out = pics({"pr": {"title": '"><script>x</script>', "html": "<p>a</p>"}, "groups": {}})
+
+    assert 'aria-label="&quot;&gt;&lt;script&gt;x&lt;/script&gt;"' in out
+    assert "<script>x" not in out
+
+
+@pytest.mark.parametrize("clean, pr_sections, group_pictures", [
+    (None, 0, 0),
+    ({"pr": None, "groups": {}}, 0, 0),
+    ({"pr": PR_PIC, "groups": {}}, 1, 0),
+    ({"pr": None, "groups": {1: "<p>g1</p>"}}, 0, 1),
+    ({"pr": PR_PIC, "groups": {0: "<p>g0</p>", 1: "<p>g1</p>"}}, 1, 2),
+])
+def test_layout_with_zero_one_or_two_pictures(clean, pr_sections, group_pictures):
+    out = pics(clean)
+
+    assert out.count('<section class="cw-pr-picture"') == pr_sections
+    assert out.count('class="cw-vis cw-vis-group"') == group_pictures
+    assert "cw-picture:" not in out
+
+
+def test_group_picture_lands_by_index_between_its_heading_and_its_files():
+    out = pics({"pr": None, "groups": {1: "<p>g1</p>"}})
+
+    two = out.index(">Two</h3>")
+    assert two < out.index('<div class="cw-vis cw-vis-group"><p>g1</p></div>') < out.index(">b</details>")
+    assert out.index(">a</details>") < two
+
+
+def test_a_group_picture_out_of_range_renders_nothing():
+    out = pics({"pr": None, "groups": {7: "<p>nope</p>"}})
+
+    assert "nope" not in out and "cw-picture:" not in out
+
+
+def test_all_symbols_is_collapsed_once_after_the_walkthrough_only_with_symbols():
+    out = pics(symdelta=GRAPH_SD)
+
+    assert out.count(ALL_SYMS) == 1 and out.count('class="vd-symbols') == 1
+    assert out.index(">b</details>") < out.index(ALL_SYMS) < out.index('<div class="foot">')
+    assert "<details class=\"cw-allsyms\" open" not in out
+    for none in (None, {"nodes": []}, {"language": None}):
+        assert "cw-allsyms" not in pics(symdelta=none)
+
+
+def test_page_without_pictures_still_has_all_symbols_and_nothing_else_new():
+    out = pics(symdelta=GRAPH_SD)
+
+    assert ALL_SYMS in out
+    assert 'class="cw-vis' not in out and '<section class="cw-pr-picture"' not in out
+
+
+def test_the_old_spec_story_is_gone_even_if_analysis_still_carries_visuals():
+    order, files = parsed()
+    out = render_html({**ANALYSIS, "visuals": [{"title": "T", "acts": []}]}, files, TEMPLATE,
+                      now=FROZEN, order=order, symdelta=GRAPH_SD)
+
+    assert "cw-story" not in out and "cw-story-data" not in out
+
+
+def _visuals_file(tmp_path, raw):
+    path = tmp_path / "visuals.json"
+    path.write_text(json.dumps(raw))
+    return path
+
+
+def test_load_visuals_drops_hostile_fragments_and_reports_them(tmp_path):
+    hostile = '<p>ok</p><script>evil()</script><img src=x onerror=alert(1)>'
+    raw = {"pr": {"title": "t", "html": hostile},
+           "groups": [{"index": 0, "html": "<p>fine</p>"}, {"index": 9, "html": "<p>x</p>"},
+                      {"index": 1, "html": '<p><!-- HR_STATE -->&lt;!-- HR_STATE --&gt;</p>'}]}
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), 2)
+    out = pics(clean)
+
+    assert clean["pr"] is None and set(clean["groups"]) == {0, 1}
+    assert lines[0] == "visuals: 2 kept, 2 dropped"
+    assert any(line.startswith("visuals: visuals.pr:") for line in lines[1:])
+    assert "evil()" not in out and "onerror" not in out and "<script" not in out
+    assert "<!-- HR_STATE -->" not in out
+    assert "&lt;!-- HR_STATE --&gt;" in out
+
+
+def test_a_picture_follows_its_analysis_index_past_a_skipped_group(tmp_path):
+    order, files = parsed()
+    groups = [{"title": "AAA", "paths": ["src/auth.py"]},
+              {"title": "BBB", "paths": ["gone.py"]},
+              {"title": "CCC", "paths": ["README.md"]}]
+    rendered = story(order, files, groups, None)
+    raw = {"pr": None, "groups": [{"index": i, "html": f"<p>pic{i}</p>"} for i in range(3)]}
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), len(groups),
+                                {g.idx for g in rendered})
+    out = pics(clean, walkthrough=walkthrough_html(rendered, files, {}))
+
+    assert lines == ["visuals: 2 kept, 1 dropped",
+                     "visuals: visuals.groups[1]: group has no files on this page"]
+    assert out.index(">AAA ") < out.index("pic0") < out.index(">CCC ") < out.index("pic2")
+    assert "pic1" not in out and out.count('class="cw-vis cw-vis-group"') == 2
+
+
+def test_load_visuals_survives_unreadable_json(tmp_path):
+    path = tmp_path / "visuals.json"
+    path.write_text("{not json")
+
+    clean, lines = load_visuals(path, 2)
+
+    assert clean is None and lines == ["visuals: unreadable (JSONDecodeError)"]
 
 
 def test_level_script_defers_a_graph_inside_a_closed_details_to_its_first_toggle():
     script = _between(_real_template(), "querySelectorAll('.vd-symbols')", "\n})();")
 
     assert "root.closest('details')" in script and "addEventListener('toggle'" in script
+
+
+def test_reply_row_is_a_compact_one_row_input_with_a_round_send_and_quiet_actions():
+    template = _real_template()
+    row = _between(template, "function buildReplyRow(root){", "function wireReplyBox(")
+    assert "input.rows=1" in row and "'fb-reply-send'" in row
+    assert "btn.setAttribute('aria-label','Reply on GitHub')" in row and "btn.hidden=true" in row
+    assert "'fb-quiet cw-reply-ask'" in row and "'Ask the agent'" in row
+    assert "fb-primary" not in row and "fb-ghost" not in row
+    resolve = _between(template, "function buildResolveButton(root){", "const threadWrapByRoot")
+    assert "'fb-quiet'" in resolve and "btn.textContent='Resolve'" in resolve
+    assert "setAttribute('aria-label','Resolve conversation')" in resolve and "markPendingResolve(root.id)" in resolve
+    wire = _between(template, "function wireReplyBox(", "function buildResolveButton(")
+    assert "e.key==='Enter'&&!e.shiftKey" in wire and "btn.hidden=!can" in wire
+    for sel, must in ((r"\.fb-reply-input\{([^}]*)\}", ["resize:none", "max-height:"]),
+                      (r"\.fb-reply-box:focus-within\{([^}]*)\}", ["outline:2px solid var(--accent)"]),
+                      (r"\.fb-reply-box \.fb-reply-send::before\{([^}]*)\}", ["position:absolute", "inset:-9px"]),
+                      (r"\.fb-item \.fb-quiet,\.fb-actions \.fb-quiet\{min-height:44px\}", [])):
+        m = re.search(sel, template)
+        assert m, sel
+        for frag in must:
+            assert frag in m.group(1), frag
+
+
+def test_quiet_actions_and_reply_input_do_not_inherit_the_diff_line_height_or_mono_font():
+    template = _real_template()
+    sans = "font-family:system-ui,-apple-system"
+    quiet = re.search(r"\.fb-item \.fb-quiet,\.fb-actions \.fb-quiet\{([^}]*)\}", template).group(1)
+    assert "line-height:1.4" in quiet and sans in quiet and "font-size:var(--fs-xs)" in quiet
+    acts = re.search(r"\.fb-reply-acts\{([^}]*)\}", template).group(1)
+    assert "line-height:1.4" in acts and sans in acts
+    inp = re.search(r"\.fb-reply-input\{([^}]*)\}", template).group(1)
+    assert sans in inp and "font-size:var(--fs-sm)" in inp and "var(--mono)" not in inp
+
+
+def test_ask_the_agent_from_a_thread_seeds_a_line_chip_from_the_root_comment():
+    template = _real_template()
+    ask = _between(template, "openThreadAsk=(root,host,input)=>{", "const openLineComposer=")
+    assert "threadRef(root)" in ask and "v.editor.setSegs([ref,' '])" in ask
+    ref = _between(template, "function threadRef(root){", "function chipNode(")
+    assert "kind:'line'" in ref and "root.path" in ref and "root.side" in ref and "root.body" in ref and "validRef(ref)" in ref
+
+
+def test_reply_box_helpers_gate_sending_and_cap_the_grown_height():
+    src = _between(_real_template(), "const REPLY_MAX_H=160;", "function buildReplyRow(")
+    _node(src + """
+const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+eq([replyCanSend(''), replyCanSend(' \\n\\t'), replyCanSend(' a '), replyCanSend(null)], [false, false, true, true]);
+eq(replyFit(30, 160), {h: 30, over: false});
+eq(replyFit(160, 160), {h: 160, over: false});
+eq(replyFit(400, 160), {h: 160, over: true});
+""")
+
+
+# ---- picture styling and removed features ----
+
+_VIS_ALIASES = {
+    "--background": "var(--bg)", "--foreground": "var(--text)", "--card": "var(--panel)",
+    "--muted-foreground": "var(--muted)", "--success": "var(--green)",
+    "--warning": "var(--yellow)", "--destructive": "var(--red)",
+    "--chart-1": "var(--accent)", "--chart-2": "var(--green)", "--chart-3": "var(--yellow)",
+    "--chart-4": "var(--purple)", "--chart-5": "var(--cyan)", "--chart-6": "var(--red)",
+    "--code-background": "var(--panel2)", "--font-mono": "var(--mono)", "--radius": "8px",
+}
+
+
+def _vis_rule():
+    return re.search(r"\n  \.cw-vis\{([^}]*)\}", _real_template()).group(1)
+
+
+@pytest.mark.parametrize("name, value", _VIS_ALIASES.items())
+def test_cw_vis_aliases_t3_theme_names_to_page_tokens(name, value):
+    assert f"{name}:{value}" in _vis_rule()
+
+
+def test_cw_vis_surface_aliases_and_font_are_defined():
+    rule = _vis_rule()
+    for name in ("--accent-surface", "--destructive-surface", "--font-sans"):
+        assert name + ":" in rule
+    assert "color-mix(in srgb,var(--red) 14%,var(--panel))" in rule
+
+
+def test_cw_vis_sets_its_own_line_height_and_font_against_inherited_diff_values():
+    rule = _vis_rule()
+    assert "line-height:1.4" in rule and "font-family:var(--font-sans)" in rule
+
+
+def test_the_global_svg_text_restyle_leaves_pictures_alone():
+    template = _real_template()
+    assert re.search(r"svg:not\(\s*\.cw-vis\s+svg\s*\)\s+text\s*\{", template)
+    assert not re.search(r"^\s*svg\s+text\s*\{", template, re.M)
+
+
+def test_pictures_are_never_wired_as_zoomable_diagrams():
+    sel = re.search(r"const DIAGRAM_SEL='([^']*)'", _real_template()).group(1)
+    assert "cw-vis" not in sel
+
+
+@pytest.mark.parametrize("gone", [
+    "wireStory", "storyNextIndex", "storyHunkKey", "cw-story", "cw-card", "cw-flow",
+    "svgbox", ".hop", ".spine", "In graph", "cw-ingraph", "wt-badge", "wireGroupTabs",
+])
+def test_template_carries_nothing_of_the_removed_story_and_flow_features(gone):
+    assert gone not in _real_template()
+
+
+def test_a_rendered_picture_reaches_the_page_inside_its_cw_vis_wrapper():
+    out = pics({"pr": PR_PIC, "groups": {}})
+
+    wrapper = re.search(r'<div class="cw-vis"[^>]*>(.*?)</div>', out, re.S)
+    assert wrapper and wrapper.group(1) == PR_PIC["html"]
+
+
+@pytest.mark.parametrize("explain, heading", [(False, "The PR in one picture"), (True, "This code in one picture")])
+def test_the_picture_heading_follows_the_mode(explain, heading):
+    out = pics({"pr": PR_PIC, "groups": {}}, explain=explain)
+
+    assert f'<h2 id="cw-pr-picture-h">{heading}</h2>' in out
+
+
+def test_load_visuals_survives_pathologically_deep_json(tmp_path):
+    path = tmp_path / "visuals.json"
+    path.write_text("[" * 100000)
+
+    clean, lines = load_visuals(path, 2)
+
+    assert clean is None and lines == ["visuals: unreadable (RecursionError)"]
+
+
+@pytest.mark.parametrize("raw, reason", [([1], 'expected an object with "pr" and "groups"'),
+                                         ({"pr": {"title": "t", "html": "<p>" + "x" * 400000 + "</p>"}, "groups": []},
+                                          "in total, over the")])
+def test_a_rejected_visuals_file_reads_as_ignored_not_zero_kept(tmp_path, raw, reason):
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), 2)
+
+    assert clean == {"pr": None, "groups": {}}
+    assert len(lines) == 1 and lines[0].startswith("visuals: ignored, ") and reason in lines[0]
+    assert "kept" not in lines[0] and "visuals: visuals:" not in lines[0]

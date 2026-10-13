@@ -53,10 +53,10 @@ Role and note rules, with the bad/good pairs: `prompts/batch.md`.
 
 ## The prose and grouping subagent
 
-Judgment rules (what `overview`, `groups`, the flow diagrams and `hop`/`side` are for, the
+Judgment rules (what `overview` and `groups` are for, the
 worked example): `prompts/prose.md`. One subagent, on the strong tier since it needs the whole
 change in view and nothing downstream can check its judgment, writes `<scratchpad>/prose.json`
-with `target`, `overview`, `verdict`, `groups` and a top-level `flow_mermaid`, from the
+with `target`, `overview`, `verdict` and `groups`, from the
 fragments, the numstat and the graph summaries (`symdelta.counts`/`symdelta.moved`). Under about
 2000 lines, hand it `<scratchpad>/raw.diff` too and tell it to read it, since that removes the
 guessing; above that, fragments and the numstat only, never `raw.diff`, the size this split
@@ -66,7 +66,7 @@ enough to explain the machinery.
 The main thread no longer writes `groups` into `analysis.json` by hand: this subagent writes them
 directly into `prose.json`, and `fanout.py merge` carries them through.
 
-It may add `visuals` to `prose.json` (spec: `static.md`, rules: `prompts/prose.md`); `merge` copies the key only when present, like `groups`. It reads the symbol node ids from `symdelta.json` so it can name real ids.
+The pictures are not this subagent's job: a separate subagent writes them, `static.md` step 2b4.
 
 Ordering: this subagent waits for every batch fragment and for `symdelta.json`, the same
 dependency the old grouping pass already had, so the critical path does not get longer.
@@ -96,11 +96,7 @@ the diff but missing from `files[]`, a blank `role`, an invented file or hunk, a
 check tokenises with `[A-Za-z_][A-Za-z0-9_]*`, splits camelCase and snake_case, compares
 case-insensitively, ignores context lines, and skips a hunk whose changed lines carry no
 identifiers at all. It is deliberately language independent: `symdelta.py` already owns the
-per-language token split, and duplicating it here is the thing to avoid. A group's `hop` runs
-through the same tokeniser, checked against the whole diff rather than one hunk, since a
-hand-off can point at either side of a group boundary; `hop` also fails over six words, `side`
-fails when it isn't a plain boolean, and the last group that isn't a `side` group fails if it
-carries a `hop` at all.
+per-language token split, and duplicating it here is the thing to avoid.
 
 ### The empty-note floor, and why the old per-hunk churn check is gone
 

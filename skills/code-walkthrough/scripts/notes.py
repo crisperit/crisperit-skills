@@ -74,8 +74,8 @@ keyed by thread_id. It never goes through merge_state: that function's VALID_ID_
 PAGE_DENIED_NOTE_FIELDS guard against a browser-pasted note payload, and a resolution object
 is a different shape entirely -- already-trusted output from a worker, not page input.
 
-import merges a page's Copy for agent payload into state.json: the page is a plain local
-file with no server to post a click to, so pasting the copied JSON here is the only way a
+import merges a page's exported notes payload into state.json: the page is a plain local
+file with no server to post a click to, so passing the JSON here is the only way a
 marked note reaches state.json. It goes through merge_state with is_page_origin=True, the
 same deny-list a page write is always subject to (PAGE_DENIED_NOTE_FIELDS and VALID_ID_RE): a
 pasted payload is a snapshot of localStorage and can be stale, and without that deny-list a
@@ -1056,7 +1056,7 @@ def do_apply_resolutions(args):
 
 
 def do_import(args):
-    """Merge a pasted copy-for-agent payload into state.json."""
+    """Merge a pasted page notes payload into state.json."""
     state = _load_state(args.state)
     raw = Path(args.file).read_text() if args.file else sys.stdin.read()
     partial = json.loads(raw)

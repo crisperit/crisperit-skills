@@ -77,7 +77,6 @@ The template and the rendered HTML still never enter context.
   "target": "master...HEAD",
   "verdict": "one line for the facts strip: the change in a breath",
   "overview": "lead (1-2 sentences) + 3-5 one-line bullets of organizing ideas -- shape in prompts/prose.md",
-  "flow_mermaid": "flowchart LR ..., or \"\" when there is no flow worth drawing",
   "files": [
     {
       "path": "pkg/thing.py",
@@ -89,30 +88,11 @@ The template and the rendered HTML still never enter context.
     {
       "title": "Hot-reload the rate-limit config",
       "why": "optional one line on why this theme reads here",
-      "paths": ["pkg/thing.py"],
-      "flow_mermaid": "optional, one small diagram for this group",
-      "hop": "optional, 2-6 words naming the hand-off to the next stop",
-      "side": "optional, true for a supporting group off the main line"
-    }
-  ],
-  "visuals": [
-    {
-      "title": "The request becomes a prompt",
-      "intro": "optional",
-      "acts": [{
-        "title": "Intake", "text": "optional", "bridge": "optional",
-        "flow": [{"sym": "<symdelta node id or file:label>"}, {"edge": "validates"}, {"sym": "..."}]
-      }]
+      "paths": ["pkg/thing.py"]
     }
   ]
 }
 ```
-
-`visuals` is optional and advisory: `validate_analysis.check_visuals` (not part of the gate)
-drops a visual with any problem whole, so a bad one never fails a build, and `pipeline.py prepare`
-prints `visuals: N kept, M dropped` plus one line per problem. Caps are the `VISUALS_MAX`-style
-constants in that script. The prose agent needs `symdelta.json` first to know the ids, so a
-fan-out run builds it before the prose pass, as it already does for the graph summaries.
 
 This file is the whole of your judgment. Nothing downstream writes prose: `render.py` and
 `walkthrough.py` place these strings and build every other part of the output from `raw.diff`.
@@ -120,7 +100,7 @@ So a field left blank is a section that will not appear, not a section someone e
 
 One entry per file in `raw.diff`, one `hunks` entry per `@@` hunk in that file, every `role`
 non-blank. Judgment rules for `role` and `note`, with the bad/good pairs: `prompts/batch.md`.
-Judgment rules for `overview`, `groups`, the flow diagrams, the `hop`/`side` fields and `visuals`, with the
+Judgment rules for `overview` and `groups`, with the
 worked example: `prompts/prose.md`. The single subagent below the fan-out threshold reads both
 of these before filling in this whole schema itself.
 
@@ -146,7 +126,7 @@ python3 <skill>/scripts/fanout.py split --diff <scratchpad>/raw.diff \
    `validate_analysis.py --fragment` before replying.
 2. Then one subagent on the strong tier, since it needs the whole change in view and nothing
    downstream can check its judgment, writes `<scratchpad>/prose.json` with `target`,
-   `overview`, `verdict`, `groups` and a top-level `flow_mermaid`, from the fragments, the
+   `overview`, `verdict` and `groups`, from the fragments, the
    numstat and `<scratchpad>/symdelta.json`'s counts and moved files. Under about 2000 lines,
    also hand it `<scratchpad>/raw.diff` and tell it to read it. It waits for every batch and for
    `symdelta.json`. Full brief: `references/fanout.md`.
@@ -196,8 +176,7 @@ for a deleted file's `hunks` list, and the `verdict` key.
 ## 2b3. Build the symbol-delta graph
 
 Every target names two refs by this point, a working-tree target's via the snapshot commit from
-step 1, so this step always runs. It is the only graph either output carries besides the flow
-diagram, and it stays outside `pipeline.py`: see step 2 above for why. Issue it as its own Bash
+step 1, so this step always runs. It is the only graph either output carries, and it stays outside `pipeline.py`: see step 2 above for why. Issue it as its own Bash
 call, run outside any command sandbox, because git fetch needs the network and symdelta writes
 caches outside the repo (in Claude Code, `dangerouslyDisableSandbox: true`), in the same message
 as the fan-out spawns and `pipeline.py early`. In explain mode `<base>` is the empty baseline:
@@ -236,6 +215,23 @@ already the scope. Explaining a whole repository is a legitimate `<paths>` of `.
 Supported: Go, TypeScript, Python and Rust, each needing its language server on PATH. The
 per-language profiles, install commands, cache location, the name-collision problem this graph
 avoids, and the runtime budget on a large repo: `references/graphs.md`.
+
+## 2b4. Pictures
+
+After `symdelta.json` exists and the step 2b gate passed, spawn ONE subagent on the strong tier
+(it needs the whole change in view and nothing downstream checks its judgment), in the same
+message as `pipeline.py prepare` (step 3). It reads `prompts/visuals.md`, runs
+`python3 <skill>/scripts/visuals.py digest --symdelta <scratchpad>/symdelta.json
+[--complexity <scratchpad>/complexity.json]`, and writes `<scratchpad>/visuals.json` with
+`json.dump`: `{"pr": {"title", "html"} | null, "groups": [{"index", "html"}]}`, where `index` is the
+group's 0-based position in `analysis.json`. It then runs
+`python3 <skill>/scripts/visuals.py check --visuals <scratchpad>/visuals.json --groups <N>` with
+`N` the group count and fixes what it prints, at most twice. It replies with the path, the count
+and the titles only. `render` waits for that reply: `pipeline.py render` picks up
+`<scratchpad>/visuals.json` on its own, re-checks it, and `prepare` prints `visuals: N kept, M
+dropped`. Pictures are optional, and a docs- or config-only change may have none; a page without
+them simply has none, with no fallback. The sanitiser's allowlist, the page layout and why a
+picture is dropped: `references/graphs.md`.
 
 ## 2f. Sync existing PR comments, only when the diffed target is a GitHub PR
 
@@ -319,10 +315,9 @@ The page is a plain local file. Open it with `xdg-open <out>.html` on Linux, `op
 macOS, or `start "" <out>.html` on Windows. When none of those work, or the session is remote or
 headless, print the path instead and do not open it -- a text-mode browser fallback would launch
 inside the agent's own terminal and block it. Notes typed into the page live in `localStorage` on
-this file's origin; nothing round-trips to `state.json` on its own. The Comments panel's two copy
-buttons are the only way out: Copy gh command posts straight to GitHub (a later sync pulls the
-posted comments back into `state.json`), and Copy for agent copies the same comments as feedback
-text to paste back into this session, see step 6.
+this file's origin; nothing round-trips to `state.json` on its own. The Comments panel's copy
+button is the only way out: Copy gh command posts straight to GitHub (a later sync pulls the
+posted comments back into `state.json`), see step 6.
 
 ### 4b. Hosting, only when the user asks for it in words
 
@@ -336,26 +331,23 @@ Report what actually ran:
 
 - Name the HTML page's path, say whether it was opened, and add: click a diff
   line in the walkthrough to comment on it, reply inline under an existing thread (the persistent
-  box under it, no button needed), click Resolve conversation to mark a thread done, and open the
-  Comments button (bottom right) to review every comment and copy either a `gh` command to post
-  them (and any resolved threads) directly, or the agent payload, see step 6.
-- When the diffed target was a PR, add that every comment in the panel can be turned into a
-  review comment once its payload is pasted back, see step 6.
+  box under it, no button needed), click Resolve to mark a thread done, and open the
+  Comments button (bottom right) to review every comment and draft. Comments and drafts live in
+  the panel; a static page has no hand-back path. When there is a pushed PR, Copy gh command
+  copies a `gh` command that posts them (and any resolved threads) directly, see step 6.
 - When step 4b uploaded the page, give the URL on its own line and repeat that commenting is
   local-file only.
 
-Nothing is published anywhere unless the user asked for hosting in step 4b, or the user pastes a
-Copy for agent payload and asks for it to be delivered, step 6.
+Nothing is published anywhere unless the user asked for hosting in step 4b, or asks for their
+comments to be delivered, step 6.
 
 ## 6. Turn notes into PR comments, when the user asks
 
 The page has no server to post a click to. When there is a pushed PR, the user runs the `gh`
 command Copy gh command printed -- one heredoc per postable comment plus one
-`resolveReviewThread` mutation per thread marked Resolve conversation -- in which case posting is
-already done. Explain mode never has a PR, so the page offers only Copy for agent there. Copy for
-agent copies the same comments as plain text (`Feedback:` then one `path:line` and its body per
-comment, in page order): read it as feedback to act on directly in this conversation, not a
-payload to machine-import, since it carries no ids.
+`resolveReviewThread` mutation per thread marked Resolve -- in which case posting is
+already done. Explain mode never has a PR, so the page offers no export there; feedback goes back
+through live-mode threads or in conversation.
 
 How the `gh` command payload is built, what to show the user before posting, and why posting is
 never automatic: `references/pr-comments.md`.

@@ -4,17 +4,11 @@
 
 The page has no server to post a click to: the user opens the Comments button and either runs
 the `gh` command Copy gh command printed -- one heredoc per postable comment plus one
-`resolveReviewThread` mutation per thread marked Resolve conversation, posting straight to
-GitHub, in which case this step is already done -- or clicks Copy for agent and pastes what it
-copies into the conversation instead.
-
-Both buttons render from the same stored notes JSON. Copy for agent copies plain text: a
-`Feedback:` line, then one `path:line` (or `path:start-end` for a range comment) and its body per
-comment, blank-line separated, in page order. It carries no id and no anchor, so there is nothing
-here for `notes.py import` to merge into `state.json` -- read it the way a human's review
-feedback would be read, and act on it: implement what each comment asks for, or, when a PR exists
-and the user wants these posted as real review comments too, use the comment's own `path:line` to
-do that with a fresh `gh api` call or by pointing the user at Copy gh command.
+`resolveReviewThread` mutation per thread marked Resolve, posting straight to
+GitHub, in which case this step is already done. Without a PR the user hands feedback back in
+conversation, or uses live mode, where comments go to the agent as threads (Add to thread).
+When a PR exists and the user wants a comment posted, use its own `path:line` with a fresh
+`gh api` call or point the user at Copy gh command.
 
 Still true either way: show the exact comment text and where each one lands before doing
 anything with it, then ask once. Posting is outward facing and other people get notified, so it
@@ -23,17 +17,15 @@ on a colleague's PR is the normal case, so nothing here guards on authorship, bu
 deliberate all the same. Rewrite nothing: the note is the user's words, tighten only if they ask.
 
 Explain mode never has a PR, so the page already hides the Copy gh command button and shows a
-note instead; Copy for agent is the only exit there, and reads purely as feedback to act on in
-the repo, since there is no PR to post it to.
+note instead; there is no PR to post to, so feedback goes back through live-mode threads.
 
 In live mode, the Copy gh command button is always hidden, and a Post to GitHub button takes its
 place instead (shown under the same PR/pushed conditions): it previews the same comments and
 resolutions in a confirm dialog, then posts them itself through the daemon rather than handing
-the reader a command to run (`references/live.md`'s Posting section has the full flow). Copy for
-agent is unaffected either way.
+the reader a command to run (`references/live.md`'s Posting section has the full flow).
 
 `notes.py import`, `deliver` and `submit` (hand-fed notes JSON, one GraphQL pending review) still
-work for a state.json-driven posting flow; neither button feeds them.
+work for a state.json-driven posting flow; the page does not feed them.
 
 In live mode a comment can also be published on its own, outside any review: a local draft's
 Publish now button sends one `POST repos/<o>/<r>/pulls/<n>/comments` (or, for a reply, `.../comments/<root_id>/replies`,
@@ -85,5 +77,5 @@ gh api graphql -f query='
 
 When the user asks to refresh the comments, re-run both passes above, then reload the page to
 see them: nothing pushes an update to a page that is already open. A thread the reader marked
-Resolve conversation shows as resolved for real once this confirms it; until then the page
+Resolve shows as resolved for real once this confirms it; until then the page
 shows it as pending.

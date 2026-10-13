@@ -53,10 +53,8 @@ def _html_note(text):
 
 _MAX_BUTTON_LABEL = "Expand diagram to full size"
 
-# One button, pasted verbatim into every diagram's header row (this module's own two, plus
-# render.py's page-level FLOW and walkthrough.py's per-group tab strip, which both import this
-# rather than growing a second copy). Icon only, wording carried by aria-label/title alone,
-# reusing wire()'s own label from the template so the two affordances read as one.
+# One button, pasted verbatim into every diagram's header row, icon only, wording carried by
+# aria-label/title alone, reusing wire()'s own label from the template so the two affordances read as one.
 _MAX_BUTTON_HTML = (
     f'<button type="button" class="vd-max-btn" aria-label="{_MAX_BUTTON_LABEL}" '
     f'title="{_MAX_BUTTON_LABEL}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" '
@@ -179,39 +177,6 @@ def wrap_label(label, target=LABEL_WRAP_TARGET):
         ZWSP.join(_split_overlong(word, target)) if len(word) > target else word
         for word in words
     )
-
-
-# A label's opening delimiter: one or two of mermaid's bracket-shape characters directly
-# before the quote -- rectangle `["`, subroutine `[["`, cylinder `[("`, stadium `(["`, round
-# `("`, circle `(("`, diamond `{"`, hexagon `{{"`, and the asymmetric flag `>"`. Matching just
-# this prefix finds the label regardless of which shape closes it.
-_MERMAID_LABEL_RE = re.compile(r'([\[({>]{1,2})"([^"]*)"')
-
-# An edge label, `-->|text|` or `-->|"text"|`, anchored on the arrow so a `|` used for
-# something else on the line can't be mistaken for one. Matches any arrow shape (solid, dotted,
-# thick, `--x`/`--o`, and their `<`-reversed forms); quoted and bare are separate groups so the
-# substitution can put back exactly the quoting it found.
-_MERMAID_EDGE_LABEL_RE = re.compile(r'(<?[-=.]+[-=]?[>ox])\|(?:"([^"|\n]*)"|([^|\n]*))\|')
-
-
-def _wrap_edge_label(m):
-    arrow, quoted, bare = m.groups()
-    if quoted is not None:
-        return f'{arrow}|"{wrap_label(quoted)}"|'
-    return f'{arrow}|{wrap_label(bare)}|'
-
-
-def _wrap_flow_labels(mermaid):
-    """Run every quoted node/subgraph label, and every edge label, in a flow diagram through
-    `wrap_label`, so a long space-free identifier gets somewhere to break instead of stretching
-    its node across the page (see `wrap_label` for why it is zero-width spaces and not `<br/>`).
-
-    Shared by render.py's top-level FLOW and walkthrough.py's per-group flow, one owner for the
-    regex pair rather than two copies drifting apart. Safe to run unconditionally on a
-    `sequenceDiagram` too: its message syntax (`A->>B: text`) never matches either regex, since
-    both require the bracket/pipe shapes only a flowchart node or edge label uses."""
-    mermaid = _MERMAID_LABEL_RE.sub(lambda m: f'{m.group(1)}"{wrap_label(m.group(2))}"', mermaid)
-    return _MERMAID_EDGE_LABEL_RE.sub(_wrap_edge_label, mermaid)
 
 
 def _pkg_label(pkg_id, pkg_by_id):
@@ -848,7 +813,6 @@ def render_symbols(data, explain=False, paths=(), inline=False):
     # is why the slider's caption underneath is gone. No aria-pressed: a label reading
     # "packages" and a state reading "pressed" say different things, so the accessible name
     # spells out both the state and what activating does, and the script keeps it in step.
-    # A class, not an id: a per-group graph puts more than one of these on the page.
     toggle = ('<button type="button" class="vd-level-toggle" '
               f'data-names="{names_attr}" aria-label="Detail level: {LEVEL_NAMES[here].lower()}.'
               f' Activate to show {LEVEL_NAMES[there].lower()}."'
@@ -1034,7 +998,7 @@ def _structure_chips(components, group_color, titles=None):
     buttons = ['<button type="button" class="vds-chip" data-g="all" aria-pressed="true">All</button>']
     for gi in groups:
         title = titles.get(gi)
-        # analysis.json's own group titles carry backticked identifiers same as `why`/`hop`
+        # analysis.json's own group titles carry backticked identifiers same as `why`
         # elsewhere on this page; _html_note's escape-then-codeify is what promotes them to
         # <code> instead of a literal backtick landing in the chip.
         label = _html_note(f"{gi + 1} {title}") if title else str(gi + 1)
@@ -1148,9 +1112,8 @@ def _structure_legend(edges, explain):
 def render_structure(data, explain=False):
     """The system-structure view: structure.py's own real components (classes, interfaces,
     functions the diff actually touched -- see its module docstring for why that is not
-    symdelta's node state), laid out in call-depth columns and coloured by story group like the
-    story map above (`walkthrough._group_color`, reused so a component's colour matches its
-    stop's exactly), with call and implements/extends edges drawn over the boxes' real screen
+    symdelta's node state), laid out in call-depth columns and coloured by walkthrough group
+    (`walkthrough._group_color`, reused so a component's colour matches its group heading's), with call and implements/extends edges drawn over the boxes' real screen
     geometry by a small script (see the template) rather than mermaid -- dagre has no notion of
     "column by caller depth", the one layout this view exists to draw.
 

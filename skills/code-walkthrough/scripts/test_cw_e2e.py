@@ -54,7 +54,7 @@ def _stub_reply(body, _n):
         return cw_testlib.delayed(DELAY, cw_testlib.tool_call("submit_fragment", _passing_fragment(seed)))
     if model == "prose-m":
         return cw_testlib.delayed(DELAY, cw_testlib.tool_call(
-            "submit_prose", {"overview": "o", "verdict": "v", "flow_mermaid": ""}))
+            "submit_prose", {"overview": "o", "verdict": "v"}))
     raise RuntimeError(f"unexpected model {model!r}")
 
 

@@ -9,7 +9,7 @@ The only thing a model contributes is `analysis.json` (schema in `static.md` ste
 in it follows the caller's style rule: apply the no-ai-slop skill if available, otherwise plain
 sentences, no dashes, no filler.
 
-The template carries all CSS, the line-commenting UI and the copy-for-Claude mechanism.
+The template carries all CSS, the line-commenting UI and the Comments panel.
 `render.py` replaces `<!-- DIFF_TITLE -->` and `<!-- DIFF_CONTENT -->` and touches nothing else.
 
 ## Two independent rules apply to mermaid source, not one
@@ -63,9 +63,10 @@ arithmetic, a string from `analysis.json`, or a section file pasted byte for byt
 |---|---|---|
 | Facts strip | `.facts` with up to three `.fact` blocks | file count and net delta from `raw.diff`, the target, `verdict` |
 | OVERVIEW | `h2` + one `p` per paragraph | `overview`, omitted when blank; same heading in both modes |
-| FLOW | `h2` + `.panel.svgbox` wrapping `pre.mermaid` | `flow_mermaid`, omitted when blank |
-| STRUCTURE | between the story map and WALKTHROUGH | `structure.py` + `sections.py --kind structure`, omitted when the section file is empty |
-| WALKTHROUGH | `h2` + `section-walkthrough.html` | `walkthrough.py` |
+| The PR in one picture | `h2` + the model-drawn picture | `visuals.json`, omitted when absent |
+| STRUCTURE ("System change") | between the picture and WALKTHROUGH | `structure.py` + `sections.py --kind structure`, omitted when the section file is empty |
+| WALKTHROUGH | `h2` + `section-walkthrough.html` | `walkthrough.py`; each group opens with its own picture from `visuals.json`, matched by group index |
+| All symbols | collapsed `details` | the symbol graph, drawn on first open |
 | Footer | `.foot` | target, timestamp, PR link from `links.json` |
 
 `render.py`'s `--structure` flag lands the row above; passing an empty section file, or omitting
@@ -75,24 +76,18 @@ Notes on the rows that look arbitrary:
 
 - **No FILE MAP section.** A panel listing the same paths directly above the same paths is one
   section too many, so the walkthrough `summary` carries the inventory.
-- **No page-level SYMBOLS row.** A symbols level laid out across a whole page is unreadable on a
-  big diff, so that detail lives per group instead, drawn inline by `walkthrough.py` with its own
-  toggle between packages and symbols, scoped to that group's files (see the call-graph tab note
-  below).
-- **No per-group FLOW row.** A group's own `flow_mermaid` lives inside WALKTHROUGH, not as a
-  page-level row: `walkthrough.py` builds one panel per group, directly under that group's `why`
-  paragraph, holding both its flow diagram and its inline call-graph behind a tab bar when it has
-  both (`flow`/`call graph`, `flow` the default) -- and no tab bar, just the one diagram, when it
-  has only one of them. The flow tab reuses the same `.panel.svgbox` + `pre.mermaid` shape as the
-  top-level FLOW above; the call-graph tab carries the packages/symbols level toggle the inline
-  symbols block already builds, shown in the tab bar itself while that tab is active.
+- **The symbol graph is not a top-level row.** A symbols level laid out across a whole page is
+  unreadable on a big diff, so it sits inside the collapsed "All symbols" disclosure, with its
+  packages/symbols toggle. The pictures and that disclosure are in `references/graphs.md`
+  ("Pictures and All symbols"); `references/static.md` step 2b4 covers how the pictures are written.
+- **No FLOW section, no per-group diagram or call-graph tabs.** A group's picture comes from
+  `visuals.json`, not from `analysis.json`.
 - **Section files are pasted, never regenerated.** Their escaping is already correct, so
   escaping again renders `&amp;lt;` on the page, and retyping a diagram is how a legend drifts
   from its arrows. `validate_analysis.py --sections` checks each one's marker survived.
-- **`flow_mermaid` for a before/after comparison declares the "before" subgraph first.**
-  Subgraphs render in declaration order, so a `flowchart TB` puts whichever came first on top.
 - **The zoom modal needs no markup help.** `wire()` sets `tabindex` and `role` on every
-  `.svgbox` it finds; the copies in the generated markup only matter before the JS has run.
+  diagram box it finds (`.vd-symbols .mermaid` and `.vds-sys`); the copies in the
+  generated markup only matter before the JS has run.
 - **The vendored mermaid script is spliced in conditionally.** `splice_assets.py` fills the
   page's one JS placeholder only when the output contains a `class="mermaid"` block; a page with
   none keeps the placeholder as an inert comment and stays small.
@@ -112,8 +107,7 @@ removed equals the old span each header declares and context plus added equals t
 
 The page has no size budget, so it carries every hunk body, and cannot omit a file even when
 `analysis.json` did: no line comment can anchor to a hunk that was dropped for size.
-`--symdelta` orders each group caller-first and gives it its own call graph scoped to its own
-files, the `call graph` tab beside `flow` above.
+`--symdelta` orders each group caller-first.
 `--complexity` adds the complexity chip described in `references/graphs.md`. `--diff`'s own
 rename headers let a moved file show its old path instead of reading as a new addition. All three
 are optional; `pipeline.py prepare` passes them whenever the files they read exist.

@@ -33,13 +33,14 @@ import links  # noqa: E402
 import notes  # noqa: E402
 import regen  # noqa: E402
 import state  # noqa: E402
+import visuals  # noqa: E402
 from symdelta import add_worktree, remove_worktree  # noqa: E402
-from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, check_visuals, parse_hunks, validate  # noqa: E402
+from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, parse_hunks, validate  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
 
-STEPS = ("capture", "split", "skeleton", "worktree", "complexity", "symdelta",
+STEPS = ("capture", "split", "skeleton", "worktree", "complexity", "symdelta", "visuals",
          "small", "prose", "routed", "comments", "threads", "prepare", "render", "run")
 
 HEAVY = threading.BoundedSemaphore(2)  # shared across every walkthrough in this process
@@ -309,13 +310,11 @@ def _fragment_submit_tool():
 def _prose_submit_tool():
     return {"type": "function", "function": {
         "name": "submit_prose",
-        "description": "Submit overview, verdict, flow_mermaid and groups.",
-        "parameters": {"type": "object", "required": ["overview", "verdict", "flow_mermaid"],
+        "description": "Submit overview, verdict and groups.",
+        "parameters": {"type": "object", "required": ["overview", "verdict"],
             "properties": {
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
-                "flow_mermaid": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "object"}},
-                "visuals": {"type": "array", "items": {"type": "object"}}}}}}
+                "groups": {"type": "array", "items": {"type": "object"}}}}}}
 
 
 def _resolution_submit_tool():
@@ -329,41 +328,12 @@ def _resolution_submit_tool():
 def _analysis_submit_tool():
     return {"type": "function", "function": {
         "name": "submit_analysis",
-        "description": "Submit the whole analysis: files, overview, verdict, flow_mermaid, groups.",
-        "parameters": {"type": "object", "required": ["files", "overview", "verdict", "flow_mermaid"],
+        "description": "Submit the whole analysis: files, overview, verdict, groups.",
+        "parameters": {"type": "object", "required": ["files", "overview", "verdict"],
             "properties": {
                 "files": {"type": "array", "items": {"type": "object"}},
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
-                "flow_mermaid": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "object"}},
-                "visuals": {"type": "array", "items": {"type": "object"}}}}}}
-
-
-SYMBOL_DIGEST_MAX = 150
-
-
-def _symbol_digest(symdelta):
-    """The ids an author may name in `visuals`, one per line, or "" when there are none."""
-    rows = []
-    for n in (symdelta or {}).get("nodes", []):
-        if isinstance(n, dict) and n.get("kind") == "symbol":
-            span = n.get("range")
-            where = f"{n.get('file')}:{span[0]}-{span[1]}" if span else str(n.get("file"))
-            rows.append(f"{n.get('id')} | {where} | {n.get('state')}")
-    return "\n".join(rows[:SYMBOL_DIGEST_MAX])
-
-
-def _symbol_digest_text(digest):
-    return "\n\nSymbols for `visuals` (id | file:lines | state):\n" + digest if digest else ""
-
-
-def _apply_visuals(prose, args, symdelta, digest):
-    """Sets prose["visuals"] to the valid visuals; returns the problem lines worth a repair
-    round, which are none when the author was never shown any symbol ids."""
-    clean, problems = check_visuals(args.get("visuals"), symdelta)
-    if clean:
-        prose["visuals"] = clean
-    return problems if digest else []
+                "groups": {"type": "array", "items": {"type": "object"}}}}}}
 
 
 def _make_on_usage(d, role, on_event, config):
@@ -802,8 +772,6 @@ def _run_prose(d, meta, config, on_event, batch_count):
         user_text += "\n\n```json\n" + json.dumps(
             {"language": symdelta.get("language"), "counts": symdelta.get("counts"),
              "moved": symdelta.get("moved")}, indent=2) + "\n```"
-    digest = _symbol_digest(symdelta)
-    user_text += _symbol_digest_text(digest)
     if raw_diff.count("\n") <= 2000:
         user_text += "\n\n```diff\n" + raw_diff + "\n```"
 
@@ -819,19 +787,17 @@ def _run_prose(d, meta, config, on_event, batch_count):
             "target": meta["target"],
             "overview": args.get("overview") if isinstance(args.get("overview"), str) else "",
             "verdict": args.get("verdict") if isinstance(args.get("verdict"), str) else "",
-            "flow_mermaid": args.get("flow_mermaid") if isinstance(args.get("flow_mermaid"), str) else "",
         }
         if isinstance(args.get("groups"), list):
             prose["groups"] = args["groups"]
-        visual_lines = _apply_visuals(prose, args, symdelta, digest)
         merged, problems = _merge_and_validate(d, fragment_paths, prose)
         prose_lines = [p for p in problems if _classify(p, diff_paths)[0] == "prose"]
         other_lines = [p for p in problems if _classify(p, diff_paths)[0] != "prose"]
         state["prose"] = prose
         state["merged"] = merged
         state["other_lines"] = other_lines
-        if (prose_lines or visual_lines) and state["attempt"] < 3:
-            return "gate: " + "\n".join(prose_lines + visual_lines) + "\nfix and call submit_prose again"
+        if prose_lines and state["attempt"] < 3:
+            return "gate: " + "\n".join(prose_lines) + "\nfix and call submit_prose again"
         return cw_llm.Done({"other_lines": other_lines})
 
     local_handlers = dict(handlers)
@@ -867,6 +833,99 @@ def _run_prose(d, meta, config, on_event, batch_count):
 
     _emit_step(d, on_event, "prose", "ok", lines=other_lines)
     return "route", other_lines
+
+
+def _visuals_submit_tool():
+    return {"type": "function", "function": {
+        "name": "submit_visuals",
+        "description": "Submit the PR picture and one picture per group (HTML/SVG fragments).",
+        "parameters": {"type": "object", "properties": {
+            "pr": {"type": ["object", "null"], "properties": {
+                "title": {"type": "string"}, "html": {"type": "string"}}},
+            "groups": {"type": "array", "items": {"type": "object", "properties": {
+                "index": {"type": "integer"}, "html": {"type": "string"}}}}}}}}
+
+
+def _visuals_user_text(d, meta, analysis, symdelta):
+    raw_diff = (d / "raw.diff").read_text(errors="replace")
+    numstat = (d / "numstat.tsv").read_text(errors="replace") if (d / "numstat.tsv").exists() else ""
+    complexity = cw_store.read_json(d / "complexity.json", default=None)
+    parts = [f"PR: {meta.get('title') or meta['target']}\nTarget: {meta['target']}",
+             f"Overview:\n{analysis.get('overview', '')}"]
+    groups = analysis.get("groups") or []
+    if groups:
+        parts.append("Groups (index | title | why | files):\n" + "\n".join(
+            f"{i} | {g.get('title')} | {g.get('why') or ''} | {', '.join(g.get('paths') or [])}"
+            for i, g in enumerate(groups) if isinstance(g, dict)))
+    parts.append("Numstat:\n" + numstat)
+    digest = visuals.symbol_digest(symdelta, complexity)
+    if digest:
+        parts.append(digest)
+    if raw_diff.count("\n") <= 2000:
+        parts.append("```diff\n" + raw_diff + "\n```")
+    else:
+        parts.append("Files (the diff is too long to include; read head/ for details):\n" + "\n".join(
+            f"{f.get('path')}: {f.get('role')}" + "".join(
+                f"\n  - {h.get('note')}" for h in f.get("hunks") or [] if h.get("note"))
+            for f in analysis.get("files") or [] if isinstance(f, dict)))
+    return "\n\n".join(parts)
+
+
+def _run_visuals(d, meta, config, on_event, force=False):
+    """Authors the PR picture and one picture per group into visuals.json. Never raises and never
+    fails the run: a failure only marks the `visuals` step failed and the page has no pictures."""
+    out = d / "visuals.json"
+    if out.exists() and not force:
+        _emit_step(d, on_event, "visuals", "skipped")
+        return False
+    try:
+        analysis = cw_store.read_json(d / "analysis.json", default=None) or {}
+        symdelta = cw_store.read_json(d / "symdelta.json", default=None)
+        n_groups = len(analysis.get("groups") or [])
+        if not analysis or (not n_groups and not visuals.symbol_digest(symdelta)):
+            _emit_step(d, on_event, "visuals", "skipped")
+            return False
+        role = "visuals" if cw_store.role_profile(config, "visuals") else "prose"
+        profile = cw_store.role_profile(config, role)
+        if profile is None:
+            _emit_step(d, on_event, "visuals", "failed", error="no profile for role prose")
+            return False
+        _emit_step(d, on_event, "visuals", "running")
+        system_prompt = (SKILL_DIR / "prompts" / "visuals.md").read_text() + DELIVERY_SUFFIX.format(
+            tool="submit_visuals")
+        messages = [{"role": "system", "content": system_prompt},
+                    {"role": "user", "content": _visuals_user_text(d, meta, analysis, symdelta)}]
+        tools, handlers = read_tools(d)
+        state: dict = {"attempt": 0}
+
+        def handler(args):
+            state["attempt"] += 1
+            clean, problems = visuals.check_visuals(args, n_groups)
+            if problems and state["attempt"] < 3:
+                return "gate: " + "\n".join(problems) + "\nfix and call submit_visuals again"
+            state["clean"], state["problems"] = clean, problems
+            return cw_llm.Done({"ok": True})
+
+        local_handlers = dict(handlers)
+        local_handlers["submit_visuals"] = handler
+        try:
+            cw_llm.run_tools(
+                profile, messages, tools + [_visuals_submit_tool()], local_handlers, max_rounds=8,
+                max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
+                on_usage=_make_on_usage(d, role, on_event, config), cwd=d / "head")
+        finally:
+            _write_transcript(d, "visuals", profile, messages, result="clean" in state)
+        clean = state["clean"]
+        if not clean["pr"] and not clean["groups"]:
+            raise RuntimeError("no usable pictures; dropped: " + "; ".join(state["problems"])[:500])
+        out.write_text(json.dumps({
+            "pr": clean["pr"],
+            "groups": [{"index": i, "html": h} for i, h in sorted(clean["groups"].items())]}, indent=2))
+        _emit_step(d, on_event, "visuals", "ok")
+        return True
+    except Exception as e:
+        _emit_step(d, on_event, "visuals", "failed", error=str(e), remedy=getattr(e, "remedy", None))
+        return False
 
 
 def _route_and_finalize(d, meta, config, on_event, batch_count, manifest, other_lines):
@@ -929,9 +988,6 @@ def _run_small(d, meta, config, on_event):
     system_prompt = batch_prompt + "\n\n" + prose_prompt + DELIVERY_SUFFIX.format(tool="submit_analysis")
     user_text = (f"```diff\n{raw_diff}\n```\n\n```json\n{json.dumps(seed, indent=2)}\n```"
                  f"\n\nNumstat:\n{numstat}")
-    symdelta = cw_store.read_json(d / "symdelta.json", default=None)
-    digest = _symbol_digest(symdelta)
-    user_text += _symbol_digest_text(digest)
 
     attempts = 0
     model_used = None
@@ -962,11 +1018,9 @@ def _run_small(d, meta, config, on_event):
                 "target": meta["target"],
                 "overview": args.get("overview") if isinstance(args.get("overview"), str) else "",
                 "verdict": args.get("verdict") if isinstance(args.get("verdict"), str) else "",
-                "flow_mermaid": args.get("flow_mermaid") if isinstance(args.get("flow_mermaid"), str) else "",
             }
             if isinstance(args.get("groups"), list):
                 prose["groups"] = args["groups"]
-            visual_lines = _apply_visuals(prose, args, symdelta, digest)
             full = {**{k: v for k, v in prose.items() if k != "target"}, "target": prose["target"],
                     "files": fragment["files"]}
             full_problems = validate(raw_diff, full)
@@ -976,12 +1030,12 @@ def _run_small(d, meta, config, on_event):
             state["prose"] = prose
             state["problems"] = full_problems
             retry = state["attempt"] < 3
-            if not full_problems and not (visual_lines and retry):
+            if not full_problems:
                 state["ok"] = True
                 return cw_llm.Done({"ok": True})
             if not retry:
                 return cw_llm.Done({"ok": False, "problems": full_problems})
-            return "gate: " + "\n".join(full_problems + visual_lines) + "\nfix and call submit_analysis again"
+            return "gate: " + "\n".join(full_problems) + "\nfix and call submit_analysis again"
 
         local_handlers = dict(handlers)
         local_handlers["submit_analysis"] = handler
@@ -1468,7 +1522,7 @@ def _ensure_split(d, meta, config):
 def _full_clean(d, old_meta, toplevel):
     for name in ("batches", "partial"):
         _rm(d / name)
-    for name in ("prose.json", "analysis.json", "analysis.partial.json", "symdelta.json",
+    for name in ("prose.json", "analysis.json", "analysis.partial.json", "symdelta.json", "visuals.json",
                  "complexity.json", "structure.json", "links.json", "pipeline.json",
                  "raw.diff", "numstat.tsv", "partial.html"):
         _rm(d / name)
@@ -1581,7 +1635,7 @@ def prepare_walkthrough(params, is_running=None, edit_guard=None):
     retry = old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted")
     with contextlib.nullcontext() if retry else edit_guard(d):
         if retry:
-            for name in ("prose.json", "analysis.json", "pipeline.json"):
+            for name in ("prose.json", "analysis.json", "visuals.json", "pipeline.json"):
                 _rm(d / name)
             meta = dict(old_meta)
         else:
@@ -1670,6 +1724,7 @@ def run(d, on_event=None):
         if meta.get("refresh") and (d / "analysis.json").exists():
             meta = cw_store.update_meta(d, lambda m: m.update({"refresh": False}))
             renderer.wait_idle(timeout=60)
+            _run_visuals(d, meta, config, on_event)
             final_ok = _final_build(d, meta, config, on_event)
             return "done" if final_ok else "failed"
 
@@ -1750,6 +1805,7 @@ def run(d, on_event=None):
 
         renderer.wait_idle(timeout=60)
         meta = cw_store.read_meta(d) or meta
+        _run_visuals(d, meta, config, on_event)
         final_ok = _final_build(d, meta, config, on_event)
         return "done" if final_ok else "failed"
     except Exception as e:
@@ -1767,10 +1823,23 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     run_parser = sub.add_parser("run")
     run_parser.add_argument("--dir", required=True)
+    visuals_parser = sub.add_parser("visuals")
+    visuals_parser.add_argument("--dir", required=True)
+    visuals_parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
 
     config = cw_store.load_config()
     cw_llm.configure(config.get("max_concurrency", 4))
+
+    if args.command == "visuals":
+        d = Path(args.dir)
+        meta = cw_store.read_meta(d)
+        if meta is None:
+            print(f"no walkthrough at {d}", file=sys.stderr)
+            return 1
+        _run_visuals(d, meta, config, lambda ev, data: print(json.dumps({"event": ev, "data": data})),
+                     force=args.force)
+        return 0
 
     def _print_event(event, data):
         print(json.dumps({"event": event, "data": data}))

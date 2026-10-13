@@ -443,8 +443,8 @@ TRIAGE_COMMENT = (
     "to resolve: call propose_resolve, with an optional short reply draft. Nothing is published."
 )
 
-NO_PR_MSG = "No PR for this comparison -- use Copy for agent instead."
-HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet -- use Copy for agent instead."
+NO_PR_MSG = "No PR for this comparison."
+HEAD_NOT_PUSHED_MSG = "The compared commit has not been pushed yet."
 SIBLING_NO_PUBLISH = {"error": "publishing is off in this view", "remedy": "go back to the PR head"}
 STILL_BUILDING_MSG = "walkthrough still building"
 FAILED_MSG = "walkthrough did not finish"
