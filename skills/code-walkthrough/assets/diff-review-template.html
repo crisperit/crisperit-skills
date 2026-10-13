@@ -5529,7 +5529,17 @@
       st.progress={tool:d.tool,detail:d.detail};
       progressElsOf(d.qid).forEach(e=>{ e.textContent=progressText(st.progress); });
     };
-    window.__cwOnOutcome=upsertOutcome;
+    function pageEditToast(o){
+      const msg={set textContent(t){ if(t) toast(t); }};
+      toast('Page edited by agent',[
+        {label:'Undo',run:()=>pageEditAct(o.oid,'revert',{},msg)},
+        {label:'Open thread',run:()=>openPanel({thread:o.thread_id})}]);
+    }
+    window.__cwOnOutcome=o=>{
+      const prev=o&&o.oid&&findOutcome(o.oid);
+      upsertOutcome(o);
+      if(o&&o.outcome==='page_edit'&&o.state==='applied'&&!prev) pageEditToast(o);
+    };
     let snapshots=0;
     window.__cwOnSnapshot=d=>{
       streams.clear();
