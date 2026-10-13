@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import cw_llm  # noqa: E402
+import cw_repo  # noqa: E402
 import cw_store  # noqa: E402
 import fanout  # noqa: E402
 import fanout_threads  # noqa: E402
@@ -164,6 +165,21 @@ def _gh(meta, args, *, stdin=None, timeout=60):
         raise cw_store.CWError("gh not found", remedy="install gh, then gh auth login") from e
     except subprocess.TimeoutExpired as e:
         raise cw_store.CWError("gh timed out", remedy="check gh auth status, or raise this call's timeout") from e
+
+
+def own_pr(meta):
+    """True/False when the PR author is / is not the gh viewer; None when either lookup fails."""
+    try:
+        viewer = _gh(meta, ["api", "user"])
+        author = _gh(meta, ["pr", "view", str(meta["pr"]), "--repo", meta["gh_repo"],
+                            "--json", "author"])
+        if viewer.returncode != 0 or author.returncode != 0:
+            return None
+        login = json.loads(viewer.stdout).get("login")
+        pr_author = (json.loads(author.stdout).get("author") or {}).get("login")
+    except (cw_store.CWError, ValueError, AttributeError, OSError):
+        return None
+    return None if not login or not pr_author else login == pr_author
 
 
 def _notes(meta, args, *, stdin=None):
@@ -1341,7 +1357,9 @@ def _final_build(d, meta, config, on_event):
         _emit_step(d, on_event, "prepare", "ok")
 
         if meta.get("pr"):
-            sync_pr(d, meta, on_event)
+            if sync_pr(d, meta, on_event):
+                viewer_owns = own_pr(meta)
+                cw_store.update_meta(d, lambda m: m.update({"own_pr": viewer_owns}))
             _resolve_threads(d, meta, config, on_event)
 
         _emit_step(d, on_event, "render", "running")
@@ -1470,7 +1488,8 @@ def _full_clean(d, old_meta, toplevel):
 
 def prepare_walkthrough(params, is_running=None):
     is_running = is_running or (lambda d: False)
-    repo = params.get("repo")
+    config = cw_store.load_config()
+    repo = cw_repo.resolve(params, config)
     base_ref = params.get("base")
     head_ref = params.get("head")
     target = params.get("target")
@@ -1498,7 +1517,6 @@ def prepare_walkthrough(params, is_running=None):
         gh_repo = state._repo_from_links({"repo_url": links.repo_web_url(str(toplevel))})
         if gh_repo is None:
             raise cw_store.CWError("origin is not a GitHub remote", remedy="follow references/static.md of the code-walkthrough skill")
-    config = cw_store.load_config()
     if cw_store.role_profile(config, "analysis") is None or cw_store.role_profile(config, "prose") is None:
         raise cw_store.CWError(
             "no model backend configured",

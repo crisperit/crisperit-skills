@@ -684,6 +684,57 @@ def test_cancel_queued_turn_never_spawns():
             assert len(fc.starts()) == 1
 
 
+def test_full_turns_queue_behind_each_other_review_turns_do_not(monkeypatch):
+    import test_cw_ask as ask
+
+    started, release = [], {}
+    events = []
+
+    def fake_answer(d, qid, anchor, question, on_event=None, thread_id=None, live=None, **kw):
+        started.append(qid)
+        release[qid].wait(5)
+
+    def wait_for(pred):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not pred():
+            time.sleep(0.02)
+        assert pred(), (started, events)
+
+    monkeypatch.setattr(cw_ask, "answer", fake_answer)
+    with cw_testlib.temp_home() as home:
+        d = ask._claude_done(home)
+        key, wid = d.parent.name, d.name
+        with running_daemon() as daemon:
+            monkeypatch.setattr(daemon.hub, "emit", lambda k, w, ev, data: events.append((ev, data)))
+
+            def start(qid, thread, mode):
+                release[qid] = threading.Event()
+                daemon.start_ask(key, wid, d, qid, thread, ask.ANCHOR_SECTION, "x", mode=mode)
+
+            start("q-00000001", "q-0000000a", "full")
+            wait_for(lambda: started == ["q-00000001"])
+            start("q-00000002", "q-0000000b", "full")
+            wait_for(lambda: ("progress", {"qid": "q-00000002", "thread_id": "q-0000000b", "tool": "queued",
+                                           "detail": "q-0000000a"}) in events)
+            start("q-00000003", "q-0000000c", "review")
+            wait_for(lambda: "q-00000003" in started)
+            assert "q-00000002" not in started
+
+            start("q-00000004", "q-0000000d", "full")
+            wait_for(lambda: any(e[0] == "progress" and e[1]["qid"] == "q-00000004" for e in events))
+            assert daemon.cancel(key, wid, "q-00000004")
+            turn = _wait_status(d, "q-00000004", "cancelled", timeout=5)
+            assert turn["answer"] == "" and "q-00000004" not in started
+
+            release["q-00000001"].set()
+            wait_for(lambda: "q-00000002" in started)
+            for ev in release.values():
+                ev.set()
+            wait_for(lambda: daemon._asks == 0)
+            assert not daemon.edit_lock(d).locked()
+            assert "q-00000004" not in started
+
+
 OID = "o-0a1b2c3d"
 OQID = "q-11223344"
 

@@ -95,8 +95,10 @@ def remove_all(d, meta):
     """Prune: every task worktree of this walkthrough and its cw/ branches."""
     repo = meta.get("repo")
     tasks = Path(d) / "tasks"
-    if repo and tasks.is_dir():
-        for wt in tasks.iterdir():
+    if repo:
+        if (Path(d) / "agent").exists():
+            remove_worktree(repo, Path(d) / "agent")
+        for wt in tasks.iterdir() if tasks.is_dir() else ():
             remove_worktree(repo, wt)
         shutil.rmtree(tasks, ignore_errors=True)
         refs = _git(repo, ["for-each-ref", "--format=%(refname:short)",
@@ -189,20 +191,24 @@ def build_prompt(d, meta, current):
     return "\n\n".join(parts)
 
 
+def _commit_all(repo, wt, message):
+    """Stage everything in wt and commit it (no hooks, no signing); returns the new HEAD."""
+    name = _git(repo, ["config", "user.name"]).stdout.strip() or "Code Walkthrough"
+    email = _git(repo, ["config", "user.email"]).stdout.strip() or "code-walkthrough@localhost"
+    _git_ok(wt, ["add", "-A"])
+    message = f"{message}\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+    _git_ok(wt, ["-c", f"user.name={name}", "-c", f"user.email={email}",
+                 "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "commit", "--no-verify", "-m", message])
+    return _git_ok(wt, ["rev-parse", "HEAD"]).strip()
+
+
 def _commit(repo, wt, meta, t, title, summary, link):
     """Returns the commit's task fields, or None when the agent changed nothing."""
     _check_git_link(repo, wt, link)
     if not _git_ok(wt, ["status", "--porcelain"]).strip():
         return None
-    name = _git(repo, ["config", "user.name"]).stdout.strip() or "Code Walkthrough"
-    email = _git(repo, ["config", "user.email"]).stdout.strip() or "code-walkthrough@localhost"
-    branch = branch_name(meta, t)
-    _git_ok(wt, ["checkout", "-b", branch])
-    _git_ok(wt, ["add", "-A"])
-    message = f"{title}\n\n{summary}\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
-    _git_ok(wt, ["-c", f"user.name={name}", "-c", f"user.email={email}",
-                 "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "commit", "--no-verify", "-m", message])
-    sha = _git_ok(wt, ["rev-parse", "HEAD"]).strip()
+    _git_ok(wt, ["checkout", "-b", branch_name(meta, t)])
+    sha = _commit_all(repo, wt, f"{title}\n\n{summary}")
     files, added, removed = [], 0, 0
     for line in _git_ok(wt, ["diff", "--numstat", "--no-renames", f"{meta['head']}..{sha}"]).splitlines():
         add, dele, path = line.split("\t", 2)

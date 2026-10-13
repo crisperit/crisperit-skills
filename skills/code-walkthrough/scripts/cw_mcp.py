@@ -41,12 +41,15 @@ _STDOUT_LOCK = threading.Lock()
 TOOLS = [
     {
         "name": "walkthrough_start",
-        "description": "Start or resume a live code-walkthrough run for a diff and return its URL.",
+        "description": ("Start or resume a live code-walkthrough run for a diff and return its URL. repo is an "
+                        "absolute path of a local checkout, or owner/name. If owner/name is not cloned on this "
+                        "machine the call fails and the error says so: ASK the user before passing clone: true, "
+                        "which clones the repo (blobless) into the walkthrough cache."),
         "inputSchema": {
             "type": "object", "required": ["repo", "base", "head", "target", "slug"],
             "properties": {
                 "repo": {"type": "string"}, "base": {"type": "string"}, "head": {"type": "string"},
-                "target": {"type": "string"}, "slug": {"type": "string"}, "pr": {"type": "integer"},
+                "clone": {"type": "boolean"}, "target": {"type": "string"}, "slug": {"type": "string"}, "pr": {"type": "integer"},
                 "explain": {"type": "boolean"}, "paths": {"type": "array", "items": {"type": "string"}},
                 "title": {"type": "string"}, "diff_file": {"type": "string"},
             },

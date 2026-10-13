@@ -27,8 +27,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_agent  # noqa: E402
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
+import cw_repo  # noqa: E402
 import cw_run  # noqa: E402  direct, not the runner seam: /post's gh-facing calls (notes.py
 import cw_store  # noqa: E402
 import cw_task  # noqa: E402
@@ -126,6 +128,7 @@ def _live_payload(key, wid, meta, d, token, port):
         "batches": {"done": len(meta.get("batches_done") or []), "total": meta.get("batches", 0)},
         "usage": meta.get("usage", {}), "total": cw_store.usage_total(meta),
         "drafts": drafts, "sibling": sibling,
+        "agent": {"full": cw_agent.trust(meta, cw_store.load_config()), "own_pr": meta.get("own_pr")},
     }
 
 
@@ -1077,7 +1080,140 @@ class _Handler(BaseHTTPRequestHandler):
             by_id = {n["id"]: n for n in st.get("notes", [])}
             in_review = [{"id": i, "path": by_id[i].get("path"), "line": by_id[i].get("line"),
                           "body": by_id[i].get("body")} for i in waiting if i in by_id]
-            own_pr = self._own_pr(meta)
+            own_pr = cw_run.own_pr(meta)
+        self._send_json(200, {
+            "notes": notes_items, "resolves": resolves_items, "nonce": nonce,
+            "review": {"pending": bool(info.get("review_id")), "comments": info.get("comments", 0)},
+            "in_review": in_review, "own_pr": own_pr, "reset": reset,
+        })
+
+    @staticmethod
+    def _post_ids(payload):
+        """None when the caller sent no `ids` (every ready draft), the id set when it did, False
+        when `ids` is malformed."""
+        ids = payload.get("ids")
+        if ids is None:
+            return None
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return False
+        return set(ids)
+
+    @staticmethod
+    def _post_resolve(payload):
+        """The `resolve` list, [] when absent, False when it is not a list of strings."""
+        resolve = payload.get("resolve")
+        if resolve is None:
+            return []
+        if not isinstance(resolve, list) or not all(isinstance(i, str) for i in resolve):
+            return False
+        return resolve
+
+    @staticmethod
+    def _post_reply_parent_error(st, ids):
+        """With `ids`, a selected reply draft whose parent is itself a local draft needs that
+        parent selected too: the reply can only be delivered into the parent's thread."""
+        if ids is None:
+            return None
+        by_id = {n["id"]: n for n in st.get("notes", [])}
+        for note_id in ids:
+            note = by_id.get(note_id)
+            parent = by_id.get((note or {}).get("reply_to") or "")
+            if (note and note.get("state") == "draft" and parent is not None
+                    and parent.get("origin") == "local" and parent.get("state") == "draft"
+                    and parent["id"] not in ids):
+                return {"error": f"{note_id} replies to the draft {parent['id']}, which is not selected",
+                        "remedy": "a reply needs its parent comment: tick it too"}
+        return None
+
+    def _reset_stuck(self, d, meta, st):
+        """Notes in_review whose pending review no longer exists on GitHub (submitted or
+        discarded in the web UI) go back to draft so they can be delivered again. Runs after
+        sync, whose dedupe already turned the ones submitted elsewhere into posted. A failed
+        review-info lookup resets nothing."""
+        if not self._in_review_ids(st):
+            return st, []
+        info = self._review_info(meta, d)
+        if info is None or info.get("review_id"):
+            return st, []
+        reset = notes.reset_in_review(st)
+        cw_store.write_json(d / "state.json", st)
+        return st, reset
+
+    @staticmethod
+    def _in_review_ids(st):
+        return [n["id"] for n in st.get("notes", []) if n.get("state") == "in_review"]
+
+    def _post_sync(self, d, meta, st):
+        if meta.get("pr") and meta.get("gh_repo"):
+            _runner().sync_pr(d, meta)
+            refreshed = cw_store.read_json(d / "state.json")
+            if isinstance(refreshed, dict):
+                return refreshed
+        return st
+
+    def _review_info(self, meta, d):
+        result = cw_run._notes(meta, ["review-info", "--state", str(d / "state.json")])
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout)
+        except ValueError:
+            return None
+
+    def _route_post_preview(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if self._sibling_refusal(d):
+            return
+        if self.server.cw_daemon.is_running(d):
+            self._send_json(409, {"error": STILL_BUILDING_MSG})
+            return
+        with cw_store.dir_lock(d):
+            meta, err = self._post_check_meta(d)
+            if err:
+                self._send_json(409, err)
+                return
+            st, err = self._post_check_state(d)
+            if err:
+                self._send_json(409, err)
+                return
+            ids = self._post_ids(payload)
+            if ids is False:
+                self._send_json(400, {"error": "ids must be a list of strings"})
+                return
+            resolve_ids = self._post_resolve(payload)
+            if resolve_ids is False:
+                self._send_json(400, {"error": "resolve must be a list of strings"})
+                return
+            st = self._post_sync(d, meta, st)
+            st, reset = self._reset_stuck(d, meta, st)
+            waiting = self._in_review_ids(st)
+            try:
+                st, notes_items, resolves_items = self._post_items(d, st, resolve_ids, ids)
+            except cw_store.CWError as e:
+                self._send_json(500, {"error": str(e)})
+                return
+            parent_err = self._post_reply_parent_error(st, ids)
+            if parent_err:
+                self._send_json(400, parent_err)
+                return
+            nonce = self._post_nonce(notes_items, resolves_items)
+            info = self._review_info(meta, d) or {}
+            by_id = {n["id"]: n for n in st.get("notes", [])}
+            in_review = [{"id": i, "path": by_id[i].get("path"), "line": by_id[i].get("line"),
+                          "body": by_id[i].get("body")} for i in waiting if i in by_id]
+            own_pr = cw_run.own_pr(meta)
         self._send_json(200, {
             "notes": notes_items, "resolves": resolves_items, "nonce": nonce,
             "review": {"pending": bool(info.get("review_id")), "comments": info.get("comments", 0)},
@@ -1546,6 +1682,8 @@ class Daemon:
         self._asks = 0
         self._ask_locks = {}
         self._ask_locks_guard = threading.Lock()
+        self._edit_locks = {}
+        self._edit_holders = {}
         self._qids = set()
         self._qids_lock = threading.Lock()
         self._turns = {}
@@ -1653,6 +1791,11 @@ class Daemon:
         with self._ask_locks_guard:
             return self._ask_locks.setdefault(key, threading.Lock())
 
+    def edit_lock(self, d):
+        # ponytail: one Full turn per walkthrough; per-path locks if threads need parallel edits
+        with self._ask_locks_guard:
+            return self._edit_locks.setdefault(str(d), threading.Lock())
+
     def finalise_stale_turns(self, d):
         with self._qids_lock:
             cw_ask.finalise_stale(d, self._qids)
@@ -1693,7 +1836,8 @@ class Daemon:
             timer.start()
         return True
 
-    def start_ask(self, key, wid, d, qid, thread_id, anchor, question, source="user", anchors=None):
+    def start_ask(self, key, wid, d, qid, thread_id, anchor, question, source="user", anchors=None,
+                  mode="review"):
         with self._inflight_lock:
             self._asks += 1
         live = {"text": "", "seq": 0, "progress": None, "proc": None, "cancelled": False,
@@ -1713,23 +1857,54 @@ class Daemon:
                 self._turns.pop(qid, None)
             raise
 
+        def _cancelled():
+            return live["cancelled"] or self._stopped.is_set()
+
+        def _write_cancelled():
+            now = cw_store.now_iso()
+            record = cw_ask._with_anchors(
+                {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
+                 "anchor": anchor, "comment": question, "question": question,
+                 "source": source, "status": "cancelled", "answer": "", "error": None, "remedy": None,
+                 "profile": None, "model": None, "session_id": None,
+                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}, anchors)
+            cw_ask._append_qa(d, record)
+            emit("thread", {"kind": "turn", "record": record})
+
+        def _hold_edit_lock():
+            lock = self.edit_lock(d)
+            if not lock.acquire(blocking=False):
+                with self._ask_locks_guard:
+                    holder = self._edit_holders.get(str(d))
+                live["queued_behind"] = holder
+                cw_ask._emit_progress(live, emit, qid, thread_id, "queued", holder)
+                while not lock.acquire(timeout=0.5):
+                    if _cancelled():
+                        return False
+            live["progress"] = None
+            with self._ask_locks_guard:
+                self._edit_holders[str(d)] = thread_id
+            return True
+
         def _target():
+            holding = False
             try:
                 with self.ask_lock(d, thread_id):
-                    if live["cancelled"] or self._stopped.is_set():
-                        now = cw_store.now_iso()
-                        record = cw_ask._with_anchors(
-                            {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
-                             "anchor": anchor, "comment": question, "question": question,
-                             "source": source, "status": "cancelled", "answer": "", "error": None, "remedy": None,
-                             "profile": None, "model": None, "session_id": None,
-                             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}, anchors)
-                        cw_ask._append_qa(d, record)
-                        emit("thread", {"kind": "turn", "record": record})
+                    if _cancelled():
+                        _write_cancelled()
                         return
+                    if mode == "full":
+                        holding = _hold_edit_lock()
+                        if not holding or _cancelled():
+                            _write_cancelled()
+                            return
                     cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live, source=source,
                                   anchors=anchors)
             finally:
+                if holding:
+                    with self._ask_locks_guard:
+                        self._edit_holders.pop(str(d), None)
+                    self.edit_lock(d).release()
                 with self._inflight_lock:
                     self._asks -= 1
                 with self._qids_lock:
@@ -1884,6 +2059,12 @@ def _prune():
         for key_dir in root.iterdir():
             if key_dir.is_dir() and not any(key_dir.iterdir()):
                 key_dir.rmdir()
+    referenced = set()
+    for d in _iter_walkthrough_dirs():
+        repo = (cw_store.read_meta(d) or {}).get("repo")
+        if repo:
+            referenced.add(Path(repo).resolve())
+    cw_repo.prune(referenced, cutoff)
 
 
 def serve():

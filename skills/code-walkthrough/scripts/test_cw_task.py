@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cw_agent  # noqa: E402
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_mcp  # noqa: E402
@@ -445,6 +446,9 @@ def test_prune_removes_every_task_worktree_and_branch():
         with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}) as fc, srv.running_daemon() as daemon:
             _task, done = _run_to_done(daemon, d, oid, fc)
         assert done["state"] == "done" and _branches(repo) and len(_worktrees(repo)) == 3
+        meta = cw_store.read_meta(d)
+        cw_agent.ensure_worktree(d, meta)
+        assert (d / "agent").is_dir() and f"cw/{srv.WID}/agent" in _branches(repo) and len(_worktrees(repo)) == 4
         cw_server._remove_walkthrough(cw_store.read_meta(d), d)
         assert not d.exists() and _branches(repo) == [] and len(_worktrees(repo)) == 1
 
