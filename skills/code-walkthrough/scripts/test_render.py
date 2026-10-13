@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_server  # noqa: E402
 from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
-    render_html, counts_from, _flow_tb, _wrap_flow_labels,
+    render_html, story_data, counts_from, _flow_tb, _wrap_flow_labels,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
 from sections import ZWSP  # noqa: E402
@@ -450,13 +450,20 @@ def test_live_ui_never_uses_html_injection_sinks():
     split = "function splitBackticks(" + _between(template, "function splitBackticks(", "function wireAsk(){")
     wire_ask = _wire_ask()
 
-    for scope in (wire_ask, split, sibling):
+    story = "function wireStory(){" + _between(template, "function wireStory(){", "wireStory();")
+
+    for scope in (wire_ask, split, sibling, story):
         for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
             assert banned not in scope, banned
     # model-authored text only reaches the DOM through mk(..., text)
     mk = _between(wire_ask, "const mk=(tag,cls,text)=>{", "};")
     assert "e.textContent=text" in mk
     assert "window.open(r.url,'_blank','noopener')" in wire_ask
+    assert "window.__vdGoToLine=navGoToLine" in template and "window.__vdGoToLine(sp)" in story
+    chip = _between(story, "const chip=mk(", "h.append(chip)")
+    assert "'cw-story-pulse'" in chip or "cw-story-pulse" in chip
+    assert "chip.setAttribute('aria-label'" in chip and "chip.type='button'" in chip
+    assert "'pointerdown'" in chip and "'mousedown'" in chip and "e.stopPropagation()" in chip
 
 
 def test_post_flow_double_submit_guards():
@@ -518,6 +525,11 @@ _CSS_RULES = [
     (r"body:not\(\.show-notes\) \.hunk-note-hunk,\n\s*body:not\(\.show-notes\) \.wt-why\{([^}]*)\}",
      ["display:none"], []),
     (r"body:not\(\.show-notes\) h3\.wt-group \.vd-max-btn\{([^}]*)\}", ["display:none"], []),
+    (r"@media \(max-width:480px\)\{\s*\.cw-flow\{([^}]*)\}", ["flex-direction:column"], []),
+    (r"\.cw-story-pulse\{([^}]*)\}", [], ["animation"]),
+    (r"\.dline-plus::before,\.cw-ref-dot-btn::before,\.cw-ingraph::before\{([^}]*)\}",
+     ["position:absolute", "inset:-16px"], []),
+    (r"@media \(pointer:coarse\)\{[^@]*?\.cw-story-detail button\{([^}]*)\}", ["min-height:44px"], []),
     (r"\.cw-caret\{([^}]*)\}", [], ["animation"]),
     (r"@media \(prefers-reduced-motion:no-preference\)\{\s*\.cw-caret\{([^}]*)\}",
      ["animation:cw-caret"], []),
@@ -730,3 +742,136 @@ def test_parse_header_prefix_matches_state_hunk_id(diff_header):
 const p = parseHeader({json.dumps(diff_header)});
 if ({json.dumps(hunk["id"])} !== 'x.py\\t' + p.prefix) throw new Error('id mismatch: ' + p.prefix);
 """)
+
+
+@pytest.mark.parametrize("key, i, n, want", [
+    ("ArrowRight", 0, 3, 1), ("ArrowDown", 1, 3, 2), ("ArrowRight", 2, 3, 2),
+    ("ArrowLeft", 2, 3, 1), ("ArrowUp", 0, 3, 0), ("Home", 2, 3, 0), ("End", 0, 3, 2),
+    ("Tab", 1, 3, -1), ("ArrowRight", 0, 0, -1),
+])
+def test_story_next_index_clamps_and_ignores_other_keys(key, i, n, want):
+    src = "function storyNextIndex(" + _between(_real_template(), "function storyNextIndex(", "function storyHunkKey(")
+    _node(src + f"""
+const got = storyNextIndex({i}, {n}, {json.dumps(key)});
+if (got !== {want}) throw new Error('got ' + got);
+""")
+
+
+@pytest.mark.parametrize("diff_header", [
+    "@@ -10,2 +10,3 @@",
+    "@@ -1 +1 @@ def f():",
+])
+def test_story_hunk_key_matches_state_hunk_id(diff_header):
+    diff = ("diff --git a/x.py b/x.py\nindex aaa1111..bbb2222 100644\n--- a/x.py\n+++ b/x.py\n"
+            f"{diff_header}\n-a\n+b\n")
+    hunk = build({"files": []}, diff)["hunks"][0]
+    src = "function storyHunkKey(" + _between(_real_template(), "function storyHunkKey(", "function wireStory(){")
+
+    _node(src + f"""
+if (storyHunkKey('x.py', {json.dumps(diff_header)}) !== {json.dumps(hunk["id"])}) throw new Error('id mismatch');
+if (storyHunkKey('x.py', 'not a header') !== null) throw new Error('expected null');
+""")
+
+
+# ---- story visuals ----
+
+SYMDELTA = {"nodes": [
+    {"id": "p:load", "label": "load", "kind": "symbol", "file": "src/auth.py", "range": [40, 42],
+     "state": "changed"},
+    {"id": "p:old", "label": "old", "kind": "symbol", "file": "src/auth.py", "range": [41, 41],
+     "state": "gone"},
+]}
+VISUALS = [{"title": "T", "acts": [{"title": "A", "flow": [
+    {"sym": "p:load"}, {"edge": "calls"}, {"sym": "src/auth.py:old"}]}]}]
+
+
+CLEAN = [{"title": "T", "acts": [{"title": "A", "flow": [
+    {"sym": "p:load"}, {"edge": "calls"}, {"sym": "p:old"}]}]}]
+
+
+def story_html(visuals=VISUALS, symdelta=SYMDELTA, complexity=None, **kw):
+    order, files = parsed()
+    return render_html({**ANALYSIS, "visuals": visuals, **kw}, files, TEMPLATE, now=FROZEN,
+                       order=order, symdelta=symdelta, complexity=complexity)
+
+
+def test_story_section_sits_between_overview_and_story_map_and_carries_the_blob():
+    out = story_html(groups=[{"title": "Auth", "paths": ["src/auth.py"]},
+                             {"title": "Docs", "paths": ["README.md"]}])
+
+    assert '<section class="cw-story" id="cw-story" hidden' in out
+    assert out.index("<h2>Overview</h2>") < out.index('id="cw-story"') < out.index("<h2>Story map</h2>")
+    blob = out.split('id="cw-story-data">')[1].split("</script>")[0]
+    assert "<" not in blob
+    data = json.loads(blob)
+    assert data["visuals"][0]["acts"][0]["flow"][2] == {"sym": "p:old"}
+    assert set(data["syms"]) == {"p:load", "p:old"}
+
+
+def test_no_valid_visuals_means_no_story_section():
+    assert "cw-story" not in story_html(visuals=[{"title": "T", "acts": []}])
+    assert "cw-story" not in story_html(visuals=VISUALS, symdelta=None)
+    assert "cw-story" not in story_html(visuals=None)
+
+
+def test_story_syms_carry_hunks_capped_code_and_the_state_hunk_id():
+    order, files = parsed()
+    data = story_data(CLEAN, SYMDELTA, None, files)
+    sym = data["syms"]["p:load"]
+
+    prefix = files["src/auth.py"]["hunks"][0]["prefix"]
+    assert sym["side"] == "RIGHT" and sym["hunks"] == [f"src/auth.py\t{prefix}"]
+    assert [kind for kind, _ in sym["code"]] == ["c", "a", "c"]
+    assert sym["cx"] is None and sym["state"] == "changed"
+
+
+def test_story_code_is_capped_at_four_rows():
+    diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n@@ -1,0 +1,6 @@\n" + "".join(
+        f"+l{i}\n" for i in range(6))
+    _, files = parse_hunks(diff)
+    sd = {"nodes": [{"id": "f", "label": "f", "kind": "symbol", "file": "f.py", "range": [1, 6],
+                     "state": "new"}]}
+    visuals = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "f"}]}]}]
+
+    assert len(story_data(visuals, sd, None, files)["syms"]["f"]["code"]) == 4
+
+
+def test_gone_symbol_reads_the_left_side_and_complexity_overrides_state():
+    order, files = parsed()
+    cx = {"files": {"src/auth.py": {"symbols": [
+        {"name": "old", "before": 3, "after": 0, "existed": True, "removed": True}]}}}
+    sym = story_data(CLEAN, SYMDELTA, cx, files)["syms"]["p:old"]
+
+    assert sym["side"] == "LEFT" and sym["state"] == "gone" and sym["cx"] == [3, 0]
+    assert sym["hunks"] == [] and sym["code"] == []
+
+
+GRAPH_SD = {"nodes": [
+    {"id": "p", "label": "p", "kind": "pkg", "parent": None, "depth": 0},
+    *[{"id": f"p:{n}", "label": n, "kind": "symbol", "parent": "p", "depth": 1,
+       "file": "src/auth.py", "range": r, "state": "changed"}
+      for n, r in (("load", [40, 42]), ("old", [41, 41]))],
+], "edges": [{"id": "e0", "source": "p:load", "target": "p:old", "state": "new"}]}
+
+
+def test_all_symbols_disclosure_holds_the_graph_once_inside_the_story():
+    out = story_html(symdelta=GRAPH_SD)
+    section = out.split('id="cw-story"')[1].split("</section>")[0]
+
+    assert out.count('<details class="cw-allsyms"><summary>All symbols</summary>') == 1
+    assert section.index('id="cw-story-root"') < section.index("cw-allsyms") < section.index("vd-symbols")
+    assert section.count('class="vd-symbols') == 1
+
+
+def test_page_without_valid_visuals_is_unchanged_by_the_symdelta():
+    bare = story_html(visuals=None, symdelta=None)
+
+    assert story_html(visuals=None, symdelta=GRAPH_SD) == bare
+    assert story_html(visuals=[{"title": "T", "acts": []}], symdelta=GRAPH_SD) == bare
+    assert "cw-allsyms" not in bare
+
+
+def test_level_script_defers_a_graph_inside_a_closed_details_to_its_first_toggle():
+    script = _between(_real_template(), "querySelectorAll('.vd-symbols')", "\n})();")
+
+    assert "root.closest('details')" in script and "addEventListener('toggle'" in script

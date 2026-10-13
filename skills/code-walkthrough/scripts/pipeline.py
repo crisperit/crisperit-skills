@@ -36,6 +36,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
 
 sys.path.insert(0, str(SCRIPTS_DIR))
+from validate_analysis import check_visuals  # noqa: E402  one owner for the visuals spec
 import fanout  # noqa: E402  in-process merge, per the phase 2 import convention (section 0)
 
 
@@ -208,10 +209,23 @@ def cmd_prepare(args):
     analysis = json.loads(analysis_path.read_text())
     if not (analysis.get("verdict") or "").strip():
         print("warning: verdict is blank")
+    if analysis.get("visuals") is not None:
+        symdelta = json.loads(symdelta_path.read_text()) if symdelta_path.exists() else None
+        clean, problems = check_visuals(analysis["visuals"], symdelta)
+        print(f"visuals: {len(clean)} kept, {len(analysis['visuals']) - len(clean)} dropped")
+        for problem in problems:
+            print(f"visuals: {problem}")
 
     (d / "pipeline.json").write_text(json.dumps({"explain": args.explain, "links_ok": links_ok},
                                                  indent=2))
     return 0
+
+
+def _optional_data_flags(d):
+    """render.py's --symdelta/--complexity for whichever of the two files exist. Passing
+    --complexity also turns on the Complexity fact in the facts strip."""
+    return [arg for flag, name in (("--symdelta", "symdelta.json"), ("--complexity", "complexity.json"))
+            if (d / name).exists() for arg in (flag, str(d / name))]
 
 
 def cmd_render(args):
@@ -240,6 +254,7 @@ def cmd_render(args):
     structure_html = d / "section-structure.html"
     if structure_html.exists():
         render_cmd += ["--structure", str(structure_html)]
+    render_cmd += _optional_data_flags(d)
     if args.title:
         render_cmd += ["--title", args.title]
 
@@ -351,6 +366,7 @@ def cmd_partial(args):
                   "--state", str(state_path)]
     if structure_html:
         render_cmd += ["--structure", str(structure_html)]
+    render_cmd += _optional_data_flags(d)
     if args.explain:
         render_cmd.append("--explain")
 

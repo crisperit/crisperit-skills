@@ -158,6 +158,39 @@ def test_explain_recorded_by_prepare_reaches_render_via_pipeline_json():
         assert "--explain" in render_args
 
 
+def test_render_passes_symdelta_and_complexity_only_when_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head)
+        assert pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
+                              "--head", head]) == 0
+        (d / "complexity.json").unlink(missing_ok=True)
+        _, bare = _render_and_capture_argv(d, "test")
+        (d / "symdelta.json").write_text('{"nodes": []}')
+        (d / "complexity.json").write_text('{"files": {}}')
+        _, full = _render_and_capture_argv(d, "test")
+
+    assert "--symdelta" not in bare and "--complexity" not in bare
+    assert full[full.index("--symdelta") + 1] == str(d / "symdelta.json")
+    assert full[full.index("--complexity") + 1] == str(d / "complexity.json")
+
+
+def test_prepare_reports_kept_and_dropped_visuals(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head)
+        analysis = json.loads((d / "analysis.json").read_text())
+        analysis["visuals"] = [{"title": "T", "acts": [{"title": "A", "flow": [{"sym": "x"}]}]}]
+        (d / "analysis.json").write_text(json.dumps(analysis))
+
+        assert pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
+                              "--head", head]) == 0
+
+    out = capsys.readouterr().out
+    assert "visuals: 0 kept, 1 dropped" in out
+    assert "visuals: visuals: dropped, symdelta.json has no symbols" in out
+
+
 def test_links_cached_leaves_a_pre_placed_links_json_untouched():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
@@ -195,6 +228,11 @@ def _hostile_repo(tmp):
         {"foo.py": "one\ntwo\nthree\nfoo_helper\n", "bar.py": "one\ntwo\nthree\nbar_helper\n"})
 
 
+def _symdelta(path, label, line):
+    return {"id": f"p:{label}", "label": label, "kind": "symbol", "file": path,
+            "range": [line, line], "state": "new"}
+
+
 def _render_with_text(repo, base, head, d, payload):
     """Two files, two groups, so verdict, overview, top-level and group flow_mermaid, group
     title/why/hop, role and note are all exercised, each carrying `payload` -- wrapped in just
@@ -222,7 +260,14 @@ def _render_with_text(repo, base, head, d, payload):
              "hunks": [{"header": headers[1], "note": f"bar_helper {payload}"}]},
         ],
     }
+    # Only intro and act text take the payload: title/edge/bridge caps reject it, and a
+    # rejected visual would leave nothing to render.
+    analysis["visuals"] = [{"title": "Story", "intro": payload, "acts": [{
+        "title": "Act", "text": payload,
+        "flow": [{"sym": "p:foo_helper"}, {"edge": "calls"}, {"sym": "p:bar_helper"}]}]}]
     (d / "analysis.json").write_text(json.dumps(analysis))
+    (d / "symdelta.json").write_text(json.dumps({"language": "python", "nodes": [
+        _symdelta("foo.py", "foo_helper", 4), _symdelta("bar.py", "bar_helper", 4)]}))
 
     rc = pipeline.main(["all", "--dir", str(d), "--repo", str(repo), "--base", base,
                          "--head", head, "--slug", "test", "--title", payload])

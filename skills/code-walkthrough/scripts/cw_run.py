@@ -32,7 +32,7 @@ import notes  # noqa: E402
 import regen  # noqa: E402
 import state  # noqa: E402
 from symdelta import add_worktree, remove_worktree  # noqa: E402
-from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, parse_hunks, validate  # noqa: E402
+from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, check_visuals, parse_hunks, validate  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
@@ -297,7 +297,8 @@ def _prose_submit_tool():
             "properties": {
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
                 "flow_mermaid": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "object"}}}}}}
+                "groups": {"type": "array", "items": {"type": "object"}},
+                "visuals": {"type": "array", "items": {"type": "object"}}}}}}
 
 
 def _resolution_submit_tool():
@@ -317,7 +318,35 @@ def _analysis_submit_tool():
                 "files": {"type": "array", "items": {"type": "object"}},
                 "overview": {"type": "string"}, "verdict": {"type": "string"},
                 "flow_mermaid": {"type": "string"},
-                "groups": {"type": "array", "items": {"type": "object"}}}}}}
+                "groups": {"type": "array", "items": {"type": "object"}},
+                "visuals": {"type": "array", "items": {"type": "object"}}}}}}
+
+
+SYMBOL_DIGEST_MAX = 150
+
+
+def _symbol_digest(symdelta):
+    """The ids an author may name in `visuals`, one per line, or "" when there are none."""
+    rows = []
+    for n in (symdelta or {}).get("nodes", []):
+        if isinstance(n, dict) and n.get("kind") == "symbol":
+            span = n.get("range")
+            where = f"{n.get('file')}:{span[0]}-{span[1]}" if span else str(n.get("file"))
+            rows.append(f"{n.get('id')} | {where} | {n.get('state')}")
+    return "\n".join(rows[:SYMBOL_DIGEST_MAX])
+
+
+def _symbol_digest_text(digest):
+    return "\n\nSymbols for `visuals` (id | file:lines | state):\n" + digest if digest else ""
+
+
+def _apply_visuals(prose, args, symdelta, digest):
+    """Sets prose["visuals"] to the valid visuals; returns the problem lines worth a repair
+    round, which are none when the author was never shown any symbol ids."""
+    clean, problems = check_visuals(args.get("visuals"), symdelta)
+    if clean:
+        prose["visuals"] = clean
+    return problems if digest else []
 
 
 def _make_on_usage(d, role, on_event, config):
@@ -756,6 +785,8 @@ def _run_prose(d, meta, config, on_event, batch_count):
         user_text += "\n\n```json\n" + json.dumps(
             {"language": symdelta.get("language"), "counts": symdelta.get("counts"),
              "moved": symdelta.get("moved")}, indent=2) + "\n```"
+    digest = _symbol_digest(symdelta)
+    user_text += _symbol_digest_text(digest)
     if raw_diff.count("\n") <= 2000:
         user_text += "\n\n```diff\n" + raw_diff + "\n```"
 
@@ -775,14 +806,15 @@ def _run_prose(d, meta, config, on_event, batch_count):
         }
         if isinstance(args.get("groups"), list):
             prose["groups"] = args["groups"]
+        visual_lines = _apply_visuals(prose, args, symdelta, digest)
         merged, problems = _merge_and_validate(d, fragment_paths, prose)
         prose_lines = [p for p in problems if _classify(p, diff_paths)[0] == "prose"]
         other_lines = [p for p in problems if _classify(p, diff_paths)[0] != "prose"]
         state["prose"] = prose
         state["merged"] = merged
         state["other_lines"] = other_lines
-        if prose_lines and state["attempt"] < 3:
-            return "gate: " + "\n".join(prose_lines) + "\nfix and call submit_prose again"
+        if (prose_lines or visual_lines) and state["attempt"] < 3:
+            return "gate: " + "\n".join(prose_lines + visual_lines) + "\nfix and call submit_prose again"
         return cw_llm.Done({"other_lines": other_lines})
 
     local_handlers = dict(handlers)
@@ -880,6 +912,9 @@ def _run_small(d, meta, config, on_event):
     system_prompt = batch_prompt + "\n\n" + prose_prompt + DELIVERY_SUFFIX.format(tool="submit_analysis")
     user_text = (f"```diff\n{raw_diff}\n```\n\n```json\n{json.dumps(seed, indent=2)}\n```"
                  f"\n\nNumstat:\n{numstat}")
+    symdelta = cw_store.read_json(d / "symdelta.json", default=None)
+    digest = _symbol_digest(symdelta)
+    user_text += _symbol_digest_text(digest)
 
     attempts = 0
     model_used = None
@@ -914,6 +949,7 @@ def _run_small(d, meta, config, on_event):
             }
             if isinstance(args.get("groups"), list):
                 prose["groups"] = args["groups"]
+            visual_lines = _apply_visuals(prose, args, symdelta, digest)
             full = {**{k: v for k, v in prose.items() if k != "target"}, "target": prose["target"],
                     "files": fragment["files"]}
             full_problems = validate(raw_diff, full)
@@ -922,12 +958,13 @@ def _run_small(d, meta, config, on_event):
             state["analysis"] = full
             state["prose"] = prose
             state["problems"] = full_problems
-            if not full_problems:
+            retry = state["attempt"] < 3
+            if not full_problems and not (visual_lines and retry):
                 state["ok"] = True
                 return cw_llm.Done({"ok": True})
-            if state["attempt"] >= 3:
+            if not retry:
                 return cw_llm.Done({"ok": False, "problems": full_problems})
-            return "gate: " + "\n".join(full_problems) + "\nfix and call submit_analysis again"
+            return "gate: " + "\n".join(full_problems + visual_lines) + "\nfix and call submit_analysis again"
 
         local_handlers = dict(handlers)
         local_handlers["submit_analysis"] = handler

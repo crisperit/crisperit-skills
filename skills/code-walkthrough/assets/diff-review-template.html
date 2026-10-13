@@ -1259,6 +1259,53 @@
   #cw-post-confirm-items{color:var(--muted);font-size:var(--fs-xs)}
   #cw-post-confirm-status{min-height:1.2em;font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
 
+  .cw-story h3{margin:18px 0 4px}
+  .cw-story h4{margin:14px 0 4px;color:var(--muted);font-size:var(--fs-sm)}
+  .cw-story p{margin:4px 0}
+  .cw-bridge{color:var(--muted);font-style:italic}
+  .cw-flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
+  .cw-card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;
+    background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);
+    padding:8px 12px;font:inherit;cursor:pointer;max-width:100%}
+  .cw-card:hover{border-color:var(--accent)}
+  .cw-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-card[aria-pressed="true"]{border-color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 12%,var(--panel2))}
+  .cw-card-label{font:600 var(--fs-sm) var(--mono);overflow-wrap:anywhere}
+  .cw-card-loc{font:var(--fs-xs) var(--mono);color:var(--muted)}
+  .cw-card-meta{display:flex;gap:6px;align-items:center}
+  .cw-badge{font:600 var(--fs-xs) system-ui;border-radius:999px;padding:1px 8px;
+    background:color-mix(in srgb,var(--muted) 18%,transparent);color:var(--muted)}
+  .cw-badge.new{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
+  .cw-badge.changed{background:color-mix(in srgb,var(--yellow) 18%,transparent);color:var(--yellow)}
+  .cw-badge.gone{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+  .cw-cx{font:var(--fs-xs) var(--mono);color:var(--muted)}
+  .cw-story-detail{margin:10px 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
+    background:var(--panel2);color:var(--muted);font-size:var(--fs-sm)}
+  .cw-story-loc{font:var(--fs-xs) var(--mono);color:var(--text);overflow-wrap:anywhere}
+  .cw-story-cx{font:var(--fs-xs) var(--mono);margin:2px 0}
+  .cw-story-code{margin:6px 0;overflow-x:auto;font:var(--fs-xs) var(--mono);color:var(--text);white-space:pre}
+  .cw-story-open{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border);
+    border-radius:6px;padding:4px 10px;cursor:pointer}
+  .cw-story-open:hover{border-color:var(--accent)}
+  .cw-ingraph{position:relative;margin-left:8px;padding:0 8px;vertical-align:middle;line-height:1.3;
+    font:600 var(--fs-xs) system-ui;color:var(--accent);background:var(--panel2);
+    border:1px solid var(--border);border-radius:999px;cursor:pointer;user-select:none}
+  .cw-ingraph:hover{border-color:var(--accent)}
+  .cw-ingraph:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cw-story-pulse{outline:2px solid var(--accent);outline-offset:2px}
+  @media (prefers-reduced-motion:no-preference){
+    .cw-story-pulse{animation:cw-story-pulse 1.4s ease-out}
+  }
+  @keyframes cw-story-pulse{0%{outline-offset:8px;outline-color:transparent}30%{outline-offset:2px;outline-color:var(--accent)}100%{outline-color:transparent}}
+  .cw-arrow{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-xs)}
+  .cw-arrow::before{content:'\2192';font-size:var(--fs-md);color:var(--accent)}
+  @media (max-width:480px){
+    .cw-flow{flex-direction:column;align-items:stretch}
+    .cw-arrow{justify-content:center}
+    .cw-arrow::before{content:'\2193'}
+  }
+
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
      carries an unconditional rule elsewhere (width/height) at this same ID specificity, and a
      tied specificity is decided by source order, not by which rule sits inside the media query.
@@ -1289,12 +1336,14 @@
     #cw-post-confirm-close{width:44px;height:44px;font-size:16px}
     .fb-primary,.fb-ghost,.fb-danger,.fb-reply-input{min-height:44px}
     .stop{min-height:44px}
+    .cw-card{min-height:44px}
+    .cw-story-detail button{min-height:44px}
     .vds-chips button{min-height:44px;padding:10px 14px}
     /* Hit area grows, visible size doesn't: a 44px button here would overlap the line number
        and the row above/below. ::before extends the tappable region on all sides instead,
        via inset rather than negative margins, so it never adds to .dline-plus's own box and
        can't grow the row's layout height. */
-    .dline-plus::before,.cw-ref-dot-btn::before{content:'';position:absolute;inset:-16px}
+    .dline-plus::before,.cw-ref-dot-btn::before,.cw-ingraph::before{content:'';position:absolute;inset:-16px}
     /* 44px tap target without a 44px row: the padding grows the hit area and the equal
        negative margin takes that growth back out of the layout, so it spills into the
        summary's own padding instead of making every file header 20px taller. */
@@ -1629,7 +1678,17 @@
       // Either the page-level section (no .wt-panel at all) or a group whose graph is the
       // only diagram it has (a .wt-panel with no tab bar -- see _group_panel): both show
       // their default level in place from the start, so both render here at load.
-      await showLevel(level);
+      // Inside a closed <details> (the story's "All symbols") mermaid measures the labels as
+      // zero and degenerate() would mark the render failed, so it waits for the first open.
+      const closed = root.closest('details');
+      if (closed && !closed.open) {
+        let opened = false;
+        closed.addEventListener('toggle', () => {
+          if (closed.open && !opened) { opened = true; showLevel(level); }
+        });
+      } else {
+        await showLevel(level);
+      }
     }
   }
 })();
@@ -2220,6 +2279,7 @@
   window.__vdZoomOpen=openZoom; // lets the level script's group-graph button, and its in-dialog level toggle, reuse this instead of a second render path
   window.__vdOpenMenu=openMenu; // lets the structure script's own box menu reuse this instead of a second menu implementation
   window.__vdGoToFile=navGoToFile; // ditto, for its "Go to walkthrough" item
+  window.__vdGoToLine=navGoToLine;
 })();
 </script>
 <script>
@@ -6763,6 +6823,141 @@ document.querySelectorAll('summary a').forEach(a => {
     // ResizeObserver and the pan/zoom listeners wireModalPanZoom bound to the shared body.
     return { disconnect(){ ro.disconnect(); pz.controller.abort(); } };
   };
+})();
+</script>
+<script>
+(function(){
+  function storyNextIndex(i,n,key){
+    if(n<=0) return -1;
+    if(key==='ArrowRight'||key==='ArrowDown') return Math.min(i+1,n-1);
+    if(key==='ArrowLeft'||key==='ArrowUp') return Math.max(i-1,0);
+    if(key==='Home') return 0;
+    if(key==='End') return n-1;
+    return -1;
+  }
+  function storyHunkKey(path,headerText){
+    const m=/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.exec(headerText);
+    return m?path+'\t'+m[0]:null;
+  }
+  function wireStory(){
+    const sec=document.getElementById('cw-story'), blob=document.getElementById('cw-story-data');
+    const root=document.getElementById('cw-story-root');
+    if(!sec||!blob||!root) return;
+    let data;
+    try{ data=JSON.parse(blob.textContent); }catch(e){ return; }
+    if(!data||!Array.isArray(data.visuals)||!data.syms) return;
+    const mk=(tag,cls,text)=>{
+      const e=document.createElement(tag);
+      if(cls) e.className=cls;
+      if(text!=null) e.textContent=text;
+      return e;
+    };
+    const firstCard=new Map();
+    const card=id=>{
+      const s=data.syms[id], b=mk('button','cw-card');
+      b.type='button';
+      b.setAttribute('aria-pressed','false');
+      b.dataset.sym=id;
+      b.append(mk('span','cw-card-label',s.label),
+        mk('span','cw-card-loc',String(s.file).split('/').pop()+':'+s.start));
+      const meta=mk('span','cw-card-meta');
+      meta.append(mk('span','cw-badge '+s.state,s.state));
+      if(s.cx) meta.append(mk('span','cw-cx',s.cx[0]+'\u2192'+s.cx[1]));
+      b.append(meta);
+      return b;
+    };
+    for(const v of data.visuals){
+      const vis=mk('section','cw-visual');
+      const detail=mk('div','cw-story-detail','Select a symbol to see its code');
+      detail.setAttribute('aria-live','polite');
+      const cards=[];
+      const select=b=>{
+        cards.forEach(c=>{
+          const on=c===b;
+          c.setAttribute('aria-pressed',on?'true':'false');
+          c.tabIndex=on?0:-1;
+        });
+        const s=data.syms[b.dataset.sym];
+        detail.replaceChildren(mk('div','cw-story-loc',s.file+':'+s.start+'-'+s.end));
+        if(s.cx) detail.append(mk('div','cw-story-cx','complexity '+s.cx[0]+' \u2192 '+s.cx[1]+' branches'));
+        const code=mk('div','cw-story-code diff');
+        for(const [k,t] of (s.code||[]).slice(0,4)) code.append(mk('span',k,t));
+        if(code.childNodes.length) detail.append(code);
+        const open=mk('button','cw-story-open','Open in diff');
+        open.type='button';
+        open.addEventListener('click',()=>{
+          const sp=window.__vdSymbolSpan(s.file,s.side,s.start,Math.max(s.end,s.start));
+          if(sp) window.__vdGoToLine(sp); else window.__vdGoToFile(s.file);
+        });
+        detail.append(open);
+      };
+      vis.append(mk('h3',null,v.title));
+      if(v.intro) vis.append(mk('p',null,v.intro));
+      v.acts.forEach((act,ai)=>{
+        if(ai>0&&v.acts[ai-1].bridge) vis.append(mk('p','cw-bridge',v.acts[ai-1].bridge));
+        vis.append(mk('h4',null,act.title));
+        if(act.text) vis.append(mk('p',null,act.text));
+        const flow=mk('div','cw-flow');
+        let pendingEdge=null, seen=false;
+        for(const item of act.flow){
+          if(item.edge!=null){ pendingEdge=item.edge; continue; }
+          if(!data.syms[item.sym]) continue;
+          if(seen){
+            const a=mk('span','cw-arrow');
+            if(pendingEdge) a.append(mk('span',null,pendingEdge));
+            flow.append(a);
+          }
+          pendingEdge=null; seen=true;
+          const c=card(item.sym);
+          c.tabIndex=-1;
+          c.addEventListener('click',()=>select(c));
+          c.addEventListener('keydown',e=>{
+            const i=storyNextIndex(cards.indexOf(c),cards.length,e.key);
+            if(i<0) return;
+            e.preventDefault();
+            cards[i].focus();
+            select(cards[i]);
+          });
+          cards.push(c);
+          if(!firstCard.has(item.sym)) firstCard.set(item.sym,{c,select});
+          flow.append(c);
+        }
+        vis.append(flow);
+      });
+      if(cards.length) cards[0].tabIndex=0;
+      vis.append(detail);
+      root.append(vis);
+    }
+    const byHunk=new Map();
+    for(const [id,e] of firstCard) for(const h of data.syms[id].hunks||[]) if(!byHunk.has(h)) byHunk.set(h,{id,...e});
+    let pulseT=0;
+    const stop=e=>e.stopPropagation();
+    for(const d of document.querySelectorAll('details.hunk')){
+      const pe=d.querySelector('.hunk-path'), path=pe?pe.textContent.trim():'';
+      for(const h of d.querySelectorAll('span.h')){
+        const t=byHunk.get(storyHunkKey(path,h.textContent));
+        if(!t) continue;
+        const chip=mk('button','cw-ingraph','In graph');
+        chip.type='button';
+        chip.setAttribute('aria-label','Show '+data.syms[t.id].label+' in the story');
+        // summary toggles on click and the gutter starts a selection on pointer/mouse down.
+        for(const ev of ['pointerdown','pointerup','mousedown','mouseup']) chip.addEventListener(ev,stop);
+        chip.addEventListener('click',e=>{
+          e.stopPropagation();
+          t.c.scrollIntoView({block:'center'});
+          t.select(t.c);
+          t.c.focus({preventScroll:true});
+          clearTimeout(pulseT);
+          document.querySelectorAll('.cw-story-pulse').forEach(x=>x.classList.remove('cw-story-pulse'));
+          t.c.classList.add('cw-story-pulse');
+          pulseT=setTimeout(()=>t.c.classList.remove('cw-story-pulse'),1400);
+        });
+        h.append(chip);
+      }
+    }
+    sec.hidden=false;
+  }
+  wireStory();
 })();
 </script>
 <script>

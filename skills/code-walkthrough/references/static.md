@@ -94,9 +94,25 @@ The template and the rendered HTML still never enter context.
       "hop": "optional, 2-6 words naming the hand-off to the next stop",
       "side": "optional, true for a supporting group off the main line"
     }
+  ],
+  "visuals": [
+    {
+      "title": "The request becomes a prompt",
+      "intro": "optional",
+      "acts": [{
+        "title": "Intake", "text": "optional", "bridge": "optional",
+        "flow": [{"sym": "<symdelta node id or file:label>"}, {"edge": "validates"}, {"sym": "..."}]
+      }]
+    }
   ]
 }
 ```
+
+`visuals` is optional and advisory: `validate_analysis.check_visuals` (not part of the gate)
+drops a visual with any problem whole, so a bad one never fails a build, and `pipeline.py prepare`
+prints `visuals: N kept, M dropped` plus one line per problem. Caps are the `VISUALS_MAX`-style
+constants in that script. The prose agent needs `symdelta.json` first to know the ids, so a
+fan-out run builds it before the prose pass, as it already does for the graph summaries.
 
 This file is the whole of your judgment. Nothing downstream writes prose: `render.py` and
 `walkthrough.py` place these strings and build every other part of the output from `raw.diff`.
@@ -104,7 +120,7 @@ So a field left blank is a section that will not appear, not a section someone e
 
 One entry per file in `raw.diff`, one `hunks` entry per `@@` hunk in that file, every `role`
 non-blank. Judgment rules for `role` and `note`, with the bad/good pairs: `prompts/batch.md`.
-Judgment rules for `overview`, `groups`, the flow diagrams and the `hop`/`side` fields, with the
+Judgment rules for `overview`, `groups`, the flow diagrams, the `hop`/`side` fields and `visuals`, with the
 worked example: `prompts/prose.md`. The single subagent below the fan-out threshold reads both
 of these before filling in this whole schema itself.
 

@@ -66,6 +66,8 @@ enough to explain the machinery.
 The main thread no longer writes `groups` into `analysis.json` by hand: this subagent writes them
 directly into `prose.json`, and `fanout.py merge` carries them through.
 
+It may add `visuals` to `prose.json` (spec: `static.md`, rules: `prompts/prose.md`); `merge` copies the key only when present, like `groups`. It reads the symbol node ids from `symdelta.json` so it can name real ids.
+
 Ordering: this subagent waits for every batch fragment and for `symdelta.json`, the same
 dependency the old grouping pass already had, so the critical path does not get longer.
 

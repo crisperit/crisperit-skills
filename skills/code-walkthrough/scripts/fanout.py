@@ -18,10 +18,12 @@ cheap model often only sees one side of a rename. It does not check coverage:
 validate_analysis.py does that, and it must be run on the merged file.
 
 Fragment shape, one per batch: {"files": [ <analysis.json files[] entries> ]}
-prose.json: {"target", "overview", "flow_mermaid", "verdict", "section_notes", "groups"?}
-"groups" is carried through only when prose.json has the key at all, never defaulted to ""
-like the other prose keys: an empty-string "groups" fails validate_analysis.py's "must be a
-list" check, where a missing key is a no-op there and falls into walkthrough.py's catch-all.
+prose.json: {"target", "overview", "flow_mermaid", "verdict", "section_notes", "groups"?,
+"visuals"?}
+"groups" and "visuals" are carried through only when prose.json has the key at all, never
+defaulted to "" like the other prose keys: an empty-string "groups" fails
+validate_analysis.py's "must be a list" check, where a missing key is a no-op there and falls
+into walkthrough.py's catch-all.
 
 Stdlib only, no network.
 """
@@ -170,8 +172,9 @@ def merge(diff_text, fragment_paths, prose):
     # Anything the fragments invented is kept, not dropped, so the gate can name it.
     ordered += list(entries.values())
     prose_out = {key: prose.get(key, PROSE_DEFAULTS.get(key, "")) for key in PROSE_KEYS}
-    if "groups" in prose:
-        prose_out["groups"] = prose["groups"]
+    for key in ("groups", "visuals"):
+        if key in prose:
+            prose_out[key] = prose[key]
     return {**prose_out, "files": ordered}
 
 
