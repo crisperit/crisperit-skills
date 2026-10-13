@@ -4045,11 +4045,12 @@
     const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
     const asEl=node=>node&&(node.nodeType===1?node:node.parentElement);
     const inLiveUi=node=>{ const el=asEl(node); return !!(el&&el.closest('.cw-thread,.cw-compose,.cw-pageedit')); };
+    const LIVE_SEL='.cw-thread,.cw-compose,.cw-pageedit,.fb-item,.dline-plus,.cw-ref-dot-btn';
 
     function textOf(el){
-      if(!el.querySelector('.cw-thread,.cw-compose,.cw-pageedit')) return el.textContent;
+      if(!el.querySelector(LIVE_SEL)) return el.textContent;
       const c=el.cloneNode(true);
-      c.querySelectorAll('.cw-thread,.cw-compose,.cw-pageedit').forEach(n=>n.remove());
+      c.querySelectorAll(LIVE_SEL).forEach(n=>n.remove());
       return c.textContent;
     }
 
@@ -4086,7 +4087,7 @@
       blockIdx={list:[],byKey:new Map(),pos:new Map()};
       let section=document.title||'', n=0;
       planEl.querySelectorAll(BLOCK_SEL).forEach(el=>{
-        if(el.closest('.cw-thread,.cw-compose,.cw-pageedit')) return;
+        if(el.closest(LIVE_SEL)) return;
         const k=blockKey(el);
         blockIdx.list.push({el,text:norm(textOf(el))});
         if(!blockIdx.byKey.has(k)) blockIdx.byKey.set(k,el);
@@ -4095,6 +4096,14 @@
       });
       return blockIdx;
     }
+
+    let settleTimer=null;
+    new MutationObserver(()=>{
+      blockIdx=null;
+      clearTimeout(settleTimer);
+      settleTimer=setTimeout(resyncPageEdits,300);
+    }).observe(planEl,{childList:true,subtree:true,characterData:true});
+    if(document.readyState!=='complete') addEventListener('load',()=>resyncPageEdits());
 
     function proseLabel(el){
       const p=blockIndex().pos.get(el);
@@ -4417,9 +4426,20 @@
       const target=o.payload&&o.payload.target;
       const heading=a.section&&[...planEl.querySelectorAll('h1,h2,h3,h4')].find(x=>x.textContent.trim()===a.section);
       if(a.kind==='section'&&target===a.section) return {el:heading||null,outdated:!heading};
-      const el=target&&blockIndex().byKey.get(target);
+      const idx=blockIndex();
+      const el=target&&idx.byKey.get(target);
       if(el) return {el,outdated:false};
-      return {el:heading||null,outdated:true};
+      const q=norm(a.quote||'').slice(0,60);
+      const hit=q&&idx.list.find(b=>b.text.includes(q));
+      return {el:hit?hit.el:heading||null,outdated:true};
+    }
+
+    function resyncPageEdits(){
+      for(const [oid,cur] of [...pageEdits]){
+        if(!cur.node.isConnected||!cur.outdated) continue;
+        const d=pageEditTarget(cur.o);
+        if(d.el!==cur.destEl||!d.outdated){ removePageEdit(oid); syncPageEdit(cur.o); }
+      }
     }
 
     function pageEditAct(oid,verb,btn,msg){
@@ -4475,8 +4495,8 @@
         orig.classList.add('cw-pageedit-hidden');
       }
       n.append(acts);
-      if(dest.el) dest.el.insertAdjacentElement('afterend',n);
-      pageEdits.set(o.oid,{node:n,orig,sig});
+      if(dest.el) dest.el.insertAdjacentElement('afterend',n); else planEl.prepend(n);
+      pageEdits.set(o.oid,{node:n,orig,sig,o,outdated:dest.outdated,destEl:dest.el});
       n.querySelectorAll('pre.mermaid').forEach(pre=>renderMermaidEdit(pre,pre.textContent));
     }
 
@@ -6150,16 +6170,17 @@
       openComposer(c,box=>ref.insertAdjacentElement('afterend',box));
     };
 
-    function loadQa(){
+    function loadQa(retry=true){
+      const each=(xs,f)=>(xs||[]).forEach(x=>{ try{ f(x); }catch(e){ console.error('code-walkthrough: replay failed',e); } });
       fetch(window.CW_LIVE.api+'/qa',{headers:{'X-CW-Token':window.CW_LIVE.token}})
         .then(r=>r.ok?r.json():null)
         .then(data=>{
-          if(!data||!Array.isArray(data.turns)) return;
-          data.turns.forEach(x=>upsertTurn(x,true));
-          (data.resolved||[]).forEach(tid=>applyResolve(tid,true));
-          (data.outcomes||[]).forEach(upsertOutcome);
+          if(!data||!Array.isArray(data.turns)){ if(retry) setTimeout(()=>loadQa(false),1500); return; }
+          each(data.turns,x=>upsertTurn(x,true));
+          each(data.resolved,tid=>applyResolve(tid,true));
+          each(data.outcomes,upsertOutcome);
         })
-        .catch(()=>{});
+        .catch(()=>{ if(retry) setTimeout(()=>loadQa(false),1500); });
     }
     loadQa();
   }
