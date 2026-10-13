@@ -43,7 +43,9 @@ never overwrites an existing one; paste a profile in instead.
  },
  "roles": {"analysis": "claude", "prose": "claude", "ask": "claude", "escalate": "proxy"},
  "max_concurrency": 4, "timeout_s": 300, "max_conversation_tokens": 200000,
- "small_diff_lines": 1500, "batch_max_lines": 400}
+ "small_diff_lines": 1500, "batch_max_lines": 400,
+ "trust": {"repos": ["owner/name"], "orgs": ["owner"]},
+ "repos": {"owner/name": "/abs/path/to/existing/clone"}}
 ```
 
 A profile's `kind` is `openai` (the default; needs `base_url` and `model`) or `claude-code`
@@ -55,6 +57,9 @@ and `price_per_mtok` apply to the openai kind only. `roles.escalate` is optional
 usage is booked under the "thread" role. `small_diff_lines` and `batch_max_lines` mirror the fan-out thresholds in `static.md` step 2 and
 step 2a. An openai profile may also carry `price_per_mtok: {"input": x, "output": y}`, which is what
 turns a usage total into `cost_usd`; no price table ships, since one would go stale.
+`trust.repos` and `trust.orgs` (both default to empty, matched case-insensitively) say where Full
+access may be offered and which repos clone without asking, see "Full access" and "Repos without a
+local clone". `repos` maps `owner/name` to an existing absolute directory and wins over the cache.
 
 ## `check`
 
@@ -78,12 +83,79 @@ holding the link's target text instead.
 
 Thread turns differ: they run `claude` without `--safe-mode`, since safe mode disables MCP servers,
 but still with `--restricted`, the read-only `Read`, `Grep` and `Glob` tools, `--strict-mcp-config`
-and a per-turn stdio outcome server exposing two tools, `propose_resolve` and `propose_page_edit`. `CLAUDE.md` and user
+and a per-turn stdio outcome server. Review threads can call `propose_resolve`, `propose_page_edit`,
+`propose_github_draft`, `propose_task` and `post_draft_comments`; Full threads (see
+[Full access](#full-access)) drop `propose_task` and add `reload_walkthrough`. `CLAUDE.md` and user
 settings are verified not to load under `--restricted`. Each thread is one Claude Code session (first
 turn `--session-id`, later turns `--resume`), stored in `~/.claude/projects` for the head checkout;
 a lost session is reseeded from the thread's Q&A. Stop sends SIGTERM to the turn's process group
 (SIGKILL after 3 s) and the session stays resumable. A `ctx/` folder in the walkthrough directory
 holds copies of `analysis.json` and `raw.diff` the agent may read.
+
+## Repos without a local clone
+
+`walkthrough_start`'s `repo` is an absolute path or `owner/name`. The daemon resolves `owner/name`
+in this order: the `repos` map in `config.json` (a value that is not an existing absolute directory
+fails with the remedy `fix repos.<name> in config.json`), then the cache clone at
+`~/.code-walkthrough/repos/github.com/<owner>/<name>`, then a fresh clone, then a refusal. A
+refusal reads `<name> is not cloned on this machine`, and its remedy is the question to ask the
+user (clone it, about N MB, into that path), what to call next on yes (`walkthrough_start` again
+with `clone: true`) and what to do on no (the static path, `gh pr diff`). The clone happens without
+the question only when the repo is in `trust.repos`. It is blobless and checkout-less
+(`gh repo clone`, `--filter=blob:none --no-checkout`) with `GH_TOKEN` and `GITHUB_TOKEN` stripped;
+the clone's own config points `github.com` at `gh auth git-credential`, so blobs fetched later
+authenticate. It lands in a temp directory and is renamed into place only on success, so a retry
+after a timeout is safe. A mapped or cached repo then fetches the PR head and base before the build
+when `pr` is set or `base` starts with `origin/`.
+
+## Full access
+
+A thread normally runs in Review: read-only tools, the PR's own files, no edits. Full runs your own
+Claude Code in a shared worktree, so the agent can edit files and run what your own settings allow.
+Use the Review | Full switch under a thread's composer to choose per message.
+
+Full is off by default and only offered when the walkthrough's repo is in `trust.repos`, its owner in
+`trust.orgs` (for a non-PR local target the repo is read from `origin`), or the PR is the signed-in
+user's own (cached when the build syncs the PR). It is never offered on sibling pages, and needs a
+claude-code `thread` profile. `POST .../comment` with `mode: "full"` answers 400 without such a
+profile or on a bad mode, 409 on a sibling page, 403 when the repo is not trusted.
+
+What loads: `--setting-sources user`, so your own settings (including `permissions.allow`), skills,
+user-level MCP servers and `CLAUDE.md`. The PR branch's `.claude/settings`, hooks, `.mcp.json` and
+`CLAUDE.md` do not load. The turn's cw outcome tools are added, with the `prompts/agent.md` rules
+appended to the system prompt.
+
+What is blocked, best effort: git transports are disabled in the agent's environment
+(`cw_llm.no_push_env`, so fetch and clone fail too) and `git push` and other push-like commands are
+denied by rule. Neither is a sandbox. Your own walkthrough MCP tools are disallowed
+(`FULL_DISALLOWED`), so the agent cannot start or reply to walkthroughs as you. The daemon itself
+never pushes. Edits are accepted automatically inside the worktree. Anything else that would prompt
+is denied rather than asked, and the page lists it on the turn as "Needs permission".
+
+The agent runs with your `permissions.allow`, so a broad `Bash`, `Write` or `WebFetch` allow rule
+applies in full, and `gh` and network access (`gh api`, `curl`) follow your own settings. The PR
+text it reads can try to steer it. Keep broad allow rules out of your user settings if you use Full
+on code you do not trust.
+
+Trust is by repo, org or your own PR only. A fork PR into a trusted repo also gets Full, so list
+only repos you accept that for. The PR author's `.claude` settings, hooks, `.mcp.json` and
+`CLAUDE.md` are not loaded.
+
+All Full turns of a walkthrough share one worktree at `agent/` in its store directory, on the branch
+`cw/<id>/agent`, created on the first Full turn from the walkthrough's head. Only one Full turn runs
+at a time per walkthrough: a second waits and shows "Queued behind <thread>", and Stop cancels it
+while it waits. Review turns never wait. After each turn the daemon commits what changed and records
+an `edits` card with the files and line counts. Show opens a sibling walkthrough on that commit;
+Discard drops the worktree, the branch and every agent edit at once, and answers 409 while a Full
+turn is running. If the daemon restarts mid-turn it leaves a dirty worktree, and the next Full turn
+commits it. A Full turn can run long, so you may need to raise `timeout_s`.
+
+Two tools exist only for the thread agent. `post_draft_comments` puts up to 30 review comments on
+diff lines of the page as local drafts (an invalid comment rejects the whole call; nothing reaches
+GitHub until you submit the review). `reload_walkthrough` (Full only) asks for a sibling
+walkthrough of the `cw/<id>/agent` commit, opened beside the current page; the daemon marks the
+request done or failed when the turn ends, and the page shows a Reload card. It never rebuilds the
+current page.
 
 ## Environment variables and `stop`
 
@@ -99,8 +171,11 @@ others); everything else, including any `ANTHROPIC_*` variable, passes through u
 Everything lives under `~/.code-walkthrough/` (override with `CODE_WALKTHROUGH_HOME`):
 `server.json`, `server.lock` and `server.log` for the daemon itself, `config.json`, and one
 `w/<repo-key>/<id>/` directory per walkthrough holding its `meta.json`, read-only `head/`
-worktree, batches, drafts and rendered pages. The daemon prunes a walkthrough untouched for more
-than 30 days (`CW_PRUNE_DAYS`), skipping any that still carries an unposted local draft.
+worktree, the Full-mode `agent/` worktree once one exists, batches, drafts and rendered pages.
+`repos/github.com/<owner>/<name>/` holds the cache clones. The daemon prunes a walkthrough untouched
+for more than 30 days (`CW_PRUNE_DAYS`), skipping any that still carries an unposted local draft; its
+task and `agent/` worktrees and branches go with it. It also removes a cache clone that no remaining
+walkthrough references and that is older than the same cutoff.
 
 ## The `walkthrough/` prefix
 
@@ -224,6 +299,13 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | Store would sit inside the repo | set `CODE_WALKTHROUGH_HOME` outside the repo |
 | `pr` set, origin isn't a GitHub remote | follow references/static.md of the code-walkthrough skill |
 | `comments`/`threads` step failed | `gh auth login` (`GH_TOKEN`/`GITHUB_TOKEN` are not passed to `gh` here) |
+| `<name>` is not cloned on this machine | ask the user, then call `walkthrough_start` again with `clone: true`, or on no use `gh pr diff` (static.md) |
+| `repos.<name>` is not an existing absolute directory | fix `repos.<name>` in `config.json` |
+| Clone or fetch of a repo failed | check `gh auth status` and that you can read the repo, then retry |
+| Full access is off for this walkthrough (403) | add `owner/name` to `trust.repos` in `config.json` |
+| Full access needs a claude-code thread profile (400) | point `roles.thread` at a claude-code profile |
+| Full access is off on an updated walkthrough (409) | use the original walkthrough |
+| A Full turn is running, Discard refused (409) | try again when it ends |
 | Ask selection too large | select a smaller range |
 | No thread role | set `roles.thread` or `roles.ask` in `config.json` |
 | The outcome server did not start | see `server.log`; check `python3` is on PATH and `cw_mcp.py` runs |
