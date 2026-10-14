@@ -288,6 +288,57 @@ def test_implements_is_recorded_from_ts_class_heritage(tmp_path):
     assert entries == [{"from": impl["id"], "to": "Base", "kind": "implements"}]
 
 
+# ---- Python ----------------------------------------------------------------------------------
+
+
+PY_SRC = """import functools
+from abc import ABC
+
+
+class Repo(ABC, Generic[T], metaclass=Meta):
+    def get(self):
+        def inner():
+            return 1
+        return inner()
+
+    async def put(self):
+        return 2
+
+
+@functools.cache
+def load():
+    return 3
+
+
+def outer():
+    def nested():
+        return 4
+    return nested()
+"""
+
+
+def test_parse_py_module_classes_functions_and_heritage():
+    cw_testlib.require_tree_sitter("python")
+    mod = structure.parse_py_module(PY_SRC)
+    assert set(mod) == {"Repo", "load", "outer"}
+    assert mod["Repo"]["kind"] == "class"
+    assert mod["Repo"]["extends"] == ["ABC"]
+    assert set(mod["Repo"]["members"]) == {"get", "put"}
+    assert mod["load"]["kind"] == "function"
+    assert mod["Repo"]["implements"] == []
+
+
+def test_python_diff_through_analyse(tmp_path):
+    cw_testlib.require_tree_sitter("python")
+    repo, base, head = make_repo(
+        tmp_path, {"a.py": PY_SRC}, {"a.py": PY_SRC.replace("return 3", "return 33")}
+    )
+    symdelta = _write_json(repo, "symdelta.json", _edge_symdelta("a.py", "outer", "a.py", "load"))
+    result = _run_structure(repo, base, head, symdelta_path=symdelta)
+    assert result["language"] == "python"
+    assert _component(result, "load")["state"] == "changed"
+
+
 # ---- grouping via analysis.json --------------------------------------------------------------
 
 

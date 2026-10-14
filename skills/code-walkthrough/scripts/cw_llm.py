@@ -421,6 +421,7 @@ def confine_prefix(worktree, repo_root, home, turns_dir, sockets=None, exists=os
 
 
 _confined = {"ok": False, "failed_at": None}
+_confined_lock = threading.Lock()
 CONFINEMENT_RETRY_S = 60
 
 
@@ -428,12 +429,15 @@ def confinement_available(run=subprocess.run, clock=time.monotonic):
     # A failed probe may be transient (timeout), so it is retried after a minute; success is final.
     if _confined["ok"]:
         return True
-    failed_at = _confined["failed_at"]
-    if failed_at is not None and clock() - failed_at < CONFINEMENT_RETRY_S:
-        return False
-    _confined["ok"] = _probe_confinement(run)
-    _confined["failed_at"] = None if _confined["ok"] else clock()
-    return _confined["ok"]
+    with _confined_lock:
+        if _confined["ok"]:
+            return True
+        failed_at = _confined["failed_at"]
+        if failed_at is not None and clock() - failed_at < CONFINEMENT_RETRY_S:
+            return False
+        _confined["ok"] = _probe_confinement(run)
+        _confined["failed_at"] = None if _confined["ok"] else clock()
+        return _confined["ok"]
 
 
 def _probe_confinement(run):

@@ -735,6 +735,25 @@ def test_full_turns_queue_behind_each_other_review_turns_do_not(monkeypatch):
             assert "q-00000004" not in started
 
 
+def test_turn_thread_failure_writes_an_error_record(monkeypatch):
+    import test_cw_ask as ask
+
+    def boom(*a, **k):
+        raise RuntimeError("worktree exploded")
+
+    monkeypatch.setattr(cw_ask, "answer", boom)
+    with cw_testlib.temp_home() as home:
+        d = ask._claude_done(home)
+        with running_daemon() as daemon:
+            daemon.start_ask(d.parent.name, d.name, d, "q-00000001", "q-00000001", ask.ANCHOR_SECTION, "x")
+            turn = _wait_status(d, "q-00000001", "error", timeout=5)
+            assert turn["error"] == "worktree exploded" and turn["mode"] == "review"
+            wait_for = time.monotonic() + 5
+            while daemon._asks and time.monotonic() < wait_for:
+                time.sleep(0.02)
+            assert daemon._asks == 0
+
+
 OID = "o-0a1b2c3d"
 OQID = "q-11223344"
 
