@@ -63,14 +63,24 @@ def test_visuals_prompt_examples_pass_the_sanitiser():
     for block in blocks:
         example = json.loads(block)
         n_groups = max([g["index"] for g in example["groups"]], default=-1) + 1
-        clean, problems = visuals.check_visuals(example, n_groups)
+        files = {r.partition(":")[0] for n in example.get("overview", {}).get("nodes", []) + example.get(
+            "overview", {}).get("notes", []) for r in n.get("refs", [])}
+        ctx = {"files": files, "symdelta": {"nodes": [
+            {"kind": "symbol", "file": "api/gateway.py", "label": "check_quota"}]}}
+        clean, problems = visuals.check_visuals(example, max(n_groups, 1), ctx)
         assert problems == []
-        assert bool(clean["pr"]) == bool(example["pr"]) and len(clean["groups"]) == len(example["groups"])
+        assert clean["pr"] is None and len(clean["groups"]) == len(example["groups"])
+        assert bool(clean["overview"]) == ("overview" in example)
+
+
+def test_visuals_prompt_has_an_overview_example_and_no_pr_picture():
+    text = (PROMPTS_DIR / "visuals.md").read_text()
+    assert '{"overview": {"title"' in text and '"pr"' not in text
 
 
 def test_visuals_prompt_stays_small_and_examples_are_phone_sized():
     text = (PROMPTS_DIR / "visuals.md").read_text()
-    assert len(text.encode()) <= 10752
+    assert len(text.encode()) <= 11264
     for vb in re.findall(r"viewBox='0 0 (\d+) \d+'", text):
         assert 360 <= int(vb) <= 560
 

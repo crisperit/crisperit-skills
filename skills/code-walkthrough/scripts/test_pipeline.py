@@ -94,7 +94,6 @@ def test_a_failing_analysis_exits_1_and_writes_nothing_downstream():
                              "--head", head, "--slug", "test"])
 
         assert rc != 0
-        assert not (d / "structure.json").exists()
         assert not (d / "state.json").exists()
         assert not (d / "test.html").exists()
 
@@ -116,14 +115,14 @@ def test_a_stale_section_is_removed_when_symdelta_is_missing():
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)
         d = _scratch(tmp, repo, base, head)
-        (d / "section-structure.html").write_text("<!-- code-walkthrough:structure -->old\n")
+        (d / "section-symbols.html").write_text("<!-- code-walkthrough:symbols -->old\n")
         assert not (d / "symdelta.json").exists()
 
         rc = pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
                              "--head", head])
 
         assert rc == 0
-        assert not (d / "section-structure.html").exists()
+        assert not (d / "section-symbols.html").exists()
 
 
 def test_no_remote_gives_links_ok_false_and_render_drops_links():

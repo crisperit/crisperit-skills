@@ -368,12 +368,14 @@ def test_check_visuals_happy_path():
     clean, probs = v.check_visuals(raw({"title": "  The  PR ", "html": OK},
                                        [{"index": 1, "html": OK}, {"index": 0, "html": "<div>b</div>"}]), 2)
     assert probs == []
-    assert clean == {"pr": {"title": "The PR", "html": OK}, "groups": {1: OK, 0: "<div>b</div>"}}
+    assert clean == {"pr": {"title": "The PR", "html": OK}, "overview": None,
+                     "groups": {1: OK, 0: "<div>b</div>"}}
 
 
 def test_check_visuals_null_pr_and_empty_groups_are_fine():
-    assert v.check_visuals({"pr": None, "groups": []}, 3) == ({"pr": None, "groups": {}}, [])
-    assert v.check_visuals({}, 3) == ({"pr": None, "groups": {}}, [])
+    empty = {"pr": None, "overview": None, "groups": {}}
+    assert v.check_visuals({"pr": None, "groups": []}, 3) == (empty, [])
+    assert v.check_visuals({}, 3) == (empty, [])
 
 
 def test_check_visuals_group_index_handling():
@@ -397,7 +399,7 @@ def test_check_visuals_prefixes_ids_per_fragment():
 def test_check_visuals_problem_lines_name_the_fragment_and_drop_it():
     clean, probs = v.check_visuals(raw({"title": "t", "html": "<img>"}, [
         {"index": 0, "html": "<script>"}, {"index": 1, "html": OK}]), 2)
-    assert clean == {"pr": None, "groups": {1: OK}}
+    assert clean == {"pr": None, "overview": None, "groups": {1: OK}}
     assert "visuals.pr: <img> is not allowed" in probs
     assert "visuals.groups[0]: <script> is not allowed" in probs
 
@@ -419,7 +421,7 @@ def test_check_visuals_size_caps():
     assert clean["groups"] == {} and "limit" in probs[0]
     many = [{"index": i, "html": "<p>" + "y" * 11000 + "</p>"} for i in range(12)]
     clean, probs = v.check_visuals(raw({"title": "t", "html": OK}, many), 12)
-    assert clean == {"pr": None, "groups": {}} and "in total" in probs[0]
+    assert clean == {"pr": None, "overview": None, "groups": {}} and "in total" in probs[0]
     clean, probs = v.check_visuals(raw(None, [{"index": i, "html": OK} for i in range(13)]), 13)
     assert sorted(clean["groups"]) == list(range(12)) and any("at most 12" in p for p in probs)
 
@@ -431,7 +433,7 @@ def test_check_visuals_size_caps():
 ])
 def test_check_visuals_never_raises_on_garbage(junk):
     clean, probs = v.check_visuals(junk, 2)
-    assert clean == {"pr": None, "groups": {}} and probs
+    assert clean == {"pr": None, "overview": None, "groups": {}} and probs
     clean, probs = v.check_visuals({"groups": [{"index": 0, "html": OK}]}, "n")
     assert clean["groups"] == {} and probs
     v.check_visuals(junk, None)
@@ -498,3 +500,189 @@ def test_cli_digest_and_check(tmp_path):
     notjson = tmp_path / "n.json"
     notjson.write_text("{")
     assert run_cli("check", "--visuals", str(notjson), "--groups", "1").returncode == 1
+
+
+DIFF = """diff --git a/routing/tool_registrar.py b/routing/tool_registrar.py
+--- a/routing/tool_registrar.py
++++ b/routing/tool_registrar.py
+@@ -1,3 +1,4 @@
+-def _create_tool_wrapper(x): pass
++def _create_tool_wrapper(x, gate): pass
+diff --git a/integrations/google/bigquery/approval.py b/integrations/google/bigquery/approval.py
+--- a/integrations/google/bigquery/approval.py
++++ b/integrations/google/bigquery/approval.py
+@@ -1 +1 @@
++    decide(waiter_token)
+diff --git a/user/preferences/tools.py b/user/preferences/tools.py
+--- a/user/preferences/tools.py
++++ b/user/preferences/tools.py
+@@ -1 +1 @@
++x = 1
+diff --git a/integrations/google/bigquery/cost.py b/integrations/google/bigquery/cost.py
+--- /dev/null
++++ b/integrations/google/bigquery/cost.py
+@@ -0,0 +1 @@
++pass
+"""
+SYMDELTA = {"nodes": [{"id": "a:cost_gate", "kind": "symbol", "label": "cost_gate", "state": "new",
+                       "file": "integrations/google/bigquery/cost.py"}]}
+CTX = v.diff_ctx(DIFF, SYMDELTA)
+
+
+def N(i, label, kind, **kw):
+    return {"id": i, "label": label, "kind": kind, **kw}
+
+
+def overview(**kw):
+    o = {"title": "BigQuery reads are cost-gated", "nodes": [
+        N("wrap", "Tool wrapper", "guard", note="gate before tool", watch=True,
+          refs=["routing/tool_registrar.py:_create_tool_wrapper"]),
+        N("bq", "BigQuery tool", "new", group=0),
+        N("cost", "Cost gate", "new", refs=["integrations/google/bigquery/cost.py:cost_gate"]),
+        N("prefs", "User preferences", "new", refs=["user/preferences/tools.py"]),
+        N("appr", "Approval service", "changed", refs=["integrations/google/bigquery/approval.py:decide"]),
+        N("card", "Approval card", "guard", group=1),
+        N("waiter", "waiter token", "removed", refs=["integrations/google/bigquery/approval.py:waiter_token"])],
+        "edges": [{"from": "wrap", "to": "bq", "kind": "guard"}, {"from": "bq", "to": "cost", "label": "dry run"},
+                  {"from": "cost", "to": "prefs", "kind": "new"}, {"from": "cost", "to": "appr", "kind": "changed"},
+                  {"from": "appr", "to": "card", "kind": "guard"}, {"from": "appr", "to": "waiter", "kind": "removed"}],
+        "notes": [{"kind": "config", "text": "BQ_MAX_USD env var", "refs": ["user/preferences/tools.py"]}]}
+    o.update(kw)
+    return o
+
+
+def ov(raw_ov, ctx=CTX, n_groups=2):
+    return v.check_overview(raw_ov, n_groups, ctx["files"], ctx["symdelta"], ctx["text"])
+
+
+def test_overview_valid_passes_and_symdelta_label_or_diff_identifier_anchor_refs():
+    clean, probs = ov(overview())
+    assert probs == [] and len(clean["nodes"]) == 7 and len(clean["edges"]) == 6
+    assert clean["nodes"][0]["watch"] is True and clean["nodes"][1]["refs"] == []
+    assert clean["notes"][0]["kind"] == "config" and clean["edges"][0]["label"] == ""
+
+
+def test_overview_bad_ref_dropped_with_exact_message_and_anchored_node_survives():
+    o = overview()
+    o["nodes"][3]["refs"] = ["user/preferences/tools.py:is_loosening"]
+    o["nodes"][3]["group"] = 0
+    clean, probs = ov(o)
+    assert "overview.nodes[3].refs[0]: user/preferences/tools.py:is_loosening not in diff" in probs
+    assert clean["nodes"][3]["refs"] == [] and clean["nodes"][3]["group"] == 0
+
+
+def test_overview_unanchored_node_dropped_with_its_edges():
+    o = overview()
+    o["nodes"][3]["refs"] = ["user/preferences/tools.py:is_loosening"]
+    clean, probs = ov(o)
+    assert [n["id"] for n in clean["nodes"]] == ["wrap", "bq", "cost", "appr", "card", "waiter"]
+    assert all("prefs" not in (e["from"], e["to"]) for e in clean["edges"])
+    assert any(p.startswith("overview.nodes[3]: needs a valid group or a ref") for p in probs)
+
+
+def test_overview_path_outside_diff_and_group_out_of_range():
+    o = overview()
+    o["nodes"][2]["refs"] = ["other/file.py"]
+    o["nodes"][1]["group"] = 5
+    clean, probs = ov(o)
+    assert "overview.nodes[2].refs[0]: other/file.py not in diff" in probs
+    assert any("nodes[1].group" in p for p in probs)
+    assert [n["id"] for n in clean["nodes"]] == ["wrap", "prefs", "appr", "card", "waiter"]
+
+
+def test_overview_bad_edge_endpoint_and_kind_dropped():
+    o = overview()
+    o["edges"] += [{"from": "wrap", "to": "ghost"}, {"from": "wrap", "to": "wrap"},
+                   {"from": "wrap", "to": "card", "kind": "weird"}]
+    clean, probs = ov(o)
+    assert len(clean["edges"]) == 6
+    assert sum("edges[" in p for p in probs) == 3
+
+
+def test_overview_limits_truncate_and_report():
+    o = overview(title="t" * 90)
+    o["nodes"][0]["label"] = "L" * 30
+    o["nodes"][0]["note"] = "n" * 40
+    o["edges"][0]["label"] = "e" * 20
+    clean, probs = ov(o)
+    assert len(clean["title"]) == 80 and clean["title"].endswith("\u2026")
+    assert clean["nodes"][0]["label"] == "L" * 21 + "\u2026" and len(clean["nodes"][0]["note"]) == 30
+    assert len(clean["edges"][0]["label"]) == 14
+    assert sum("truncated" in p for p in probs) == 4
+
+
+def test_overview_counts_watch_ids_and_kinds():
+    o = overview()
+    for n in o["nodes"]:
+        n["watch"] = True
+    o["nodes"][1]["id"] = "wrap"
+    o["nodes"][2]["id"] = "Bad Id"
+    o["nodes"][3]["kind"] = "bogus"
+    clean, probs = ov(o)
+    assert sum(n["watch"] for n in clean["nodes"]) == 3
+    assert any("used twice" in p for p in probs) and any("must match" in p for p in probs)
+    assert any("nodes[3].kind" in p for p in probs)
+    o = overview(notes=[{"kind": "moved", "text": f"m{i}", "group": 0} for i in range(6)])
+    clean, probs = ov(o)
+    assert len(clean["notes"]) == 4 and any("at most 4" in p for p in probs)
+
+
+def test_overview_too_few_nodes_or_edges_is_none():
+    o = overview()
+    o["nodes"] = o["nodes"][:1]
+    assert ov(o)[0] is None
+    o = overview(edges=[{"from": "wrap", "to": "ghost"}])
+    clean, probs = ov(o)
+    assert clean is None and any("at least 2 valid nodes" in p for p in probs)
+    assert ov(overview(title=""))[0] is None
+
+
+def test_overview_over_6kb_rejected():
+    o = overview(notes=[{"kind": "new", "text": "x", "group": 0, "refs": ["a" * 400 + ".py"] * 3}] * 4)
+    clean, probs = ov(o)
+    assert clean is None and "over the 6 KB limit" in probs[0]
+
+
+def test_overview_xss_strings_stay_data():
+    o = overview()
+    o["nodes"][0]["label"] = "<img onerror=x>"
+    o["nodes"][0]["note"] = "<script>1</script>"
+    clean, _ = ov(o)
+    assert clean["nodes"][0]["label"] == "<img onerror=x>" and clean["nodes"][0]["note"] == "<script>1</script>"
+
+
+def test_overview_without_context_keeps_refs_unchecked():
+    clean, probs = v.check_overview(overview(), 2)
+    assert probs == [] and clean["nodes"][3]["refs"] == ["user/preferences/tools.py"]
+
+
+@pytest.mark.parametrize("junk", [5, "x", [], {"title": 5}, {"title": "t", "nodes": "x", "edges": 3},
+                                  {"title": "t", "nodes": [1, None], "edges": [[]], "notes": [7]}])
+def test_overview_never_raises_on_garbage(junk):
+    clean, probs = v.check_overview(junk, 2, set(), None, None)
+    assert clean is None and probs
+
+
+def test_check_visuals_wires_overview_and_keeps_legacy_pr():
+    clean, probs = v.check_visuals({"overview": overview(), "pr": {"title": "t", "html": OK}, "groups": []}, 2, CTX)
+    assert probs == [] and clean["overview"]["title"] and clean["pr"]["html"] == OK
+    o = overview()
+    o["nodes"][3]["refs"] = ["user/preferences/tools.py:is_loosening"]
+    clean, probs = v.check_visuals({"overview": o}, 2, CTX)
+    assert any("is_loosening not in diff" in p for p in probs) and clean["overview"] is not None
+    assert v.check_visuals({"overview": None}, 2) == ({"pr": None, "overview": None, "groups": {}}, [])
+
+
+def test_cli_check_with_diff_and_symdelta(tmp_path):
+    (tmp_path / "d.diff").write_text(DIFF)
+    (tmp_path / "s.json").write_text(json.dumps(SYMDELTA))
+    o = overview()
+    o["nodes"][2]["refs"] = ["integrations/google/bigquery/cost.py:cost_gate"]
+    f = tmp_path / "v.json"
+    f.write_text(json.dumps({"overview": o, "groups": []}))
+    r = run_cli("check", "--visuals", str(f), "--groups", "2", "--diff", str(tmp_path / "d.diff"),
+                "--symdelta", str(tmp_path / "s.json"))
+    assert r.returncode == 0 and r.stdout.strip() == "ok"
+    f.write_text(json.dumps({"overview": overview(), "groups": []}))
+    r = run_cli("check", "--visuals", str(f), "--groups", "2", "--diff", str(tmp_path / "d.diff"))
+    assert r.returncode == 1 and "cost.py:cost_gate not in diff" in r.stdout

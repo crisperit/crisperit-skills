@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_server  # noqa: E402
 from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
-    render_html, load_visuals, counts_from,
+    render_html, load_visuals, counts_from, overview_layout, overview_svg,
+    visuals_mod,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
 from state import build  # noqa: E402
@@ -211,25 +212,6 @@ def test_explain_rewords_the_headings_and_drops_the_add_remove_arithmetic():
     assert "(net " not in out
     assert "<h2>Overview</h2>" in out  # same heading as the non-explain page
     assert "<b>Summary</b>" in out and "<b>Verdict</b>" not in out
-
-
-# ---- structure placement ----
-
-def test_structure_section_lands_between_the_overview_and_the_walkthrough():
-    # render.py adds nothing around section-structure.html's own content, only places it.
-    order, files = parsed()
-    structure = '<!-- code-walkthrough:structure -->\n<div class="vd-structure"><h2>System change</h2></div>'
-    out = render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, structure=structure,
-                      walkthrough='<!-- code-walkthrough:walkthrough -->\n<p>wt-body</p>')
-
-    assert out.index("<h2>Overview</h2>") < out.index('<div class="vd-structure">') \
-        < out.index("wt-body")
-
-
-def test_an_empty_structure_section_inserts_nothing():
-    order, files = parsed()
-    out = render_html(ANALYSIS, files, TEMPLATE, now=FROZEN, order=order, structure="   \n")
-    assert "vd-structure" not in out
 
 
 def test_no_story_map_is_rendered_however_many_groups_there_are():
@@ -1039,20 +1021,128 @@ def test_load_visuals_survives_pathologically_deep_json(tmp_path):
 def test_a_rejected_visuals_file_reads_as_ignored_not_zero_kept(tmp_path, raw, reason):
     clean, lines = load_visuals(_visuals_file(tmp_path, raw), 2)
 
-    assert clean == {"pr": None, "groups": {}}
+    assert clean == {"pr": None, "overview": None, "groups": {}}
     assert len(lines) == 1 and lines[0].startswith("visuals: ignored, ") and reason in lines[0]
     assert "kept" not in lines[0] and "visuals: visuals:" not in lines[0]
 
 
-def test_structure_filter_chips_are_gone_and_lane_edges_reroute_when_opened():
-    template = _real_template()
-    assert "vds-chip" not in template and "applyChipFilterOn" not in template
-    assert "details.vds-lanes" in template and "d.addEventListener('toggle', redraw)" in template
-    assert "window.addEventListener('resize', redraw)" in template
-    assert "!sys.offsetWidth" in template
+# ---- System change diagram ----
+
+OV_NODES = [
+    {"id": "agent", "label": "Agent", "note": "calls tools", "kind": "changed", "group": 0, "refs": [], "watch": False},
+    {"id": "wrap", "label": "Wrapper", "note": "", "kind": "new", "group": 1, "refs": ["src/auth.py"], "watch": True},
+    {"id": "tool", "label": "Tool", "note": "", "kind": "same", "group": None, "refs": ["src/auth.py:load_session"], "watch": False},
+    {"id": "gate", "label": "Gate", "note": "", "kind": "guard", "group": 0, "refs": [], "watch": False},
+    {"id": "wh", "label": "Warehouse", "note": "", "kind": "removed", "group": 1, "refs": [], "watch": False},
+    {"id": "appr", "label": "Approval", "note": "", "kind": "new", "group": 0, "refs": [], "watch": False},
+]
+OV_EDGES = [
+    {"from": a, "to": b, "label": lab, "kind": k} for a, b, lab, k in [
+        ("agent", "wrap", "", "new"), ("wrap", "tool", "", "same"), ("tool", "gate", "check", "guard"),
+        ("gate", "wh", "", "removed"), ("gate", "appr", "", "changed"), ("appr", "agent", "retry", "new")]
+]
+OV = {"title": "Agent flow", "nodes": OV_NODES, "edges": OV_EDGES,
+      "notes": [{"kind": "config", "text": "flag on", "group": 1, "refs": []}]}
 
 
-def test_structure_edges_are_faint_at_rest_and_lit_on_focus():
+def ov_page(ov=OV, **kw):
+    return pics({"pr": None, "overview": ov, "groups": {}}, walkthrough="", **kw)
+
+
+def test_overview_layout_layers_left_to_right_and_flags_the_back_edge():
+    lay = overview_layout(OV_NODES, OV_EDGES)
+
+    assert lay["layer"] == [0, 1, 2, 3, 4, 4]
+    assert lay["back"] == [False] * 5 + [True]
+    assert sorted(lay["cols"][4]) == [4, 5]
+
+
+def test_overview_layout_is_deterministic_and_puts_disconnected_nodes_in_layer_zero():
+    nodes = OV_NODES[:3] + [dict(OV_NODES[3], id="solo")]
+    edges = OV_EDGES[:1]
+
+    assert overview_layout(nodes, edges) == overview_layout(nodes, edges)
+    assert overview_layout(nodes, edges)["layer"] == [0, 1, 0, 0]
+    assert overview_svg(OV) == overview_svg(OV)
+
+
+def test_overview_draws_every_node_with_a_path_and_group_colour_and_a_back_edge_below():
+    out = ov_page()
+
+    assert out.count('class="cw-ov-node') == 6 and out.count('data-path="') == 6 + 1
+    assert 'data-path="src/auth.py"' in out
+    assert 'data-path="src/auth.py"' in out and "cw-ov-g1" in out and "cw-ov-g2" in out
+    assert "cw-ov-watch" in out and ">REVIEW<" in out
+    assert out.count('<path class="cw-ov-e ') == 6
+    assert "cw-ov-n-removed" in out and 'class="cw-ov-key cw-ov-n-config"' in out
+    assert out.index("cw-overview-h") < out.index("cw-ov-legend") < out.index("cw-ov-chips")
+
+
+@pytest.mark.parametrize("explain, heading", [(False, "System change"), (True, "How it works")])
+def test_overview_heading_follows_the_mode_and_the_title_is_the_subtitle(explain, heading):
+    out = ov_page(explain=explain)
+
+    assert f'<h2 id="cw-overview-h">{heading}</h2><p class="cw-ov-sub">Agent flow</p>' in out
+
+
+def test_overview_sits_before_the_walkthrough_and_replaces_the_legacy_picture():
+    out = pics({"pr": PR_PIC, "overview": OV, "groups": {}})
+
+    assert out.index("cw-overview") < out.index("Walkthrough") and "pr-picture" not in out
+
+
+def test_without_an_overview_the_legacy_picture_renders_and_with_neither_there_is_no_section():
+    assert "pr-picture" in pics({"pr": PR_PIC, "overview": None, "groups": {}})
+    none = pics({"pr": None, "overview": None, "groups": {}})
+    assert "cw-overview" not in none and "pr-picture" not in none
+
+
+def test_a_node_without_refs_jumps_to_its_groups_first_file():
+    order, files = parsed()
+    analysis = dict(ANALYSIS, groups=[{"title": "g", "why": "w", "paths": ["README.md"]}])
+    out = render_html(analysis, files, TEMPLATE, now=FROZEN, order=order,
+                      visuals={"pr": None, "overview": OV, "groups": {}})
+
+    assert re.search(r'cw-ov-n-changed"[^>]*data-path="README.md" data-group="0"', out)
+
+
+EVIL = '<script>alert(1)</script>" onerror="x'
+
+
+def test_overview_escapes_every_model_string():
+    nodes = [dict(OV_NODES[0], label=EVIL, note=EVIL, refs=[EVIL]), dict(OV_NODES[1])]
+    ov = {"title": EVIL, "nodes": nodes, "edges": [dict(OV_EDGES[0], label=EVIL)],
+          "notes": [{"kind": "new", "text": EVIL, "group": 0, "refs": [EVIL]}]}
+    out = ov_page(ov)
+
+    assert "<script>alert" not in out.replace("</script>", "") and 'onerror="' not in out
+    assert "&lt;script&gt;" in out and "&quot; onerror=" in out
+
+
+def test_overview_never_emits_a_node_id_into_markup():
+    ov = dict(OV, nodes=[dict(n, id=n["id"]) for n in OV_NODES])
+
+    assert not re.search(r"\b(agent|wrap|gate|appr)\b", overview_svg(ov).replace("Agent", ""))
+
+
+def test_load_visuals_passes_ctx_so_an_unverifiable_ref_is_dropped(tmp_path):
+    raw = {"overview": dict(OV, nodes=[dict(OV_NODES[0], refs=["nope.py"], group=0)] + OV_NODES[1:3] + OV_NODES[3:],
+                            notes=[])}
+    ctx = visuals_mod.diff_ctx(DIFF)
+
+    clean, lines = load_visuals(_visuals_file(tmp_path, raw), 2, None, ctx)
+
+    assert clean["overview"]["nodes"][0]["refs"] == []
+    assert any("nope.py not in diff" in line for line in lines)
+    assert clean["overview"]["nodes"][1]["refs"] == ["src/auth.py"]
+
+
+def test_template_has_a_delegated_overview_handler_and_no_html_sink_in_it():
     template = _real_template()
-    assert ".vds-e{fill:none;stroke-width:1.3;opacity:.14" in template
-    assert ".vds-sys.vds-active .vds-e.vds-lit{opacity:1" in template
+    script = template.split("</script>")[-2]
+
+    assert "'.cw-ov-node,.cw-ov-chip'" in script and "document.addEventListener('click',jump)" in script
+    assert "window.__cwGoToFile(t.dataset.path)" in script and "window.__cwGoToFile=navGoToFile" in template
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "onclick="):
+        assert banned not in script, banned
+    assert "onerror=" not in overview_svg(OV)

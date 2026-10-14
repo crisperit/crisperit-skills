@@ -478,9 +478,194 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def check_visuals(raw, n_groups):
-    """raw = {"pr": {"title","html"}|None, "groups": [{"index","html"}]} -> (clean, problems)."""
-    clean = {"pr": None, "groups": {}}
+OVERVIEW_MAX = 6 * 1024
+_KINDS = ("same", "new", "changed", "guard", "removed")
+_NOTE_KINDS = ("new", "changed", "removed", "guard", "config", "moved")
+_NODE_ID = re.compile(r"[a-z0-9_]{1,12}")
+_SYMBOL = re.compile(r"[A-Za-z_$][\w$.]*")
+_MAX_WATCH = 3
+
+
+def diff_ctx(raw_diff, symdelta=None):
+    """Validation context for overview refs: the diff's files, the +/- text per file, and the
+    symdelta. A symbol ref passes when it is a symdelta label for that file or an identifier in
+    that file's added or removed lines. The symdelta `state` is never read."""
+    text, path, in_hunk = {}, None, False
+    for line in (raw_diff if isinstance(raw_diff, str) else "").splitlines():
+        if line.startswith("diff --git "):
+            m = re.match(r"diff --git a/(.+?) b/(.+)$", line)
+            path, in_hunk = (m.group(2) if m else None), False
+            if path:
+                text.setdefault(path, [])
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and path and line[:1] in "+-":
+            text[path].append(line[1:])
+    return {"files": set(text), "symdelta": symdelta, "text": {k: "\n".join(v) for k, v in text.items()}}
+
+
+def _labels_by_file(symdelta):
+    out = {}
+    nodes = symdelta.get("nodes") if isinstance(symdelta, dict) else None
+    for n in nodes or []:
+        if isinstance(n, dict) and n.get("kind") == "symbol" and isinstance(n.get("file"), str):
+            out.setdefault(n["file"], set()).add(n.get("label"))
+    return out
+
+
+def check_overview(raw, n_groups, files=None, symdelta=None, added_removed_text=None):
+    """Validate the `overview` graph -> (clean | None, problems).
+
+    files: set of repo-relative paths in the diff; None skips ref checking (refs are kept as
+    shape-checked strings). added_removed_text: path -> the file's +/- lines, for symbol refs.
+    Over-long strings are reported and truncated with an ellipsis; invalid items are reported and
+    dropped; None when fewer than 2 nodes or 1 edge survive."""
+    problems = []
+    if not isinstance(raw, dict):
+        return None, ["overview: expected an object with title, nodes and edges"]
+    n_groups = n_groups if _is_int(n_groups) else 0
+    try:
+        size = len(json.dumps(raw, ensure_ascii=False).encode("utf-8", "replace"))
+    except (TypeError, ValueError):
+        return None, ["overview: not plain JSON"]
+    if size > OVERVIEW_MAX:
+        return None, [f"overview: {size // 1024} KB, over the {OVERVIEW_MAX // 1024} KB limit"]
+    labels = _labels_by_file(symdelta)
+    texts = added_removed_text or {}
+
+    def text(label, v, lo, hi):
+        if not isinstance(v, str):
+            problems.append(f"{label}: expected text")
+            return None
+        v = " ".join(_CTRL.sub("", v).split())
+        if len(v) < lo:
+            problems.append(f"{label}: expected {lo}..{hi} characters")
+            return None
+        if len(v) > hi:
+            problems.append(f"{label}: {len(v)} characters, over {hi}; truncated")
+            v = v[:hi - 1] + "\u2026"
+        return v
+
+    def listof(label, v, cap):
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            problems.append(f"{label}: expected a list")
+            return []
+        if len(v) > cap:
+            problems.append(f"{label}: at most {cap}, {len(v) - cap} dropped")
+        return v[:cap]
+
+    def kind(label, v, allowed):
+        if v is None:
+            return "same" if "same" in allowed else None
+        if v in allowed:
+            return v
+        problems.append(f"{label}.kind: must be one of {list(allowed)}")
+        return None
+
+    def refs_of(label, v):
+        out = []
+        for j, ref in enumerate(listof(f"{label}.refs", v, 3)):
+            where = f"{label}.refs[{j}]"
+            path, _, sym = ref.partition(":") if isinstance(ref, str) else ("", "", "")
+            if not path or (sym and not _SYMBOL.fullmatch(sym)):
+                problems.append(f"{where}: expected path or path:symbol")
+                continue
+            if files is not None:
+                ok = path in files and (not sym or sym in labels.get(path, ()) or re.search(
+                    rf"(?<![\w$]){re.escape(sym.rsplit('.', 1)[-1])}(?![\w$])", texts.get(path, "")))
+                if not ok:
+                    problems.append(f"{where}: {ref[:80]} not in diff")
+                    continue
+            out.append(ref)
+        return out
+
+    def group_of(label, g):
+        if g is None:
+            return None
+        if _is_int(g) and 0 <= g < n_groups:
+            return g
+        problems.append(f"{label}.group: {str(g)[:20]} is not a group index (0..{n_groups - 1})")
+        return None
+
+    title = text("overview.title", raw.get("title"), 1, TITLE_MAX)
+    nodes, ids, watched = [], set(), 0
+    for i, n in enumerate(listof("overview.nodes", raw.get("nodes"), 12)):
+        label = f"overview.nodes[{i}]"
+        if not isinstance(n, dict):
+            problems.append(f"{label}: expected an object")
+            continue
+        nid = n.get("id")
+        if not isinstance(nid, str) or not _NODE_ID.fullmatch(nid):
+            problems.append(f"{label}.id: must match [a-z0-9_]{{1,12}}")
+            continue
+        if nid in ids:
+            problems.append(f"{label}.id: {nid} is used twice")
+            continue
+        lab = text(f"{label}.label", n.get("label"), 1, 22)
+        note = text(f"{label}.note", n.get("note"), 0, 30) if n.get("note") not in (None, "") else ""
+        k = kind(label, n.get("kind"), _KINDS)
+        if lab is None or note is None or k is None:
+            continue
+        group, refs = group_of(label, n.get("group")), refs_of(label, n.get("refs"))
+        if group is None and not refs:
+            problems.append(f"{label}: needs a valid group or a ref in the diff, dropped")
+            continue
+        watch = n.get("watch") is True
+        if n.get("watch") not in (None, True, False):
+            problems.append(f"{label}.watch: expected true or false")
+        if watch and watched >= _MAX_WATCH:
+            problems.append(f"{label}.watch: at most {_MAX_WATCH} watched nodes")
+            watch = False
+        watched += watch
+        ids.add(nid)
+        nodes.append({"id": nid, "label": lab, "note": note, "kind": k, "group": group, "refs": refs,
+                      "watch": watch})
+
+    edges = []
+    for i, e in enumerate(listof("overview.edges", raw.get("edges"), 16)):
+        label = f"overview.edges[{i}]"
+        if not isinstance(e, dict):
+            problems.append(f"{label}: expected an object")
+            continue
+        a, b = e.get("from"), e.get("to")
+        if not (isinstance(a, str) and isinstance(b, str) and a in ids and b in ids and a != b):
+            problems.append(f"{label}: from/to must be two different node ids, dropped")
+            continue
+        lab = text(f"{label}.label", e.get("label"), 0, 14) if e.get("label") not in (None, "") else ""
+        k = kind(label, e.get("kind"), _KINDS)
+        if lab is None or k is None:
+            continue
+        edges.append({"from": a, "to": b, "label": lab, "kind": k})
+
+    notes = []
+    for i, c in enumerate(listof("overview.notes", raw.get("notes"), 4)):
+        label = f"overview.notes[{i}]"
+        if not isinstance(c, dict):
+            problems.append(f"{label}: expected an object")
+            continue
+        t, k = text(f"{label}.text", c.get("text"), 1, 48), kind(label, c.get("kind"), _NOTE_KINDS)
+        if t is None or k is None:
+            continue
+        group, refs = group_of(label, c.get("group")), refs_of(label, c.get("refs"))
+        if group is None and not refs:
+            problems.append(f"{label}: needs a valid group or a ref in the diff, dropped")
+            continue
+        notes.append({"kind": k, "text": t, "group": group, "refs": refs})
+
+    if title is None:
+        return None, _cap(problems)
+    if len(nodes) < 2 or not edges:
+        problems.append("overview: needs at least 2 valid nodes and 1 valid edge, dropped")
+        return None, _cap(problems)
+    return {"title": title, "nodes": nodes, "edges": edges, "notes": notes}, _cap(problems)
+
+
+def check_visuals(raw, n_groups, ctx=None):
+    """raw = {"overview": {...}|None, "groups": [{"index","html"}], "pr": legacy {"title","html"}|None}
+    -> (clean, problems). ctx = diff_ctx(...) lets overview refs be checked against the diff."""
+    clean = {"pr": None, "overview": None, "groups": {}}
     if not isinstance(raw, dict):
         return clean, ['visuals: expected an object with "pr" and "groups"']
     n_groups = n_groups if _is_int(n_groups) else 0
@@ -520,6 +705,11 @@ def check_visuals(raw, n_groups):
                 out = frag("visuals.pr", pr.get("html"), "cwv0-", PR_MAX)
                 if out:
                     clean["pr"] = {"title": title, "html": out}
+    if raw.get("overview") is not None:
+        ctx = ctx or {}
+        clean["overview"], probs = check_overview(
+            raw["overview"], n_groups, ctx.get("files"), ctx.get("symdelta"), ctx.get("text"))
+        problems.extend(probs)
     for k, g in enumerate(groups):
         label = f"visuals.groups[{k}]"
         if not isinstance(g, dict):
@@ -583,12 +773,18 @@ def main(argv=None):
     c = sub.add_parser("check")
     c.add_argument("--visuals", required=True)
     c.add_argument("--groups", type=int, required=True)
+    c.add_argument("--diff")
+    c.add_argument("--symdelta")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "digest":
             print(symbol_digest(_load(a.symdelta), _load(a.complexity) if a.complexity else None))
             return 0
-        _, problems = check_visuals(_load(a.visuals), a.groups)
+        ctx = None
+        if a.diff:
+            with open(a.diff, encoding="utf-8", errors="replace") as f:
+                ctx = diff_ctx(f.read(), _load(a.symdelta) if a.symdelta else None)
+        _, problems = check_visuals(_load(a.visuals), a.groups, ctx)
     except (OSError, ValueError) as e:
         print(f"cannot read input: {e}", file=sys.stderr)
         return 1

@@ -1,8 +1,43 @@
-You write the pictures for a code walkthrough page: one picture of the whole PR, and one for
-each walkthrough group. Deliver once, by calling `submit_visuals`:
+You write the visuals for a code walkthrough page: one overview graph of the change, and one
+picture for each walkthrough group. Deliver once, by calling `submit_visuals`:
 
-    {"pr": {"title": "plain text, 80 characters at most", "html": "<fragment>"} | null,
-     "groups": [{"index": <0-based group index>, "html": "<fragment>"}]}
+    {"overview": {...} | omitted, "groups": [{"index": <0-based group index>, "html": "<fragment>"}]}
+
+## Overview graph
+
+A reviewer sees in 10 seconds where the change is and what kind. The page draws it; you give data.
+
+    {"title": "1-80 chars, what this change does to the system",
+     "nodes": [{"id": "[a-z0-9_]{1,12}", "label": "1-22 chars", "note": "0-30 chars, what it now does",
+                "kind": "same|new|changed|guard|removed", "group": <group index>|null,
+                "refs": ["path" or "path:symbol", up to 3], "watch": true|false}],
+     "edges": [{"from": "id", "to": "id", "label": "0-14 chars", "kind": "same|new|changed|guard|removed"}],
+     "notes": [{"kind": "new|changed|removed|guard|config|moved", "text": "1-48 chars",
+                "group": <index>|null, "refs": []}]}
+
+- 6 to 10 nodes, 6 KB in all; `notes` are chips for changes with no place in the graph. Nodes are runtime components or
+  concepts (Tool wrapper, Cost gate, Postgres), never function names. Edges run in the direction
+  of control or data; put the main flow first.
+- `kind` marks what the change did. Show deleted things as `removed` nodes. `guard` is a trust
+  boundary or validation that got stricter. `watch` on at most 3 nodes: look here first.
+- Every node and note needs a `group` index or `refs` copied from the digest or diff; a ref's path
+  must be in the diff and its symbol a digest symbol or an identifier on a +/- line, or the ref
+  is dropped (and a node with no anchor left with it).
+- No runtime path (refactor, move, deps)? Use 2+ modules or areas as `same` nodes with edges and
+  put the change in notes. A docs- or config-only change: omit `overview`.
+
+```json
+{"overview": {"title": "Requests are quota-checked before reaching the API", "nodes": [
+ {"id": "client", "label": "Client", "kind": "same", "refs": ["api/client.py"]},
+ {"id": "gate", "label": "API gateway", "note": "checks quota", "kind": "guard", "watch": true, "refs": ["api/gateway.py:check_quota"]},
+ {"id": "quota", "label": "Quota store", "note": "counts per key", "kind": "new", "group": 0},
+ {"id": "admin", "label": "Admin", "kind": "same", "refs": ["admin/limits.py"]}],
+ "edges": [{"from": "client", "to": "gate", "kind": "same"},
+  {"from": "gate", "to": "quota", "label": "incr", "kind": "new"},
+  {"from": "admin", "to": "quota", "label": "set limit", "kind": "new"}],
+ "notes": [{"kind": "config", "text": "RATE_LIMIT_DEFAULT env var", "refs": ["config.py"]}]},
+ "groups": []}
+```
 
 ## What a picture is for
 
@@ -23,7 +58,7 @@ picture already carries the explanation, so a picture that reads like styled pro
 - Colour has meaning: `var(--success)` new, `var(--warning)` changed, `var(--destructive)`
   removed or blocked, `var(--accent)` the focus, `var(--muted-foreground)` untouched context.
 - Give a picture to EVERY group with real structure or behaviour to show (a flow, a data shape,
-  a contract change, a before/after). Leave a group out (and `"pr": null`) only for docs-,
+  a contract change, a before/after). Leave a group out only for docs-,
   tooling- or config-only changes or trivial groups. Skipping a group with behaviour is a failure.
 - It must read from 360px to 1200px wide. HTML: `display:flex;flex-wrap:wrap` or `display:grid`
   with `grid-template-columns:repeat(auto-fit,minmax(140px,1fr))`; no fixed width above 320px.
@@ -31,8 +66,7 @@ picture already carries the explanation, so a picture that reads like styled pro
 
 ## SVG geometry (phone first)
 
-The page scales the SVG to the screen: a 720-wide viewBox on a 390px phone shrinks 12px text to
-about 6px. Do the arithmetic.
+The page scales the SVG to the screen: a 720-wide viewBox on a phone shrinks 12px text to 6px.
 
 - `viewBox` width 360 to 480, never above 560. Set `viewBox`, `width='100%'` and
   `style='max-width:<viewBox width x 1.6>px'`.
@@ -59,7 +93,7 @@ on top, dashed lifelines, arrows 30px apart, labels above, dashed returns.
 ## What the page accepts
 
 A sanitiser rebuilds everything from an allowlist. Anything outside it rejects that fragment and
-returns the problem lines (`visuals.pr: <img> is not allowed`); repair them by calling
+returns the problem lines (`visuals.groups[0]: <img> is not allowed`); repair them by calling
 `submit_visuals` again, at most three tries.
 
 - HTML tags: span strong em b i code small sub sup br mark kbd abbr del ins div p h4 h5 ul ol li
@@ -78,32 +112,26 @@ returns the problem lines (`visuals.pr: <img> is not allowed`); repair them by c
   `var(--warning)` `var(--destructive)` `var(--destructive-surface)` `var(--accent-surface)`
   `var(--code-background)`; fonts `var(--font-mono)` `var(--font-sans)`; `var(--radius)`.
   Tints: `color-mix(in srgb, var(--chart-1) 20%, transparent)`.
-- Size: 24 KB for the PR picture, 12 KB per group, 400 elements, 12 levels deep.
+- Size: 12 KB per group, 400 elements, 12 levels deep.
 
 ## Examples
-
-An SVG flow, top to bottom, with arrowheads, a new node outlined green and a removed step in red (PR picture):
-
-```json
-{"pr": {"title": "Limits reload from config at runtime", "html": "<svg viewBox='0 0 400 192' width='100%' role='img' aria-label='Config change reaches the limiter through a new loader' style='max-width:640px'><defs><marker id='a' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0 0 L8 4 L0 8 Z' fill='var(--muted-foreground)'/></marker></defs><rect x='10' y='10' width='110' height='32' rx='6' fill='var(--card)' stroke='var(--border)'/><text font-size='12' x='65' y='30' text-anchor='middle' fill='var(--foreground)' font-family='var(--font-mono)'>Config file</text><line x1='65' y1='42' x2='65' y2='78' stroke='var(--muted-foreground)' marker-end='url(#a)'/><rect x='10' y='80' width='110' height='32' rx='6' fill='var(--accent-surface)' stroke='var(--success)'/><text font-size='12' x='65' y='100' text-anchor='middle' fill='var(--foreground)' font-family='var(--font-mono)'>Loader</text><line x1='65' y1='112' x2='65' y2='148' stroke='var(--muted-foreground)' marker-end='url(#a)'/><rect x='10' y='150' width='110' height='32' rx='6' fill='var(--card)' stroke='var(--border)'/><text font-size='12' x='65' y='170' text-anchor='middle' fill='var(--foreground)' font-family='var(--font-mono)'>RateLimiter</text><rect x='320' y='150' width='70' height='32' rx='6' fill='var(--destructive-surface)' stroke='var(--destructive)'/><text font-size='12' x='355' y='170' text-anchor='middle' fill='var(--foreground)' font-family='var(--font-mono)'>Deploy</text><line x1='318' y1='166' x2='122' y2='166' stroke='var(--destructive)' stroke-dasharray='5 4' marker-end='url(#a)'/><text font-size='12' x='220' y='158' text-anchor='middle' fill='var(--destructive)' font-family='var(--font-sans)'>no longer needed</text></svg>"}, "groups": []}
-```
 
 A before/after comparison with an arrow between two panels (group 0):
 
 ```json
-{"pr": null, "groups": [{"index": 0, "html": "<div style='display:flex;flex-wrap:wrap;gap:8px;align-items:center'><div style='flex:1 1 150px;border:1px solid var(--destructive);border-radius:var(--radius);background:var(--destructive-surface);padding:10px'><strong style='color:var(--destructive)'>Before</strong><p style='margin:6px 0 0;font-size:14px'>Constants, redeploy to change</p></div><span style='font-size:28px;color:var(--accent)' aria-hidden='true'>&rarr;</span><div style='flex:1 1 150px;border:1px solid var(--success);border-radius:var(--radius);background:var(--accent-surface);padding:10px'><strong style='color:var(--success)'>After</strong><p style='margin:6px 0 0;font-size:14px'>Live config, no deploy</p></div></div>"}]}
+{"groups": [{"index": 0, "html": "<div style='display:flex;flex-wrap:wrap;gap:8px;align-items:center'><div style='flex:1 1 150px;border:1px solid var(--destructive);border-radius:var(--radius);background:var(--destructive-surface);padding:10px'><strong style='color:var(--destructive)'>Before</strong><p style='margin:6px 0 0;font-size:14px'>Constants, redeploy to change</p></div><span style='font-size:28px;color:var(--accent)' aria-hidden='true'>&rarr;</span><div style='flex:1 1 150px;border:1px solid var(--success);border-radius:var(--radius);background:var(--accent-surface);padding:10px'><strong style='color:var(--success)'>After</strong><p style='margin:6px 0 0;font-size:14px'>Live config, no deploy</p></div></div>"}]}
 ```
 
 A bar chart scaled from real numbers, the outlier in the changed colour (group 1):
 
 ```json
-{"pr": null, "groups": [{"index": 1, "html": "<svg viewBox='0 0 360 120' width='100%' role='img' aria-label='Cyclomatic complexity per file, limiter.py highest' style='max-width:576px'><text font-size='12' x='4' y='25' fill='var(--foreground)' font-family='var(--font-mono)'>parse.py</text><rect x='90' y='8' width='108' height='24' rx='4' fill='var(--chart-1)'/><text font-size='12' x='204' y='25' fill='var(--foreground)' font-family='var(--font-sans)'>18</text><text font-size='12' x='4' y='61' fill='var(--foreground)' font-family='var(--font-mono)'>loader.py</text><rect x='90' y='44' width='72' height='24' rx='4' fill='var(--chart-1)'/><text font-size='12' x='168' y='61' fill='var(--foreground)' font-family='var(--font-sans)'>12</text><text font-size='12' x='4' y='97' fill='var(--foreground)' font-family='var(--font-mono)'>limiter.py</text><rect x='90' y='80' width='186' height='24' rx='4' fill='var(--warning)'/><text font-size='12' x='282' y='97' fill='var(--foreground)' font-family='var(--font-sans)'>31</text></svg>"}]}
+{"groups": [{"index": 1, "html": "<svg viewBox='0 0 360 120' width='100%' role='img' aria-label='Cyclomatic complexity per file, limiter.py highest' style='max-width:576px'><text font-size='12' x='4' y='25' fill='var(--foreground)' font-family='var(--font-mono)'>parse.py</text><rect x='90' y='8' width='108' height='24' rx='4' fill='var(--chart-1)'/><text font-size='12' x='204' y='25' fill='var(--foreground)' font-family='var(--font-sans)'>18</text><text font-size='12' x='4' y='61' fill='var(--foreground)' font-family='var(--font-mono)'>loader.py</text><rect x='90' y='44' width='72' height='24' rx='4' fill='var(--chart-1)'/><text font-size='12' x='168' y='61' fill='var(--foreground)' font-family='var(--font-sans)'>12</text><text font-size='12' x='4' y='97' fill='var(--foreground)' font-family='var(--font-mono)'>limiter.py</text><rect x='90' y='80' width='186' height='24' rx='4' fill='var(--warning)'/><text font-size='12' x='282' y='97' fill='var(--foreground)' font-family='var(--font-sans)'>31</text></svg>"}]}
 ```
 
 A sequence (group 2):
 
 ```json
-{"pr": null, "groups": [{"index": 2, "html": "<svg viewBox='0 0 400 140' width='100%' role='img' aria-label='Job posted, queued, 202 returned' style='max-width:640px'><defs><marker id='m' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0 0 L8 4 L0 8 Z' fill='var(--foreground)'/></marker></defs><g font-size='12' text-anchor='middle' fill='var(--foreground)' stroke='var(--foreground)'><path d='M60 36V130M200 36V130M340 36V130' stroke='var(--border)' stroke-dasharray='4 4'/><g fill='var(--card)' stroke='var(--border)'><rect x='15' y='8' width='90' height='28'/><rect x='155' y='8' width='90' height='28'/><rect x='295' y='8' width='90' height='28'/></g><text stroke='none' x='60' y='26'>Client</text><text stroke='none' x='200' y='26'>API</text><text stroke='none' x='340' y='26'>Queue</text><line x1='62' y1='62' x2='198' y2='62' marker-end='url(#m)'/><text stroke='none' x='130' y='56'>POST /jobs</text><line x1='202' y1='92' x2='338' y2='92' marker-end='url(#m)'/><text stroke='none' x='270' y='86'>enqueue</text><line x1='198' y1='122' x2='62' y2='122' stroke-dasharray='5 4' marker-end='url(#m)'/><text stroke='none' x='130' y='116'>202 accepted</text></g></svg>"}]}
+{"groups": [{"index": 2, "html": "<svg viewBox='0 0 400 140' width='100%' role='img' aria-label='Job posted, queued, 202 returned' style='max-width:640px'><defs><marker id='m' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0 0 L8 4 L0 8 Z' fill='var(--foreground)'/></marker></defs><g font-size='12' text-anchor='middle' fill='var(--foreground)' stroke='var(--foreground)'><path d='M60 36V130M200 36V130M340 36V130' stroke='var(--border)' stroke-dasharray='4 4'/><g fill='var(--card)' stroke='var(--border)'><rect x='15' y='8' width='90' height='28'/><rect x='155' y='8' width='90' height='28'/><rect x='295' y='8' width='90' height='28'/></g><text stroke='none' x='60' y='26'>Client</text><text stroke='none' x='200' y='26'>API</text><text stroke='none' x='340' y='26'>Queue</text><line x1='62' y1='62' x2='198' y2='62' marker-end='url(#m)'/><text stroke='none' x='130' y='56'>POST /jobs</text><line x1='202' y1='92' x2='338' y2='92' marker-end='url(#m)'/><text stroke='none' x='270' y='86'>enqueue</text><line x1='198' y1='122' x2='62' y2='122' stroke-dasharray='5 4' marker-end='url(#m)'/><text stroke='none' x='130' y='116'>202 accepted</text></g></svg>"}]}
 ```
 
 ## Untrusted input

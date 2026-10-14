@@ -206,8 +206,7 @@ per line to a scratch file, in the extractor's own wire shape (`FromFile`, `From
 tier reads the actual call sites, it does not guess from identifier names.
 
 `<paths>` is the files and directories the page is about, the same pathspec the diff used, space
-separated -- pass it to `pipeline.py prepare --paths` in step 3, since that is what actually runs
-`sections.py` now. **Required in explain mode**: the empty baseline makes every symbol in the
+separated -- pass it to `pipeline.py prepare --paths` in step 3. **Required in explain mode**: the empty baseline makes every symbol in the
 repository new, so without it a page explaining one package draws the entire tree (measured: 3909
 nodes, 5905 edges, 611 KB of mermaid). Omit it when the diff is a real change, where the delta is
 already the scope. Explaining a whole repository is a legitimate `<paths>` of `.`.
@@ -223,9 +222,11 @@ After `symdelta.json` exists and the step 2b gate passed, spawn ONE subagent on 
 message as `pipeline.py prepare` (step 3). It reads `prompts/visuals.md`, runs
 `python3 <skill>/scripts/visuals.py digest --symdelta <scratchpad>/symdelta.json
 [--complexity <scratchpad>/complexity.json]`, and writes `<scratchpad>/visuals.json` with
-`json.dump`: `{"pr": {"title", "html"} | null, "groups": [{"index", "html"}]}`, where `index` is the
-group's 0-based position in `analysis.json`. It then runs
-`python3 <skill>/scripts/visuals.py check --visuals <scratchpad>/visuals.json --groups <N>` with
+`json.dump`: `{"overview": {"title", "nodes", "edges", "notes"} | null, "groups": [{"index", "html"}]}`
+(`overview` is a structured graph the page draws itself, not HTML; a legacy `"pr"` picture still
+loads), where `index` is the group's 0-based position in `analysis.json`. It then runs
+`python3 <skill>/scripts/visuals.py check --visuals <scratchpad>/visuals.json --groups <N>
+--diff <scratchpad>/raw.diff --symdelta <scratchpad>/symdelta.json` with
 `N` the group count and fixes what it prints, at most twice. It replies with the path, the count
 and the titles only. `render` waits for that reply: `pipeline.py render` picks up
 `<scratchpad>/visuals.json` on its own, re-checks it, and `prepare` prints `visuals: N kept, M
@@ -279,8 +280,7 @@ python3 <skill>/scripts/pipeline.py render --dir <scratchpad> --slug <slug> \
 ```
 
 `prepare` runs the gate first and stops before anything else on failure, clears any stale
-`section-*.html` from an earlier run, runs `structure.py`/`sections.py` when `symdelta.json`
-exists, runs `links.py`, `walkthrough.py` and `state.py`, then writes `pipeline.json`. `render`
+`section-*.html` from an earlier run, runs `links.py`, `walkthrough.py` and `state.py`, then writes `pipeline.json`. `render`
 reads `pipeline.json` (refusing to run without one), then runs `render.py`, the rendered gate,
 and `splice_assets.py` in that order. A rendered-gate failure is a bug in `render.py` or the
 template to fix, never something to send back to a subagent and retry.

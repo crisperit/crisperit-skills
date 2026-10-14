@@ -64,17 +64,5 @@ resolved: the page renders plain code with the file's own line numbers instead o
 and "Scope: 6 files, 1400 lines" instead of add/remove arithmetic. OVERVIEW keeps the same
 heading in both modes. Same pipeline either way, only the wording and colouring change.
 
-The structure view, built by `structure.py` inside `pipeline.py prepare`, follows the same rule:
-"How it fits together" instead of "System change" for its heading, "N components in M columns"
-instead of a per-state count in its summary strip, and no state badges, member state chips,
-removed boxes, or gone edges -- every one of those reads as a change against a baseline, and
-explain mode's baseline is empty, so all of it would be reporting on the trick rather than the
-code.
-
 Both renderers have to agree: a page with diff-coloured headings over plain-code hunks is
 worse than either mode on its own.
-
-Scope the structure view too: against a real ref pair, `structure.py`'s own `git diff` is already
-bounded to the files that actually changed, but the empty baseline turns every file in the repo
-into a changed file, so without `--paths` the component set balloons past the 30-component cap
-with code the page was never about. Pass `structure.py --paths` the same pathspec the diff used.

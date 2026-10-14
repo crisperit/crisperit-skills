@@ -1,6 +1,6 @@
 # The symbol-delta graph
 
-Background for `complexity.py` and `structure.py` (both run automatically by `pipeline.py`) and
+Background for `complexity.py` (run automatically by `pipeline.py`) and
 for `symdelta.py` (`static.md` step 2b3, still a manual call since it is the slow one). Read it when
 a graph looks wrong, when deciding whether to trust a `language: null` result, or when the
 fleet-wide runtime is the thing you're planning around.
@@ -140,58 +140,12 @@ HEAD-side otherwise, since that's the only ref the symbol is known to still exis
 The pictures are written by a model (`static.md` step 2b4, the daemon's `visuals` step) into
 `visuals.json` and sanitised again at render: `scripts/visuals.py` rebuilds the HTML and SVG from an
 allowlisted tree, so anything outside it (scripts, links, images, classes, event handlers) drops that
-picture whole. The allowlist lives there, not here. The page shows "The PR in one picture" right after
-the Overview, then one picture per group, matched by the group's index in `analysis.json`. The symbol
+picture whole. The allowlist lives there, not here. The page shows "System change" (the `overview` graph, drawn by
+`render.py` as an SVG; a legacy `pr` picture only when there is no graph) right after the Overview, then one picture per group, matched by the group's index in `analysis.json`. The symbol
 graph appears only inside the collapsed "All symbols" disclosure, drawn on first open because mermaid
 cannot measure a closed `<details>`. There is no story map and there are no per-group flow diagrams,
 and there is no fallback: a page without pictures has none, and an old page is regenerated (a fresh
 run, or `cw_run.py visuals --dir <dir> --force` then `pipeline.py render`).
-
-## `structure.py`: real symbols, not symdelta's own node state
-
-symdelta.json's own node `state` answers "did the LSP see a call edge appear", not "did this
-symbol exist on base", so a modified function that only gains a new caller comes back "new"
-even though it was already there. `structure.py` answers existence itself instead: it parses
-the file at both refs directly and diffs declared symbols -- classes, interfaces and top-level
-functions/methods, never a local closure -- so its own `new`/`changed`/`moved`/`removed`/
-`unchanged` states are trustworthy on their own, independent of whatever symdelta.json says.
-
-It also needs `analysis.json`'s own `groups` to colour components by group, which is why
-`pipeline.py prepare` runs it only after the gate has passed, never alongside the fan-out. It
-still reads `symdelta.json` too, whatever that script's own `"language"` came back as, but only
-for call edges between the components it finds; parsing the two refs at each language is its own
-job, described below.
-
-Two parse tiers, both stdlib-plus-one-dependency rather than a language server: TypeScript/JS
-through a lazily-loaded tree-sitter grammar (bundled with graphify, loaded from its own venv when
-no standalone install exists), Go through a tiny stdlib-only helper program under
-`extractors/go/structure` (`go/parser` over one file's content via stdin, no `go/packages`, no
-module resolution -- it never needs the repo's own dependencies to compile, unlike symdelta's Go
-extractor). Missing the tree-sitter grammar, or the `go` toolchain, is the same `language: null`
-outcome as symdelta's own missing-tool case, named in `"reason"`.
-
-Call edges are symdelta.json's, rolled up from symbol to component level by matching each edge
-endpoint's `(file, top-level name)` against what this script itself parsed; an edge with either
-end unresolved (a nested closure, a symbol in a file this script didn't touch) is dropped rather
-than guessed at. `implements`/`extends` targets are a class's own heritage clause names, not
-component ids -- there is no cross-file type index here, so `sections.py`'s renderer resolves a
-target to a component by name, first match wins on a collision, and drops it silently when
-nothing in the capped set carries that name.
-
-Every component whose file `is_test_path()` classifies as a test is dropped before the cap, not
-after: a test file earns no slot in the 30-component budget at a real component's expense. Past
-that, capped at 30 components (`MAX_COMPONENTS`): a round-robin by call-edge degree across each
-`analysis.json` group keeps the busiest few from every theme rather than the first 30 found, and
-`dropped` in the output says how many the cap itself cut (test files dropped earlier don't count
-against that number).
-
-A component that survives the cap with no call edge and no resolved implements/extends edge
-moves into a top-level `also_touched` field (plain names, sorted), out of `components` -- it has
-nothing to draw a box or a line for. Every remaining component carries `row`: its 0-based
-position within its own `column`, from a 3-sweep barycenter ordering over call and
-implements/extends edges (ported from the approved mockup's own `_barycenter_order`), so
-`sections.py` can draw a column top-to-bottom in an order that keeps a caller close to its
-nearest callee instead of alphabetical or arrival order.
 
 ## LSP tier guards
 
