@@ -15,7 +15,7 @@ different file, same kind, with either the same body or a shared member (the oth
 same-name pair neither ref's diff --name-status treated as a rename) comes out "moved" rather
 than "new"+"removed"; two unrelated symbols that merely share a name stay removed+new.
 
-Two parse tiers: TypeScript/JS through a lazily-loaded tree-sitter grammar (bundled with
+Two parse tiers: TypeScript/JS and Python through a lazily-loaded tree-sitter grammar (bundled with
 graphify; see _get_ts_parser), Go through a tiny stdlib-only helper program under
 extractors/go/structure (go/parser over one file's content via stdin, no go/packages, no
 module resolution). Call edges come from symdelta.json, rolled up from symbol to component
@@ -51,6 +51,7 @@ MAX_COMPONENTS = 30
 
 TS_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 GO_EXT = ".go"
+PY_EXTS = {".py"}
 
 GO_STRUCTURE_SRC_DIR = SCRIPT_DIR / "extractors" / "go" / "structure"
 GO_STRUCTURE_BIN = symdelta.CACHE_DIR / "structure-go-extractor"
@@ -108,6 +109,8 @@ def detect_lang(path):
         return "typescript"
     if ext == GO_EXT:
         return "go"
+    if ext in PY_EXTS:
+        return "python"
     return None
 
 
@@ -122,8 +125,8 @@ def _graphify_site_packages():
 
 
 @functools.lru_cache(maxsize=None)
-def _get_ts_parser():
-    """A tree-sitter Parser for TypeScript, or None. Tries a real install first, then
+def _get_ts_parser(module_name="tree_sitter_typescript", language_attr="language_typescript"):
+    """A tree-sitter Parser for the given grammar module (TypeScript by default), or None. Tries a real install first, then
     graphify's bundled grammar (in a python 3.12 venv, compatible with this interpreter, but a
     version bump there could silently stop working), then gives up."""
     if os.environ.get("STRUCTURE_NO_TREE_SITTER"):  # test seam for the no-parser path
@@ -140,8 +143,8 @@ def _get_ts_parser():
         except ImportError:
             return None
     try:
-        module = importlib.import_module("tree_sitter_typescript")
-        language_fn = getattr(module, "language_typescript", None)
+        module = importlib.import_module(module_name)
+        language_fn = getattr(module, language_attr, None)
         if language_fn is None:
             return None
         return tree_sitter.Parser(tree_sitter.Language(language_fn()))
@@ -285,6 +288,65 @@ def parse_ts_module(content):
     return components
 
 
+# ---------- Python, via tree-sitter ----------
+
+
+def _py_bases(node, src):
+    args = node.child_by_field_name("superclasses")
+    if args is None:
+        return []
+    names = (
+        _strip_generic(_text(c, src).split("[", 1)[0])
+        for c in args.children if c.type in ("identifier", "attribute", "subscript")
+    )
+    return [n for n in names if n.rsplit(".", 1)[-1] != "Generic"]  # typing noise, not a real base
+
+
+def _py_unwrap(node):
+    if node.type == "decorated_definition":
+        return node.child_by_field_name("definition") or node
+    return node
+
+
+def parse_py_module(content):
+    """Same return shape as parse_ts_module, for top-level classes and functions in a Python
+    file (a decorator is part of the definition it wraps). Returns None when no tree-sitter
+    Python grammar is available."""
+    parser = _get_ts_parser("tree_sitter_python", "language")
+    if parser is None:
+        return None
+    src = content.encode("utf-8", errors="replace")
+    try:
+        tree = parser.parse(src)
+    except Exception:
+        return None
+    components = {}
+    for child in tree.root_node.children:
+        actual = _py_unwrap(child)
+        name_node = actual.child_by_field_name("name")
+        if name_node is None:
+            continue
+        name = _text(name_node, src)
+        if actual.type == "function_definition":
+            components[name] = {
+                "kind": "function", "hash": _body_hash(child, src), "members": {},
+                "extends": [], "implements": [],
+            }
+        elif actual.type == "class_definition":
+            members = {}
+            body = actual.child_by_field_name("body")
+            for member in body.children if body is not None else ():
+                method = _py_unwrap(member)
+                m_name = method.child_by_field_name("name")
+                if method.type == "function_definition" and m_name is not None:
+                    members[_text(m_name, src)] = _body_hash(member, src)
+            components[name] = {
+                "kind": "class", "hash": _body_hash(child, src), "members": members,
+                "extends": _py_bases(actual, src), "implements": [],
+            }
+    return components
+
+
 # ---------- Go, via a tiny stdlib-only helper program ----------
 
 
@@ -343,8 +405,8 @@ def parse_go_module(content):
     return components
 
 
-PARSERS = {"typescript": parse_ts_module, "go": parse_go_module}
-RELEVANT_EXTS = {"typescript": TS_EXTS, "go": {GO_EXT}}
+PARSERS = {"typescript": parse_ts_module, "go": parse_go_module, "python": parse_py_module}
+RELEVANT_EXTS = {"typescript": TS_EXTS, "go": {GO_EXT}, "python": PY_EXTS}
 
 
 # ---------- delta computation ----------
@@ -752,7 +814,7 @@ def analyse(repo, base, head, symdelta_path, analysis_path, paths=()):
 
     lang_counts = Counter(lang for lang in (detect_lang(p) for p in all_paths) if lang)
     if not lang_counts:
-        return _empty_result("no changed files in a supported language (typescript/go)")
+        return _empty_result("no changed files in a supported language (typescript/go/python)")
     language = lang_counts.most_common(1)[0][0]
     reason = None
     if len(lang_counts) > 1:
@@ -777,7 +839,8 @@ def analyse(repo, base, head, symdelta_path, analysis_path, paths=()):
     base_modules = parse_side(base_paths, resolved_base)
     head_modules = parse_side(head_paths, head)
     if not base_modules and not head_modules:
-        tool = "tree-sitter typescript grammar" if language == "typescript" else "go toolchain"
+        tool = {"typescript": "tree-sitter typescript grammar",
+                "python": "tree-sitter python grammar"}.get(language, "go toolchain")
         return _empty_result(f"no {language} parser available ({tool} missing)")
 
     components, pos_to_id = build_components(base_modules, head_modules)
