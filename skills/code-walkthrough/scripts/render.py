@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from complexity import summary_line  # noqa: E402  one owner for wording a complexity delta
-from sections import _codeify, render_symbols  # noqa: E402  one owner for these
+from sections import _MAX_BUTTON_HTML, _codeify, render_symbols  # noqa: E402  one owner for these
 import visuals as visuals_mod  # noqa: E402  the sanitiser, the single trust boundary for pictures
 from validate_analysis import parse_hunks  # noqa: E402  one owner for diff parsing
 from walkthrough import story  # noqa: E402  one owner for the group order
@@ -98,7 +98,7 @@ def _html_prose(text):
     name inject a live element."""
     return _codeify(escape(text))
 
-OV_W, OV_H, OV_COL, OV_ROW, OV_PAD = 150, 58, 80, 28, 16
+OV_W, OV_H, OV_COL, OV_ROW, OV_PAD = 150, 58, 110, 28, 16
 _OV_KEYS = ("new", "changed", "guard", "removed", "same", "config", "moved")
 
 
@@ -227,7 +227,7 @@ def overview_svg(ov, target_of=lambda item: ""):
             f'{", needs review" if node["watch"] else ""}">'
             f'<title>{escape(chr(10).join(tip))}</title>'
             f'<rect class="cw-ov-box" x="{x}" y="{y}" width="{OV_W}" height="{OV_H}" rx="8"/>{dot}'
-            f'<text class="cw-ov-kind" x="{x + 18}" y="{y + 14}">{node["kind"]}</text>{pill}'
+            f'<text class="cw-ov-kind" x="{x + (18 if dot else 10)}" y="{y + 14}">{node["kind"]}</text>{pill}'
             f'<text class="cw-ov-name" x="{x + 10}" y="{y + 33}">{escape(_clip(node["label"], 20))}</text>'
             f'<text class="cw-ov-note" x="{x + 10}" y="{y + 49}">{escape(_clip(node["note"], 26))}</text></g>')
     parts += labels
@@ -244,7 +244,9 @@ def overview_html(ov, explain, target_of=lambda item: ""):
         f'<span class="cw-ov-chip cw-ov-n-{c["kind"]}"{_group_attrs(c, target_of)} tabindex="0" role="link">'
         f'{escape(_clip(c["text"], 48))}</span>' for c in ov["notes"])
     return ('<section class="cw-overview" id="cw-overview" aria-labelledby="cw-overview-h">'
-            f'<h2 id="cw-overview-h">{heading}</h2><p class="cw-ov-sub">{escape(ov["title"])}</p>'
+            f'<h2 class="h2-row" id="cw-overview-h"><span>{heading}</span><span class="ctl">'
+            f'{_MAX_BUTTON_HTML.replace("<button ", "<button data-ov-zoom ", 1)}</span></h2>'
+            f'<p class="cw-ov-sub">{escape(ov["title"])}</p>'
             f'<div class="cw-vis cw-ov-wrap">{overview_svg(ov, target_of)}</div>'
             f'<div class="cw-ov-meta"><div class="cw-ov-legend">{legend}</div>'
             f'<div class="cw-ov-chips">{chips}</div></div></section>')
@@ -263,7 +265,12 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
              f'{added} line{"" if added == 1 else "s"}</span></div>') if explain else (
             f'<div class="fact"><b>Changed</b><span>{count} '
             f'file{"" if count == 1 else "s"}, +{added} -{removed} (net {sign}{net})</span></div>')
+    heading = title or (f"Code walkthrough: {target}" if target else "Code walkthrough")
+    pr_url = links.get("pr_url") if links else None
+    pr_link = (f'<p class="sub cw-title-sub"><a href="{escape(pr_url)}" target="_blank" rel="noopener noreferrer">'
+               'View pull request</a></p>') if pr_url else ""
     body = [
+        f'<h1 class="cw-title">{escape(heading)}</h1>{pr_link}',
         '<div class="facts">',
         "  " + scope,
         f'  <div class="fact"><b>Target</b><span>{escape(target)}</span></div>',
@@ -298,9 +305,9 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
 
         body.append(overview_html(ov, explain, target_of))
     elif pr_picture:
-        heading = "This code in one picture" if explain else "The PR in one picture"
+        pic_heading = "This code in one picture" if explain else "The PR in one picture"
         body.append('<section class="cw-pr-picture" id="cw-pr-picture"'
-                    f' aria-labelledby="cw-pr-picture-h"><h2 id="cw-pr-picture-h">{escape(heading)}</h2>'
+                    f' aria-labelledby="cw-pr-picture-h"><h2 id="cw-pr-picture-h">{escape(pic_heading)}</h2>'
                     f'<div class="cw-vis" role="group" aria-label="{escape(pr_picture["title"])}">'
                     f'{pr_picture["html"]}</div></section>')
 
@@ -334,7 +341,6 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                  ' rel="noopener noreferrer">pull request</a>')
     body.append(f'<div class="foot">{foot}</div>')
 
-    heading = title or (f"Code walkthrough: {target}" if target else "Code walkthrough")
     page = template.replace(TITLE_PLACEHOLDER, escape(heading))
     page = page.replace(CONTENT_PLACEHOLDER, "\n".join(body))
     if state is not None:

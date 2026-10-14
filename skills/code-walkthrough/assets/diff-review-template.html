@@ -67,6 +67,8 @@
   .wrap>ul li{margin:4px 0}
   h1{font-size:var(--fs-xl);margin:0 0 4px}
   .sub{color:var(--muted);margin:0 0 28px;font-size:var(--fs-sm)}
+  .cw-title{overflow-wrap:anywhere;line-height:1.25}
+  .cw-title-sub{margin:0 0 16px;overflow-wrap:anywhere}
   h2{font-size:var(--fs-md);letter-spacing:.08em;text-transform:uppercase;
     color:var(--muted);margin:36px 0 14px;border-bottom:1px solid var(--border);
     padding-bottom:8px}
@@ -173,7 +175,10 @@
      second grid row that would need its own explicit placement. */
   details.hunk .hunk-lines{display:flex;flex-wrap:wrap;column-gap:12px;row-gap:4px;
     align-items:baseline;min-width:0}
-  details.hunk .hunk-path{flex:0 1 auto;min-width:0;overflow-wrap:anywhere;
+  /* break-word, not anywhere: the "/" breaks come from the <wbr> the wrap script adds after each
+     slash, and anywhere would still split a segment mid-word. break-word keeps the fallback
+     for one segment wider than the row. */
+  details.hunk .hunk-path{flex:0 1 auto;min-width:0;overflow-wrap:break-word;
     white-space:normal}
   /* margin-left:auto, not the path's old min-width:60%, is what holds the stat at the right
      edge now: the path has to shrink to its text so the PR link sits against the filename
@@ -222,7 +227,8 @@
      the graph's own gone nodes use (.sw-gone below): a deletion is a structural fact, not a
      verdict, so it must not read as either warning or improvement. Every state also has its sign
      in the chip text, so colour is never the only channel. */
-  details.hunk .hunk-cx{flex:none;font-size:var(--fs-xs);padding:1px 6px;border-radius:999px;
+  details.hunk .hunk-cx{flex:0 1 auto;min-width:0;max-width:100%;overflow:hidden;
+    text-overflow:ellipsis;font-size:var(--fs-xs);padding:1px 6px;border-radius:999px;
     border:1px solid var(--border);color:var(--muted);white-space:nowrap}
   details.hunk .hunk-cx.up{color:var(--red);
     border-color:color-mix(in srgb,var(--red) 45%,transparent)}
@@ -248,15 +254,15 @@
      the default state grey said it twice and read as switched off; --accent is this page's
      interactive colour, so the control wears it whatever it says, and hover/press move the
      background instead. */
-  #wt-notes-toggle,.vd-level-toggle{background:var(--panel2);border:1px solid var(--accent);
+  #wt-notes-toggle,#cw-wrap-toggle,.vd-level-toggle{background:var(--panel2);border:1px solid var(--accent);
     color:var(--accent);border-radius:6px;padding:4px 10px;cursor:pointer;
     font:600 var(--fs-xs) system-ui;letter-spacing:.06em;text-transform:uppercase;
     transition:background .2s}
-  #wt-notes-toggle:hover,
+  #wt-notes-toggle:hover,#cw-wrap-toggle:hover,
   .vd-level-toggle:hover{background:color-mix(in srgb,var(--accent) 14%,var(--panel2))}
-  #wt-notes-toggle:active,
+  #wt-notes-toggle:active,#cw-wrap-toggle:active,
   .vd-level-toggle:active{background:color-mix(in srgb,var(--accent) 22%,var(--panel2))}
-  #wt-notes-toggle:focus-visible,
+  #wt-notes-toggle:focus-visible,#cw-wrap-toggle:focus-visible,
   .vd-level-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Explanations are on by default; pressing the toggle drops this class and takes every
      per-hunk note and each group's why line with it. .hunk-note without the -hunk suffix is the
@@ -290,6 +296,30 @@
   .diff .a{background:color-mix(in srgb,var(--green) 14%,transparent)}
   .diff .d{background:color-mix(in srgb,var(--red) 14%,transparent)}
   .diff .h{color:var(--purple)}
+  /* Soft-wrap, toggled by #cw-wrap-toggle (body.cw-wrap). CSS only, so line text, anchors and
+     selection ranges are the same nodes either way. Hanging indent: the row's padding-left
+     holds the gutter (20px, see .dline) plus the number badge, and the negative text-indent
+     pulls the first line back so the badge sits in the gutter while continuation lines start
+     under the code. --cw-num is the badge's box (min-width + margin-right, see .dline-num);
+     it only drifts if a line number outgrows that width. */
+  body{--cw-num:40px}
+  body.cw-wrap details.hunk pre.diff .a,body.cw-wrap details.hunk pre.diff .d,
+  body.cw-wrap details.hunk pre.diff .c,body.cw-wrap details.hunk pre.diff .h{
+    width:auto;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+  body.cw-wrap details.hunk pre.diff .dline{padding-left:calc(20px + var(--cw-num));
+    text-indent:calc(-1 * var(--cw-num))}
+  body.cw-wrap details.hunk pre.diff .dline-num{text-indent:0}
+  /* Narrow screens: the file card, its pre and the line-number badge each pad the sides, which
+     left ~40 characters of code. The pre needs no left padding of its own because .dline
+     already reserves the 20px gutter for the "+" and reference dot. Placed after the
+     details.hunk rules above, so these win on source order. */
+  @media(max-width:560px){
+    body{--cw-num:34px}
+    details.hunk>summary{padding:10px}
+    details.hunk .hunk-meta,details.hunk .hunk-note{padding-left:10px;padding-right:10px}
+    details.hunk pre.diff{margin:8px 4px 10px;padding:10px 6px 10px 0}
+    details.hunk .dline-num{min-width:28px;margin-right:6px;padding-right:6px}
+  }
   /* hljs token colours, mapped onto this page's own vars rather than a vendored theme --
      scoped to .diff so it can't bleed into pre.mermaid or a prose <code>. */
   .diff .hljs-keyword,.diff .hljs-literal,.diff .hljs-type{color:var(--purple)}
@@ -430,6 +460,7 @@
 
   .fb-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
     padding:8px 10px;font-size:var(--fs-xs)}
+  .fb-item .cw-md{overflow-wrap:anywhere}
   /* Visible landing spot for the comments panel's click-to-focus jump (see wireCommentsPanel below). */
   .fb-item:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Same dashed-and-dimmed convention as .sw-gone / .hunk-cx.gone above: a structural fact,
@@ -719,7 +750,7 @@
     background:var(--purple)}
   .cw-ref-dot-btn:hover::after{box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 30%,transparent)}
   .cw-ref-dot-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:50%}
-  .cw-ref-dot:not(.dline){box-shadow:inset 3px 0 0 var(--purple)}
+  .cw-ref-dot:not(.dline){box-shadow:-6px 0 0 -3px var(--purple)}
   #cw-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:64px;z-index:52;
     display:flex;align-items:center;gap:10px;box-sizing:border-box;width:max-content;max-width:min(420px,calc(100vw - 32px));
     padding:8px 12px;border:1px solid var(--purple);border-radius:8px;background:var(--panel2);color:var(--text);
@@ -1045,6 +1076,18 @@
   /* System change diagram (render.py overview_svg). Kind colour is one custom property per kind
      so node, chip, legend swatch and edge all read the same theme variable. */
   .cw-ov-sub{margin:-4px 0 8px;color:var(--muted);font-size:var(--fs-sm)}
+  /* No-JS "scrolls sideways" cue: the local layers cover the shadows at the scroll ends, so a
+     shadow only shows on an edge that still has content behind it. */
+  .cw-ov-wrap{background:
+    linear-gradient(to right,var(--panel) 30%,transparent) left center/28px 100% no-repeat local,
+    linear-gradient(to left,var(--panel) 30%,transparent) right center/28px 100% no-repeat local,
+    linear-gradient(to right,rgba(0,0,0,.35),transparent) left center/12px 100% no-repeat scroll,
+    linear-gradient(to left,rgba(0,0,0,.35),transparent) right center/12px 100% no-repeat scroll,
+    var(--panel)}
+  #mermaid-zoom-body svg.cw-ov{width:100%;height:100%;max-width:100%;
+    --font-sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+  #mermaid-zoom-body svg.cw-ov text{font-family:var(--font-sans)}
+  @media (max-width:600px){.cw-ov-meta .cw-ov-legend{display:grid;grid-template-columns:repeat(3,max-content);gap:6px 18px}}
   .cw-ov-n-new{--ovk:var(--green)} .cw-ov-n-changed{--ovk:var(--yellow)}
   .cw-ov-n-guard{--ovk:var(--purple)} .cw-ov-n-removed{--ovk:var(--red)}
   .cw-ov-n-same{--ovk:var(--muted)} .cw-ov-n-config{--ovk:var(--cyan)} .cw-ov-n-moved{--ovk:var(--accent)}
@@ -1094,7 +1137,10 @@
     .vd-max-btn{width:44px;height:44px}
     .vd-level-toggle{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
-    #wt-notes-toggle{min-height:44px;padding:10px 14px}
+    #wt-notes-toggle,#cw-wrap-toggle{min-height:44px;padding:10px 14px}
+    /* Same trick as h2.h2-row a below: padding grows the hit area, the equal negative margin
+       takes it back out of the layout, so the 13px checkbox stays and the row doesn't grow. */
+    details.hunk .hunk-viewed{padding:15px 8px;margin:-15px -8px}
     #hr-comments-btn,#cw-live-reload{height:44px}
     .cw-typing #cw-dock{visibility:hidden;pointer-events:none}
     #hr-comments-close{width:44px;height:44px;font-size:16px}
@@ -1835,7 +1881,7 @@
   // the level script) it's the box's own svg.
   function visibleSvg(box){
     return box.matches('.mermaid')?box.querySelector('svg')
-      :box.querySelector('.mermaid:not([hidden]) svg');
+      :box.querySelector('.mermaid:not([hidden]) svg')||box.querySelector('svg.cw-ov');
   }
   function openZoom(box){
     closeNavMenu(); // otherwise the inline menu is left open, hidden behind the dialog
@@ -1845,8 +1891,10 @@
     if(!dlg.open) dlg.showModal(); // showModal() throws if already open -- the dialog's own level toggle re-opens here to refresh, not to open a second time
     const clone=svg.cloneNode(true);
     clone.__navSource=svg; // focusNavNode/clearNavFocus mirror onto this, so fullscreen focus changes survive the dialog closing
+    clone.style.minWidth=''; // the overview's inline min-width is for the page, not the dialog
     zbody.replaceChildren(clone);
     const api=panZoom(clone,'modal');
+    if(api&&clone.classList.contains('cw-ov')) api.reset(); // whole graph first, pinch in from there
     zctl.hidden=!api;
   }
   function wire(box){
@@ -1907,6 +1955,9 @@
       const box=currentDiagramBox(diagramContainerFor(btn));
       if(box&&window.__vdZoomOpen) window.__vdZoomOpen(box);
     });
+  });
+  document.querySelectorAll('[data-ov-zoom]').forEach(btn=>{
+    btn.addEventListener('click',()=>openZoom(document.querySelector('.cw-ov-wrap')));
   });
   window.__vdZoomOpen=openZoom; // lets the level script's group-graph button, and its in-dialog level toggle, reuse this instead of a second render path
 })();
@@ -2271,6 +2322,169 @@
     return out;
   }
 
+  const mk=(tag,cls,text)=>{
+    const e=document.createElement(tag);
+    if(cls) e.className=cls;
+    if(text!=null) e.textContent=text;
+    return e;
+  };
+
+  function mdUrl(u){
+    try{ const x=new URL(u); return x.protocol==='http:'||x.protocol==='https:'?x.href:null; }
+    catch(_){ return null; }
+  }
+
+  function parseInline(s){
+    const out=[];
+    let buf='', i=0;
+    const flush=()=>{ if(buf){ out.push({t:'text',v:buf}); buf=''; } };
+    const close=(m,from)=>{
+      for(let j=from;j<s.length;j++){
+        if(s[j]==='`'){ const k=s.indexOf('`',j+1); if(k>0){ j=k; continue; } }
+        if(j>from&&s.startsWith(m,j)&&!/\s/.test(s[j-1])&&(m!=='*'||(s[j-1]!=='*'&&s[j+1]!=='*'))) return j;
+      }
+      return -1;
+    };
+    while(i<s.length){
+      const c=s[i], n=s[i+1]||' ';
+      if(c==='`'){
+        const j=s.indexOf('`',i+1);
+        if(j>i+1){ flush(); out.push({t:'code',v:s.slice(i+1,j)}); i=j+1; continue; }
+      } else if(c==='*'&&n==='*'){
+        const j=/\s/.test(s[i+2]||' ')?-1:close('**',i+2);
+        if(j>0){ flush(); out.push({t:'b',c:parseInline(s.slice(i+2,j))}); i=j+2; continue; }
+        buf+='**'; i+=2; continue;
+      } else if(c==='*'&&!/\s/.test(n)){
+        const j=close('*',i+1);
+        if(j>0){ flush(); out.push({t:'i',c:parseInline(s.slice(i+1,j))}); i=j+1; continue; }
+      } else if(c==='['){
+        const m=/^\[([^\]]+)\]\(([^)\s]+)\)/.exec(s.slice(i)), href=m&&mdUrl(m[2]);
+        if(href){ flush(); out.push({t:'a',href,c:parseInline(m[1])}); i+=m[0].length; continue; }
+      }
+      buf+=c; i++;
+    }
+    flush();
+    return out;
+  }
+
+  function parseMd(text){
+    const cells=l=>{
+      let s=l.trim();
+      if(s.startsWith('|')) s=s.slice(1);
+      if(/(^|[^\\])\|$/.test(s)) s=s.slice(0,-1);
+      return s.split(/(?<!\\)\|/).map(c=>c.trim().replace(/\\\|/g,'|'));
+    };
+    const lines=String(text).split('\n'), out=[];
+    const ITEM=/^(\s*)([-*]|\d+\.)\s+(\S.*)$/, FENCE=/^\s*```/, HEAD=/^(#{1,3})\s+(\S.*?)\s*#*\s*$/;
+    let para=[];
+    const flush=()=>{ if(para.length) out.push({kind:'p',text:para.join('\n').trim()}); para=[]; };
+    for(let i=0;i<lines.length;i++){
+      const line=lines[i];
+      if(!line.trim()){ flush(); continue; }
+      if(FENCE.test(line)){
+        let k=i+1;
+        while(k<lines.length&&!/^\s*```\s*$/.test(lines[k])) k++;
+        if(k<lines.length){ flush(); out.push({kind:'pre',text:lines.slice(i+1,k).join('\n')}); i=k; continue; }
+      }
+      const h=HEAD.exec(line);
+      if(h){ flush(); out.push({kind:'h',level:h[1].length,text:h[2]}); continue; }
+      if(ITEM.test(line)){
+        flush();
+        const list={kind:'list',ordered:/\d/.test(ITEM.exec(line)[2]),items:[]};
+        for(;i<lines.length;i++){
+          const m=ITEM.exec(lines[i]);
+          if(m){
+            const last=list.items[list.items.length-1];
+            if(m[1].length&&last){
+              last.sub=last.sub||{ordered:/\d/.test(m[2]),items:[]};
+              last.sub.items.push(m[3]);
+            } else list.items.push({text:m[3],sub:null});
+          } else if(/^\s+\S/.test(lines[i])&&list.items.length){
+            const last=list.items[list.items.length-1];
+            if(last.sub) last.sub.items[last.sub.items.length-1]+='\n'+lines[i].trim();
+            else last.text+='\n'+lines[i].trim();
+          } else break;
+        }
+        i--;
+        out.push(list);
+        continue;
+      }
+      if(line.includes('|')&&i+1<lines.length){
+        const head=cells(line), d=cells(lines[i+1]);
+        if(d.length===head.length&&d.every(c=>/^:?-+:?$/.test(c))){
+          flush();
+          const align=d.map(c=>c.endsWith(':')?(c.startsWith(':')?'center':'right'):(c.startsWith(':')?'left':''));
+          const rows=[];
+          for(i+=2;i<lines.length&&lines[i].trim()&&lines[i].includes('|');i++){
+            const r=cells(lines[i]).slice(0,head.length);
+            while(r.length<head.length) r.push('');
+            rows.push(r);
+          }
+          i--;
+          out.push({kind:'table',head,align,rows});
+          continue;
+        }
+      }
+      para.push(line);
+    }
+    flush();
+    return out;
+  }
+
+  function inlineInto(e,text){
+    const walk=(parent,toks)=>{
+      for(const t of toks){
+        if(t.t==='text') parent.append(document.createTextNode(t.v));
+        else if(t.t==='code') parent.append(mk('code',null,t.v));
+        else {
+          const x=document.createElement(t.t==='b'?'strong':t.t==='i'?'em':'a');
+          if(t.t==='a'){ x.href=t.href; x.rel='noopener noreferrer'; x.target='_blank'; }
+          walk(x,t.c);
+          parent.append(x);
+        }
+      }
+    };
+    walk(e,parseInline(text));
+    return e;
+  }
+  const richEl=(tag,text)=>inlineInto(document.createElement(tag),text);
+
+  function mdTable(t){
+    const row=(tag,cs)=>{
+      const tr=document.createElement('tr');
+      cs.forEach((c,i)=>{ const e=richEl(tag,c); if(t.align[i]) e.style.textAlign=t.align[i]; tr.append(e); });
+      return tr;
+    };
+    const tbl=document.createElement('table'), thead=document.createElement('thead'), tbody=document.createElement('tbody');
+    thead.append(row('th',t.head));
+    for(const r of t.rows) tbody.append(row('td',r));
+    tbl.append(thead,tbody);
+    const wrap=mk('div','cw-pageedit-table');
+    wrap.append(tbl);
+    return wrap;
+  }
+
+  function mdEl(text){
+    const frag=document.createDocumentFragment();
+    const listEl=l=>{
+      const e=document.createElement(l.ordered?'ol':'ul');
+      for(const it of l.items){
+        const li=richEl('li',it.text);
+        if(it.sub) li.append(listEl({ordered:it.sub.ordered,items:it.sub.items.map(text=>({text,sub:null}))}));
+        e.append(li);
+      }
+      return e;
+    };
+    for(const b of parseMd(text)){
+      if(b.kind==='table') frag.append(mdTable(b));
+      else if(b.kind==='pre') frag.append(mk('pre',null,b.text));
+      else if(b.kind==='h') frag.append(richEl(b.level<3?'h4':'h5',b.text));
+      else if(b.kind==='list') frag.append(listEl(b));
+      else frag.append(richEl('p',b.text));
+    }
+    return frag;
+  }
+
   // Pinned locale: the page's own text is English, so a browser-locale relative/absolute
   // date (e.g. Polish "2 dni temu") would be the odd one out.
   const RTF=new Intl.RelativeTimeFormat('en-GB',{numeric:'auto'});
@@ -2394,7 +2608,7 @@
         d.append(pub,msg);
       }
     } else {
-      d.appendChild(document.createTextNode(n.body));
+      const md=mk('div','cw-md'); md.append(mdEl(n.body)); d.appendChild(md);
     }
     return d;
   }
@@ -3682,12 +3896,6 @@
 
     const BLOCK_SEL='p,li,pre,table,blockquote,h2,h3,h4,.fact,.panel';
     const norm=s=>String(s).replace(/\s+/g,' ').trim();
-    const mk=(tag,cls,text)=>{
-      const e=document.createElement(tag);
-      if(cls) e.className=cls;
-      if(text!=null) e.textContent=text;
-      return e;
-    };
     const mkBtn=(text,cls)=>{ const b=mk('button',cls,text); b.type='button'; return b; };
     const firstLine=s=>String(s||'').split('\n')[0].slice(0,100);
     const headers=()=>({'X-CW-Token':window.CW_LIVE.token,'Content-Type':'application/json'});
@@ -3995,162 +4203,6 @@
         if(doc.querySelector('parsererror')) throw new Error('bad svg');
         pre.replaceChildren(document.importNode(doc.documentElement,true));
       }).catch(fail);
-    }
-
-    function mdUrl(u){
-      try{ const x=new URL(u); return x.protocol==='http:'||x.protocol==='https:'?x.href:null; }
-      catch(_){ return null; }
-    }
-
-    function parseInline(s){
-      const out=[];
-      let buf='', i=0;
-      const flush=()=>{ if(buf){ out.push({t:'text',v:buf}); buf=''; } };
-      const close=(m,from)=>{
-        for(let j=from;j<s.length;j++){
-          if(s[j]==='`'){ const k=s.indexOf('`',j+1); if(k>0){ j=k; continue; } }
-          if(j>from&&s.startsWith(m,j)&&!/\s/.test(s[j-1])&&(m!=='*'||(s[j-1]!=='*'&&s[j+1]!=='*'))) return j;
-        }
-        return -1;
-      };
-      while(i<s.length){
-        const c=s[i], n=s[i+1]||' ';
-        if(c==='`'){
-          const j=s.indexOf('`',i+1);
-          if(j>i+1){ flush(); out.push({t:'code',v:s.slice(i+1,j)}); i=j+1; continue; }
-        } else if(c==='*'&&n==='*'){
-          const j=/\s/.test(s[i+2]||' ')?-1:close('**',i+2);
-          if(j>0){ flush(); out.push({t:'b',c:parseInline(s.slice(i+2,j))}); i=j+2; continue; }
-          buf+='**'; i+=2; continue;
-        } else if(c==='*'&&!/\s/.test(n)){
-          const j=close('*',i+1);
-          if(j>0){ flush(); out.push({t:'i',c:parseInline(s.slice(i+1,j))}); i=j+1; continue; }
-        } else if(c==='['){
-          const m=/^\[([^\]]+)\]\(([^)\s]+)\)/.exec(s.slice(i)), href=m&&mdUrl(m[2]);
-          if(href){ flush(); out.push({t:'a',href,c:parseInline(m[1])}); i+=m[0].length; continue; }
-        }
-        buf+=c; i++;
-      }
-      flush();
-      return out;
-    }
-
-    function parseMd(text){
-      const cells=l=>{
-        let s=l.trim();
-        if(s.startsWith('|')) s=s.slice(1);
-        if(/(^|[^\\])\|$/.test(s)) s=s.slice(0,-1);
-        return s.split(/(?<!\\)\|/).map(c=>c.trim().replace(/\\\|/g,'|'));
-      };
-      const lines=String(text).split('\n'), out=[];
-      const ITEM=/^(\s*)([-*]|\d+\.)\s+(\S.*)$/, FENCE=/^\s*```/, HEAD=/^(#{1,3})\s+(\S.*?)\s*#*\s*$/;
-      let para=[];
-      const flush=()=>{ if(para.length) out.push({kind:'p',text:para.join('\n').trim()}); para=[]; };
-      for(let i=0;i<lines.length;i++){
-        const line=lines[i];
-        if(!line.trim()){ flush(); continue; }
-        if(FENCE.test(line)){
-          let k=i+1;
-          while(k<lines.length&&!/^\s*```\s*$/.test(lines[k])) k++;
-          if(k<lines.length){ flush(); out.push({kind:'pre',text:lines.slice(i+1,k).join('\n')}); i=k; continue; }
-        }
-        const h=HEAD.exec(line);
-        if(h){ flush(); out.push({kind:'h',level:h[1].length,text:h[2]}); continue; }
-        if(ITEM.test(line)){
-          flush();
-          const list={kind:'list',ordered:/\d/.test(ITEM.exec(line)[2]),items:[]};
-          for(;i<lines.length;i++){
-            const m=ITEM.exec(lines[i]);
-            if(m){
-              const last=list.items[list.items.length-1];
-              if(m[1].length&&last){
-                last.sub=last.sub||{ordered:/\d/.test(m[2]),items:[]};
-                last.sub.items.push(m[3]);
-              } else list.items.push({text:m[3],sub:null});
-            } else if(/^\s+\S/.test(lines[i])&&list.items.length){
-              const last=list.items[list.items.length-1];
-              if(last.sub) last.sub.items[last.sub.items.length-1]+='\n'+lines[i].trim();
-              else last.text+='\n'+lines[i].trim();
-            } else break;
-          }
-          i--;
-          out.push(list);
-          continue;
-        }
-        if(line.includes('|')&&i+1<lines.length){
-          const head=cells(line), d=cells(lines[i+1]);
-          if(d.length===head.length&&d.every(c=>/^:?-+:?$/.test(c))){
-            flush();
-            const align=d.map(c=>c.endsWith(':')?(c.startsWith(':')?'center':'right'):(c.startsWith(':')?'left':''));
-            const rows=[];
-            for(i+=2;i<lines.length&&lines[i].trim()&&lines[i].includes('|');i++){
-              const r=cells(lines[i]).slice(0,head.length);
-              while(r.length<head.length) r.push('');
-              rows.push(r);
-            }
-            i--;
-            out.push({kind:'table',head,align,rows});
-            continue;
-          }
-        }
-        para.push(line);
-      }
-      flush();
-      return out;
-    }
-
-    function inlineInto(e,text){
-      const walk=(parent,toks)=>{
-        for(const t of toks){
-          if(t.t==='text') parent.append(document.createTextNode(t.v));
-          else if(t.t==='code') parent.append(mk('code',null,t.v));
-          else {
-            const x=document.createElement(t.t==='b'?'strong':t.t==='i'?'em':'a');
-            if(t.t==='a'){ x.href=t.href; x.rel='noopener noreferrer'; x.target='_blank'; }
-            walk(x,t.c);
-            parent.append(x);
-          }
-        }
-      };
-      walk(e,parseInline(text));
-      return e;
-    }
-    const richEl=(tag,text)=>inlineInto(document.createElement(tag),text);
-
-    function mdTable(t){
-      const row=(tag,cs)=>{
-        const tr=document.createElement('tr');
-        cs.forEach((c,i)=>{ const e=richEl(tag,c); if(t.align[i]) e.style.textAlign=t.align[i]; tr.append(e); });
-        return tr;
-      };
-      const tbl=document.createElement('table'), thead=document.createElement('thead'), tbody=document.createElement('tbody');
-      thead.append(row('th',t.head));
-      for(const r of t.rows) tbody.append(row('td',r));
-      tbl.append(thead,tbody);
-      const wrap=mk('div','cw-pageedit-table');
-      wrap.append(tbl);
-      return wrap;
-    }
-
-    function mdEl(text){
-      const frag=document.createDocumentFragment();
-      const listEl=l=>{
-        const e=document.createElement(l.ordered?'ol':'ul');
-        for(const it of l.items){
-          const li=richEl('li',it.text);
-          if(it.sub) li.append(listEl({ordered:it.sub.ordered,items:it.sub.items.map(text=>({text,sub:null}))}));
-          e.append(li);
-        }
-        return e;
-      };
-      for(const b of parseMd(text)){
-        if(b.kind==='table') frag.append(mdTable(b));
-        else if(b.kind==='pre') frag.append(mk('pre',null,b.text));
-        else if(b.kind==='h') frag.append(richEl(b.level<3?'h4':'h5',b.text));
-        else if(b.kind==='list') frag.append(listEl(b));
-        else frag.append(richEl('p',b.text));
-      }
-      return frag;
     }
 
     function pageEditContent(b){
@@ -6195,6 +6247,49 @@ document.querySelectorAll('summary a').forEach(a => {
 })();
 </script>
 <script>
+// Hunk-header and code layout for narrow screens. Soft-wrap defaults on for a narrow or touch
+// screen and off on desktop until the reader picks; the choice persists (try/catch for the
+// same file:// reason as the explanations toggle). The wrapping itself is CSS, see body.cw-wrap.
+(function(){
+  const KEY='cw-wrap';
+  let on=window.matchMedia('(max-width:560px),(pointer:coarse)').matches;
+  try{ const v=localStorage.getItem(KEY); if(v!==null) on=v==='1'; }catch(e){}
+  const notes=document.getElementById('wt-notes-toggle');
+  const btn=document.createElement('button');
+  btn.type='button'; btn.id='cw-wrap-toggle';
+  const apply=()=>{
+    document.body.classList.toggle('cw-wrap',on);
+    btn.textContent=on?'wrap on':'wrap off';
+    btn.setAttribute('aria-label',on?'Code wraps. Activate to scroll sideways instead.'
+      :'Code scrolls sideways. Activate to wrap lines.');
+  };
+  apply();
+  if(notes) notes.after(btn);
+  btn.addEventListener('click',()=>{
+    on=!on; apply();
+    try{ localStorage.setItem(KEY,on?'1':'0'); }catch(e){}
+  });
+  // A "/" is not a line-break opportunity, so a long path would split mid-word. <wbr> adds one
+  // after each slash and has no text, so textContent (read as the literal PR path) is unchanged.
+  document.querySelectorAll('.hunk-path').forEach(el=>{
+    const w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+    const nodes=[]; while(w.nextNode()) nodes.push(w.currentNode);
+    for(const t of nodes){
+      if(!t.data.includes('/')) continue;
+      const f=document.createDocumentFragment();
+      t.data.split('/').forEach((s,i,a)=>{
+        f.append(s+(i<a.length-1?'/':''));
+        if(i<a.length-1) f.append(document.createElement('wbr'));
+      });
+      t.replaceWith(f);
+    }
+  });
+  document.querySelectorAll('details.hunk .hunk-cx').forEach(c=>{
+    c.title=c.textContent+' - '+c.title;
+  });
+})();
+</script>
+<script>
 (function(){
   if(window.CW_LIVE){
     const LIVE=window.CW_LIVE;
@@ -6341,6 +6436,8 @@ document.querySelectorAll('summary a').forEach(a => {
   function jump(e){
     const t=e.target.closest?e.target.closest(JUMP):null;
     if(!t||!t.dataset.path||!window.__cwGoToFile) return false;
+    const zoom=t.closest('#mermaid-zoom');
+    if(zoom) zoom.close();
     window.__cwGoToFile(t.dataset.path);
     return true;
   }
