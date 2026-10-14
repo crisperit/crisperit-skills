@@ -317,20 +317,21 @@ def test_live_code_is_gated_behind_cw_live_and_calls_real_daemon_routes():
 def test_live_ui_never_uses_html_injection_sinks():
     template = _real_template()
     sibling = "function wireSibling(){" + _between(template, "function wireSibling(){", "wireSibling();")
-    md = "function mdUrl(" + _between(template, "function mdUrl(", "function pageEditContent(")
+    md = "function mdUrl(" + _between(template, "function mdUrl(", "// Pinned locale")
     wire_ask = _wire_ask()
-    assert "function parseMd(" in wire_ask and "function mdEl(" in wire_ask
+    assert "function parseMd(" in md and "function mdEl(" in md
 
     for scope in (wire_ask, md, sibling):
         for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
             assert banned not in scope, banned
     # model-authored text only reaches the DOM through mk(..., text)
-    mk = _between(wire_ask, "const mk=(tag,cls,text)=>{", "};")
+    mk = _between(template, "const mk=(tag,cls,text)=>{", "};")
     assert "e.textContent=text" in mk
     assert "window.open(r.url,'_blank','noopener')" in wire_ask
     turn = _between(wire_ask, "function turnEl(", "function upsertOutcome(")
     assert "mdEl(r.answer||'')" in turn and "mk('p','cw-turn-a',r.answer" not in turn
     assert "pre-wrap" not in re.search(r"\.cw-turn-a\{[^}]*\}", template).group(0)
+    assert "mdEl(n.body)" in template
 
 
 def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds():
@@ -1082,7 +1083,8 @@ def test_overview_draws_every_node_with_a_path_and_group_colour_and_a_back_edge_
 def test_overview_heading_follows_the_mode_and_the_title_is_the_subtitle(explain, heading):
     out = ov_page(explain=explain)
 
-    assert f'<h2 id="cw-overview-h">{heading}</h2><p class="cw-ov-sub">Agent flow</p>' in out
+    assert f'<h2 class="h2-row" id="cw-overview-h"><span>{heading}</span>' in out
+    assert 'data-ov-zoom' in out and '</h2><p class="cw-ov-sub">Agent flow</p>' in out
 
 
 def test_overview_sits_before_the_walkthrough_and_replaces_the_legacy_picture():
@@ -1146,3 +1148,10 @@ def test_template_has_a_delegated_overview_handler_and_no_html_sink_in_it():
     for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "onclick="):
         assert banned not in script, banned
     assert "onerror=" not in overview_svg(OV)
+
+
+def test_page_opens_with_a_visible_title_and_the_pr_link():
+    out = ov_page(explain=False)
+    assert '<h1 class="cw-title">' in out and out.count("<h1") == 1
+    link = pics(links={"pr_url": "https://x/pr/1"}, title="A <b> title")
+    assert '<h1 class="cw-title">A &lt;b&gt; title</h1><p class="sub cw-title-sub"><a href="https://x/pr/1"' in link
