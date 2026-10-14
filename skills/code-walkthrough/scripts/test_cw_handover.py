@@ -81,6 +81,8 @@ def test_threads_part_open_resolved_handed_and_caps():
         ids = [x["thread_id"] for x in t["open"]]
         assert len(ids) == 20 and ids[0] == "t-24" and "t-resolved" not in ids and tk.QID not in ids
         assert t["open_remaining"] == 6 and t["handed_remaining"] == 0
+        assert [x["thread_id"] for x in t["resolved"]] == ["t-resolved"] and t["resolved_remaining"] == 0
+        assert t["drafts"] == []
         first = t["open"][0]["turns"][0]
         assert len(first["comment"]) == 1000 and len(first["answer"]) == 2000 and first["source"] == "user"
         assert len(t["open"][0]["anchor"]["quote"]) <= 300
@@ -101,7 +103,29 @@ def test_threads_part_open_resolved_handed_and_caps():
         cw_ask._append_qa(d, {"qid": "q-0000ffff", "thread_id": "multi", "anchor": tk.ANCHOR,
                               "anchors": [tk.ANCHOR, tk.ANCHOR], "comment": "c", "question": "c",
                               "status": "ok", "answer": "a"})
+        for i in range(3):
+            cw_ask._append_qa(d, {"qid": f"q-1000000{i}", "thread_id": "t-24", "anchor": tk.ANCHOR, "comment": "c",
+                                  "question": "c", "status": "ok", "answer": "a"})
+        srv._append_qa(d, {"type": "outcome", "oid": "o-0000aaaa", "qid": "q-00000000", "thread_id": "t-24",
+                           "outcome": "page_edit", "state": "applied", "at": "t",
+                           "payload": {"op": "replace", "target": "o-00000001",
+                                       "block": {"type": "graph", "graph": {"title": "Flow"}}}})
+        srv._append_qa(d, {"type": "outcome", "oid": "o-0000bbbb", "qid": "q-00000000", "thread_id": "t-23",
+                           "outcome": "page_edit", "state": "applied", "at": "t",
+                           "payload": {"op": "insert_after", "target": "overview:p1",
+                                       "block": {"type": "prose", "text": "x" * 3000}}})
+        st = cw_ask._state_notes(d)
+        cw_server.cw_store.write_json(d / "state.json", {"notes": st + [
+            {"id": "n-1", "origin": "github", "path": "a.py", "line": 1, "body": "gh"},
+            {"id": "n-2", "path": "a.py", "line": 3, "side": "new", "state": "draft", "body": "m" * 600}]})
         t = cw_server._threads_part(d, {})
+        assert [x["id"] for x in t["drafts"]] == ["n-2"] and len(t["drafts"][0]["body"]) == 500
+        by_tid = {x["thread_id"]: x for x in t["open"]}
+        assert len(by_tid["t-24"]["turns"]) == 4
+        assert by_tid["t-24"]["outcomes"][0]["summary"] == {
+            "op": "replace", "target": "o-00000001", "target_is_oid": True, "type": "graph", "title": "Flow"}
+        prose = by_tid["t-23"]["outcomes"][0]["summary"]
+        assert len(prose["text"]) == 2000 and prose["target_is_oid"] is False and "title" not in prose
         assert len(t["open"][0]["anchors"]) == 2
         assert len(t["handed"]) == 20 and t["handed_remaining"] == 3
         assert t["handed"][0]["oid"] == "o-00000015" and len(t["handed"][0]["title"]) == 300
@@ -124,7 +148,9 @@ def test_threads_part_outcome_summaries_and_empty_walkthrough():
                                "outcome": kind, "state": "dismissed" if payload == ["x"] else "proposed",
                                "at": "t", "payload": payload})
         summaries = [o["summary"] for o in cw_server._threads_part(d, {})["open"][0]["outcomes"]]
-        assert summaries == ["b" * 300, "done", "replace prose", "T", "", None]
+        assert summaries == ["b" * 300, "done", {"op": "replace", "target": "x", "target_is_oid": False, "type": "prose",
+                                                  "text": "t"}, "T",
+                             {"op": None, "target": None, "target_is_oid": False, "type": None, "text": None}, None]
 
 
 def _reply(daemon, **args):

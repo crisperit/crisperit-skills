@@ -2,7 +2,8 @@
 """Render the walkthrough section from analysis.json and raw.diff.
 
   python3 walkthrough.py --analysis analysis.json --diff raw.diff --format html \
-      [--links links.json] [--symdelta symdelta.json] [--complexity complexity.json] [--open 3]
+      [--links links.json] [--symdelta symdelta.json] [--complexity complexity.json] [--open 3] \
+      [--repo R --base B --head H]
 
 Everything in a walkthrough except the prose is mechanical: the paths, the line counts, the
 bars, the `<details>` nesting, the fences, the escaping and the diff bodies all follow from
@@ -21,7 +22,9 @@ Stdlib only, no network.
 """
 
 import argparse
+import base64
 import json
+import subprocess
 import sys
 from html import escape
 from pathlib import Path
@@ -47,6 +50,19 @@ GROUP_PALETTE_SIZE = 6
 # commit put a chip on all 13, including "1 cx" on four new one-line getters. With it, three
 # files carry one, and all three hold a function a reviewer should look at.
 NOTEWORTHY_CX = 10
+
+# ponytail: previews inline file bytes as data: URIs, so the page grows with them. A flat
+# per-file cap plus one per-page budget keeps a PR full of screenshots from producing a
+# multi-hundred-MB page; raise the budget or link out to the blob if that proves too tight.
+IMAGE_CAP = 1_000_000
+MARKDOWN_CAP = 256_000
+PAGE_PREVIEW_BUDGET = 8_000_000
+_IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".gif": "image/gif", ".webp": "image/webp"}
+_MARKDOWN_EXT = (".md", ".markdown")
+_EYE = ('<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+        '<path d="M1 8s2.6-5 7-5 7 5 7 5-2.6 5-7 5-7-5-7-5z" fill="none" stroke="currentColor" '
+        'stroke-width="1.4"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>')
 
 _LOCKFILES = frozenset({
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
@@ -283,6 +299,70 @@ def rename_note(old, new):
     return "/".join(part for part in (prefix, middle, suffix) if part)
 
 
+def _read_blob(repo, ref, path, cap):
+    """("ok", bytes), ("big", size) or None when git has no such blob (or fails at all). Asks
+    for the size first so a huge blob is never read into memory just to be refused."""
+    spec = f"{ref}:{path}"
+    try:
+        size = subprocess.run(["git", "-C", repo, "cat-file", "-s", spec],
+                              capture_output=True, text=True, timeout=30)
+        if size.returncode != 0:
+            return None
+        n = int(size.stdout.strip())
+        if n > cap:
+            return "big", n
+        blob = subprocess.run(["git", "-C", repo, "cat-file", "blob", spec],
+                              capture_output=True, timeout=30)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return ("ok", blob.stdout) if blob.returncode == 0 else None
+
+
+def _too_big(n):
+    return f'<span class="cw-preview-skip">too large to preview ({max(1, round(n / 1000))} KB)</span>'
+
+
+def _preview(path, old_path, repo, base, head, budget):
+    """(markup lines, shown by default) for a previewable file, or ([], False) when it has none.
+    `budget` is a one-item list holding the page's remaining preview bytes."""
+    ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if ext in _MARKDOWN_EXT:
+        got = _read_blob(repo, head, path, MARKDOWN_CAP)
+        if got is None:
+            return [], False
+        if got[0] == "ok" and len(got[1]) > budget[0]:
+            got = ("big", len(got[1]))
+        if got[0] == "big":
+            return [f'  <div class="cw-preview-body">{_too_big(got[1])}</div>'], False
+        budget[0] -= len(got[1])
+        text = got[1].decode("utf-8", errors="replace")
+        return [f'  <template class="cw-md-src">{escape(text)}</template>',
+                '  <div class="cw-preview-body"></div>'], False
+    mime = _IMAGE_MIME.get(ext)
+    if not mime:
+        return [], False
+    figures = []
+    for label, ref, name in (("Before", base, old_path or path), ("After", head, path)):
+        got = _read_blob(repo, ref, name, IMAGE_CAP)
+        if got is None:
+            continue
+        if got[0] == "ok" and len(got[1]) > budget[0]:
+            got = ("big", len(got[1]))
+        if got[0] == "big":
+            inner = _too_big(got[1])
+        else:
+            budget[0] -= len(got[1])
+            data = base64.b64encode(got[1]).decode("ascii")
+            inner = f'<img alt="{escape(label + ": " + name)}" src="data:{mime};base64,{data}">'
+        figures.append((label, inner))
+    if not figures:
+        return [], False
+    if len(figures) == 1:
+        figures = [({"Before": "Deleted", "After": "Added"}[figures[0][0]], figures[0][1])]
+    parts = "".join(f"<figure>{inner}<figcaption>{label}</figcaption></figure>" for label, inner in figures)
+    return [f'  <div class="cw-preview-body"><div class="cw-preview-img">{parts}</div></div>'], True
+
+
 def _group_color(index):
     """The palette variable for a group at this 0-based index, cycling through --g1..--g6.
     Shared by every place a group is coloured so each shows the same group in the same colour."""
@@ -290,7 +370,8 @@ def _group_color(index):
 
 
 def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, complexity=None,
-                 renames=None, explain=False):
+                 renames=None, explain=False, repo=None, base=None, head=None):
+    budget = [PAGE_PREVIEW_BUDGET]
     is_open = _open_paths(groups, open_count, files)
     file_urls, hunk_urls = link_index(links)
     cx = complexity_index(complexity)
@@ -328,7 +409,10 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
             chip, direction = complexity_chip(cx.get(path))
             depth = depth_chip(cx.get(path))
             old_path = renames.get(path)
-            out.append(f'<details class="hunk"{" open" if path in is_open else ""}>')
+            preview, shown = (_preview(path, old_path, repo, base, head, budget)
+                              if repo and base and head else ([], False))
+            cls = "hunk cw-previewing" if shown else "hunk"
+            out.append(f'<details class="{cls}"{" open" if path in is_open else ""}>')
             out.append("  <summary>")
             # hunk-lines is the summary's one column-2 grid item (see the template): CSS alone
             # stacks the path+stat row above the optional "moved from" row beneath it.
@@ -362,6 +446,10 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
             # after it would wrap onto a third line instead.
             out.append('      <label class="hunk-viewed" title="Mark this file as viewed">'
                        '<input type="checkbox" class="hunk-viewed-cb"> Viewed</label>')
+            if preview:
+                out.append(f'      <button type="button" class="hunk-preview" title="Preview"'
+                           f' aria-label="Preview rendered file"'
+                           f' aria-pressed="{"true" if shown else "false"}">{_EYE}</button>')
             if old_path:
                 # Sibling of .hunk-path, never inside it: the page's comment JS reads
                 # .hunk-path's textContent as the literal PR-comment path, which must stay pure.
@@ -420,7 +508,8 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
                             for kind, text in hunk["lines"]]
                     spans = "\n".join([head] + body)
                 out.append(f'  <pre class="diff">{spans}</pre>')
-            if not file["hunks"]:
+            out.extend(preview)
+            if not file["hunks"] and not (preview and shown):
                 if old_path:
                     # The move itself is already in the header's hunk-was; this only needs to
                     # tell the reader they can skip the file.
@@ -442,6 +531,9 @@ def main():
     parser.add_argument("--complexity", help="complexity.json, for the per-file cx deltas")
     parser.add_argument("--open", type=int, default=DEFAULT_OPEN,
                         help="how many of the first files in reading order render expanded")
+    parser.add_argument("--repo", help="git repo, to preview markdown and image files in place")
+    parser.add_argument("--base", help="base ref, the before side of an image preview")
+    parser.add_argument("--head", help="head ref, the after side of a preview")
     parser.add_argument("--explain", action="store_true",
                         help="the target is code as it stands, not a change: render plain code "
                              "with the file's own line numbers instead of diff rows")
@@ -464,7 +556,7 @@ def main():
     groups = story(order, files, analysis.get("groups"), symdelta)
     complexity = optional(args.complexity)
     sys.stdout.write(render_html(groups, files, by_path, args.open, links, complexity, renames,
-                                 args.explain))
+                                 args.explain, args.repo, args.base, args.head))
     return 0
 
 

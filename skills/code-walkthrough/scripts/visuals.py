@@ -513,6 +513,52 @@ def _labels_by_file(symdelta):
     return out
 
 
+def _ref_in_diff(path, sym, files, labels, texts):
+    if path not in files:
+        return False
+    return not sym or sym in labels.get(path, ()) or bool(re.search(
+        rf"(?<![\w$]){re.escape(sym.rsplit('.', 1)[-1])}(?![\w$])", texts.get(path, "")))
+
+
+MAX_CALLS = 60
+
+
+def check_calls(raw, ctx):
+    """Model-drawn call edges: [{"from": "path:sym", "to": "path:sym", "state": "new"|"gone"}] ->
+    (calls, problems). Both endpoints must be diff files whose symbol is a symdelta label or an
+    identifier in that file's +/- lines. Invalid or duplicate items are reported and dropped."""
+    problems, out, seen = [], [], set()
+    ctx = ctx or {}
+    files, texts = ctx.get("files") or set(), ctx.get("text") or {}
+    labels = _labels_by_file(ctx.get("symdelta"))
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["calls: expected a list"]
+    if len(raw) > MAX_CALLS:
+        problems.append(f"calls: at most {MAX_CALLS}, {len(raw) - MAX_CALLS} dropped")
+    for i, c in enumerate(raw[:MAX_CALLS]):
+        label = f"calls[{i}]"
+        if not isinstance(c, dict) or c.get("state") not in ("new", "gone"):
+            problems.append(f'{label}: expected {{"from","to","state": "new"|"gone"}}')
+            continue
+        ends = []
+        for side in ("from", "to"):
+            ref = c.get(side)
+            path, _, sym = ref.partition(":") if isinstance(ref, str) else ("", "", "")
+            if not path or not _SYMBOL.fullmatch(sym):
+                problems.append(f"{label}.{side}: expected path:symbol")
+            elif not _ref_in_diff(path, sym, files, labels, texts):
+                problems.append(f"{label}.{side}: {ref[:80]} not in diff")
+            else:
+                ends.append((path, sym))
+        if len(ends) == 2 and ends[0] != ends[1] and (*ends, c["state"]) not in seen:
+            seen.add((*ends, c["state"]))
+            out.append({"from": f"{ends[0][0]}:{ends[0][1]}", "to": f"{ends[1][0]}:{ends[1][1]}",
+                        "state": c["state"]})
+    return out, problems[:MAX_PROBLEMS]
+
+
 def check_overview(raw, n_groups, files=None, symdelta=None, added_removed_text=None):
     """Validate the `overview` graph -> (clean | None, problems).
 
@@ -572,12 +618,9 @@ def check_overview(raw, n_groups, files=None, symdelta=None, added_removed_text=
             if not path or (sym and not _SYMBOL.fullmatch(sym)):
                 problems.append(f"{where}: expected path or path:symbol")
                 continue
-            if files is not None:
-                ok = path in files and (not sym or sym in labels.get(path, ()) or re.search(
-                    rf"(?<![\w$]){re.escape(sym.rsplit('.', 1)[-1])}(?![\w$])", texts.get(path, "")))
-                if not ok:
-                    problems.append(f"{where}: {ref[:80]} not in diff")
-                    continue
+            if files is not None and not _ref_in_diff(path, sym, files, labels, texts):
+                problems.append(f"{where}: {ref[:80]} not in diff")
+                continue
             out.append(ref)
         return out
 

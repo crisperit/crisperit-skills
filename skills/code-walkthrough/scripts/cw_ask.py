@@ -33,6 +33,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
 
 PROMPT_CAP = 16000
+# ponytail: refuse only above this; the quote is never cut, extras after it are cut to PROMPT_CAP
+SELECTION_CAP = 200_000
 HUNK_WINDOW = 40
 QA_PAIRS = 5
 QUESTION_MAX = 2000
@@ -329,11 +331,36 @@ def write_turn_anchor(d, qid, thread_id, anchor, comment=None, source="user", an
     refs = anchors or [anchor]
     doc = _with_anchors(
         {"qid": qid, "thread_id": thread_id, "anchor": anchor, "comment": comment, "source": source,
-         "mode": mode, "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs)}, anchors)
+         "mode": mode, "resolvable": _resolvable(d, refs), "replyable": _replyable(d, refs),
+         "page_edits": _applied_page_edits(d, thread_id)}, anchors)
     cw_store.write_json(path, doc)
     trusted = _trusted_anchor_path(d, qid)
     trusted.parent.mkdir(exist_ok=True)
     cw_store.write_json(trusted, doc)
+
+
+def _applied_page_edits(d, thread_id):
+    return [{"oid": o["oid"], "target": (o["payload"] or {}).get("target"),
+             "type": ((o["payload"] or {}).get("block") or {}).get("type")}
+            for o in read_outcomes(d)
+            if o["thread_id"] == thread_id and o["outcome"] == "page_edit" and o["state"] == "applied"]
+
+
+def _page_edits_text(d, thread_id):
+    rows = []
+    for o in read_outcomes(d):
+        if o["thread_id"] != thread_id or o["outcome"] != "page_edit" or o["state"] != "applied":
+            continue
+        p = o["payload"] or {}
+        block = p.get("block") or {}
+        what = (f"diagram '{(block.get('graph') or {}).get('title')}'" if block.get("type") == "graph"
+                else block.get("type"))
+        where = "after block" if p.get("op") == "insert_after" else "of block"
+        rows.append(f"{o['oid']} ({p.get('op')} {where} {p.get('target')}, {what})")
+    if not rows:
+        return ""
+    return ("Your applied page edits: " + "; ".join(rows)
+            + ". Pass an oid as target to replace that edit.")
 
 
 def _trusted_anchor_path(d, qid):
@@ -470,6 +497,10 @@ def _outcome_action(d, oid, action, payload, on_event):
     if transition is None:
         raise OutcomeError(f"unknown action {action!r}", "invalid")
     from_states, to_state = transition
+    if current["outcome"] == "page_edit" and action == "revert" and any(
+            o["outcome"] == "page_edit" and o["state"] == "applied" and o["oid"] != oid
+            and (o["payload"] or {}).get("target") == oid for o in outcomes):
+        raise OutcomeError("a newer page edit replaces this one", "conflict", remedy="undo the newer edit first")
     if isinstance(from_states, str):
         from_states = (from_states,)
     if current["state"] not in from_states:
@@ -566,6 +597,9 @@ def complete_handed(d, oid, thread_id, record, summary, on_event=None):
     return folded
 
 
+_OID_TARGET_RE = re.compile(r"o-[0-9a-f]{8}")
+
+
 def _note_loc(d, note_id):
     for n in _state_notes(d):
         if n.get("id") == note_id:
@@ -588,8 +622,11 @@ def _outcome_updates_text(d, thread_id, since_last_turn=True):
         payload = r.get("payload") or o["payload"]
         if o["outcome"] == "page_edit":
             verb = "undid" if r.get("state") == "reverted" else "redid"
-            where = "after block" if payload["op"] == "insert_after" else "of block"
-            lines.append(f"The user {verb} your page edit ({payload['op']} {where} {payload['target']})")
+            if _OID_TARGET_RE.fullmatch(str(payload["target"])):
+                lines.append(f"The user {verb} your edit {payload['target']} replacement ({payload['op']})")
+            else:
+                where = "after block" if payload["op"] == "insert_after" else "of block"
+                lines.append(f"The user {verb} your page edit ({payload['op']} {where} {payload['target']})")
             continue
         if o["outcome"] == "task":
             if r.get("state") == "dismissed":
@@ -787,7 +824,7 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=Non
             body, _hunks = _references_body(d, fresh, True)
             added = ["References added in this comment:\n\n" + body]
         extras = [_block_key_text(anchors), _candidates_text(d, anchors), _reply_targets_text(d, anchors),
-                  _outcome_updates_text(d, thread_id)]
+                  _outcome_updates_text(d, thread_id), _page_edits_text(d, thread_id)]
         return "\n\n".join([f"Question:\n{question}", *added, *filter(None, extras)])
 
     many = len(refs) > 1
@@ -798,7 +835,7 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=Non
     else:
         hunks = []
         combined = f"Question:\n{question}"
-    if len(combined) > PROMPT_CAP:
+    if len(combined) > SELECTION_CAP:
         raise cw_store.CWError("selection too large",
                                remedy="remove a reference" if many else "select a smaller range")
 
@@ -826,12 +863,14 @@ def build_prompt(d, anchor, question, thread_id=None, resumed=False, anchors=Non
     qa_text = _qa_pairs_text(d, thread_id)
     if qa_text:
         parts.append(qa_text)
+    pinned = [_page_edits_text(d, thread_id)]
     if thread_id is not None:
-        updates = _outcome_updates_text(d, thread_id, since_last_turn=False)
-        if updates:
-            parts.append(updates)
+        pinned.insert(0, _outcome_updates_text(d, thread_id, since_last_turn=False))
+    pinned = "\n\n".join(filter(None, pinned))
 
-    return "\n\n".join(parts)[:PROMPT_CAP]
+    budget = max(PROMPT_CAP - len(combined) - 2 - (len(pinned) + 2 if pinned else 0), 0)
+    extras = "\n\n".join(parts[1:])[:budget]
+    return "\n\n".join(filter(None, [combined, extras, pinned]))
 
 
 def begin_turn(d, qid, anchor, comment, thread_id=None, on_event=None, source="user", anchors=None,

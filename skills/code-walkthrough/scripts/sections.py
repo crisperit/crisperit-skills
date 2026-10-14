@@ -684,6 +684,13 @@ def _llm_caveat_text():
             "Edges may be wrong.")
 
 
+def _model_note(data):
+    if data.get("resolver") != "model":
+        return ""
+    reason = data.get("reason") or "no reason given"
+    return _html_note(f"Drawn by the model from the diff, not from a code index ({reason}).")
+
+
 def _llm_caveat():
     return _html_note(_llm_caveat_text())
 
@@ -753,6 +760,8 @@ def render_symbols(data, explain=False, paths=(), inline=False):
         note = _packages_note(pkg_count, len(edges), undrawn_count)
         ids_attr = escape(json.dumps(pkg_map, sort_keys=True)).replace('"', "&quot;")
         caveat_html = f'<p class="note">{_llm_caveat()}</p>\n' if data.get("resolver") == "llm" else ""
+        if data.get("resolver") == "model":
+            caveat_html = f'<p class="note">{_model_note(data)}</p>\n'
         body = "\n".join([
             f'<div class="mermaid" data-ids="{ids_attr}">{escape(level1)}</div>',
             f'<p class="note">{note}</p>',
@@ -821,7 +830,8 @@ def render_symbols(data, explain=False, paths=(), inline=False):
         f'data-legend="{legend_attrs[1]}" data-ids="{ids_attrs[1]}"{lines_attr}>{escape(level2)}</div>',
         f'<p class="note">{note}</p>',
     ]) + "\n" + (
-        f'<p class="note">{_llm_caveat()}</p>\n' if data.get("resolver") == "llm" else ""
+        f'<p class="note">{_llm_caveat()}</p>\n' if data.get("resolver") == "llm" else
+        f'<p class="note">{_model_note(data)}</p>\n' if data.get("resolver") == "model" else ""
     ) + orphans_html + moved_html
 
     return "\n".join([

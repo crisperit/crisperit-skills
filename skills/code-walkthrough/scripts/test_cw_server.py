@@ -1095,3 +1095,94 @@ def test_draft_comments_keep_and_dismiss_routes():
         with running_daemon() as daemon:
             status, body = _post(daemon, f"/api/walkthrough/{KEY}/{WID}/outcomes/{DC_OID}/dismiss")
             assert status == 200 and body["outcome"]["state"] == "dismissed"
+
+
+# -- trust route ----------------------------------------------------------------
+
+def _trust_setup(home, **meta):
+    d, _ = _make_walkthrough(home)
+    cw_store.update_meta(d, lambda m: m.update(gh_repo="Acme/Widgets", **meta))
+    return d, f"/api/walkthrough/{KEY}/{WID}/trust"
+
+
+def _config(home):
+    return json.loads((home / "config.json").read_text())
+
+
+def test_trust_route_guards_and_bad_bodies():
+    with cw_testlib.temp_home() as home:
+        _d, path = _trust_setup(home)
+        with running_daemon() as daemon:
+            body = {"scope": "repo", "action": "add"}
+            _guard_checks(daemon, path, body)
+            for bad in ({}, {"scope": "repo"}, {"scope": "team", "action": "add"},
+                        {"scope": "repo", "action": "drop"}, {**body, "value": "x/y"}, []):
+                assert _post(daemon, path, bad)[0] == 400, bad
+            status, raw = _request(daemon, "POST", path, token=daemon.token, body="{nope")
+            assert status == 400
+        assert not (home / "config.json").exists()
+
+
+def test_trust_route_sibling_and_non_github_conflict():
+    with cw_testlib.temp_home() as home:
+        d, path = _trust_setup(home, sibling_of={"key": "k", "id": "w"})
+        with running_daemon() as daemon:
+            assert _post(daemon, path, {"scope": "repo", "action": "add"})[0] == 409
+            cw_store.update_meta(d, lambda m: (m.pop("sibling_of"), m.pop("gh_repo"), m.update(origin_repo="")))
+            status, body = _post(daemon, path, {"scope": "org", "action": "add"})
+            assert status == 409 and body["error"] == "not a github.com repo"
+        assert not (home / "config.json").exists()
+
+
+def test_trust_route_edits_config_and_emits_agent_event():
+    with cw_testlib.temp_home() as home:
+        _d, path = _trust_setup(home)
+        (home / "config.json").write_text(json.dumps({"limits": {"x": 1}, "trust": {"repos": ["Other/Repo"]}}))
+        with running_daemon() as daemon:
+            q = daemon.hub.register(KEY, WID)
+            status, body = _post(daemon, path, {"scope": "org", "action": "add"})
+            assert status == 200 and body["agent"]["trusted"] == {"by": "org", "value": "Acme"}
+            event, data = q.get(timeout=2)
+            assert event == "agent" and data == body["agent"]
+            assert _post(daemon, path, {"scope": "org", "action": "add"})[0] == 200
+            assert _post(daemon, path, {"scope": "repo", "action": "add"})[0] == 200
+            assert _post(daemon, path, {"scope": "repo", "action": "add"})[0] == 200
+            cfg = _config(home)
+            assert cfg["limits"] == {"x": 1} and "profiles" not in cfg and "roles" not in cfg
+            assert cfg["trust"] == {"repos": ["Other/Repo", "Acme/Widgets"], "orgs": ["Acme"]}
+            cfg["trust"]["repos"].append("ACME/widgets")
+            (home / "config.json").write_text(json.dumps(cfg))
+            status, body = _post(daemon, path, {"scope": "repo", "action": "remove"})
+            assert status == 200
+            assert _config(home)["trust"]["repos"] == ["Other/Repo"]
+
+
+def test_trust_route_invalid_config_is_400_and_untouched():
+    with cw_testlib.temp_home() as home:
+        _d, path = _trust_setup(home)
+        (home / "config.json").write_text("{not json")
+        with running_daemon() as daemon:
+            status, body = _post(daemon, path, {"scope": "repo", "action": "add"})
+            assert status == 400 and "invalid config" in body["error"] and body["remedy"]
+        assert (home / "config.json").read_text() == "{not json"
+
+
+def test_trust_route_wrong_shaped_trust_is_400_and_untouched():
+    with cw_testlib.temp_home() as home:
+        _d, path = _trust_setup(home)
+        with running_daemon() as daemon:
+            for trust in ("yes", {"repos": "Acme/Widgets"}, {"repos": ["ok", 3]}, {"orgs": {"a": 1}}):
+                text = json.dumps({"trust": trust})
+                (home / "config.json").write_text(text)
+                status, body = _post(daemon, path, {"scope": "repo", "action": "add"})
+                assert status == 400 and "invalid config: trust" in body["error"] and body["remedy"], trust
+                assert (home / "config.json").read_text() == text
+
+
+def test_trust_route_write_failure_is_400_with_remedy():
+    from unittest import mock
+    with cw_testlib.temp_home() as home:
+        _d, path = _trust_setup(home)
+        with running_daemon() as daemon, mock.patch.object(cw_store, "write_json", side_effect=PermissionError("/x")):
+            status, body = _post(daemon, path, {"scope": "repo", "action": "add"})
+            assert status == 400 and body["error"] == "could not write config.json" and body["remedy"]

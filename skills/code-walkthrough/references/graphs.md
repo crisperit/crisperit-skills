@@ -57,6 +57,16 @@ inferred, not compiler-resolved, so the reader can discount it deliberately rath
 by default. It is still worse than a real graph: a wrong edge is worse than no edge, which is why
 it is opt-in, asked for once per diff, and never the default when `language` is `null`.
 
+In live mode there is a fallback of a different kind. When `symdelta.py` returns `language: null`
+and no digest exists, the `visuals` step asks the model for the call edges of the diff (`calls`,
+up to 60, each `from`/`to` as `path:symbol` with state `new` or `gone`). Both endpoints must sit
+in the diff and the symbol must appear in that file's changed lines, or the call is rejected. The
+result is saved as `symdelta.model.json` with language `model` and resolver `model`, and the page
+uses it only when `symdelta.json` has no nodes. The All symbols graph then carries the note "Drawn
+by the model from the diff, not from a code index", with the reason. These edges are read from the
+diff, not resolved by a type checker, so they are still not name matching and still labelled as
+inferred. Static mode has no such fallback.
+
 When `<paths>` scopes the symbols graph (`static.md` step 2b3), the graph keeps symbols under those
 paths plus whatever their edges reach one hop out, not just the exact files named.
 

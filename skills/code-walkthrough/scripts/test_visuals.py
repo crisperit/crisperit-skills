@@ -686,3 +686,43 @@ def test_cli_check_with_diff_and_symdelta(tmp_path):
     f.write_text(json.dumps({"overview": overview(), "groups": []}))
     r = run_cli("check", "--visuals", str(f), "--groups", "2", "--diff", str(tmp_path / "d.diff"))
     assert r.returncode == 1 and "cost.py:cost_gate not in diff" in r.stdout
+
+
+CALLS_DIFF = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,2 +1,2 @@
+-    old_helper()
++    new_helper()
+diff --git a/b.py b/b.py
+--- a/b.py
++++ b/b.py
+@@ -1 +1 @@
++def new_helper(): pass
+"""
+
+
+def test_check_calls_accepts_diff_symbols_and_rejects_the_rest():
+    ctx = v.diff_ctx(CALLS_DIFF)
+    ok = {"from": "a.py:new_helper", "to": "b.py:new_helper", "state": "new"}
+    calls, problems = v.check_calls([
+        ok, dict(ok),
+        {"from": "a.py:old_helper", "to": "b.py:new_helper", "state": "gone"},
+        {"from": "a.py:absent", "to": "b.py:new_helper", "state": "new"},
+        {"from": "c.py:new_helper", "to": "b.py:new_helper", "state": "new"},
+        {"from": "a.py", "to": "b.py:new_helper", "state": "new"},
+        {"from": "a.py:new_helper", "to": "b.py:new_helper", "state": "maybe"}], ctx)
+    assert [(c["from"], c["state"]) for c in calls] == [("a.py:new_helper", "new"), ("a.py:old_helper", "gone")]
+    assert any("a.py:absent not in diff" in p for p in problems)
+    assert any("c.py:new_helper not in diff" in p for p in problems)
+    assert any("calls[5].from: expected path:symbol" in p for p in problems)
+    assert any("calls[6]" in p for p in problems)
+
+
+def test_check_calls_caps_and_shape():
+    ctx = v.diff_ctx(CALLS_DIFF)
+    assert v.check_calls(None, ctx) == ([], [])
+    assert v.check_calls("x", ctx)[1] == ["calls: expected a list"]
+    many = [{"from": f"a.py:new_helper", "to": "b.py:new_helper", "state": "new"}] * 61
+    calls, problems = v.check_calls(many, ctx)
+    assert len(calls) == 1 and "at most 60, 1 dropped" in problems[0]

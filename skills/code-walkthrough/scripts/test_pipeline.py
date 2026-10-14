@@ -175,6 +175,26 @@ def test_render_passes_symdelta_and_complexity_only_when_present():
     assert full[full.index("--complexity") + 1] == str(d / "complexity.json")
 
 
+def test_symdelta_file_falls_back_to_model_data_only_without_real_nodes():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        assert pipeline._symdelta_file(d) == d / "symdelta.json"
+        (d / "symdelta.model.json").write_text("{}")
+        (d / "symdelta.json").write_text('{"language": null, "nodes": []}')
+        assert pipeline._symdelta_file(d) == d / "symdelta.model.json"
+        (d / "symdelta.json").write_text('{"language": "go", "nodes": [{"id": "a"}]}')
+        assert pipeline._symdelta_file(d) == d / "symdelta.json"
+
+
+def test_symdelta_file_survives_corrupt_symdelta_json():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "symdelta.json").write_text('{"language": "go", "nodes": [{"id"')
+        assert pipeline._symdelta_file(d) == d / "symdelta.json"
+        (d / "symdelta.model.json").write_text("{}")
+        assert pipeline._symdelta_file(d) == d / "symdelta.model.json"
+
+
 VIS_OK = '<p>picture</p>'
 
 

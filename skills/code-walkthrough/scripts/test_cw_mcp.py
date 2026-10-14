@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -169,8 +170,17 @@ def _page_doc(kind="block"):
 
 
 def _edit(**over):
-    args = {"op": "insert_after", "target": "overview:p1", "block": {"type": "mermaid", "text": "flowchart TD\nA-->B"}}
+    args = {"op": "insert_after", "target": "overview:p1", "block": {"type": "prose", "text": "hello"}}
     return {**args, **over}
+
+
+GRAPH = {"title": "t", "nodes": [{"id": "a", "label": "A", "kind": "new", "refs": ["a.py:f"]},
+                                 {"id": "b", "label": "B", "kind": "same", "refs": ["b.py"]}],
+         "edges": [{"from": "a", "to": "b", "kind": "new"}]}
+
+
+def _gedit(graph=GRAPH, **over):
+    return _edit(block={"type": "graph", "graph": graph}, **over)
 
 
 def test_check_page_edit_cases():
@@ -185,8 +195,16 @@ def test_check_page_edit_cases():
     assert "block must be an object" in check(_edit(block="x"))
     assert "4000" in check(_edit(block={"type": "prose", "text": "x" * 4001}))
     assert check(_edit(block={"type": "prose", "text": "x" * 4000})) is None
-    assert check(_edit(block={"type": "mermaid", "text": "x" * 6000})) is None
-    assert "6000" in check(_edit(block={"type": "mermaid", "text": "x" * 6001}))
+    assert "block.type" in check(_edit(block={"type": "mermaid", "text": "flowchart TD\nA-->B"}))
+    assert check(_gedit()) is None
+    noref = {**GRAPH, "nodes": [{**n, "refs": []} for n in GRAPH["nodes"]]}
+    assert "block.graph invalid" in check(_gedit(noref))
+    assert "block.graph invalid" in check(_gedit("x"))
+    assert "KB" in check(_gedit({**GRAPH, "notes": ["\u00e9" * 4000]}))
+    oid_doc = {**doc, "page_edits": [{"oid": "o-1", "target": "overview:p1", "type": "graph"}]}
+    assert check(_edit(target="o-1"), oid_doc) is None
+    assert "target must be" in check(_edit(target="o-1"))
+    assert check(_edit(target="o-1"), oid_doc, already={"page_edit:overview:p1"}) is None
     assert "target must be overview:p1" in check(_edit(target="other:p9"))
     assert "reply instead" in check(_edit(), _page_doc("line"))
     mixed = {**_page_doc(), "anchors": [_page_doc("line")["anchor"], _page_doc()["anchor"]]}
@@ -195,8 +213,8 @@ def test_check_page_edit_cases():
     task = {"title": "t", "steps": ["s"], "files": ["a.py"]}
     assert cw_mcp.check_outcome(mixed, "propose_task", task) is None
     assert "diff lines" in cw_mcp.check_outcome(_page_doc(), "propose_task", task)
-    assert "already proposed a page edit" in check(_edit(), already={"page_edit"})
-    assert cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "w"}, already={"page_edit"}) is not None
+    assert "already proposed a page edit" in check(_edit(), already={"page_edit:overview:p1"})
+    assert cw_mcp.check_outcome(doc, "propose_resolve", {"thread": "7", "why": "w"}, already={"page_edit:overview:p1"}) is not None
 
 
 class _Rpc:
@@ -289,6 +307,7 @@ def test_outcomes_server_page_edit_is_stored_stripped_and_once_per_turn():
             assert rec["name"] == "propose_page_edit"
             assert rec["arguments"] == {"op": "insert_after", "target": "overview:p1",
                                         "block": {"type": "prose", "text": "hello"}}
+            assert "(oid o-" in good["content"][0]["text"]
             again = call(_edit())
             assert again["isError"] is True and "already proposed" in again["content"][0]["text"]
             assert len((d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()) == 1
@@ -363,7 +382,7 @@ def test_check_github_draft_cases():
     mixed = {**_draft_doc(), "anchors": [ANCHORS["block"], ANCHORS["line"]]}
     assert cw_mcp.check_outcome(mixed, "propose_github_draft", {"body": "b", "target": NEW}) is None
     assert "already drafted" in check({"body": "b", "target": NEW}, already={"github_draft"})
-    assert check({"body": "b", "target": NEW}, already={"page_edit", "resolve:7"}) is None
+    assert check({"body": "b", "target": NEW}, already={"page_edit:x", "resolve:7"}) is None
 
 
 def test_github_draft_payload_copies_target_and_verbatim_is_byte_for_byte():
@@ -546,3 +565,27 @@ def test_reload_walkthrough_is_full_only_and_once_per_turn():
         ok, msg = cw_mcp.accept_outcome(d, "q1", "reload_walkthrough", {})
         assert not ok and "already requested" in msg
         assert json.loads((d / "turns" / "q1.outcomes.jsonl").read_text())["arguments"] == {}
+
+
+def test_page_edit_graph_payload_has_prefixed_markers_and_targets_differ_per_turn():
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        doc = {**_page_doc(), "anchors": [_page_doc()["anchor"], {"kind": "block", "block": "overview:p2"}],
+               "page_edits": [{"oid": "o-1", "target": "overview:p1", "type": "graph"}]}
+        (d / "turns" / "q1.anchor.json").write_text(json.dumps(doc))
+        ok, _ = cw_mcp.accept_outcome(d, "q1", "propose_page_edit", _gedit())
+        assert ok
+        ok, _ = cw_mcp.accept_outcome(d, "q1", "propose_page_edit", _gedit(target="overview:p2"))
+        assert ok
+        ok, text = cw_mcp.accept_outcome(d, "q1", "propose_page_edit", _gedit(target="o-1"))
+        assert ok and "(oid o-" in text
+        ok, text = cw_mcp.accept_outcome(d, "q1", "propose_page_edit", _edit())
+        assert not ok and "already proposed" in text
+        recs = [json.loads(x) for x in (d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()]
+        block = recs[0]["arguments"]["block"]
+        assert block["type"] == "graph" and block["graph"]["title"] == "t"
+        assert re.search(r'<marker id="cw-ov-m-[0-9a-f]{6}-new"', block["svg"])
+        assert recs[0]["arguments"]["block"]["svg"] != recs[1]["arguments"]["block"]["svg"]
+        import xml.etree.ElementTree as ET
+        assert ET.fromstring(block["svg"]).tag == "{http://www.w3.org/2000/svg}svg"

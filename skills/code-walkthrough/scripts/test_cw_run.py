@@ -694,3 +694,45 @@ def test_reuse_keeps_a_passing_fragment_at_the_same_sig_a_new_head_clears_it():
 def test_head_on_github_needs_gh_to_confirm_the_head_oid(monkeypatch, out, rc, expected):
     monkeypatch.setattr(cw_run, "_gh", lambda meta, args, **kw: types.SimpleNamespace(returncode=rc, stdout=out))
     assert cw_run._head_on_github({"pr": 5, "gh_repo": "o/r", "head": "abc"}) is expected
+
+
+NULL_SYMDELTA = {"language": None, "reason": "no go toolchain", "remedy": "install go"}
+
+
+def _calls_run(symdelta, groups=False):
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub, symbols=False, groups=True)
+            (d / "symdelta.json").write_text(json.dumps(symdelta))
+            (d / "symdelta.model.json").write_text("stale")
+            pic = [{"index": 0, "html": "<p>g</p>"}]
+            bad = {"groups": pic, "calls": [{"from": "foo.py:nope", "to": "foo.py:X", "state": "new"}]}
+            good = {"groups": pic, "calls": [{"from": "foo.py:X", "to": "foo.py:b", "state": "new"},
+                                            {"from": "foo.py:b", "to": "foo.py:X", "state": "gone"}]}
+            stub.script = {"prose-m": [_submit(bad), _submit(good)]}
+            ran = cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            model = d / "symdelta.model.json"
+            return (model.read_text() if model.exists() else None), stub, ran
+
+
+def test_null_language_asks_for_calls_and_writes_model_symdelta():
+    model, stub, ran = _calls_run(NULL_SYMDELTA)
+    assert ran
+    props = stub.requests[0]["tools"][-1]["function"]["parameters"]["properties"]
+    assert "calls" in props
+    assert "also submit `calls`" in cw_testlib.last_user_text(stub.requests[0])
+    gate = [m["content"] for m in stub.requests[1]["messages"] if m.get("role") == "tool"][-1]
+    assert "calls[0].from: foo.py:nope not in diff" in gate
+    saved = json.loads(model)
+    assert saved["resolver"] == "model" and saved["language"] == "model"
+    assert saved["reason"] == "no go toolchain" and saved["moved"] == []
+    assert {"target", "nodes", "edges", "presets", "counts"} <= set(saved)
+    assert {n["label"] for n in saved["nodes"] if n["kind"] == "symbol"} == {"foo.X", "foo.b"}
+
+
+def test_real_symdelta_never_asks_for_calls_or_writes_model_file():
+    model, stub, _ran = _calls_run({"language": "python", "nodes": [
+        {"id": "foo.py:X", "label": "X", "kind": "symbol", "file": "foo.py", "state": "changed"}]}, groups=True)
+    assert "calls" not in stub.requests[0]["tools"][-1]["function"]["parameters"]["properties"]
+    assert "also submit `calls`" not in cw_testlib.last_user_text(stub.requests[0])
+    assert model is None

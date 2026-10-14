@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Self-check for walkthrough.py. Assert-based."""
 
+import base64
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from walkthrough import (  # noqa: E402
+    IMAGE_CAP,
+    MARKDOWN_CAP,
     SMALL_DIFF_LINES,
     caller_depth,
     depth_chip,
@@ -18,6 +22,7 @@ from walkthrough import (  # noqa: E402
     story,
 )
 from validate_analysis import parse_hunks, check_rendered  # noqa: E402
+from cw_testlib import git, require_git  # noqa: E402
 
 
 def flat(order, files):
@@ -792,3 +797,120 @@ def test_explain_file_stat_counts_lines_instead_of_adds_and_removes():
     assert '<span class="add">' not in out
     assert '<span class="hunk-stat">3 lines</span>' in out
     assert '<span class="hunk-stat">1 line</span>' in out
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" + bytes(range(40))
+PNG2 = b"\x89PNG\r\n\x1a\n" + b"\x00" + bytes(range(40, 90))
+
+
+def _preview_repo(tmp_path, base_files, head_files):
+    """Commit base_files then head_files (bytes, None deletes); returns (repo, base, head, diff)."""
+    require_git()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+
+    def commit(files, msg):
+        for name, data in files.items():
+            if data is None:
+                (repo / name).unlink()
+            else:
+                (repo / name).write_bytes(data)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "--allow-empty", "-m", msg)
+        return git(repo, "rev-parse", "HEAD").strip()
+
+    base = commit({"keep.txt": b"x\n", **base_files}, "base")
+    head = commit(head_files, "head")
+    return repo, base, head, git(repo, "diff", base, head)
+
+
+def _preview_out(repo, base, head, diff):
+    order, files = parse_hunks(diff)
+    return render_html(flat(order, files), files, {}, repo=str(repo), base=base, head=head)
+
+
+def test_modified_png_previews_before_and_after_by_default_with_a_toggle_button(tmp_path):
+    repo, base, head, diff = _preview_repo(tmp_path, {"logo.png": PNG}, {"logo.png": PNG2})
+    out = _preview_out(repo, base, head, diff)
+
+    assert base64.b64encode(PNG).decode() in out and base64.b64encode(PNG2).decode() in out
+    assert out.count("data:image/png;base64,") == 2
+    assert "Before" in out and "After" in out
+    assert '<details class="hunk cw-previewing"' in out
+    assert 'class="hunk-preview"' in out and 'aria-pressed="true"' in out
+    assert "No textual diff" not in out
+
+
+def test_added_png_shows_one_image_and_a_deleted_one_shows_its_old_side(tmp_path):
+    repo, base, head, diff = _preview_repo(tmp_path, {"old.png": PNG}, {"new.png": PNG2, "old.png": None})
+    out = _preview_out(repo, base, head, diff)
+
+    assert out.count("<img ") == 2
+    assert out.count("<figure>") == 2
+    assert "<figcaption>Added</figcaption>" in out and "<figcaption>Deleted</figcaption>" in out
+
+
+def test_oversized_image_gets_a_skip_note_not_bytes(tmp_path):
+    big = b"\x89PNG\x00" + b"0" * IMAGE_CAP
+    repo, base, head, diff = _preview_repo(tmp_path, {}, {"big.png": big})
+    out = _preview_out(repo, base, head, diff)
+
+    assert "too large to preview (1000 KB)" in out
+    assert "<img " not in out
+
+
+def test_markdown_source_goes_into_an_escaped_template_and_the_diff_stays(tmp_path):
+    md = b"# Title\n\n<script>x</script> | a |\n"
+    repo, base, head, diff = _preview_repo(tmp_path, {"README.md": b"old\n"}, {"README.md": md})
+    out = _preview_out(repo, base, head, diff)
+
+    assert '<template class="cw-md-src"># Title' in out
+    assert "&lt;script&gt;x&lt;/script&gt;" in out and "<script>" not in out
+    assert '<div class="cw-preview-body"></div>' in out
+    assert '<details class="hunk"' in out and 'aria-pressed="false"' in out
+    assert '<pre class="diff">' in out
+
+
+def test_oversized_markdown_is_skipped_with_a_note(tmp_path):
+    repo, base, head, diff = _preview_repo(tmp_path, {"a.md": b"x\n"}, {"a.md": b"y" * (MARKDOWN_CAP + 1)})
+    out = _preview_out(repo, base, head, diff)
+
+    assert "too large to preview" in out and "cw-md-src" not in out
+
+
+def test_page_budget_stops_previews_once_spent(tmp_path, monkeypatch):
+    monkeypatch.setattr("walkthrough.PAGE_PREVIEW_BUDGET", len(PNG) + 10)
+    repo, base, head, diff = _preview_repo(tmp_path, {}, {"a.png": PNG, "b.png": PNG2})
+    out = _preview_out(repo, base, head, diff)
+
+    assert out.count("<img ") == 1 and out.count("too large to preview") == 1
+
+
+def test_git_failure_skips_the_preview_silently(tmp_path):
+    diff = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+    order, files = parse_hunks(diff)
+    out = render_html(flat(order, files), files, {}, repo=str(tmp_path / "nope"), base="a", head="b")
+
+    assert "hunk-preview" not in out and "No textual diff" in out
+
+
+def test_without_repo_the_output_has_no_preview_markup():
+    diff = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+    order, files = parse_hunks(diff)
+
+    assert "hunk-preview" not in render_html(flat(order, files), files, {})
+
+
+def test_cli_accepts_repo_base_head(tmp_path):
+    repo, base, head, diff = _preview_repo(tmp_path, {}, {"a.png": PNG})
+    (tmp_path / "raw.diff").write_text(diff)
+    (tmp_path / "a.json").write_text("{}")
+    cmd = [sys.executable, str(Path(__file__).parent / "walkthrough.py"), "--analysis",
+           str(tmp_path / "a.json"), "--diff", str(tmp_path / "raw.diff"), "--format", "html"]
+    plain = subprocess.run(cmd, capture_output=True, text=True)
+    full = subprocess.run(cmd + ["--repo", str(repo), "--base", base, "--head", head],
+                          capture_output=True, text=True)
+
+    assert plain.returncode == 0 and "<img" not in plain.stdout
+    assert full.returncode == 0 and "<img" in full.stdout

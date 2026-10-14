@@ -148,9 +148,12 @@ def cmd_prepare(args):
         ):
             return 1
 
-    symdelta_path = d / "symdelta.json"
+    symdelta_path = _symdelta_file(d)
     if symdelta_path.exists():
-        symdelta_lang = json.loads(symdelta_path.read_text()).get("language")
+        try:
+            symdelta_lang = json.loads(symdelta_path.read_text()).get("language")
+        except (ValueError, AttributeError):
+            symdelta_lang = None
         print(f"symbols: {symdelta_lang or 'null'}")
     else:
         print("sections: skipped, no symdelta.json")
@@ -177,6 +180,7 @@ def cmd_prepare(args):
         walkthrough_cmd += ["--symdelta", str(symdelta_path)]
     if complexity_path.exists():
         walkthrough_cmd += ["--complexity", str(complexity_path)]
+    walkthrough_cmd += ["--repo", args.repo, "--base", args.base, "--head", args.head]
     if args.explain:
         walkthrough_cmd.append("--explain")
     if not _run_to_file("walkthrough.py", walkthrough_cmd, d / "section-walkthrough.html"):
@@ -199,12 +203,24 @@ def cmd_prepare(args):
     return 0
 
 
+def _symdelta_file(d):
+    """symdelta.json when it has symbol nodes, else the model-drawn symdelta.model.json cw_run
+    writes for a null-language run, else symdelta.json (which may not exist)."""
+    real, model = d / "symdelta.json", d / "symdelta.model.json"
+    try:
+        if real.exists() and json.loads(real.read_text()).get("nodes"):
+            return real
+    except (ValueError, AttributeError):
+        pass
+    return model if model.exists() else real
+
+
 def _optional_data_flags(d):
     """render.py's --symdelta/--complexity/--visuals for whichever of the files exist. Passing
     --complexity also turns on the Complexity fact in the facts strip."""
-    return [arg for flag, name in (("--symdelta", "symdelta.json"), ("--complexity", "complexity.json"),
-                                   ("--visuals", "visuals.json"))
-            if (d / name).exists() for arg in (flag, str(d / name))]
+    return [arg for flag, path in (("--symdelta", _symdelta_file(d)), ("--complexity", d / "complexity.json"),
+                                   ("--visuals", d / "visuals.json"))
+            if path.exists() for arg in (flag, str(path))]
 
 
 def cmd_render(args):
@@ -286,7 +302,7 @@ def cmd_partial(args):
     analysis_partial_path = d / "analysis.partial.json"
     analysis_partial_path.write_text(json.dumps(merged, indent=2) + "\n")
 
-    symdelta_path = d / "symdelta.json"
+    symdelta_path = _symdelta_file(d)
     walkthrough_cmd = ["--analysis", str(analysis_partial_path), "--diff", str(raw_diff),
                         "--format", "html"]
     if symdelta_path.exists():
@@ -294,6 +310,7 @@ def cmd_partial(args):
     complexity_path = d / "complexity.json"
     if complexity_path.exists():
         walkthrough_cmd += ["--complexity", str(complexity_path)]
+    walkthrough_cmd += ["--repo", args.repo, "--base", args.base, "--head", args.head]
     if args.explain:
         walkthrough_cmd.append("--explain")
     if not _run_to_file("walkthrough.py", walkthrough_cmd,

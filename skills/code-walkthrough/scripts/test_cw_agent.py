@@ -34,17 +34,34 @@ def test_trust_levels(monkeypatch):
     assert cw_agent.trust({**meta, "own_pr": False}, {}) is False
     sibling = {**meta, "own_pr": True, "sibling_of": {"key": "k"}}
     assert cw_agent.trust(sibling, {"trust": {"repos": ["acme/widgets"]}}) is False
+    assert cw_agent.trusted_by(meta, {}) is None
+    assert cw_agent.trusted_by({**meta, "own_pr": True}, {"trust": {"repos": ["acme/widgets"]}}) == "own_pr"
+    assert cw_agent.trusted_by(meta, {"trust": {"repos": ["acme/widgets"], "orgs": ["acme"]}}) == "repo"
+    assert cw_agent.trusted_by(meta, {"trust": {"orgs": ["ACME"]}}) == "org"
 
 
 def test_live_payload_agent_defaults_off(tmp_path, monkeypatch):
     monkeypatch.setenv("CODE_WALKTHROUGH_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    cw_testlib.write_config(tmp_path / "home", {"k": {"kind": "claude-code", "model": "sonnet"}}, {"thread": "k"})
+    monkeypatch.setattr(cw_server.cw_llm, "confinement_available", lambda: True)
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b"}, tmp_path, "tok", 1)
-    assert live["agent"] == {"full": False, "own_pr": None, "stale": False}
+    assert live["agent"]["full"] is False and live["agent"]["trusted"] is None
+    assert live["agent"]["full_off"] == {
+        "reason": "Full access is off for this walkthrough", "fixable": "trust", "repo": "a/b", "org": "a",
+        "remedy": "Trust this repo from the Threads panel, or add it to trust.repos in config.json"}
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
-    assert live["agent"] == {"full": True, "own_pr": True, "stale": False}
+    assert live["agent"] == {"full": True, "own_pr": True, "stale": False, "full_off": None,
+                             "trusted": {"by": "own_pr", "value": None}}
     monkeypatch.setattr(cw_server.cw_llm, "confinement_available", lambda: False)
     live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
-    assert live["agent"] == {"full": False, "own_pr": True, "stale": False}
+    assert live["agent"]["full"] is False and live["agent"]["full_off"]["fixable"] is None
+    assert live["agent"]["trusted"]["by"] == "own_pr"
+    (tmp_path / "home" / "config.json").unlink()
+    live = cw_server._live_payload("k", "w", {"gh_repo": "a/b", "own_pr": True}, tmp_path, "tok", 1)
+    assert live["agent"]["full_off"]["reason"] == "Full access needs a claude-code thread profile"
+    off = cw_server._full_off({"own_pr": True}, tmp_path, {"roles": {"thread": "k"}, "profiles": {"k": {"kind": "x"}}})
+    assert off[0] == 400 and "unknown kind" in off[1]["reason"]
 
 
 def test_repo_name_reads_origin_for_non_pr_targets(tmp_path):
@@ -177,8 +194,11 @@ def test_full_refusals():
         ask, d, _repo = _full_fixture(tmp, home, own_pr=False)
         with cw_testlib.running_daemon() as daemon:
             status, raw = _comment(ask, daemon, d, "full")
+            assert json.loads(raw)["remedy"] == "Full is only offered for github.com repos or your own PR"
+            cw_store.update_meta(d, lambda m: m.update(gh_repo="a/b"))
+            status, raw = _comment(ask, daemon, d, "full")
             assert (status, json.loads(raw)["error"]) == (403, "Full access is off for this walkthrough")
-            assert json.loads(raw)["remedy"] == "add owner/name to trust.repos in config.json"
+            assert json.loads(raw)["remedy"].startswith("Trust this repo from the Threads panel")
             assert _comment(ask, daemon, d, "root")[0] == 400
             cw_store.update_meta(d, lambda m: m.update(own_pr=True, sibling_of={"key": "k", "id": "w"}))
             assert _comment(ask, daemon, d, "full")[0] == 409
@@ -212,8 +232,27 @@ def test_full_refused_without_confinement(monkeypatch):
             assert json.loads(raw)["error"] == "Full access needs bubblewrap with overlayfs, which this machine lacks"
             assert json.loads(raw)["remedy"] == "install bubblewrap (Linux only); Review mode still works"
             cw_store.update_meta(d, lambda m: m.update(own_pr=False))
-            assert _comment(ask, daemon, d, "full")[0] == 403
+            assert _comment(ask, daemon, d, "full")[0] == 400
         assert cw_ask.read_qa(d) == []
+
+
+def test_trust_add_enables_full_and_remove_returns_to_review():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, _repo = _full_fixture(tmp, home, own_pr=False, gh_repo="Acme/Widgets")
+        script = {"sonnet": [cw_testlib.claude_stream_entry(["done"]) for _ in range(2)]}
+        trust_path = f"/api/walkthrough/{d.parent.name}/{d.name}/trust"
+        with cw_testlib.fake_claude(tmp, script), cw_testlib.running_daemon() as daemon:
+            assert _comment(ask, daemon, d)[0] == 202
+            ask._wait_final(d, 1)
+            status, raw = cw_testlib.request(daemon, "POST", trust_path, token=daemon.token,
+                                             body=json.dumps({"scope": "repo", "action": "add"}))
+            assert status == 200 and json.loads(raw)["agent"]["full"] is True, raw
+            assert _comment(ask, daemon, d)[0] == 202
+            ask._wait_final(d, 2)
+            status, raw = cw_testlib.request(daemon, "POST", trust_path, token=daemon.token,
+                                             body=json.dumps({"scope": "repo", "action": "remove"}))
+            assert status == 200 and json.loads(raw)["agent"]["full"] is False
+        assert [t["mode"] for t in cw_ask.read_qa(d)] == ["review", "full"]
 
 
 def test_modes_keep_separate_sessions():

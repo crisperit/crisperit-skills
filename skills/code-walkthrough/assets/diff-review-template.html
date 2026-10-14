@@ -207,6 +207,26 @@
     padding:8px 14px 0;color:var(--muted)}
   details.hunk .hunk-note{padding:10px 14px 0;font-size:var(--fs-sm);color:var(--muted)}
   details.hunk pre{margin:10px 14px 14px}
+  details.hunk .hunk-preview{flex:none;display:inline-flex;align-items:center;justify-content:center;
+    padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:none;
+    color:var(--muted);cursor:pointer}
+  details.hunk .hunk-preview[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}
+  details.hunk .hunk-preview:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  details.hunk .cw-preview-body{display:none;padding:10px 14px 14px;overflow-x:auto}
+  details.hunk.cw-previewing .cw-preview-body{display:block}
+  details.hunk.cw-previewing > pre.diff,details.hunk.cw-previewing > .hunk-note-hunk{display:none}
+  details.hunk .cw-preview-img{display:flex;flex-wrap:wrap;gap:12px}
+  details.hunk .cw-preview-img figure{margin:0;flex:1 1 0;min-width:0}
+  details.hunk .cw-preview-img img{display:block;max-width:100%;height:auto;
+    border:1px solid var(--border);border-radius:6px;
+    background:repeating-conic-gradient(#8884 0% 25%,transparent 0% 50%) 0 0/16px 16px}
+  details.hunk .cw-preview-img figcaption,details.hunk .cw-preview-skip{
+    font-size:var(--fs-xs);color:var(--muted)}
+  details.hunk .cw-preview-img figcaption{margin-top:4px}
+  @media (max-width:560px){
+    details.hunk .cw-preview-img{flex-direction:column}
+    details.hunk .hunk-preview{padding:15px 10px;margin:-15px -4px}
+  }
 
   /* Walkthrough group headings: the reading order analysis.json asked for. Plain sentence
      case, unlike the uppercase h2 section headings, so a theme reads as a label inside the
@@ -254,21 +274,16 @@
      the default state grey said it twice and read as switched off; --accent is this page's
      interactive colour, so the control wears it whatever it says, and hover/press move the
      background instead. */
-  #wt-notes-toggle,#cw-wrap-toggle,.vd-level-toggle{background:var(--panel2);border:1px solid var(--accent);
+  #cw-wrap-toggle,.vd-level-toggle{background:var(--panel2);border:1px solid var(--accent);
     color:var(--accent);border-radius:6px;padding:4px 10px;cursor:pointer;
     font:600 var(--fs-xs) system-ui;letter-spacing:.06em;text-transform:uppercase;
     transition:background .2s}
-  #wt-notes-toggle:hover,#cw-wrap-toggle:hover,
+  #cw-wrap-toggle:hover,
   .vd-level-toggle:hover{background:color-mix(in srgb,var(--accent) 14%,var(--panel2))}
-  #wt-notes-toggle:active,#cw-wrap-toggle:active,
+  #cw-wrap-toggle:active,
   .vd-level-toggle:active{background:color-mix(in srgb,var(--accent) 22%,var(--panel2))}
-  #wt-notes-toggle:focus-visible,#cw-wrap-toggle:focus-visible,
+  #cw-wrap-toggle:focus-visible,
   .vd-level-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  /* Explanations are on by default; pressing the toggle drops this class and takes every
-     per-hunk note and each group's why line with it. .hunk-note without the -hunk suffix is the
-     file's one-line role, which stays either way. */
-  body:not(.show-notes) .hunk-note-hunk,
-  body:not(.show-notes) .wt-why{display:none}
   /* The file name is the link to the file on the PR. Text colour is kept and only the
      underline carries the accent: 45 paths repainted blue is a wall of link, and the path is
      still the thing being read. Same muted decoration the note links use. */
@@ -629,6 +644,16 @@
 
   #cw-dock{position:fixed;right:16px;bottom:16px;z-index:40;
     display:flex}
+  #cw-dock[hidden]{display:none}
+  .cw-skel{position:relative;overflow:hidden;margin:12px 0;padding:12px 16px;
+    border:1px dashed var(--border);border-radius:8px;color:var(--muted);font-size:var(--fs-sm)}
+  details.hunk.cw-previewing .cw-skel{display:none}
+  .cw-skel>h2{margin:0 0 6px}
+  .cw-skel>p{margin:0}
+  .cw-skel::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+    background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--text) 8%,transparent),transparent)}
+  @media (prefers-reduced-motion:no-preference){.cw-skel::after{animation:cw-shimmer 1.6s linear infinite}}
+  @keyframes cw-shimmer{to{transform:translateX(100%)}}
   #hr-comments-btn{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;white-space:nowrap;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:999px;
     font:600 var(--fs-sm) system-ui;cursor:pointer;user-select:none;-webkit-user-select:none;
@@ -795,6 +820,11 @@
   #cw-panel-resize:hover,#cw-panel-resize:focus-visible,#cw-panel-resize.cw-dragging{background:var(--accent);opacity:.5;outline:0}
   #cw-panel-head{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;
     border-bottom:1px solid var(--border);font-weight:600}
+  .cw-access{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:6px 14px;
+    border-bottom:1px solid var(--border);font-size:var(--fs-xs);color:var(--muted);overflow-wrap:anywhere}
+  .cw-access[hidden]{display:none}
+  .cw-access-btn{padding:2px 8px;font-size:var(--fs-xs)}
+  .cw-access-err{flex:1 1 100%}
   #cw-panel-title{flex:1 1 auto;min-width:0;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;
     -webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2}
   .cw-panel-icon{flex:none;width:28px;height:28px;background:var(--panel2);border:1px solid var(--border);
@@ -1137,7 +1167,7 @@
     .vd-max-btn{width:44px;height:44px}
     .vd-level-toggle{min-height:44px;padding:10px 14px}
     details.hunk>summary{min-height:44px}
-    #wt-notes-toggle,#cw-wrap-toggle{min-height:44px;padding:10px 14px}
+    #cw-wrap-toggle{min-height:44px;padding:10px 14px}
     /* Same trick as h2.h2-row a below: padding grows the hit area, the equal negative margin
        takes it back out of the layout, so the 13px checkbox stays and the row doesn't grow. */
     details.hunk .hunk-viewed{padding:15px 8px;margin:-15px -8px}
@@ -1191,7 +1221,7 @@
 
 <!-- Ahead of #plan-content in source order (fixed visual position is unchanged) so a keyboard
      user reaches this button without tabbing through every commentable diff line first. -->
-<div id="cw-dock"><button type="button" id="hr-comments-btn" aria-haspopup="dialog">Comments <span class="cw-dock-badge">0</span></button></div>
+<div id="cw-dock" hidden><button type="button" id="hr-comments-btn" aria-haspopup="dialog">Comments <span class="cw-dock-badge">0</span></button></div>
 <dialog id="hr-comments" aria-label="Your comments">
   <div id="hr-comments-head">
     <span>Your comments</span>
@@ -2093,6 +2123,7 @@
     // this one's scope.
     window.__cwFlushPutNotes=flushPutNotes;
   }
+  window.__cwMdEl=mdEl;
 
   // Resolving a thread has no server to post a click to either: the reader's request is kept
   // locally, keyed by the thread root's id, until notes.py sync-threads confirms it on a later
@@ -4209,6 +4240,17 @@
       const text=String((b&&b.text)||'');
       const box=mk('div','cw-pageedit-body');
       if(b&&b.type==='mermaid') box.append(mk('pre','mermaid',text));
+      else if(b&&b.type==='graph'){
+        const doc=new DOMParser().parseFromString(String(b.svg||''),'image/svg+xml');
+        if(!b.svg||doc.querySelector('parsererror')) box.append(mk('p','cw-pageedit-err','The diagram failed to render.'));
+        else{
+          const w=mk('div','cw-vis cw-ov-wrap');
+          const title=String((b.graph&&b.graph.title)||'');
+          if(title) w.append(mk('p','cw-ov-sub',title));
+          w.append(document.importNode(doc.documentElement,true));
+          box.append(w);
+        }
+      }
       else if(b&&b.type==='list') box.append(mdEl(text.split('\n').map(l=>/^\s*([-*]|\d+\.)\s/.test(l)?l:'- '+l.trim()).join('\n')));
       else box.append(mdEl(text));
       return box;
@@ -4221,6 +4263,8 @@
       const target=o.payload&&o.payload.target;
       const heading=a.section&&[...planEl.querySelectorAll('h1,h2,h3,h4')].find(x=>x.textContent.trim()===a.section);
       if(a.kind==='section'&&target===a.section) return {el:heading||null,outdated:!heading};
+      const prev=target&&pageEdits.get(target);
+      if(prev&&prev.node.isConnected) return {el:prev.node,outdated:false};
       const idx=blockIndex();
       const el=target&&idx.byKey.get(target);
       if(el) return {el,outdated:false};
@@ -4230,10 +4274,14 @@
     }
 
     function resyncPageEdits(){
-      for(const [oid,cur] of [...pageEdits]){
-        if(!cur.node.isConnected||!cur.outdated) continue;
-        const d=pageEditTarget(cur.o);
-        if(d.el!==cur.destEl||!d.outdated){ removePageEdit(oid); syncPageEdit(cur.o); }
+      for(let i=0;i<=pageEdits.size;i++){
+        let changed=false;
+        for(const [oid,cur] of [...pageEdits]){
+          if(pageEdits.get(oid)!==cur||!cur.node.isConnected) continue;
+          const d=pageEditTarget(cur.o);
+          if(d.el!==cur.destEl||d.outdated!==cur.outdated){ removePageEdit(oid); syncPageEdit(cur.o); changed=true; }
+        }
+        if(!changed) break;
       }
     }
 
@@ -4283,7 +4331,7 @@
       if(p.op==='replace'&&dest.el&&!dest.outdated){
         orig=dest.el;
         const det=document.createElement('details');
-        det.append(mk('summary',null,'original'),mk('p','cw-pageedit-orig',textOf(orig)));
+        det.append(mk('summary',null,'original'),mk('p','cw-pageedit-orig',textOf(orig.querySelector('.cw-pageedit-body')||orig)));
         n.append(det);
         if(!hiddenBy.has(orig)) hiddenBy.set(orig,new Set());
         hiddenBy.get(orig).add(o.oid);
@@ -4301,7 +4349,7 @@
     }
 
     function pageEditWhat(p){
-      const noun={prose:'prose',list:'a list',mermaid:'a diagram'}[(p.block||{}).type]||'a block';
+      const noun={prose:'prose',list:'a list',mermaid:'a diagram',graph:'a diagram'}[(p.block||{}).type]||'a block';
       return p.op==='replace'?'replaced this block with '+noun:'added '+noun+' after this block';
     }
 
@@ -5515,6 +5563,8 @@
       ((d&&d.turns)||[]).forEach(x=>streams.set(x.qid,{seq:x.seq||0,text:x.text||'',progress:x.progress||null}));
       for(const t of threads.values()) if(t.turns.some(r=>r.status==='pending')) renderThread(t);
       if(snapshots++>0) loadQa();
+      paintDock();
+      if(d&&d.agent&&window.__cwOnAgent) window.__cwOnAgent(d.agent);
     };
 
     const toastEl=mk('div'); toastEl.id='cw-toast'; toastEl.setAttribute('role','status');
@@ -5542,10 +5592,13 @@
     const coarseQ=matchMedia('(pointer:coarse)');
     let dockView={open:0,waiting:0,label:'Threads'};
     function paintDock(){
+      $('cw-dock').hidden=window.CW_LIVE.status==='building'&&!dockView.open&&!dockView.waiting;
       dockSet(dock,'Threads',[{cls:'purple',text:dockView.open},
         dockView.waiting>0&&{cls:'yellow',text:dockView.waiting,full:' waiting'}]);
       dock.setAttribute('aria-label',dockView.label);
     }
+    window.__cwPaintDock=paintDock;
+    paintDock();
     const rootEl=document.documentElement;
     document.addEventListener('focusin',e=>{
       if(coarseQ.matches&&e.target.matches&&e.target.matches('.cw-compose textarea,.cw-ed')) rootEl.classList.add('cw-typing');
@@ -5600,11 +5653,51 @@
     pFoot.append(pNew,thSubmit,triageBtn,pStatus);
     pList.append(pFilters,pRows,pFoot);
 
+    const pAccess=mk('div','cw-access'); pAccess.setAttribute('role','status');
+    function paintAccess(a){
+      const kids=[];
+      const off=a&&a.full_off, by=a&&a.full&&a.trusted&&a.trusted.by;
+      if(off){
+        kids.push(mk('span',null,'Review only: '+off.reason+'. '+off.remedy));
+        if(off.fixable==='trust'){
+          if(off.repo) kids.push(trustBtn('Trust '+off.repo,'repo','add',
+            'Trust '+off.repo+'? Full lets the agent run commands and edit this repo\'s code on this machine, in a sandboxed worktree with no push. It also applies to PRs from forks into '+off.repo+'.'));
+          if(off.org) kids.push(trustBtn('Trust all of '+off.org,'org','add',
+            'Trust all of '+off.org+'? Full lets the agent run commands and edit the code of every repo owned by '+off.org+' on this machine, in a sandboxed worktree with no push. It also applies to PRs from forks into those repos.'));
+        }
+      } else if(by==='own_pr'){
+        kids.push(mk('span',null,'Full access: your PR'));
+      } else if(by==='repo'||by==='org'){
+        kids.push(mk('span',null,'Full access: trusted ('+a.trusted.value+')'));
+        kids.push(trustBtn('Stop trusting',by,'remove',null));
+      }
+      pAccess.replaceChildren(...kids);
+      pAccess.hidden=!kids.length;
+    }
+    function trustBtn(label,scope,action,warn){
+      const b=mkBtn(label,'fb-ghost cw-access-btn');
+      b.addEventListener('click',()=>{
+        if(warn&&!confirm(warn)) return;
+        const all=[...pAccess.querySelectorAll('button')];
+        all.forEach(x=>{ x.disabled=true; });
+        const fail=m=>{ all.forEach(x=>{ x.disabled=false; }); pAccess.append(mk('span','cw-access-err',m)); };
+        postJson('/trust',{scope,action})
+          .then(({ok,body})=>{
+            if(!ok||body.error) fail((body.error||'Request failed')+(body.remedy?' ('+body.remedy+')':''));
+            else paintAccess(body.agent);
+          })
+          .catch(()=>fail('Request failed -- check the daemon is still running.'));
+      });
+      return b;
+    }
+    paintAccess(window.CW_LIVE.agent);
+    window.__cwOnAgent=paintAccess;
+
     const pThread=mk('div'); pThread.id='cw-panel-thread'; pThread.hidden=true;
     const pBody=mk('div'); pBody.id='cw-panel-body';
     const pCompose=mk('div'); pCompose.id='cw-panel-compose';
     pThread.append(pBody,pCompose);
-    panel.append(grab,pHead,pList,pThread);
+    panel.append(grab,pHead,pAccess,pList,pThread);
     $('cw-dock').after(panel);
 
     const resizer=mk('div'); resizer.id='cw-panel-resize'; resizer.tabIndex=0;
@@ -6129,6 +6222,7 @@
   wireCommentsPanel();
   wireResolutionDialog();
   if(window.CW_LIVE) wireAsk();
+  if(!window.CW_LIVE||(!window.__cwPaintDock&&window.CW_LIVE.status!=='building')) $('cw-dock').hidden=false;
 
   function wireSibling(){
     const sb=window.CW_LIVE&&window.CW_LIVE.sibling;
@@ -6172,89 +6266,50 @@ document.querySelectorAll('summary a').forEach(a => {
 });
 </script>
 <script>
-// Explanations -- per-hunk notes, a group's why line and its whole diagram panel -- on by
-// default, from the one toggle in the Walkthrough heading. The file role lines are not
-// affected -- see the body:not(.show-notes) rule in the stylesheet.
-// Persisted so a reader who turned the prose off keeps it off across the next recap they open;
-// file:// and a sandboxed share host both throw on localStorage, hence the try/catch on every
-// access. Read against an explicit '0' rather than a truthy '1', so a reader who has never
-// touched it gets the on default instead of whatever a missing key coerces to.
-(function(){
-  const KEY='vd-show-notes';
-  const btn=document.getElementById('wt-notes-toggle');
-  if(!btn) return;
-
-  // A file's hunks are separate <pre> blocks only so a note can sit between them. Where no
-  // note actually sits between two of them, a framed panel each, with its own sideways
-  // scroll, is worse to read than the single block GitHub shows: so consecutive hunks with
-  // nothing between them are merged into the first of the run, and a run breaks only at a
-  // note the reader can currently see. With the notes off that is every hunk in the file.
-  // Safe for the per-line commenting: that is wired per span, by the script above this one,
-  // so a span carries its handler and its recorded identity along with it.
-  const files=[...document.querySelectorAll('details.hunk')]
-    .map(d=>[...d.querySelectorAll('pre.diff')]).filter(pres=>pres.length>1);
-  // Which <pre> each line goes back to. Comment rows the reader adds later have no mark and
-  // follow whichever line they were attached to.
-  files.forEach(pres=>pres.forEach((pre,i)=>{
-    for(const el of pre.children) el.dataset.h=i;
-  }));
-  const splitAll=()=>files.forEach(pres=>{
-    for(const pre of pres){
-      for(const sep of [...pre.querySelectorAll('[data-sep]')]) sep.remove();
-    }
-    for(const pre of pres){
-      let i=null;
-      for(const node of [...pre.childNodes]){
-        if(node.dataset&&node.dataset.h!==undefined) i=+node.dataset.h;
-        // Appended in document order, and a node already home is left alone, so visiting a
-        // <pre> that just received lines from an earlier one is a no-op rather than a shuffle.
-        if(i!==null&&pres[i]!==pre) pres[i].appendChild(node);
-      }
-    }
-    for(const pre of pres) pre.hidden=false;
+function wireFilePreview(btn){
+  const d=btn.closest('details.hunk');
+  const body=d&&d.querySelector('.cw-preview-body');
+  if(!body) return;
+  const tpl=d.querySelector('template.cw-md-src');
+  btn.addEventListener('click',e=>{
+    e.preventDefault(); e.stopPropagation();
+    const on=!d.classList.contains('cw-previewing');
+    d.classList.toggle('cw-previewing',on);
+    btn.setAttribute('aria-pressed',on?'true':'false');
+    if(on&&tpl&&!body.firstChild&&window.__cwMdEl) body.append(window.__cwMdEl(tpl.content.textContent));
   });
-  const mergeRuns=notesOn=>files.forEach(pres=>{
+}
+document.querySelectorAll('details.hunk .hunk-preview').forEach(wireFilePreview);
+</script>
+<script>
+(function(){
+  document.querySelectorAll('details.hunk').forEach(d=>{
+    const pres=[...d.querySelectorAll('pre.diff')];
     let lead=pres[0];
     for(let i=1;i<pres.length;i++){
       const before=pres[i].previousElementSibling;
-      if(notesOn&&before&&before.classList.contains('hunk-note-hunk')){ lead=pres[i]; continue; }
+      if(before&&before.classList.contains('hunk-note-hunk')){ lead=pres[i]; continue; }
       // The block ends on its last line with no trailing newline, so without this the next
       // hunk's @@ header lands on the end of that line. Two newlines, not one: the blank line
       // is what makes the header read as the start of a new hunk rather than another line of
       // the previous one.
       const sep=document.createElement('span');
-      sep.dataset.sep='1'; sep.textContent='\n\n';
+      sep.textContent='\n\n';
       lead.appendChild(sep);
       while(pres[i].firstChild) lead.appendChild(pres[i].firstChild);
       pres[i].hidden=true;
     }
   });
-
-  let on=true;
-  try{ on = localStorage.getItem(KEY) !== '0'; }catch(e){}
-  const apply=()=>{
-    document.body.classList.toggle('show-notes',on);
-    btn.textContent = on ? 'explanations' : 'no explanations';
-    btn.setAttribute('aria-label', on
-      ? 'Explanations shown. Activate to hide them.'
-      : 'Explanations hidden. Activate to show them.');
-    splitAll();
-    mergeRuns(on);
-    try{ localStorage.setItem(KEY,on?'1':'0'); }catch(e){}
-  };
-  btn.addEventListener('click',()=>{ on=!on; apply(); });
-  apply();
 })();
 </script>
 <script>
 // Hunk-header and code layout for narrow screens. Soft-wrap defaults on for a narrow or touch
 // screen and off on desktop until the reader picks; the choice persists (try/catch for the
-// same file:// reason as the explanations toggle). The wrapping itself is CSS, see body.cw-wrap.
 (function(){
   const KEY='cw-wrap';
   let on=window.matchMedia('(max-width:560px),(pointer:coarse)').matches;
   try{ const v=localStorage.getItem(KEY); if(v!==null) on=v==='1'; }catch(e){}
-  const notes=document.getElementById('wt-notes-toggle');
+  const slot=document.getElementById('wt-ctl');
   const btn=document.createElement('button');
   btn.type='button'; btn.id='cw-wrap-toggle';
   const apply=()=>{
@@ -6264,7 +6319,7 @@ document.querySelectorAll('summary a').forEach(a => {
       :'Code scrolls sideways. Activate to wrap lines.');
   };
   apply();
-  if(notes) notes.after(btn);
+  if(slot) slot.append(btn);
   btn.addEventListener('click',()=>{
     on=!on; apply();
     try{ localStorage.setItem(KEY,on?'1':'0'); }catch(e){}
@@ -6332,6 +6387,34 @@ document.querySelectorAll('summary a').forEach(a => {
       }
       el.classList.toggle('failed',liveStatus==='failed');
       el.textContent=text;
+      LIVE.status=liveStatus;
+      paintSkeletons();
+    }
+
+    function paintSkeletons(){
+      const building=liveStatus==='building', have=document.querySelectorAll('.cw-skel');
+      if(!building){ have.forEach(e=>e.remove()); return; }
+      if(have.length) return;
+      const skel=(tag,text,h)=>{
+        const el=document.createElement(tag); el.className='cw-skel'; el.setAttribute('aria-busy','true');
+        if(h){ const t=document.createElement('h2'); t.textContent=h; el.append(t); }
+        const p=h?document.createElement('p'):el; p.append(text); if(h) el.append(p);
+        return el;
+      };
+      const facts=document.querySelector('.facts');
+      if(facts&&!document.getElementById('cw-overview')&&!document.getElementById('cw-pr-picture')){
+        const wt=document.getElementById('wt-ctl'), el=skel('section','Drawing the system change\u2026','System change');
+        if(wt) wt.parentElement.before(el); else facts.after(el);
+      }
+      if(facts&&![...document.querySelectorAll('h2')].some(h=>h.textContent.trim()==='Overview')){
+        facts.after(skel('section','Writing the overview\u2026','Overview'));
+      }
+      const wtHead=document.getElementById('wt-ctl');
+      if(wtHead) document.querySelectorAll('details.hunk').forEach(d=>{
+        if(!(wtHead.parentElement.compareDocumentPosition(d)&4)) return;
+        const pre=d.querySelector('pre.diff');
+        if(pre&&!d.querySelector('.hunk-note')) pre.before(skel('p','Writing notes\u2026'));
+      });
     }
     renderBanner();
 
@@ -6400,7 +6483,7 @@ document.querySelectorAll('summary a').forEach(a => {
     es.addEventListener('thread',e=>{
       if(window.__cwOnThread) window.__cwOnThread(JSON.parse(e.data));
     });
-    ['delta','progress','outcome'].forEach(name=>{
+    ['delta','progress','outcome','agent'].forEach(name=>{
       es.addEventListener(name,e=>{
         const hook=window['__cwOn'+name[0].toUpperCase()+name.slice(1)];
         if(hook) hook(JSON.parse(e.data));
