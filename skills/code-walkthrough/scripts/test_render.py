@@ -378,20 +378,15 @@ def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds()
     assert "#" not in badge
 
 
-def test_composer_mode_switch_is_gated_and_sent_only_for_full():
+def test_composer_has_no_mode_switch_and_send_times_out():
     wire_ask = _wire_ask()
     composer = _between(wire_ask, "function threadComposer(view){", "function sendView(view){")
-    gate = "window.CW_LIVE.agent&&window.CW_LIVE.agent.full&&!window.CW_LIVE.sibling"
-    assert gate in composer and composer.index(gate) < composer.index("'fieldset'")
-    assert "r.type='radio'" in composer and "r.checked=v==='review'" in composer
-    assert "mk('legend',null,'Mode')" in composer
-    assert "last.mode==='full'" in composer
-    assert "Push commands are denied by rule, but your own allow rules still apply." in composer and "hint.hidden=true" in composer
+    assert "fieldset" not in composer and "radio" not in composer
     send = _between(wire_ask, "function sendView(view){", "function buildThread(t){")
-    assert "if(c.mode()==='full') body.mode='full';" in send
-    assert "fetch(window.CW_LIVE.api+'/comment'" in send
+    assert "body.mode" not in send and "signal:ctl.signal" in send and "ctl.abort(),30000" in send
+    assert "press Send to retry" in send
     retry = _between(wire_ask, "function retryBtn(t,r){", "const pageEdits=")
-    assert "if(r.mode==='full') body.mode='full';" in retry and "postJson('/comment',body)" in retry
+    assert "body.mode" not in retry and "postJson('/comment',body)" in retry
     panel = _between(wire_ask, "function renderPanelList(){", "const vv=window.visualViewport")
     assert "(t.turns[t.turns.length-1]||{}).mode==='full'" in panel
     assert "if(e.full) meta.append(mk('span','cw-mode-badge','Full'))" in panel

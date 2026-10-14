@@ -887,30 +887,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"{text_key} must be 1-2000 characters",
                                    "remedy": f"shorten the {text_key}"})
             return
-        mode = payload.get("mode", "review")
-        if mode not in ("review", "full"):
-            self._send_json(400, {"error": "bad mode", "remedy": "send mode review or full"})
+        mode = payload.get("mode")
+        if mode not in (None, "review", "full"):
+            self._send_json(400, {"error": "bad mode", "remedy": "omit mode or send review or full"})
             return
-        if mode == "full":
-            config = cw_store.load_config()
-            profile = cw_store.role_profile(config, "thread")
-            meta = cw_store.read_meta(d) or {}
-            if not profile or profile.get("kind") != "claude-code":
-                self._send_json(400, {"error": "Full access needs a claude-code thread profile",
-                                      "remedy": cw_task.REMEDY})
+        if mode != "review":
+            refusal = self._full_refusal(d)
+            if mode == "full" and refusal:
+                self._send_json(*refusal)
                 return
-            if meta.get("sibling_of"):
-                self._send_json(409, {"error": "Full access is off on an updated walkthrough",
-                                      "remedy": "use the original walkthrough"})
-                return
-            if not cw_agent.trust(meta, config):
-                self._send_json(403, {"error": "Full access is off for this walkthrough",
-                                      "remedy": "add owner/name to trust.repos in config.json"})
-                return
-            if not cw_llm.confinement_available():
-                self._send_json(400, {"error": "Full access needs bubblewrap with overlayfs, which this machine lacks",
-                                      "remedy": "install bubblewrap (Linux only); Review mode still works"})
-                return
+            mode = "review" if refusal else "full"
         thread_id = payload.get("thread_id")
         if thread_id is not None:
             if not isinstance(thread_id, str) or not cw_ask.THREAD_RE.fullmatch(thread_id):
@@ -943,6 +929,24 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.cw_daemon.start_ask(key, wid, d, qid, thread_id, anchor, text, anchors=anchors,
                                               mode=mode)
         self._send_json(202, {"qid": qid, "thread_id": thread_id})
+
+    def _full_refusal(self, d):
+        """(status, body) when Full may not run on this walkthrough, else None."""
+        config = cw_store.load_config()
+        profile = cw_store.role_profile(config, "thread")
+        meta = cw_store.read_meta(d) or {}
+        if not profile or profile.get("kind") != "claude-code":
+            return 400, {"error": "Full access needs a claude-code thread profile", "remedy": cw_task.REMEDY}
+        if meta.get("sibling_of"):
+            return 409, {"error": "Full access is off on an updated walkthrough",
+                         "remedy": "use the original walkthrough"}
+        if not cw_agent.trust(meta, config):
+            return 403, {"error": "Full access is off for this walkthrough",
+                         "remedy": "add owner/name to trust.repos in config.json"}
+        if not cw_llm.confinement_available():
+            return 400, {"error": "Full access needs bubblewrap with overlayfs, which this machine lacks",
+                         "remedy": "install bubblewrap (Linux only); Review mode still works"}
+        return None
 
     def _route_triage(self, key, wid):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
@@ -1918,12 +1922,12 @@ class Daemon:
         def _cancelled():
             return live["cancelled"] or self._stopped.is_set()
 
-        def _write_cancelled():
+        def _write_cancelled(status="cancelled", error=None):
             now = cw_store.now_iso()
             record = cw_ask._with_anchors(
                 {"qid": qid, "thread_id": thread_id, "started_at": now, "finished_at": now,
                  "anchor": anchor, "comment": question, "question": question,
-                 "source": source, "mode": mode, "status": "cancelled", "answer": "", "error": None, "remedy": None,
+                 "source": source, "mode": mode, "status": status, "answer": "", "error": error, "remedy": None,
                  "profile": None, "model": None, "session_id": None,
                  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}, anchors)
             cw_ask._append_qa(d, record)
@@ -1966,6 +1970,11 @@ class Daemon:
                                         self, d.parent.name, d.name, cw_store.read_meta(d), **kw))}
                     cw_ask.answer(d, qid, anchor, question, on_event=emit, thread_id=thread_id, live=live,
                                   source=source, anchors=anchors, mode=mode, **full)
+            except Exception as e:
+                try:
+                    _write_cancelled("error", str(e) or type(e).__name__)
+                except Exception:
+                    pass
             finally:
                 if holding:
                     with self._ask_locks_guard:

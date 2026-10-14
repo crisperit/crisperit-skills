@@ -190,6 +190,18 @@ def test_full_refusals():
         assert cw_ask.read_qa(d) == []
 
 
+@pytest.mark.parametrize("own_pr,mode", [(True, "full"), (False, "review")])
+def test_comment_without_mode_picks_full_only_when_allowed(own_pr, mode):
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        ask, d, _repo = _full_fixture(tmp, home, own_pr=own_pr)
+        entry = cw_testlib.claude_stream_entry(["done"])
+        with cw_testlib.fake_claude(tmp, {"sonnet": [entry]}), cw_testlib.running_daemon() as daemon:
+            status, raw = _comment(ask, daemon, d)
+            assert status == 202, raw
+            ask._wait_final(d, 1)
+        assert cw_ask.read_qa(d)[-1]["mode"] == mode
+
+
 def test_full_refused_without_confinement(monkeypatch):
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         ask, d, _repo = _full_fixture(tmp, home)

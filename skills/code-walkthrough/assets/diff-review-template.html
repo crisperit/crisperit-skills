@@ -959,11 +959,6 @@
   .cw-edits-files{margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:var(--fs-xs);overflow-wrap:anywhere}
   .cw-mode-badge{margin-left:8px;padding:0 6px;border:1px solid var(--accent);border-radius:10px;color:var(--accent);
     font:600 var(--fs-xs)/1.5 system-ui,sans-serif;vertical-align:middle}
-  .cw-mode-sw{margin:6px 0 0;padding:0;border:0;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px}
-  .cw-mode-sw legend{float:left;margin:0 12px 0 0;padding:0;color:var(--muted);font-size:var(--fs-xs)}
-  .cw-mode-sw label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
-  .cw-mode-sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .cw-mode-hint{flex:1 1 100%;margin:2px 0 0;color:var(--muted);font-size:var(--fs-xs)}
   .cw-queued{color:var(--muted);font-size:var(--fs-xs)}
   .cw-denied{margin:6px 0 0;padding:4px 8px;border-left:3px solid var(--yellow);font-size:var(--fs-xs)}
   .cw-denied-title{margin:0;color:var(--yellow);font-weight:600}
@@ -1158,7 +1153,6 @@
     #cw-selbar-target{flex:1 1 0;min-height:44px;max-width:none}
     #cw-selbar button{min-height:44px;padding:0 14px}
     .cw-compose-hint{display:none}
-    .cw-mode-sw label{min-height:44px;padding:0 8px}
     .cw-ed{min-height:88px}
     .cw-ref-tag,.cw-ref-acts button{min-height:44px}
     .cw-ref-tag{line-height:42px}
@@ -4087,7 +4081,6 @@
       b.addEventListener('click',()=>{
         b.disabled=true; t.msg.textContent='';
         const body={anchors:turnRefs(r),text:r.comment||r.question||'',thread_id:t.id};
-        if(r.mode==='full') body.mode='full';
         postJson('/comment',body)
           .then(({ok,body})=>{ if(!ok){ b.disabled=false; t.msg.textContent=body.error||'Request failed'; } })
           .catch(()=>{ b.disabled=false; t.msg.textContent='Request failed -- check the daemon is still running.'; });
@@ -5312,27 +5305,7 @@
       const note=mk('p','cw-compose-note'); note.append(mk('span','cw-compose-hint','Ctrl+Enter sends'));
       const status=mk('p','cw-compose-status'); status.setAttribute('role','status');
       box.append(ed.el,row,note,status);
-      const c={box,send,status,busy:false,mode:()=>'review',syncMode:()=>{},sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
-      if(window.CW_LIVE.agent&&window.CW_LIVE.agent.full&&!window.CW_LIVE.sibling){
-        const sw=mk('fieldset','cw-mode-sw'); sw.append(mk('legend',null,'Mode'));
-        const hint=mk('p','cw-mode-hint','Full runs your own Claude Code in a shared worktree and can edit files. Your PR author\u2019s settings are not loaded. Push commands are denied by rule, but your own allow rules still apply.');
-        const radios={};
-        let touched=false;
-        for(const [v,txt] of [['review','Review'],['full','Full']]){
-          const lab=mk('label'), r=document.createElement('input');
-          r.type='radio'; r.name='cw-mode-'+view.id; r.value=v; r.checked=v==='review'; radios[v]=r;
-          r.addEventListener('change',()=>{ touched=true; hint.hidden=!radios.full.checked; });
-          lab.append(r,document.createTextNode(txt)); sw.append(lab);
-        }
-        hint.hidden=true; sw.append(hint);
-        box.insertBefore(sw,row);
-        c.mode=()=>radios.full.checked?'full':'review';
-        c.syncMode=()=>{
-          if(touched) return;
-          const last=(view.turns||[]).slice(-1)[0];
-          radios[last&&last.mode==='full'?'full':'review'].checked=true; hint.hidden=!radios.full.checked;
-        };
-      }
+      const c={box,send,status,busy:false,sync:()=>{ send.disabled=c.busy||ed.isEmpty(); }};
       ed.onChange=c.sync;
       ed.onSend=()=>sendView(view);
       ed.say=m=>{ if(m||!c.busy) status.textContent=m; };
@@ -5353,10 +5326,10 @@
       const anchors=dedupeAnchors(view.seed?[view.seed,...chips]:chips);
       if(anchors.length>ED_MAX){ c.status.textContent='Too many references: '+ED_MAX+' max in total.'; return; }
       const body={text:serializeSegs(segs).trim(),anchors};
-      if(c.mode()==='full') body.mode='full';
       if(threads.has(view.id)) body.thread_id=view.id;
       c.busy=true; c.sync(); ed.lock(true); c.status.textContent='Sending…';
-      fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(body)})
+      const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),30000);
+      fetch(window.CW_LIVE.api+'/comment',{method:'POST',headers:headers(),body:JSON.stringify(body),signal:ctl.signal})
         .then(r=>r.json().catch(()=>({})).then(b=>({ok:r.ok,b})))
         .then(({ok,b})=>{
           c.busy=false; ed.lock(false);
@@ -5364,7 +5337,9 @@
           ed.clear(); c.status.textContent=''; c.sync();
           if(!threads.has(view.id)) openThreadWhenReady(b.thread_id);
         })
-        .catch(()=>{ c.busy=false; ed.lock(false); c.sync(); c.status.textContent='Request failed -- check the daemon is still running.'; });
+        .catch(e=>{ c.busy=false; ed.lock(false); c.sync();
+          c.status.textContent=(e&&e.name==='AbortError'?'Timed out':'Request failed -- check the daemon is still running')+'. Your text is kept: press Send to retry.'; })
+        .finally(()=>clearTimeout(timer));
     }
 
     function buildThread(t){
@@ -5408,7 +5383,6 @@
       t.badge.hidden=!t.resolved;
       t.triageTag.hidden=first.source!=='triage';
       t.turnsEl.replaceChildren(...t.turns.map((r,i)=>turnEl(r,t,i===t.turns.length-1)));
-      t.composer.syncMode();
     }
 
     function refEls(a){
