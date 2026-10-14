@@ -438,15 +438,17 @@
      over the boxes' own screen geometry by a small script below rather than mermaid -- dagre has
      no notion of "column by caller depth", the one layout this view exists to draw. */
   .vd-structure{margin:0 0 20px}
-  .vds-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
-  .vds-chips button{font:inherit;font-size:var(--fs-xs);background:var(--panel2);
-    color:var(--muted);border:1px solid var(--border);border-left:4px solid var(--c,var(--border));
-    border-radius:6px;padding:5px 10px;cursor:pointer}
-  .vds-chips button[aria-pressed="true"]{color:var(--text);background:var(--panel);
-    border-color:var(--c,var(--accent))}
-  .vds-chips button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .vds-lanes>summary{cursor:pointer;font-weight:600;margin:0 0 10px}
+  .vds-lane{background:var(--panel);border:1px solid var(--border);
+    border-left:4px solid var(--c,var(--border));border-radius:12px;padding:10px 12px;margin:0 0 14px}
+  .vds-lane-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0 0 8px}
+  .vds-lane-n{font-family:var(--mono);color:var(--c,var(--accent))}
+  .vds-lane-stat,.vds-lane-x{font-family:var(--mono);font-size:11px;border:1px solid var(--border);
+    border-radius:999px;padding:0 8px;color:var(--muted);background:var(--panel2)}
+  .vds-lane-x{color:var(--yellow);border-color:var(--yellow);margin-left:auto}
+  .vds-lane-more{font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
   .vds-scroll{overflow-x:auto;background:var(--panel);border:1px solid var(--border);
-    border-radius:12px;-webkit-overflow-scrolling:touch}
+    border-radius:8px;-webkit-overflow-scrolling:touch}
   .vds-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* The diagram container itself is the full-size control, same idiom .vd-symbols
      .mermaid uses above: zoom-in cursor at rest, its own focus-visible ring, click/Enter/Space
@@ -491,15 +493,13 @@
      structural fact, not a warning, and the strikethrough is a second, non-colour signal. */
   .vds-comp.gone{border-style:dashed;opacity:.85}
   .vds-comp.gone b{text-decoration:line-through;text-decoration-color:var(--red)}
-  /* Set by the filter-chip script below, never by the chips' own CSS: a chip only knows which
-     group it names, not which boxes match it. */
   .vds-comp.vds-dim{opacity:.22}
 
   /* Hairline by default, full strength only for the box you're on (see the structure script's
      hover/focus/sticky-focus refresh()). Dots share the class .vds-e so they dim/light in
      lockstep with their path -- only fill/stroke differ, via the higher-specificity .vds-dot
      rules below. */
-  .vds-e{fill:none;stroke-width:1.3;opacity:.32;transition:opacity .18s,stroke-width .18s}
+  .vds-e{fill:none;stroke-width:1.3;opacity:.14;transition:opacity .18s,stroke-width .18s}
   .vds-sys.vds-active .vds-e{opacity:.05}
   .vds-sys.vds-active .vds-e.vds-lit{opacity:1;stroke-width:2.2}
   .vds-e-call{stroke:var(--green)}
@@ -829,8 +829,6 @@
   #cw-selbar button{border-radius:6px;padding:4px 12px;font:600 var(--fs-sm) system-ui;cursor:pointer;white-space:nowrap}
   #cw-selbar-add{background:var(--purple);border:1px solid var(--purple);color:var(--bg)}
   #cw-selbar-add:hover{background:color-mix(in srgb,var(--purple) 85%,var(--text))}
-  #cw-selbar-pr{background:none;border:1px solid var(--yellow);color:var(--yellow)}
-  #cw-selbar-pr:hover{background:var(--yellow);color:var(--bg)}
   #cw-selbar :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cw-flash{outline:2px solid var(--purple);outline-offset:2px}
     #plan-content ::selection{background:color-mix(in srgb,var(--purple) 30%,transparent);color:inherit}
@@ -921,7 +919,13 @@
   .cw-th-triage{border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--muted);font-size:var(--fs-xs)}
   .cw-turn{margin:8px 0}
   .cw-turn-q{margin:0;color:var(--muted);font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap}
-  .cw-turn-a{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .cw-turn-a{margin:4px 0 0;overflow-wrap:anywhere}
+  .cw-streaming{white-space:pre-wrap}
+  .cw-md>*{margin:6px 0}
+  .cw-md>:first-child{margin-top:0}
+  .cw-md pre{white-space:pre-wrap;max-width:100%;overflow-x:auto}
+  .cw-md h4,.cw-md h5{font-size:inherit;font-weight:600}
+  .cw-md ul,.cw-md ol{padding-left:1.4em}
   .cw-turn-err{color:var(--red)}
   .cw-dots i{display:inline-block;width:6px;height:6px;margin-right:3px;border-radius:50%;
     background:var(--purple);opacity:.6}
@@ -1163,7 +1167,6 @@
     .fb-reply-input{min-height:36px}
     .fb-reply-box .fb-reply-send::before{content:'';position:absolute;inset:-9px}
     .fb-item .fb-quiet,.fb-actions .fb-quiet{min-height:44px}
-    .vds-chips button{min-height:44px;padding:10px 14px}
     /* Hit area grows, visible size doesn't: a 44px button here would overlap the line number
        and the row above/below. ::before extends the tappable region on all sides instead,
        via inset rather than negative margins, so it never adds to .dline-plus's own box and
@@ -3684,20 +3687,6 @@
     return (slug+'|'+h.toString(16).padStart(8,'0')).slice(0,200);
   }
 
-  function splitBackticks(text){
-    const s=String(text), out=[];
-    let i=0;
-    while(i<s.length){
-      const a=s.indexOf('`',i);
-      const b=a<0?-1:s.indexOf('`',a+1);
-      if(b<0){ out.push({code:false,text:s.slice(i)}); break; }
-      if(a>i) out.push({code:false,text:s.slice(i,a)});
-      out.push({code:true,text:s.slice(a+1,b)});
-      i=b+1;
-    }
-    return out;
-  }
-
   function refFenceFor(body){
     let run=0;
     for(const m of String(body||'').matchAll(/`+/g)) run=Math.max(run,m[0].length);
@@ -4091,11 +4080,6 @@
     const pageEdits=new Map();   // oid -> {node, orig, sig}
     const hiddenBy=new WeakMap();   // original element -> Set of applied replace oids hiding it
     let peSeq=0;
-    const richEl=(tag,text)=>{
-      const e=document.createElement(tag);
-      for(const p of splitBackticks(text)) e.append(p.code?mk('code',null,p.text):document.createTextNode(p.text));
-      return e;
-    };
 
     function renderMermaidEdit(pre,src){
       const id='cw-pe-'+(peSeq++);
@@ -4114,7 +4098,45 @@
       }).catch(fail);
     }
 
-    function parsePageEditBlocks(text){
+    function mdUrl(u){
+      try{ const x=new URL(u); return x.protocol==='http:'||x.protocol==='https:'?x.href:null; }
+      catch(_){ return null; }
+    }
+
+    function parseInline(s){
+      const out=[];
+      let buf='', i=0;
+      const flush=()=>{ if(buf){ out.push({t:'text',v:buf}); buf=''; } };
+      const close=(m,from)=>{
+        for(let j=from;j<s.length;j++){
+          if(s[j]==='`'){ const k=s.indexOf('`',j+1); if(k>0){ j=k; continue; } }
+          if(j>from&&s.startsWith(m,j)&&!/\s/.test(s[j-1])&&(m!=='*'||(s[j-1]!=='*'&&s[j+1]!=='*'))) return j;
+        }
+        return -1;
+      };
+      while(i<s.length){
+        const c=s[i], n=s[i+1]||' ';
+        if(c==='`'){
+          const j=s.indexOf('`',i+1);
+          if(j>i+1){ flush(); out.push({t:'code',v:s.slice(i+1,j)}); i=j+1; continue; }
+        } else if(c==='*'&&n==='*'){
+          const j=/\s/.test(s[i+2]||' ')?-1:close('**',i+2);
+          if(j>0){ flush(); out.push({t:'b',c:parseInline(s.slice(i+2,j))}); i=j+2; continue; }
+          buf+='**'; i+=2; continue;
+        } else if(c==='*'&&!/\s/.test(n)){
+          const j=close('*',i+1);
+          if(j>0){ flush(); out.push({t:'i',c:parseInline(s.slice(i+1,j))}); i=j+1; continue; }
+        } else if(c==='['){
+          const m=/^\[([^\]]+)\]\(([^)\s]+)\)/.exec(s.slice(i)), href=m&&mdUrl(m[2]);
+          if(href){ flush(); out.push({t:'a',href,c:parseInline(m[1])}); i+=m[0].length; continue; }
+        }
+        buf+=c; i++;
+      }
+      flush();
+      return out;
+    }
+
+    function parseMd(text){
       const cells=l=>{
         let s=l.trim();
         if(s.startsWith('|')) s=s.slice(1);
@@ -4122,11 +4144,40 @@
         return s.split(/(?<!\\)\|/).map(c=>c.trim().replace(/\\\|/g,'|'));
       };
       const lines=String(text).split('\n'), out=[];
+      const ITEM=/^(\s*)([-*]|\d+\.)\s+(\S.*)$/, FENCE=/^\s*```/, HEAD=/^(#{1,3})\s+(\S.*?)\s*#*\s*$/;
       let para=[];
       const flush=()=>{ if(para.length) out.push({kind:'p',text:para.join('\n').trim()}); para=[]; };
       for(let i=0;i<lines.length;i++){
         const line=lines[i];
         if(!line.trim()){ flush(); continue; }
+        if(FENCE.test(line)){
+          let k=i+1;
+          while(k<lines.length&&!/^\s*```\s*$/.test(lines[k])) k++;
+          if(k<lines.length){ flush(); out.push({kind:'pre',text:lines.slice(i+1,k).join('\n')}); i=k; continue; }
+        }
+        const h=HEAD.exec(line);
+        if(h){ flush(); out.push({kind:'h',level:h[1].length,text:h[2]}); continue; }
+        if(ITEM.test(line)){
+          flush();
+          const list={kind:'list',ordered:/\d/.test(ITEM.exec(line)[2]),items:[]};
+          for(;i<lines.length;i++){
+            const m=ITEM.exec(lines[i]);
+            if(m){
+              const last=list.items[list.items.length-1];
+              if(m[1].length&&last){
+                last.sub=last.sub||{ordered:/\d/.test(m[2]),items:[]};
+                last.sub.items.push(m[3]);
+              } else list.items.push({text:m[3],sub:null});
+            } else if(/^\s+\S/.test(lines[i])&&list.items.length){
+              const last=list.items[list.items.length-1];
+              if(last.sub) last.sub.items[last.sub.items.length-1]+='\n'+lines[i].trim();
+              else last.text+='\n'+lines[i].trim();
+            } else break;
+          }
+          i--;
+          out.push(list);
+          continue;
+        }
         if(line.includes('|')&&i+1<lines.length){
           const head=cells(line), d=cells(lines[i+1]);
           if(d.length===head.length&&d.every(c=>/^:?-+:?$/.test(c))){
@@ -4149,7 +4200,25 @@
       return out;
     }
 
-    function pageEditTable(t){
+    function inlineInto(e,text){
+      const walk=(parent,toks)=>{
+        for(const t of toks){
+          if(t.t==='text') parent.append(document.createTextNode(t.v));
+          else if(t.t==='code') parent.append(mk('code',null,t.v));
+          else {
+            const x=document.createElement(t.t==='b'?'strong':t.t==='i'?'em':'a');
+            if(t.t==='a'){ x.href=t.href; x.rel='noopener noreferrer'; x.target='_blank'; }
+            walk(x,t.c);
+            parent.append(x);
+          }
+        }
+      };
+      walk(e,parseInline(text));
+      return e;
+    }
+    const richEl=(tag,text)=>inlineInto(document.createElement(tag),text);
+
+    function mdTable(t){
       const row=(tag,cs)=>{
         const tr=document.createElement('tr');
         cs.forEach((c,i)=>{ const e=richEl(tag,c); if(t.align[i]) e.style.textAlign=t.align[i]; tr.append(e); });
@@ -4164,21 +4233,33 @@
       return wrap;
     }
 
+    function mdEl(text){
+      const frag=document.createDocumentFragment();
+      const listEl=l=>{
+        const e=document.createElement(l.ordered?'ol':'ul');
+        for(const it of l.items){
+          const li=richEl('li',it.text);
+          if(it.sub) li.append(listEl({ordered:it.sub.ordered,items:it.sub.items.map(text=>({text,sub:null}))}));
+          e.append(li);
+        }
+        return e;
+      };
+      for(const b of parseMd(text)){
+        if(b.kind==='table') frag.append(mdTable(b));
+        else if(b.kind==='pre') frag.append(mk('pre',null,b.text));
+        else if(b.kind==='h') frag.append(richEl(b.level<3?'h4':'h5',b.text));
+        else if(b.kind==='list') frag.append(listEl(b));
+        else frag.append(richEl('p',b.text));
+      }
+      return frag;
+    }
+
     function pageEditContent(b){
       const text=String((b&&b.text)||'');
       const box=mk('div','cw-pageedit-body');
-      if(b&&b.type==='list'){
-        const ul=document.createElement('ul');
-        for(const l of text.split('\n')){
-          const s=l.trim().replace(/^[-*]\s+/,'');
-          if(s) ul.append(richEl('li',s));
-        }
-        box.append(ul);
-      } else if(b&&b.type==='mermaid'){
-        box.append(mk('pre','mermaid',text));
-      } else {
-        for(const blk of parsePageEditBlocks(text)) box.append(blk.kind==='table'?pageEditTable(blk):richEl('p',blk.text));
-      }
+      if(b&&b.type==='mermaid') box.append(mk('pre','mermaid',text));
+      else if(b&&b.type==='list') box.append(mdEl(text.split('\n').map(l=>/^\s*([-*]|\d+\.)\s/.test(l)?l:'- '+l.trim()).join('\n')));
+      else box.append(mdEl(text));
       return box;
     }
 
@@ -4833,7 +4914,8 @@
       } else if(r.status==='error'){
         d.append(mk('p','cw-turn-a cw-turn-err','Error: '+(r.error||'unknown')+(r.remedy?' ('+r.remedy+')':'')));
       } else {
-        const a=mk('p','cw-turn-a',r.answer||'');
+        const a=mk('div','cw-turn-a cw-md');
+        a.append(mdEl(r.answer||''));
         if(r.status==='cancelled') a.append(mk('span','cw-stopped','(stopped)'));
         d.append(a);
       }
@@ -5805,7 +5887,7 @@
       return sm&&em?{sel,sm,em,last}:null;
     }
 
-    let selLast=null, selBand=[], gutterAnchor=null, gutterDrag=null;
+    let selLast=null, selBand=[], gutterAnchor=null, gutterDrag=null, rangeHeld=false;
     function markSelectedLine(d){
       if(selLast&&(!d||d.last!==selLast)){
         selLast.classList.remove('dline-sel-last');
@@ -5835,15 +5917,14 @@
     const sbTarget=document.createElement('select'); sbTarget.id='cw-selbar-target';
     sbTarget.setAttribute('aria-label','Add to thread');
     const sbAdd=mkBtn('Add'); sbAdd.id='cw-selbar-add'; sbAdd.title='Add to thread (Alt+Enter focuses this button)';
-    const sbPr=mkBtn('PR comment\u2026'); sbPr.id='cw-selbar-pr';
-    selBar.append(sbWhat,sbTarget,sbAdd,sbPr);
+    selBar.append(sbWhat,sbTarget,sbAdd);
     document.body.appendChild(selBar);
-    for(const b of [sbAdd,sbPr]) b.addEventListener('mousedown',e=>e.preventDefault());
+    sbAdd.addEventListener('mousedown',e=>e.preventDefault());
     let sbAnchor=null, sbReturn=null;
     const selBarShown=()=>!selBar.hidden;
     function hideSelBar(){ selBar.hidden=true; sbAnchor=null; }
     function clearSelection(){
-      stopDrag(); gutterAnchor=null;
+      stopDrag(); gutterAnchor=null; rangeHeld=false;
       const sel=window.getSelection();
       if(sel) sel.removeAllRanges();
       markSelectedLine(null);
@@ -5889,13 +5970,12 @@
       sbWhat.textContent=anchor.kind==='line'
         ?(anchor.end_line?'Lines '+anchor.line+'-'+anchor.end_line:'Line '+anchor.line)
         :'Selection in '+(anchor.section||'this page');
-      sbPr.hidden=!directDraftFor(anchor);
       selBar.hidden=false;
       placeSelBar(range);
     }
 
     function updateSelBar(){
-      if(gutterDrag||selBar.contains(document.activeElement)) return;
+      if(gutterDrag||rangeHeld||selBar.contains(document.activeElement)) return;
       const d=diffSel();
       markSelectedLine(d);
       const sel=window.getSelection();
@@ -5925,13 +6005,19 @@
       els.forEach(flashEl);
     }
     sbAdd.addEventListener('click',addSelection);
-    sbPr.addEventListener('click',()=>{
-      const a=sbAnchor;
-      if(!a||a.kind!=='line') return;
-      const rec=spanByLineKey.get(a.path+'\t'+a.side+'\t'+(a.end_line||a.line));
-      clearSelection();
-      if(rec) openLineComposer(a,rec.meta);
-    });
+
+    function commentRange(a,b){
+      if(composerBusy()) return;
+      const [lo,hi]=a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_PRECEDING?[b,a]:[a,b];
+      const anchor=lineRangeAnchor(lo,hi);
+      const rec=spanByLineKey.get(anchor.path+'\t'+anchor.side+'\t'+(anchor.end_line||anchor.line));
+      setRowRange(lo,hi);
+      window.getSelection().removeAllRanges();
+      hideSelBar();
+      if(!rec) return;
+      openLineComposer(anchor,rec.meta);
+      rangeHeld=!!openBox;
+    }
 
     function setRowRange(a,b){
       const [lo,hi]=a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_PRECEDING?[b,a]:[a,b];
@@ -5951,7 +6037,7 @@
       const cur=closestDline(document.elementFromPoint(e.clientX,e.clientY));
       if(!cur||cur.parentNode!==gutterDrag.start.parentNode) return;
       if(cur===gutterDrag.start&&!gutterDrag.moved) return;
-      gutterDrag.moved=true;
+      gutterDrag.moved=true; gutterDrag.end=cur;
       setRowRange(gutterDrag.start,cur);
     }
     function stopDrag(){
@@ -5964,8 +6050,9 @@
     }
     // a drag that ended back on its start badge still gets a click there; it must not reopen the single-line composer
     function dragEnd(){
+      const g=gutterDrag;
       if(!stopDrag()) return;
-      updateSelBar();
+      commentRange(g.start,g.end);
       gutterSwallow=true;
       setTimeout(()=>{ gutterSwallow=false; },300);
     }
@@ -5980,9 +6067,8 @@
       document.addEventListener('pointercancel',dragEnd);
     };
     rowTap=span=>{
-      if(!selBarShown()||!gutterAnchor||span===gutterAnchor||span.parentNode!==gutterAnchor.parentNode) return false;
-      setRowRange(gutterAnchor,span);
-      updateSelBar();
+      if(!openBox||!gutterAnchor||span===gutterAnchor||span.parentNode!==gutterAnchor.parentNode) return false;
+      commentRange(gutterAnchor,span);
       return true;
     };
     rootEl.classList.add('cw-gutter');
@@ -5990,8 +6076,7 @@
     onGutter=(meta,e)=>{
       const span=spanByLineKey.get(meta.lineKey).span;
       if(e&&e.shiftKey&&gutterAnchor&&gutterAnchor!==span&&gutterAnchor.parentNode===span.parentNode){
-        setRowRange(gutterAnchor,span);
-        updateSelBar();
+        commentRange(gutterAnchor,span);
         return;
       }
       clearSelection();
@@ -6002,6 +6087,7 @@
     let openBox=null, openC=null, openFrom=null;
     function closeBox(restore=true){
       if(!openBox) return;
+      if(rangeHeld){ rangeHeld=false; markSelectedLine(null); }
       const from=openFrom;
       openBox.remove(); openBox=openC=openFrom=null;
       if(restore&&from&&from.isConnected) from.focus();
@@ -6284,7 +6370,7 @@ document.querySelectorAll('summary a').forEach(a => {
 
   function drawEdges(sys){
     const svg = sys.querySelector('svg.vds-edges');
-    if (!svg) return;
+    if (!svg || !sys.offsetWidth) return;
     const edges = edgesOf(sys);
     svg.innerHTML = '';
     if (!edges.length) return;
@@ -6469,15 +6555,8 @@ document.querySelectorAll('summary a').forEach(a => {
     });
   }
 
-  // ---------- hover/focus/sticky-focus + chip filter ----------
-  const chips = [...document.querySelectorAll('.vds-chip')];
   let hoverId = null, stickyId = null;
 
-  function applyChipFilterOn(sys){
-    const pressed = chips.find(c => c.getAttribute('aria-pressed') === 'true');
-    const g = pressed ? pressed.dataset.g : 'all';
-    sys.querySelectorAll('.vds-comp').forEach(b => b.classList.toggle('vds-dim', g !== 'all' && b.dataset.g !== g));
-  }
   function refresh(){
     const activeId = stickyId || hoverId;
     instances().forEach(sys => {
@@ -6491,15 +6570,10 @@ document.querySelectorAll('summary a').forEach(a => {
         paths.forEach(p => p.classList.toggle('vds-lit', p.dataset.from === activeId || p.dataset.to === activeId));
       } else {
         paths.forEach(p => p.classList.remove('vds-lit'));
-        applyChipFilterOn(sys);
+        sys.querySelectorAll('.vds-comp.vds-dim').forEach(b => b.classList.remove('vds-dim'));
       }
     });
   }
-  chips.forEach(chip => chip.addEventListener('click', () => {
-    chips.forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
-    refresh();
-  }));
-
   // ---------- box click menu, reusing the nav script's shared openMenu/navGoToFile ----------
   function menuHostFor(sys){
     // Inside the dialog the menu must position against #mermaid-zoom-body (unscaled), never
@@ -6641,6 +6715,11 @@ document.querySelectorAll('summary a').forEach(a => {
     wireInstance(sys);
     drawEdges(sys);
     new ResizeObserver(() => drawEdges(sys)).observe(sys);
+  });
+  document.querySelectorAll('details.vds-lanes').forEach(d => {
+    const redraw = () => { if (d.open) d.querySelectorAll('.vds-sys').forEach(drawEdges); };
+    d.addEventListener('toggle', redraw);
+    window.addEventListener('resize', redraw);
   });
   refresh();
 

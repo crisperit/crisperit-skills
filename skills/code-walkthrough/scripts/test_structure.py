@@ -368,17 +368,26 @@ def test_group_is_null_without_an_analysis_file(tmp_path):
     assert _component(result, "a1")["group"] is None
 
 
-def test_group_titles_pure_logic():
-    groups = [{"title": "Auth"}, {"title": "  "}, {}, {"title": "Billing"}]
-    assert structure.group_titles(groups) == [
-        {"index": 0, "title": "Auth"}, {"index": 3, "title": "Billing"},
+def test_group_stats_pure_logic():
+    groups = [{"title": " Auth ", "paths": ["a.ts", "b.ts"]}, {"paths": ["c.ts"]}]
+    components = [
+        {"name": "A", "state": "new", "group": 0},
+        {"name": "B", "state": "changed", "group": 0},
+        {"name": "C", "state": "unchanged", "group": 0},
+        {"name": "D", "state": "changed", "group": 1},
     ]
-    assert structure.group_titles([]) == []
-    assert structure.group_titles(None) == []
+    numstat = {"a.ts": (5, 1), "b.ts": (2, 0), "c.ts": (7, 3), "other.ts": (99, 99)}
+
+    stats = structure.group_stats(groups, components, {0: ["Z", "Y"]}, numstat)
+
+    assert stats[0] == {"index": 0, "title": "Auth", "files": 2, "adds": 7, "dels": 1, "new": 1,
+                        "changed": 1, "symbols": 3, "dropped": ["Y", "Z"]}
+    assert stats[1] == {"index": 1, "title": "", "files": 1, "adds": 7, "dels": 3, "new": 0,
+                        "changed": 1, "symbols": 1, "dropped": []}
+    assert structure.group_stats(None, components, {}, numstat) == []
 
 
-def test_group_titles_end_to_end(tmp_path):
-    # sections.py labels its filter chips from this -- see render_structure's own chip test.
+def test_group_stats_end_to_end(tmp_path):
     cw_testlib.require_tree_sitter("typescript")
     repo, base, head = make_repo(
         tmp_path,
@@ -386,17 +395,33 @@ def test_group_titles_end_to_end(tmp_path):
         {"a.ts": "export function a1() { return 2; }\n"},
     )
     rows = [
-        ("title present", {"groups": [{"title": "Auth", "paths": ["a.ts"]}]},
-         [{"index": 0, "title": "Auth"}]),
-        ("no group has a title", {"groups": [{"paths": ["a.ts"]}]}, None),
+        ("titled", {"groups": [{"title": "Auth", "paths": ["a.ts"]}]}, "Auth"),
+        ("untitled", {"groups": [{"paths": ["a.ts"]}]}, ""),
     ]
-    for label, analysis, want in rows:
+    for label, analysis, title in rows:
         analysis_path = _write_json(repo, "analysis.json", analysis)
         result = _run_structure(repo, base, head, analysis_path=analysis_path)
-        if want is None:
-            assert "groups" not in result, label
-        else:
-            assert result["groups"] == want, label
+        stat = result["groups"][0]
+        assert (stat["title"], stat["files"], stat["adds"], stat["dels"]) == (title, 1, 1, 1), label
+    result = _run_structure(repo, base, head)
+    assert "groups" not in result
+
+
+def test_per_group_dropped_names_end_to_end(tmp_path):
+    n = structure.MAX_COMPONENTS + 2
+
+    def body(v):
+        return "".join(f"export function f{i}() {{ return {v}; }}\n" for i in range(n))
+
+    result = _run_ts(
+        tmp_path, {"a.ts": body(1)}, {"a.ts": body(2)},
+        symdelta=_edge_symdelta("a.ts", "f0", "a.ts", "f1"),
+        analysis={"groups": [{"title": "G", "paths": ["a.ts"]}]},
+    )
+
+    stat = result["groups"][0]
+    assert stat["symbols"] == n
+    assert len(stat["dropped"]) == result["dropped"] == 2
 
 
 # ---- unsupported language -> language null, same pattern as symdelta ------------------------

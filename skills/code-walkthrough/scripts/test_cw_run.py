@@ -603,6 +603,33 @@ def test_pr_target_gives_cwerror():
             assert e.remedy
 
 
+def test_fresh_rebuilds_a_done_run_and_keeps_user_state():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = cw_testlib.make_repo(tmp, {"foo.py": "a\n"}, {"foo.py": "b\n"})
+        cw_testlib.write_config(home, {"p": {"base_url": "http://127.0.0.1:1", "model": "m"}},
+                                 {"analysis": "p", "prose": "p"})
+        params = {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t"}
+        d, _meta, _reused = cw_run.prepare_walkthrough(params)
+        cw_store.update_meta(d, lambda m: m.update({"status": "done"}))
+        gone = ("analysis.json", "visuals.json", "structure.json")
+        kept = ("qa.jsonl", "page-notes.json", "threads.json", "state.json")
+        for name in gone + kept:
+            (d / name).write_text("{}")
+        (d / "turns").mkdir(exist_ok=True)
+        (d / "turns" / "1.json").write_text("{}")
+
+        _d, _meta, reused = cw_run.prepare_walkthrough(params)
+        assert reused is True
+        assert all((d / name).exists() for name in gone)
+
+        _d, meta, reused = cw_run.prepare_walkthrough({**params, "fresh": True})
+        assert reused is True
+        assert meta["status"] == "building"
+        assert not any((d / name).exists() for name in gone)
+        assert all((d / name).exists() for name in kept)
+        assert (d / "turns" / "1.json").exists()
+
+
 def test_reuse_keeps_a_passing_fragment_at_the_same_sig_a_new_head_clears_it():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         repo, base, _head = cw_testlib.make_repo(tmp, {"foo.py": "a\nb\n"}, {"foo.py": "a\nX\n"})

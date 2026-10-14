@@ -335,16 +335,20 @@ def test_live_code_is_gated_behind_cw_live_and_calls_real_daemon_routes():
 def test_live_ui_never_uses_html_injection_sinks():
     template = _real_template()
     sibling = "function wireSibling(){" + _between(template, "function wireSibling(){", "wireSibling();")
-    split = "function splitBackticks(" + _between(template, "function splitBackticks(", "function wireAsk(){")
+    md = "function mdUrl(" + _between(template, "function mdUrl(", "function pageEditContent(")
     wire_ask = _wire_ask()
+    assert "function parseMd(" in wire_ask and "function mdEl(" in wire_ask
 
-    for scope in (wire_ask, split, sibling):
+    for scope in (wire_ask, md, sibling):
         for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"):
             assert banned not in scope, banned
     # model-authored text only reaches the DOM through mk(..., text)
     mk = _between(wire_ask, "const mk=(tag,cls,text)=>{", "};")
     assert "e.textContent=text" in mk
     assert "window.open(r.url,'_blank','noopener')" in wire_ask
+    turn = _between(wire_ask, "function turnEl(", "function upsertOutcome(")
+    assert "mdEl(r.answer||'')" in turn and "mk('p','cw-turn-a',r.answer" not in turn
+    assert "pre-wrap" not in re.search(r"\.cw-turn-a\{[^}]*\}", template).group(0)
 
 
 def test_live_turn_and_outcome_cards_show_mode_queue_denials_and_unknown_kinds():
@@ -504,14 +508,21 @@ if (JSON.stringify(c) !== JSON.stringify({all:4, agent:2, pr:1, drafts:1})) thro
     assert "+counts[k]" in panel and "all.filter(t=>!t.resolved)" not in panel
 
 
-def test_gutter_plus_opens_the_composer_directly_and_only_ranges_raise_the_selection_bar():
+def test_gutter_plus_and_ranges_open_the_composer_and_text_selection_only_adds_agent_context():
     ask = _wire_ask()
     gutter = _between(ask, "onGutter=(meta,e)=>{", "let openBox=null")
     shift, plain = gutter.split("clearSelection();", 1)
-    assert "e.shiftKey" in shift and "setRowRange(gutterAnchor,span)" in shift and "updateSelBar()" in shift
+    assert "e.shiftKey" in shift and "commentRange(gutterAnchor,span)" in shift and "updateSelBar" not in shift
     assert "openLineComposer(lineRangeAnchor(span,span),meta)" in plain
     assert "updateSelBar" not in plain and "addRange" not in plain
+    drag_end = _between(ask, "function dragEnd(){", "gutterDown=")
+    assert "commentRange(g.start,g.end)" in drag_end and "updateSelBar" not in drag_end
+    row_tap = _between(ask, "rowTap=span=>{", "rootEl.classList.add('cw-gutter')")
+    assert "commentRange(gutterAnchor,span)" in row_tap and "updateSelBar" not in row_tap
+    comment = _between(ask, "function commentRange(a,b){", "function setRowRange(")
+    assert "openLineComposer(anchor,rec.meta)" in comment and "removeAllRanges()" in comment
     tpl = _real_template()
+    assert "cw-selbar-pr" not in tpl and "PR comment" not in tpl and "sbPr" not in tpl
     wire_line = _between(tpl, "function wireLine(span,meta){", "// Extension (no dot)")
     assert "span.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); open(e); } });" in wire_line
     assert re.search(r"plus\.addEventListener\('click',e=>\{\s*e\.stopPropagation\(\);.*open\(e\);\s*\}\);", wire_line)
@@ -590,20 +601,6 @@ eq(parseRefText('a\r\n```ref a.py:3 RIGHT\r\n+x\r\n```\r\nb'),
 """)
 
 
-def test_split_backticks_turns_code_spans_into_nodes_and_never_parses_markup():
-    src = "function splitBackticks(" + _between(_real_template(), "function splitBackticks(", "function wireAsk(){")
-    _node(src + """
-const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
-eq(splitBackticks('plain text'), [{code:false,text:'plain text'}]);
-eq(splitBackticks('use `foo()` now'), [{code:false,text:'use '},{code:true,text:'foo()'},{code:false,text:' now'}]);
-const un = splitBackticks('open ` never closed');
-if (un.some(p => p.code) || un.map(p => p.text).join('') !== 'open ` never closed') throw new Error('unbalanced backtick changed');
-const evil = '<img src=x onerror=alert(1)>';
-eq(splitBackticks(evil), [{code:false,text:evil}]);
-eq(splitBackticks('`' + evil + '`'), [{code:true,text:evil}]);
-""")
-
-
 def test_page_edit_label_uses_correct_grammar_for_every_block_type_and_op():
     src = "function pageEditWhat(" + _between(_real_template(), "function pageEditWhat(", "function pageEditCard(")
     _node(src + """
@@ -620,19 +617,46 @@ for (const [type, ins, rep] of cases) {
 """)
 
 
-def test_page_edit_prose_parses_gfm_tables_and_leaves_everything_else_a_paragraph():
-    src = "function parsePageEditBlocks(" + _between(_real_template(), "function parsePageEditBlocks(", "function pageEditTable(")
+def test_parse_md_parses_blocks_and_inline_markup_into_plain_data_and_never_markup():
+    src = "function mdUrl(" + _between(_real_template(), "function mdUrl(", "function inlineInto(")
     _node(src + """
 const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
-eq(parsePageEditBlocks('| a | b | c | d |\\n| --- | :--- | :---: | ---: |\\n| 1 | 2 | 3 | 4 |'),
+eq(parseMd('| a | b | c | d |\\n| --- | :--- | :---: | ---: |\\n| 1 | 2 | 3 | 4 |'),
    [{kind:'table',head:['a','b','c','d'],align:['','left','center','right'],rows:[['1','2','3','4']]}]);
-eq(parsePageEditBlocks('x | y\\n-|-\\na\\\\|b | c').map(b => b.rows), [[['a|b', 'c']]]);
-eq(parsePageEditBlocks('| a | b |\\n|---|---|\\n| 1 |\\n| 1 | 2 | 3 |').map(b => b.rows), [[['1', ''], ['1', '2']]]);
-eq(parsePageEditBlocks('intro line\\n| a |\\n|---|\\n| 1 |\\n\\nafter'),
+eq(parseMd('x | y\\n-|-\\na\\\\|b | c').map(b => b.rows), [[['a|b', 'c']]]);
+eq(parseMd('| a | b |\\n|---|---|\\n| 1 |\\n| 1 | 2 | 3 |').map(b => b.rows), [[['1', ''], ['1', '2']]]);
+eq(parseMd('intro line\\n| a |\\n|---|\\n| 1 |\\n\\nafter'),
    [{kind:'p',text:'intro line'},{kind:'table',head:['a'],align:[''],rows:[['1']]},{kind:'p',text:'after'}]);
-eq(parsePageEditBlocks('a | b\\nnot a delimiter\\n\\nx'), [{kind:'p',text:'a | b\\nnot a delimiter'},{kind:'p',text:'x'}]);
+eq(parseMd('a | b\\nnot a delimiter\\n\\nx'), [{kind:'p',text:'a | b\\nnot a delimiter'},{kind:'p',text:'x'}]);
 const evil = '<img src=x onerror=alert(1)>';
-eq(parsePageEditBlocks('| ' + evil + ' |\\n|---|\\n| `c` |')[0].head, [evil]);
+eq(parseMd('| ' + evil + ' |\\n|---|\\n| `c` |')[0].head, [evil]);
+
+eq(parseMd('Intro:\\n- a\\n* b\\n  - c\\n  - d\\n- e'),
+   [{kind:'p',text:'Intro:'},{kind:'list',ordered:false,items:[
+     {text:'a',sub:null},{text:'b',sub:{ordered:false,items:['c','d']}},{text:'e',sub:null}]}]);
+eq(parseMd('1. one\\n2. two\\n   more'), [{kind:'list',ordered:true,items:[{text:'one',sub:null},{text:'two\\nmore',sub:null}]}]);
+eq(parseMd('*italic* start\\n**bold** start'), [{kind:'p',text:'*italic* start\\n**bold** start'}]);
+eq(parseMd('# One\\n## Two\\n### Three\\n#### four'),
+   [{kind:'h',level:1,text:'One'},{kind:'h',level:2,text:'Two'},{kind:'h',level:3,text:'Three'},{kind:'p',text:'#### four'}]);
+eq(parseMd('a\\n```py\\nx = 1\\n\\n# not a heading\\n- not a list\\n```\\nb'),
+   [{kind:'p',text:'a'},{kind:'pre',text:'x = 1\\n\\n# not a heading\\n- not a list'},{kind:'p',text:'b'}]);
+eq(parseMd('```\\nnever closed'), [{kind:'p',text:'```\\nnever closed'}]);
+
+eq(parseInline('plain text'), [{t:'text',v:'plain text'}]);
+eq(parseInline('use `foo()` now'), [{t:'text',v:'use '},{t:'code',v:'foo()'},{t:'text',v:' now'}]);
+eq(parseInline('open ` never closed'), [{t:'text',v:'open ` never closed'}]);
+eq(parseInline(evil), [{t:'text',v:evil}]);
+eq(parseInline('`' + evil + '`'), [{t:'code',v:evil}]);
+eq(parseInline('a **b `c` d** e *f*'),
+   [{t:'text',v:'a '},{t:'b',c:[{t:'text',v:'b '},{t:'code',v:'c'},{t:'text',v:' d'}]},{t:'text',v:' e '},{t:'i',c:[{t:'text',v:'f'}]}]);
+eq(parseInline('**`**`'), [{t:'text',v:'**'},{t:'code',v:'**'}]);
+for (const open of ['**unclosed', '*unclosed', '2 * 3 * 4', 'a ** b ** c', '[x](https://a.b', '[x] (https://a.b)'])
+  if (parseInline(open).some(t => t.t !== 'text') || parseInline(open).map(t => t.v).join('') !== open) throw new Error('not literal: ' + open);
+eq(parseInline('_snake_case_ and a_b_c'), [{t:'text',v:'_snake_case_ and a_b_c'}]);
+eq(parseInline('[docs](https://a.b/c?d=1)'), [{t:'a',href:'https://a.b/c?d=1',c:[{t:'text',v:'docs'}]}]);
+for (const bad of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'vbscript:x', '/relative', '//a.b'])
+  if (parseInline('[x](' + bad + ')').some(t => t.t === 'a')) throw new Error('linked: ' + bad);
+eq(parseInline('[<b>x</b>](http://a.b)')[0].c, [{t:'text',v:'<b>x</b>'}]);
 """)
 
 
@@ -1018,3 +1042,17 @@ def test_a_rejected_visuals_file_reads_as_ignored_not_zero_kept(tmp_path, raw, r
     assert clean == {"pr": None, "groups": {}}
     assert len(lines) == 1 and lines[0].startswith("visuals: ignored, ") and reason in lines[0]
     assert "kept" not in lines[0] and "visuals: visuals:" not in lines[0]
+
+
+def test_structure_filter_chips_are_gone_and_lane_edges_reroute_when_opened():
+    template = _real_template()
+    assert "vds-chip" not in template and "applyChipFilterOn" not in template
+    assert "details.vds-lanes" in template and "d.addEventListener('toggle', redraw)" in template
+    assert "window.addEventListener('resize', redraw)" in template
+    assert "!sys.offsetWidth" in template
+
+
+def test_structure_edges_are_faint_at_rest_and_lit_on_focus():
+    template = _real_template()
+    assert ".vds-e{fill:none;stroke-width:1.3;opacity:.14" in template
+    assert ".vds-sys.vds-active .vds-e.vds-lit{opacity:1" in template

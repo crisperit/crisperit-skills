@@ -982,34 +982,6 @@ def _structure_also_touched(also_touched):
     return f'<p class="vds-also">{_html_note(f"Also touched: {names}")}</p>'
 
 
-def _structure_chips(components, group_color, titles=None):
-    """One filter chip per story stop (a `group` index some component actually carries) plus
-    "All", coloured to match that stop's story-map colour and labelled with that stop's own
-    title from structure.py's top-level `groups` (its own `analysis.json` doesn't reach this
-    module otherwise) -- "2 Contracts", not just "2". `titles` missing a given index, or `None`
-    entirely (structure.py ran with no `--analysis`, or that group's own title was blank), falls
-    back to the plain ordinal for just that chip. No group data at all (every component's `group`
-    is `None`) draws no chips at all, the same nothing-to-key-off-of reasoning `_symbols_legend`
-    already applies to a level with no new/gone node."""
-    groups = sorted({c["group"] for c in components if c.get("group") is not None})
-    if not groups:
-        return ""
-    titles = titles or {}
-    buttons = ['<button type="button" class="vds-chip" data-g="all" aria-pressed="true">All</button>']
-    for gi in groups:
-        title = titles.get(gi)
-        # analysis.json's own group titles carry backticked identifiers same as `why`
-        # elsewhere on this page; _html_note's escape-then-codeify is what promotes them to
-        # <code> instead of a literal backtick landing in the chip.
-        label = _html_note(f"{gi + 1} {title}") if title else str(gi + 1)
-        buttons.append(
-            f'<button type="button" class="vds-chip" data-g="{gi}" aria-pressed="false" '
-            f'style="--c:{group_color(gi)}">{label}</button>'
-        )
-    return ('<div class="vds-chips" role="group" aria-label="Highlight a story stop">'
-            + "".join(buttons) + "</div>")
-
-
 def _structure_edges(raw_edges, kept_ids, explain):
     """Call edges (structure.py's own `edges`) whose both ends survived the explain-mode
     removed-box filter. A `state: "gone"` edge is dropped outright in explain mode rather than
@@ -1109,6 +1081,73 @@ def _structure_legend(edges, explain):
     return f'<div class="vds-legend">{"".join(items)}</div>'
 
 
+def _structure_lane_html(key, groups, comps, edges, outgoing, group_color, explain, only_lane):
+    """One group's lane: header (title, files, +/-, new/changed/symbol counts, cross-group call
+    chips), its own `.vds-sys` diagram over `comps` and the intra-group `edges` only, and the
+    names the cap dropped. `key` None is the components no analysis group claims. `groups` is
+    structure.py's per-group stats keyed by index; a group missing from it (older structure.json)
+    renders title-less and stat-less rather than failing."""
+    stats = groups.get(key) or {}
+    title = stats.get("title")
+    if key is None:
+        label = "All components" if only_lane else "Ungrouped"
+        style = ""
+    else:
+        label = f'<span class="vds-lane-n">G{key + 1}</span>' + (
+            f" {_html_note(title)}" if title else "")
+        style = f' style="--c:{group_color(key)}"'
+
+    def stat(text):
+        return f'<span class="vds-lane-stat">{text}</span>'
+
+    parts = []
+    if stats.get("files"):
+        parts.append(stat(f'{stats["files"]} file{"s" if stats["files"] != 1 else ""}'))
+    if not explain and (stats.get("adds") or stats.get("dels")):
+        parts.append(stat(f'+{stats.get("adds", 0)}/-{stats.get("dels", 0)}'))
+    if not explain:
+        for field in ("new", "changed"):
+            if stats.get(field):
+                parts.append(stat(f"{stats[field]} {field}"))
+    if stats.get("symbols"):
+        parts.append(stat(f'{stats["symbols"]} symbol{"s" if stats["symbols"] != 1 else ""}'))
+    for target, n in sorted(outgoing.items()):
+        tip = escape(groups.get(target, {}).get("title") or "").replace('"', "&quot;")
+        parts.append(
+            f'<span class="vds-lane-x" title="{tip}">\u2192 G{target + 1} \u00b7 '
+            f'{n} call{"s" if n != 1 else ""}</span>'
+        )
+
+    diagram = ""
+    if comps:
+        cols_html = "\n".join(
+            '<div class="vds-col">'
+            + "".join(_structure_component_html(c, i, group_color, explain) for c in col)
+            + "</div>"
+            for i, col in enumerate(_structure_columns(comps))
+        )
+        edges_attr = escape(json.dumps(edges, sort_keys=True)).replace('"', "&quot;")
+        diagram = "\n".join([
+            '<div class="vds-scroll" tabindex="0" aria-label="Component diagram, scrollable">'
+            '<div class="vds-sys" tabindex="0" role="button" '
+            f'aria-label="Expand diagram to full size" data-edges="{edges_attr}">',
+            '<svg class="vds-edges" aria-hidden="true"></svg>',
+            f'<div class="vds-cols">{cols_html}</div>',
+            "</div></div>",
+            '<p class="vds-swipe">Swipe sideways to see the whole diagram.</p>',
+        ])
+    dropped = stats.get("dropped") or []
+    more = ""
+    if dropped:
+        names = ", ".join(escape(str(n)) for n in dropped)
+        more = f'<p class="vds-lane-more">+{len(dropped)} more: {names}</p>'
+    return (
+        f'<section class="vds-lane" data-g="{key if key is not None else ""}"{style}>\n'
+        f'<div class="vds-lane-head"><b>{label}</b>{"".join(parts)}</div>\n'
+        f"{diagram}\n{more}\n</section>"
+    )
+
+
 def render_structure(data, explain=False):
     """The system-structure view: structure.py's own real components (classes, interfaces,
     functions the diff actually touched -- see its module docstring for why that is not
@@ -1154,55 +1193,51 @@ def render_structure(data, explain=False):
     edges = _structure_edges(data.get("edges"), kept_ids, explain)
     edges += _structure_implements_edges(data.get("implements"), shown, kept_ids)
 
-    cols_html = "\n".join(
-        f'<div class="vds-col">'
-        + "".join(_structure_component_html(c, i, _group_color, explain) for c in comps)
-        + "</div>"
-        for i, comps in enumerate(_structure_columns(shown))
-    )
-    titles = {
-        g["index"]: g["title"] for g in (data.get("groups") or [])
-        if isinstance(g, dict) and isinstance(g.get("index"), int) and g.get("title")
+    groups = {
+        g["index"]: g for g in (data.get("groups") or [])
+        if isinstance(g, dict) and isinstance(g.get("index"), int)
     }
-    chips = _structure_chips(shown, _group_color, titles)
+    group_of = {c["id"]: c.get("group") for c in shown}
+    lane_keys = sorted({c.get("group") for c in shown}, key=lambda k: (k is None, k))
+    lane_keys += [k for k in sorted(groups) if k not in lane_keys and groups[k].get("dropped")]
+    lanes = []
+    lane_edges = []
+    for key in lane_keys:
+        comps = [c for c in shown if c.get("group") == key]
+        ids = {c["id"] for c in comps}
+        intra = [e for e in edges if e["from"] in ids and e["to"] in ids]
+        lane_edges += intra
+        outgoing = Counter(
+            group_of[e["to"]] for e in edges
+            if e["kind"] == "call" and e.get("state") != "gone" and e["from"] in ids
+            and group_of.get(e["to"]) not in (None, key)
+        ) if key is not None else Counter()
+        lanes.append(_structure_lane_html(
+            key, groups, comps, intra, outgoing, _group_color, explain, len(lane_keys) == 1,
+        ))
+
     summary = _html_note(_structure_summary_text(
         shown, data.get("edges"), data.get("dropped") or 0, explain,
     ))
     also_touched = _structure_also_touched(data.get("also_touched") or [])
-    legend = _structure_legend(edges, explain)
-    # Read by the template's own edge-drawing script, keyed by the same ids the boxes above
-    # carry as `id="vds-<id>"`; escape()+&quot; is the same idiom render_symbols uses for its
-    # own data-ids attribute, for the same reason -- a bare escape() leaves quotes alone.
-    edges_attr = escape(json.dumps(edges, sort_keys=True)).replace('"', "&quot;")
-
-    body = "\n".join([
-        f'<p class="note">{summary}</p>',
-        chips,
-        '<p class="vds-hint">Callers on the left, callees on the right.</p>',
-        # tabindex+aria-label: a horizontally-overflowing box with no native control of its own
-        # (no scrollbar-visible affordance on most platforms) is otherwise unreachable by
-        # keyboard -- a mouse/touch drag is not the only way in.
-        f'<div class="vds-scroll" tabindex="0" aria-label="Component diagram, scrollable">'
-        # tabindex+role+aria-label here match wire()'s own zoom-control attributes for every
-        # other diagram in the template (~L1577): the container itself is the full-size
-        # control, box clicks below stopPropagation() before this ever sees them.
-        f'<div class="vds-sys" tabindex="0" role="button" '
-        f'aria-label="Expand diagram to full size" data-edges="{edges_attr}">',
-        '<svg class="vds-edges" aria-hidden="true"></svg>',
-        f'<div class="vds-cols">{cols_html}</div>',
-        "</div></div>",
-        '<p class="vds-swipe">Swipe sideways to see the whole diagram.</p>',
-        also_touched,
-        legend,
-    ])
+    legend = _structure_legend(lane_edges, explain)
 
     heading = "How it fits together" if explain else "System change"
+    plural = "s" if len(lanes) != 1 else ""
     return "\n".join([
         STRUCTURE_MARKER,
         '<div class="vd-structure">',
-        f'<h2 class="h2-row"><span>{heading}</span><span class="ctl">'
-        f'{_diagram_max_button()}</span></h2>',
-    ]) + "\n" + body + "\n</div>\n"
+        f'<h2>{heading}</h2>',
+        f'<p class="note">{summary}</p>',
+        '<details class="vds-lanes">',
+        f'<summary>Diagram{plural} by group ({len(lanes)})</summary>',
+        '<p class="vds-hint">Callers on the left, callees on the right.</p>',
+        *lanes,
+        also_touched,
+        legend,
+        "</details>",
+        "</div>",
+    ]) + "\n"
 
 
 def main():

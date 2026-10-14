@@ -53,6 +53,8 @@ TOOLS = [
                 "clone": {"type": "boolean"}, "target": {"type": "string"}, "slug": {"type": "string"}, "pr": {"type": "integer"},
                 "explain": {"type": "boolean"}, "paths": {"type": "array", "items": {"type": "string"}},
                 "title": {"type": "string"}, "diff_file": {"type": "string"},
+                "fresh": {"type": "boolean", "description": ("Regenerate everything from scratch, keeping user threads, "
+                                                             "notes and state. Use only when the user explicitly reruns.")},
             },
         },
     },
