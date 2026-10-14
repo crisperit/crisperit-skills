@@ -163,7 +163,7 @@ def _group_attrs(item, target_of):
             f' data-group="{"" if group is None else group}"')
 
 
-def overview_svg(ov, target_of=lambda item: ""):
+def overview_svg(ov, target_of=lambda item: "", mid=""):
     """Inline SVG for a validated overview. Every string is escaped; ids never reach the markup
     (nodes are addressed by index), kinds come from visuals.py's fixed vocabulary."""
     nodes, edges = ov["nodes"], ov["edges"]
@@ -180,10 +180,11 @@ def overview_svg(ov, target_of=lambda item: ""):
     height = (bottom + 16 + 18 * (n_back - 1) + 12 + OV_PAD) if n_back else bottom + OV_PAD
     width = 2 * OV_PAD + len(cols) * OV_W + (len(cols) - 1) * OV_COL
     kinds = [e["kind"] for e in edges]
-    parts = [f'<svg class="cw-ov" viewBox="0 0 {width} {height}" role="group"'
+    mp = f"cw-ov-m-{mid}-" if mid else "cw-ov-m-"
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" class="cw-ov" viewBox="0 0 {width} {height}" role="group"'
              f' aria-label="{escape(ov["title"], quote=True)}" style="min-width:{int(width * 0.8)}px"><defs>']
     for kind in dict.fromkeys(kinds):
-        parts.append(f'<marker id="cw-ov-m-{kind}" markerUnits="userSpaceOnUse" markerWidth="10"'
+        parts.append(f'<marker id="{mp}{kind}" markerUnits="userSpaceOnUse" markerWidth="10"'
                      ' markerHeight="10" refX="9" refY="5" orient="auto">'
                      f'<path class="cw-ov-m-{kind}" d="M0,0L10,5L0,10z"/></marker>')
     parts.append("</defs>")
@@ -204,7 +205,7 @@ def overview_svg(ov, target_of=lambda item: ""):
             d = f"M{sx},{sy}C{sx + dx},{sy} {tx - dx},{ty} {tx},{ty}"
             mid = ((sx + tx) / 2, (sy + ty) / 2)
         parts.append(f'<path class="cw-ov-e cw-ov-e-{edge["kind"]}" data-from="{a}" data-to="{b}"'
-                     f' marker-end="url(#cw-ov-m-{edge["kind"]})" d="{d}"/>')
+                     f' marker-end="url(#{mp}{edge["kind"]})" d="{d}"/>')
         if edge["label"]:
             w = int(len(edge["label"]) * 5.6 + 10)
             labels.append(f'<g class="cw-ov-lbl" data-from="{a}" data-to="{b}">'
@@ -312,14 +313,7 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
                     f'{pr_picture["html"]}</div></section>')
 
     if walkthrough.strip():
-        # The toggle lives in the heading because that is the only place on the page that
-        # belongs to the walkthrough as a whole. No walkthrough, no heading, no toggle --
-        # there would be nothing for it to hide. It names the state it is in, not the one it
-        # switches to, and explanations start on, so the label here is the on label.
-        body.append('<h2 class="h2-row"><span>Walkthrough</span><span class="ctl">'
-                    '<button type="button" id="wt-notes-toggle"'
-                    ' aria-label="Explanations shown. Activate to hide them."'
-                    '>explanations</button></span></h2>')
+        body.append('<h2 class="h2-row"><span>Walkthrough</span><span class="ctl" id="wt-ctl"></span></h2>')
         group_pictures = clean.get("groups") or {}
 
         def picture(match):

@@ -181,6 +181,13 @@ def test_symbols_llm_resolver_caveat(resolver, caveat):
             assert "inferred" not in out
 
 
+@pytest.mark.parametrize("resolver, noted", [("model", True), ("go/packages", False)])
+def test_symbols_model_resolver_note(resolver, noted):
+    data = {**SYMDELTA, "language": "model" if noted else "go", "resolver": resolver, "reason": "no <index>"}
+    for out in (render_symbols(data), render_symbols(data, inline=True)):
+        assert ("Drawn by the model from the diff, not from a code index (no &lt;index&gt;)." in out) is noted
+
+
 def test_symbols_page_level_has_marker_heading_and_packages_only():
     # No toggle, no symbols level: that detail now lives per group instead (inline=True below).
     out = render_symbols(SYMDELTA)

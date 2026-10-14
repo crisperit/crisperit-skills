@@ -151,26 +151,22 @@ def test_overview_prose_blocks(overview, present, absent):
     assert out.count("<ul>") == 1
 
 
-def test_the_walkthrough_heading_carries_only_the_explanations_toggle():
+def test_the_walkthrough_heading_has_a_control_slot_and_no_explanations_toggle():
     wt = "<!-- code-walkthrough:walkthrough -->\n<details>x</details>"
     out = html(walkthrough=wt, links={"pr_url": "https://gh/pull/7"})
 
-    assert 'class="h2-row"' in out
-    assert out.count('id="wt-notes-toggle"') == 1
-    # The label names the state, so aria-pressed would say something different from the word
-    # in the button; the accessible name carries the state and the action instead.
-    assert "aria-pressed" not in out
-    assert 'aria-label="Explanations shown. Activate to hide them."' in out
-    assert ">explanations</button>" in out  # on by default, so this is the on label
     heading = out.split('class="h2-row"')[1].split("</h2>")[0]
+    assert 'id="wt-ctl"' in heading
     assert "<a " not in heading
+    assert "wt-notes-toggle" not in out
+    assert "show-notes" not in _real_template()
 
 
-def test_no_walkthrough_means_no_heading_and_no_toggle():
+def test_no_walkthrough_means_no_heading_and_no_control_slot():
     out = html(walkthrough="")
 
     assert "Walkthrough" not in out
-    assert "wt-notes-toggle" not in out
+    assert "wt-ctl" not in out
 
 
 def test_a_missing_verdict_drops_only_its_fact_block():
@@ -287,6 +283,7 @@ _CLIENT_ROUTES = [
     ("api+'/post'", "/post", "_POST_RE"),
     ("api+'/publish-one'", "/publish-one", "_PUBLISH_ONE_RE"),
     ("postJson('/triage'", "/triage", "_TRIAGE_RE"),
+    ("postJson('/trust'", "/trust", "_TRUST_RE"),
     ("api+'/threads/'", "/threads/t-1/resolve", "_RESOLVE_RE"),
     ("/cancel'", "/comment/q-0123abcd/cancel", "_CANCEL_RE"),
     ("LIVE.api+'/events?k='", "/events", "_EVENTS_RE"),
@@ -449,12 +446,108 @@ def test_live_reload_flushes_notes_before_reloading():
     assert "Promise.race" in body
 
 
+_FAKE_DOM = """
+const mk=tag=>({tag,className:'',kids:[],attrs:{},hidden:false,
+  setAttribute(k,v){this.attrs[k]=v},append(...x){this.kids.push(...x)},
+  set textContent(t){this.kids=[String(t)]},
+  before(e){ctx.log.push(['before',this.id||this.tag,e]);ctx.live.push(e)},
+  after(e){ctx.log.push(['after',this.id||this.tag,e]);ctx.live.push(e)},
+  remove(){ctx.live=ctx.live.filter(x=>x!==this)}});
+"""
+
+
+def _skeleton_titles(status, existing_skel=False, overview=False, notes=False, hunk_pos=4, no_wt=False):
+    script = _FAKE_DOM + f"""
+const ctx={{log:[],live:[]}};
+const facts=mk('facts'), wt={{parentElement:Object.assign(mk('wt-h2'),{{compareDocumentPosition:()=>{hunk_pos}}})}};
+const hunk={{querySelector:s=>s==='pre.diff'?mk('pre'):null,
+  querySelectorAll:()=>[]}};
+if({str(notes).lower()}) hunk.querySelector=s=>s==='pre.diff'?mk('pre'):(s==='.hunk-note'?{{}}:null);
+if({str(existing_skel).lower()}) ctx.live.push(mk('old'));
+const document={{
+  querySelector:s=>s==='.facts'?facts:null,
+  getElementById:i=>i==='wt-ctl'?({str(not no_wt).lower()}?wt:null):(i==='cw-overview'&&{str(overview).lower()}?{{}}:null),
+  createElement:mk,
+  querySelectorAll:s=>s==='.cw-skel'?ctx.live:s==='h2'?[{{textContent:{'"Overview"' if overview else '"x"'}}}]:s==='details.hunk'?[hunk]:[]
+}};
+let liveStatus={json.dumps(status)};
+""" + _between(_real_template(), "function paintSkeletons(){", "\n    }\n").join(["function paintSkeletons(){", "\n}"]) + """
+paintSkeletons();
+const text=e=>e.kids.map(k=>typeof k==='string'?k:text(k)).join('|');
+console.log(JSON.stringify(ctx.live.map(e=>[e.className,e.attrs['aria-busy'],text(e)])));
+"""
+    require_node()
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_placeholders_appear_only_while_building_and_for_what_is_missing():
+    got = _skeleton_titles("building")
+    assert [r[2] for r in got] == ["System change|Drawing the system change\u2026",
+                                   "Overview|Writing the overview\u2026", "Writing notes\u2026"]
+    assert all(r[0] == "cw-skel" and r[1] == "true" for r in got)
+
+    assert _skeleton_titles("building", overview=True, notes=True) == []
+    assert _skeleton_titles("done") == []
+    only_notes = ["Writing notes\u2026"]
+    assert [r[2] for r in _skeleton_titles("building", overview=True)] == only_notes
+    assert _skeleton_titles("building", overview=True, hunk_pos=2) == []
+    assert _skeleton_titles("building", overview=True, no_wt=True) == []
+    assert _skeleton_titles("failed", existing_skel=True) == []
+
+
+def test_dock_is_hidden_while_building_with_no_threads_and_revealed_otherwise():
+    fn = _between(_real_template(), "function paintDock(){", "\n    }\n")
+    script = f"""
+const els={{'cw-dock':{{hidden:true}}}}, $=i=>els[i];
+const dock={{setAttribute(){{}}}}, dockSet=()=>{{}};
+let dockView, window={{CW_LIVE:{{status:'building'}}}};
+const run=(status,v)=>{{ window.CW_LIVE.status=status; dockView=v; paintDock(); return els['cw-dock'].hidden; }};
+function paintDock(){{{fn}
+}}
+const r=[run('building',{{open:0,waiting:0}}), run('building',{{open:1,waiting:0}}),
+  run('building',{{open:0,waiting:1}}), run('done',{{open:0,waiting:0}})];
+console.log(JSON.stringify(r));
+"""
+    require_node()
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == [True, False, False, False]
+
+
+def test_static_dock_starts_hidden_and_only_the_static_script_reveals_it_off_live():
+    template = _real_template()
+    assert '<div id="cw-dock" hidden>' in template
+    assert "#cw-dock[hidden]{display:none}" in template
+    assert "details.hunk.cw-previewing .cw-skel{display:none}" in template
+
+
+def _dock_after_wiring(live, status="done", paint=False):
+    block = _between(_real_template(), "  wireCommentsPanel();\n  wireResolutionDialog();", "\n\n  function wireSibling")
+    script = f"""
+const els={{'cw-dock':{{hidden:true}}}}, $=i=>els[i];
+const wireCommentsPanel=()=>{{}}, wireResolutionDialog=()=>{{}}, wireAsk=()=>{{}};
+const window={json.dumps({"CW_LIVE": {"status": status}} if live else {})};
+if({str(paint).lower()}) window.__cwPaintDock=()=>{{}};
+""" + "  wireCommentsPanel();\n  wireResolutionDialog();" + block + "\nconsole.log(els['cw-dock'].hidden);"
+    require_node()
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip() == "true"
+
+
+def test_static_dock_shows_regardless_of_the_panel_and_live_fallback_shows_unless_building():
+    assert _dock_after_wiring(live=False) is False
+    assert _dock_after_wiring(live=True, status="done") is False
+    assert _dock_after_wiring(live=True, status="building") is True
+    assert _dock_after_wiring(live=True, status="building", paint=True) is True
+
+
 # Rules that fix real browser bugs, and no behaviour test can see them without a browser.
 _CSS_RULES = [
     (r"details\.hr-thread-resolved\{([^}]*)\}",
      ["white-space:normal", "line-height:1.6", "overflow-wrap:anywhere"], []),
-    (r"body:not\(\.show-notes\) \.hunk-note-hunk,\n\s*body:not\(\.show-notes\) \.wt-why\{([^}]*)\}",
-     ["display:none"], []),
     (r"\.dline-plus::before,\.cw-ref-dot-btn::before\{([^}]*)\}",
      ["position:absolute", "inset:-16px"], []),
     (r"\.cw-caret\{([^}]*)\}", [], ["animation"]),
@@ -597,6 +690,82 @@ for (const [type, ins, rep] of cases) {
   const a = pageEditWhat({op: 'insert_after', block: {type}}), b = pageEditWhat({op: 'replace', block: {type}});
   if (a !== ins || b !== rep) throw new Error(type + ': ' + a + ' / ' + b);
 }
+""")
+
+
+_PAGE_EDIT_DOM = """
+class El {
+  constructor(tag) { this.tag = tag; this.kids = []; this.parent = null; this.dataset = {}; this.cls = new Set(); this._t = ''; this.listeners = {};
+    this.classList = {add: c => this.cls.add(c), remove: c => this.cls.delete(c), contains: c => this.cls.has(c)}; }
+  get isConnected() { let n = this; while (n.parent) n = n.parent; return n === root; }
+  get textContent() { return this._t + this.kids.map(k => k.textContent).join(''); }
+  append(...ns) { ns.forEach(n => { n.parent = this; this.kids.push(n); }); }
+  prepend(n) { n.parent = this; this.kids.unshift(n); }
+  remove() { if (this.parent) this.parent.kids.splice(this.parent.kids.indexOf(this), 1); this.parent = null; }
+  insertAdjacentElement(_w, n) { const i = this.parent.kids.indexOf(this); n.parent = this.parent; this.parent.kids.splice(i + 1, 0, n); }
+  addEventListener() {}
+  setAttribute() {}
+  find(f) { for (const k of this.kids) { if (f(k)) return k; const r = k.find(f); if (r) return r; } return null; }
+  querySelector(sel) { const c = sel.replace('.', ''); return this.find(k => k.cls.has(c) || k.tag === sel); }
+  querySelectorAll() { return []; }
+}
+const root = new El('root'), planEl = root;
+const mk = (tag, cls, text) => { const e = new El(tag); (cls || '').split(' ').filter(Boolean).forEach(c => e.cls.add(c)); e._t = text || ''; return e; };
+const mkBtn = (t) => mk('button', '', t);
+const mdEl = (t) => mk('div', 'md', t);
+const textOf = e => e.textContent, norm = x => x;
+const postJson = () => Promise.resolve({ok: true, body: {}});
+const loadQa = () => {};
+const outcomesByQid = new Map();
+const blockEl = mk('p', '', 'block'); root.append(blockEl);
+const blockIndex = () => ({byKey: new Map([['k1', blockEl]]), list: []});
+const threads = new Map([['t1', {turns: [{anchors: [{kind: 'block', quote: 'zzz'}]}]}]]);
+let bad = false;
+global.DOMParser = class { parseFromString(s) { return {querySelector: () => bad ? {} : null, documentElement: mk('svg', 'cw-ov', s)}; } };
+global.document = {importNode: n => n, createElement: t => mk(t)};
+const eq = (a, b, m) => { if (a !== b) throw new Error(m + ': ' + JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+"""
+
+
+def _page_edit_script():
+    t = _real_template()
+    return _PAGE_EDIT_DOM + "const pageEdits=new Map();" + _between(t, "const pageEdits=new Map();", "function syncThreadEdits(")
+
+
+def test_page_edit_graph_block_renders_the_server_svg_under_its_title_and_guards_a_bad_one():
+    _node(_page_edit_script() + """
+const ok = pageEditContent({type: 'graph', graph: {title: 'Flow <b>'}, svg: '<svg class="cw-ov"/>'});
+const wrap = ok.find(k => k.cls.has('cw-ov-wrap'));
+eq(!!wrap && wrap.cls.has('cw-vis'), true, 'wrap');
+eq(wrap.find(k => k.cls.has('cw-ov-sub')).textContent, 'Flow <b>', 'title');
+eq(!!wrap.find(k => k.tag === 'svg'), true, 'svg');
+bad = true;
+const broken = pageEditContent({type: 'graph', graph: {title: 't'}, svg: 'oops'});
+eq(!!broken.find(k => k.cls.has('cw-pageedit-err')) && !broken.find(k => k.tag === 'svg'), true, 'guard');
+""")
+
+
+def test_page_edit_replacing_an_earlier_edit_by_oid_hides_it_and_undo_restores_it_in_any_order():
+    _node(_page_edit_script() + """
+const edit = (oid, op, target, text) => ({oid, thread_id: 't1', state: 'applied', outcome: 'page_edit',
+  payload: {op, target, block: {type: 'prose', text}}});
+const A = edit('o-a', 'insert_after', 'k1', 'a'), B = edit('o-b', 'replace', 'o-a', 'b');
+syncPageEdit(A); syncPageEdit(B);
+const a = pageEdits.get('o-a').node, b = pageEdits.get('o-b').node;
+eq(a.cls.has('cw-pageedit-hidden'), true, 'A hidden by B');
+eq(root.kids.indexOf(b), root.kids.indexOf(a) + 1, 'B sits after A');
+removePageEdit('o-b');
+eq(a.cls.has('cw-pageedit-hidden'), false, 'undo of B un-hides A');
+
+removePageEdit('o-a');
+syncPageEdit(B);
+eq(pageEdits.get('o-b').outdated, true, 'B before A is outdated');
+syncPageEdit(A);
+resyncPageEdits();
+const a2 = pageEdits.get('o-a').node;
+eq(pageEdits.get('o-b').outdated, false, 'resync resolves B');
+eq(a2.cls.has('cw-pageedit-hidden'), true, 'A hidden after resync');
+eq(root.kids.indexOf(pageEdits.get('o-b').node), root.kids.indexOf(a2) + 1, 'B after A');
 """)
 
 
@@ -1155,3 +1324,119 @@ def test_page_opens_with_a_visible_title_and_the_pr_link():
     assert '<h1 class="cw-title">' in out and out.count("<h1") == 1
     link = pics(links={"pr_url": "https://x/pr/1"}, title="A <b> title")
     assert '<h1 class="cw-title">A &lt;b&gt; title</h1><p class="sub cw-title-sub"><a href="https://x/pr/1"' in link
+
+
+def test_overview_svg_mid_prefixes_marker_ids_default_unchanged():
+    plain, pre = overview_svg(OV), overview_svg(OV, mid="ab12cd")
+    assert 'id="cw-ov-m-new"' in plain or 'id="cw-ov-m-' in plain
+    ids = re.findall(r'<marker id="([^"]+)"', pre)
+    assert ids and all(i.startswith("cw-ov-m-ab12cd-") for i in ids)
+    assert all(f'url(#{i})' in pre for i in ids)
+    assert pre.replace("ab12cd-", "") == plain
+
+
+def test_overview_svg_is_namespaced_svg_for_domparser():
+    import xml.etree.ElementTree as ET
+    assert ET.fromstring(overview_svg(OV)).tag == "{http://www.w3.org/2000/svg}svg"
+
+
+def test_file_preview_button_toggles_the_diff_and_renders_markdown_once():
+    fn = _between(_real_template(), "function wireFilePreview(btn){", "\ndocument.querySelectorAll('details.hunk .hunk-preview')")
+    script = f"""
+const cls=new Set(), attrs={{}}; let handler, rendered=0, last, kids=[];
+const pbody={{get firstChild(){{return kids[0]||null}}, append(x){{kids.push(x)}}}};
+const tpl={{content:{{textContent:'# Hi'}}}};
+const det={{classList:{{contains:c=>cls.has(c), toggle:(c,on)=>on?cls.add(c):cls.delete(c)}},
+  querySelector:s=>s==='.cw-preview-body'?pbody:s==='template.cw-md-src'?tpl:null}};
+const btn={{closest:()=>det, setAttribute:(k,v)=>{{attrs[k]=v}}, addEventListener:(_,h)=>{{handler=h}}}};
+const window={{__cwMdEl:t=>{{rendered++; return t}}}};
+function wireFilePreview(btn){{{fn}
+wireFilePreview(btn);
+const click=()=>handler({{preventDefault(){{}},stopPropagation(){{}}}});
+click();
+if(!cls.has('cw-previewing')||attrs['aria-pressed']!=='true'||kids[0]!=='# Hi') throw new Error('on');
+click();
+if(cls.has('cw-previewing')||attrs['aria-pressed']!=='false') throw new Error('off');
+click();
+if(rendered!==1) throw new Error('rendered '+rendered);
+"""
+    _node(script)
+
+
+def test_file_preview_uses_the_safe_renderer_and_never_html_injection():
+    template = _real_template()
+    wire = _between(template, "function wireFilePreview(btn){", "\ndocument.querySelectorAll('details.hunk .hunk-preview')")
+
+    assert "window.__cwMdEl=mdEl;" in template
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML"):
+        assert banned not in wire
+
+
+_ACCESS_DOM = """
+class El {
+  constructor(tag) { this.tag = tag; this.kids = []; this.cls = new Set(); this.hidden = false; this._t = ''; this.disabled = false; this.attrs = {}; this.on = {}; }
+  get textContent() { return this._t + this.kids.map(k => k.textContent).join(''); }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  addEventListener(n, f) { this.on[n] = f; }
+  replaceChildren(...k) { this.kids = k; }
+  append(...k) { this.kids.push(...k); }
+  querySelectorAll() { return this.kids.filter(k => k.tag === 'button'); }
+}
+const mk = (tag, cls, text) => { const e = new El(tag); (cls || '').split(' ').filter(Boolean).forEach(c => e.cls.add(c)); e._t = text || ''; return e; };
+const mkBtn = (t, cls) => mk('button', cls, t);
+const calls = [], asked = [];
+let reply = {ok: true, body: {agent: null}}, yes = true;
+const postJson = (p, b) => { calls.push([p, b]); return Promise.resolve(reply); };
+const confirm = m => { asked.push(m); return yes; };
+const window = {CW_LIVE: {agent: undefined}};
+"""
+
+
+def _access_script():
+    t = _real_template()
+    return _ACCESS_DOM + "const pAccess=" + _between(t, "const pAccess=", "window.__cwOnAgent=paintAccess;")
+
+
+def test_access_line_paints_the_four_agent_states_and_trust_is_confirmed_then_posted():
+    _node(_access_script() + """
+const eq = (a, b, m) => { if (a !== b) throw new Error(m + ': ' + JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
+const btns = () => pAccess.kids.filter(k => k.tag === 'button');
+const off = {full: false, own_pr: false, full_off: {reason: 'not trusted', remedy: 'trust it', fixable: 'trust', repo: 'o/r', org: 'o'}, trusted: null};
+paintAccess(off);
+eq(pAccess.textContent.startsWith('Review only: not trusted. trust it'), true, 'off text');
+eq(btns().map(b => b.textContent).join('|'), 'Trust o/r|Trust all of o', 'trust buttons');
+paintAccess({full: false, full_off: {reason: 'no bwrap', remedy: 'install it', fixable: null, repo: null, org: null}, trusted: null});
+eq(btns().length, 0, 'unfixable has no buttons');
+paintAccess({full: true, full_off: null, trusted: {by: 'repo', value: 'o/r'}});
+eq(pAccess.textContent.startsWith('Full access: trusted (o/r)'), true, 'trusted text');
+eq(btns().map(b => b.textContent).join('|'), 'Stop trusting', 'stop button');
+paintAccess({full: true, full_off: null, trusted: {by: 'own_pr', value: null}});
+eq(pAccess.textContent, 'Full access: your PR', 'own pr');
+eq(btns().length, 0, 'own pr no button');
+paintAccess(undefined);
+eq(pAccess.hidden, true, 'missing agent hidden');
+
+(async () => {
+  paintAccess(off);
+  yes = false; btns()[0].on.click();
+  eq(asked.length, 1, 'confirm asked'); eq(calls.length, 0, 'declined posts nothing');
+  eq(asked[0].includes('forks'), true, 'fork warning');
+  yes = true; reply = {ok: true, body: {agent: {full: true, full_off: null, trusted: {by: 'org', value: 'o'}}}};
+  btns()[1].on.click();
+  eq(asked[1].includes('every repo owned by o'), true, 'org warning');
+  eq(JSON.stringify(calls[0]), JSON.stringify(['/trust', {scope: 'org', action: 'add'}]), 'add body');
+  await new Promise(r => setTimeout(r));
+  eq(pAccess.textContent.startsWith('Full access: trusted (o)'), true, 'repainted from response');
+  btns()[0].on.click();
+  eq(asked.length, 2, 'stop trusting has no confirm');
+  eq(JSON.stringify(calls[1]), JSON.stringify(['/trust', {scope: 'org', action: 'remove'}]), 'remove body');
+  reply = {ok: false, body: {error: 'nope', remedy: 'retry'}};
+  paintAccess(off); btns()[0].on.click();
+  await new Promise(r => setTimeout(r));
+  eq(pAccess.textContent.endsWith('nope (retry)'), true, 'error shown');
+  eq(btns()[0].disabled, false, 'buttons re-enabled');
+})().catch(e => { console.error(e); process.exit(1); });
+""")
+    tpl = _real_template()
+    assert "postJson('/trust'" in tpl and "confirm(" in tpl and "window.__cwOnAgent=paintAccess" in tpl
+    assert "['delta','progress','outcome','agent']" in tpl

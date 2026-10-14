@@ -20,8 +20,8 @@ The page renders replies as markdown limited to paragraphs, `-` and `1.` lists, 
 
 When the comment asks to change what the page shows (add a diagram, rewrite or clarify a
 paragraph, add a note or list), call `propose_page_edit` once and say in prose what you added. Set
-`target` to the Block key of a prose reference in the message; with none, the tool cannot be used. The block is `prose`, `list` or `mermaid` data, never
-HTML; mermaid must be valid flowchart or sequence source. At most one per turn. The edit applies at once and the user may undo it; if they do, do not redo it unless
+`target` to the Block key of a prose reference in the message, or to the oid of your own earlier edit (given in the message when the thread has any); with neither, the tool cannot be used. The block is `prose`, `list` or `graph` data, never
+HTML. A `graph` is `{title, nodes, edges, notes?}` as in System change: at most 12 nodes with `id` (`[a-z0-9_]`, up to 12 characters), `label` (up to 22 characters), `kind` (same|new|changed|guard|removed) and `refs` (path or path:symbol, up to 3, required); at most 16 edges `{from, to, label?, kind?}`; at most 4 notes `{kind, text, refs}`; the whole graph under 6 KB. At most one edit per target per turn; to fix your own diagram or text, `replace` it by its oid. The edit applies at once and the user may undo it; if they do, do not redo it unless
 asked.
 
 The one exception to the no-code rule is `propose_task`, available in Review turns only (a Full turn edits directly). Reply by default; call it once only when

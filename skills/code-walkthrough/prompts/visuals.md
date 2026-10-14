@@ -39,6 +39,11 @@ A reviewer sees in 10 seconds where the change is and what kind. The page draws 
  "groups": []}
 ```
 
+## Calls
+
+If asked for `calls`: up to 60 call edges the diff adds or removes:
+`{"from": "path:sym", "to": "path:sym", "state": "new|gone"}`, sym from +/- lines.
+
 ## What a picture is for
 
 A reader should grasp the change at a glance. Draw it, do not write it: the page around the
@@ -53,8 +58,7 @@ picture already carries the explanation, so a picture that reads like styled pro
   numbers; a timeline when order matters. Plain text cards are the last resort.
 - One idea per picture. Clarity beats coverage: leave out symbols and files that do not serve
   that idea; nothing has to mention every file.
-- Real names and numbers only, copied from the data you were handed. Never invent a count, a
-  name or a relationship.
+- Real names and numbers only, copied from the data you were handed. Never invent a count, name or relationship.
 - Colour has meaning: `var(--success)` new, `var(--warning)` changed, `var(--destructive)`
   removed or blocked, `var(--accent)` the focus, `var(--muted-foreground)` untouched context.
 - Give a picture to EVERY group with real structure or behaviour to show (a flow, a data shape,

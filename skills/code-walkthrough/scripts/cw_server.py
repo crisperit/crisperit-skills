@@ -108,6 +108,50 @@ def _steps_public(meta):
     }
 
 
+def _full_off(meta, d, config):
+    """(status, body) when Full may not run on this walkthrough, else None. Trust is checked last
+    so a "trust" fix is only offered when trusting would actually enable Full."""
+    def off(status, reason, remedy, fixable=None, repo=None, org=None):
+        return status, {"error": reason, "reason": reason, "remedy": remedy,
+                        "fixable": fixable, "repo": repo, "org": org}
+
+    try:
+        profile = cw_store.role_profile(config, "thread")
+    except cw_store.CWError as e:
+        return off(400, str(e), e.remedy)
+    if not profile or profile.get("kind") != "claude-code":
+        return off(400, "Full access needs a claude-code thread profile", cw_task.REMEDY)
+    if meta.get("sibling_of"):
+        return off(409, "Full access is off on an updated walkthrough", "use the original walkthrough")
+    if not cw_llm.confinement_available():
+        return off(400, "Full access needs bubblewrap with overlayfs, which this machine lacks",
+                   "install bubblewrap (Linux only); Review mode still works")
+    if cw_agent.trusted_by(meta, config, d) is None:
+        reason = "Full access is off for this walkthrough"
+        repo = cw_agent.repo_name(meta, d)
+        if repo:
+            return off(403, reason, "Trust this repo from the Threads panel, or add it to trust.repos in config.json",
+                       "trust", repo, repo.split("/", 1)[0])
+        return off(403, reason, "Full is only offered for github.com repos or your own PR")
+    return None
+
+
+def _agent_payload(meta, d):
+    config = cw_store.load_config()
+    refusal = _full_off(meta, d, config)
+    full_off = None
+    if refusal:
+        full_off = {k: refusal[1][k] for k in ("reason", "remedy", "fixable", "repo", "org")}
+    by = cw_agent.trusted_by(meta, config, d)
+    value = None
+    if by == "repo":
+        value = cw_agent.repo_name(meta, d)
+    elif by == "org":
+        value = (cw_agent.repo_name(meta, d) or "").split("/", 1)[0]
+    return {"full": refusal is None, "own_pr": meta.get("own_pr"), "stale": cw_agent.agent_stale(meta),
+            "full_off": full_off, "trusted": {"by": by, "value": value} if by else None}
+
+
 def _live_payload(key, wid, meta, d, token, port):
     drafts_doc = cw_store.read_json(d / "page-notes.json", default=None)
     drafts = drafts_doc.get("notes") if isinstance(drafts_doc, dict) else None
@@ -129,8 +173,7 @@ def _live_payload(key, wid, meta, d, token, port):
         "batches": {"done": len(meta.get("batches_done") or []), "total": meta.get("batches", 0)},
         "usage": meta.get("usage", {}), "total": cw_store.usage_total(meta),
         "drafts": drafts, "sibling": sibling,
-        "agent": {"full": cw_llm.confinement_available() and cw_agent.trust(meta, cw_store.load_config(), d),
-                  "own_pr": meta.get("own_pr"), "stale": cw_agent.agent_stale(meta)},
+        "agent": _agent_payload(meta, d),
     }
 
 
@@ -313,25 +356,38 @@ def _outcome_summary(o):
         return f"{n} draft comment{'' if n == 1 else 's'}"
     if kind == "page_edit":
         block = p.get("block") if isinstance(p.get("block"), dict) else {}
-        return f"{_cap(p.get('op'), 40) or ''} {_cap(block.get('type'), 40) or ''}".strip()
+        graph = block.get("graph") if isinstance(block.get("graph"), dict) else {}
+        target = _cap(p.get("target"), 80)
+        out = {"op": _cap(p.get("op"), 40), "target": target,
+               "target_is_oid": bool(re.fullmatch(r"o-[0-9a-f]{8}", target or "")),
+               "type": _cap(block.get("type"), 40)}
+        if block.get("type") == "graph":
+            out["title"] = _cap(graph.get("title"), 200)
+        else:
+            out["text"] = _cap(block.get("text"), 2000)
+        return out
     return None
+
+
+def _thread_public(tid, t):
+    return {
+        "thread_id": tid, "anchor": _anchor_public(t["turns"][0].get("anchor")),
+        "anchors": [_anchor_public(x) for x in cw_ask.turn_anchors(t["turns"][0])],
+        "turns": [{"qid": r.get("qid"), "comment": _cap(r.get("comment"), 1000),
+                   "answer": _cap(r.get("answer"), 2000), "status": r.get("status"),
+                   "source": r.get("source")} for r in t["turns"][-THREAD_TURN_CAP:]],
+        "outcomes": [{"oid": o["oid"], "outcome": o["outcome"], "state": o["state"],
+                      "summary": _outcome_summary(o)} for o in t["outcomes"]],
+    }
 
 
 def _threads_part(d, meta):
     threads = cw_ask.read_threads(d)
-    open_threads = []
-    for tid, t in reversed(list(threads.items())):
-        if t["resolved"]:
-            continue
-        open_threads.append({
-            "thread_id": tid, "anchor": _anchor_public(t["turns"][0].get("anchor")),
-            "anchors": [_anchor_public(x) for x in cw_ask.turn_anchors(t["turns"][0])],
-            "turns": [{"qid": r.get("qid"), "comment": _cap(r.get("comment"), 1000),
-                       "answer": _cap(r.get("answer"), 2000), "status": r.get("status"),
-                       "source": r.get("source")} for r in t["turns"][-3:]],
-            "outcomes": [{"oid": o["oid"], "outcome": o["outcome"], "state": o["state"],
-                          "summary": _outcome_summary(o)} for o in t["outcomes"]],
-        })
+    open_threads = [_thread_public(tid, t) for tid, t in reversed(list(threads.items())) if not t["resolved"]]
+    resolved = [_thread_public(tid, t) for tid, t in reversed(list(threads.items())) if t["resolved"]]
+    drafts = [{"id": n.get("id"), "path": n.get("path"), "line": n.get("line"), "side": n.get("side"),
+               "state": n.get("state"), "body": _cap(n.get("body"), 500)}
+              for n in cw_ask._state_notes(d) if n.get("origin") != "github"]
     handed = []
     for tid, t in reversed(list(threads.items())):
         for o in reversed(t["outcomes"]):
@@ -349,6 +405,7 @@ def _threads_part(d, meta):
                     "branch_hint": f"git switch -c cw/{o['oid']}",
                 })
     return {"notice": THREADS_NOTICE, "open": open_threads[:20], "handed": handed[:20],
+            "resolved": resolved[:20], "resolved_remaining": max(len(resolved) - 20, 0), "drafts": drafts,
             "open_remaining": max(len(open_threads) - 20, 0), "handed_remaining": max(len(handed) - 20, 0)}
 
 
@@ -431,6 +488,7 @@ _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
 _TRIAGE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/triage$")
+_TRUST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/trust$")
 _PUBLISH_ONE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/publish-one$")
 _OID_RE = re.compile(r"^o-[0-9a-f]{8}$")
 
@@ -614,6 +672,9 @@ class _Handler(BaseHTTPRequestHandler):
         m = _TRIAGE_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_triage(m.group(1), m.group(2)))
+        m = _TRUST_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_trust(m.group(1), m.group(2)))
         self._tracked(lambda: self._send_text(404, "not found"))
 
     def _route_health(self):
@@ -882,7 +943,7 @@ class _Handler(BaseHTTPRequestHandler):
                                    "remedy": "reload the page and comment on a thread again"})
             return
         text = payload.get(text_key)
-        if (not isinstance(text, str) or not text or len(text) > 4 * cw_ask.PROMPT_CAP
+        if (not isinstance(text, str) or not text or len(text) > cw_ask.SELECTION_CAP
                 or len(cw_store.strip_ref_fences(text)) > cw_ask.QUESTION_MAX):
             self._send_json(400, {"error": f"{text_key} must be 1-2000 characters",
                                    "remedy": f"shorten the {text_key}"})
@@ -932,21 +993,59 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _full_refusal(self, d):
         """(status, body) when Full may not run on this walkthrough, else None."""
-        config = cw_store.load_config()
-        profile = cw_store.role_profile(config, "thread")
+        return _full_off(cw_store.read_meta(d) or {}, d, cw_store.load_config())
+
+    def _route_trust(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if (not isinstance(payload, dict) or set(payload) != {"scope", "action"}
+                or payload["scope"] not in ("repo", "org") or payload["action"] not in ("add", "remove")):
+            self._send_json(400, {"error": "body must be {scope: repo|org, action: add|remove}"})
+            return
         meta = cw_store.read_meta(d) or {}
-        if not profile or profile.get("kind") != "claude-code":
-            return 400, {"error": "Full access needs a claude-code thread profile", "remedy": cw_task.REMEDY}
         if meta.get("sibling_of"):
-            return 409, {"error": "Full access is off on an updated walkthrough",
-                         "remedy": "use the original walkthrough"}
-        if not cw_agent.trust(meta, config):
-            return 403, {"error": "Full access is off for this walkthrough",
-                         "remedy": "add owner/name to trust.repos in config.json"}
-        if not cw_llm.confinement_available():
-            return 400, {"error": "Full access needs bubblewrap with overlayfs, which this machine lacks",
-                         "remedy": "install bubblewrap (Linux only); Review mode still works"}
-        return None
+            self._send_json(409, {"error": "trust is off on an updated walkthrough",
+                                  "remedy": "use the original walkthrough"})
+            return
+        repo = cw_agent.repo_name(meta, d)
+        if not repo:
+            self._send_json(409, {"error": "not a github.com repo",
+                                  "remedy": "trust applies to github.com repos only"})
+            return
+        scope, action = payload["scope"], payload["action"]
+        value = repo if scope == "repo" else repo.split("/", 1)[0]
+
+        def edit(raw_config):
+            trust = raw_config.setdefault("trust", {})
+            name = "repos" if scope == "repo" else "orgs"
+            items = trust.get(name, [])
+            kept = [x for x in items if x.lower() != value.lower()]
+            present = len(kept) < len(items)
+            trust[name] = kept if action == "remove" else items if present else items + [value]
+
+        try:
+            cw_store.update_config(edit)
+        except cw_store.CWError as e:
+            self._send_json(400, {"error": str(e), "remedy": e.remedy})
+            return
+        except OSError:
+            self._send_json(400, {"error": "could not write config.json",
+                                  "remedy": "check permissions on ~/.code-walkthrough"})
+            return
+        agent = _agent_payload(meta, d)
+        self.server.cw_daemon.hub.emit(key, wid, "agent", agent)
+        self._send_json(200, {"agent": agent})
 
     def _route_triage(self, key, wid):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():

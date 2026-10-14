@@ -33,6 +33,7 @@ import cw_check  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_store  # noqa: E402
 import notes  # noqa: E402
+import visuals  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 KNOWN_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -60,7 +61,8 @@ TOOLS = [
     },
     {
         "name": "walkthrough_get",
-        "description": "Get the status, summary and usage of a walkthrough run, optionally waiting for it to finish.",
+        "description": ("Get the status, summary and usage of a walkthrough run, optionally waiting for it to finish. "
+                        "The threads part includes resolved threads, all turns, drafts and page edits."),
         "inputSchema": {
             "type": "object", "required": ["id"],
             "properties": {
@@ -206,21 +208,31 @@ OUTCOME_TOOLS = [
 
 
 PAGE_EDIT_OPS = ("insert_after", "replace")
-PAGE_EDIT_CAPS = {"prose": 4000, "list": 4000, "mermaid": 6000}
+PAGE_EDIT_CAPS = {"prose": 4000, "list": 4000, "graph": visuals.OVERVIEW_MAX}
 
 OUTCOME_TOOLS.append({
     "name": "propose_page_edit",
     "description": ("Change what the page shows next to the commented block: insert a new block after it or "
                     "replace it. The edit applies at once and the user can undo it. Prose and list blocks are "
-                    "markdown-ish text, mermaid blocks are flowchart or sequence diagram source; never HTML."),
+                    "markdown-ish text; a graph block is a diagram in the System change shape; never HTML. "
+                    "One edit per target per turn; a target is a Block key from the message or the oid of "
+                    "one of your own earlier edits, which replace swaps out."),
     "inputSchema": {
         "type": "object", "required": ["op", "target", "block"],
         "properties": {
             "op": {"enum": list(PAGE_EDIT_OPS)},
-            "target": {"type": "string", "description": "the Block key from the message"},
+            "target": {"type": "string", "description": "a Block key from the message, or the oid of your earlier edit"},
             "block": {
-                "type": "object", "required": ["type", "text"],
-                "properties": {"type": {"enum": list(PAGE_EDIT_CAPS)}, "text": {"type": "string"}},
+                "type": "object", "required": ["type"],
+                "properties": {
+                    "type": {"enum": list(PAGE_EDIT_CAPS)}, "text": {"type": "string"},
+                    "graph": {
+                        "type": "object", "required": ["title", "nodes", "edges"],
+                        "description": ("type graph only: {title, nodes: [{id, label, kind, refs}] up to 12, "
+                                        "edges: [{from, to, label?, kind?}] up to 16, notes?: [{kind, text, refs}] up to 4}; "
+                                        "each node and note needs refs (path or path:symbol)"),
+                    },
+                },
             },
         },
     },
@@ -358,27 +370,37 @@ def _check_resolve(anchor_doc, args, already):
 
 def _check_page_edit(anchor_doc, args, already):
     keys = [r[r["kind"]] for r in _refs(anchor_doc) if r.get("kind") in ("block", "section")]
-    if not keys:
+    oids = [e["oid"] for e in anchor_doc.get("page_edits", []) if isinstance(e, dict) and e.get("oid")]
+    if not keys and not oids:
         return "page edits attach to prose blocks, not diff lines; reply instead"
     if args.get("op") not in PAGE_EDIT_OPS:
         return "op must be insert_after or replace"
     block = args.get("block")
     if not isinstance(block, dict):
-        return "block must be an object with type and text"
+        return "block must be an object with type and text or graph"
     cap = PAGE_EDIT_CAPS.get(block.get("type"))
     if cap is None:
-        return "block.type must be prose, list or mermaid"
-    text = block.get("text")
-    if not isinstance(text, str) or not text.strip():
-        return "block.text is required"
-    if len(text.strip()) > cap:
-        return f"block.text must be at most {cap} characters for {block['type']}"
-    if args.get("target") not in keys:
-        if len(keys) == 1:
-            return f"target must be {keys[0]}, this comment's block key"
-        return f"target must be one of {', '.join(keys)}, this comment's block keys"
-    if "page_edit" in already:
-        return "already proposed a page edit in this turn"
+        return "block.type must be prose, list or graph"
+    if block["type"] == "graph":
+        graph = block.get("graph")
+        clean, problems = visuals.check_overview(graph, 0, None)
+        if clean is None:
+            return "block.graph invalid: " + "; ".join(problems[:3])
+        block["graph"] = clean
+    else:
+        text = block.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return "block.text is required"
+        if len(text.strip()) > cap:
+            return f"block.text must be at most {cap} characters for {block['type']}"
+    target = args.get("target")
+    if target not in keys + oids:
+        valid = keys + oids
+        if len(valid) == 1:
+            return f"target must be {valid[0]}, the only block or edit this comment may change"
+        return f"target must be one of {', '.join(valid)}, the blocks and edits this comment may change"
+    if f"page_edit:{target}" in already:
+        return "already proposed a page edit for this target in this turn"
     return None
 
 
@@ -516,6 +538,13 @@ def _github_draft_payload(args, anchor_doc):
 
 def _page_edit_payload(args, anchor_doc=None):
     block = args["block"]
+    if block["type"] == "graph":
+        import render
+        clean = block["graph"]
+        path = lambda item: (item["refs"][0].partition(":")[0] if item.get("refs") else "")
+        return {"op": args["op"], "target": args["target"],
+                "block": {"type": "graph", "graph": clean,
+                          "svg": render.overview_svg(clean, path, mid=uuid.uuid4().hex[:6])}}
     return {"op": args["op"], "target": args["target"],
             "block": {"type": block["type"], "text": block["text"].strip()}}
 
@@ -544,7 +573,7 @@ OUTCOME_KINDS = {
     },
     "propose_page_edit": {
         "outcome": "page_edit", "state": "applied", "check": _check_page_edit, "payload": _page_edit_payload,
-        "key": lambda payload: "page_edit", "accepted": "applied to the page; the user can undo it",
+        "key": lambda payload: f"page_edit:{payload['target']}", "accepted": "applied to the page; the user can undo it",
     },
     "post_draft_comments": {
         "outcome": "draft_comments", "state": "applied", "check": _check_draft_comments,
@@ -595,7 +624,10 @@ def accept_outcome(d, qid, name, args):
         f.write(json.dumps(record) + "\n")
         f.flush()
         os.fsync(f.fileno())
-    return True, kind["accepted"]
+    text = kind["accepted"]
+    if name == "propose_page_edit":
+        text += f" (oid {record['oid']})"
+    return True, text
 
 
 def outcome_tools(mode="review"):

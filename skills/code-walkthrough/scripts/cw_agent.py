@@ -34,20 +34,28 @@ def _lowered(value):
     return {x.lower() for x in value if isinstance(x, str)} if isinstance(value, list) else set()
 
 
-def trust(meta, config, d=None):
-    """Whether Full is available for this walkthrough's repo. Never calls out; own_pr is the
-    value cw_run.run cached in meta."""
+def trusted_by(meta, config, d=None):
+    """Why Full is available for this walkthrough's repo: "own_pr", "repo", "org", or None. Never
+    calls out; own_pr is the value cw_run.run cached in meta."""
     if meta.get("sibling_of"):
-        return False
+        return None
     if meta.get("own_pr") is True:
-        return True
+        return "own_pr"
     cfg = config.get("trust")
     cfg = cfg if isinstance(cfg, dict) else {}
     repos, orgs = _lowered(cfg.get("repos")), _lowered(cfg.get("orgs"))
     if not repos and not orgs:
-        return False
+        return None
     repo = (repo_name(meta, d) or "").lower()
-    return bool(repo) and (repo in repos or repo.split("/", 1)[0] in orgs)
+    if not repo:
+        return None
+    if repo in repos:
+        return "repo"
+    return "org" if repo.split("/", 1)[0] in orgs else None
+
+
+def trust(meta, config, d=None):
+    return trusted_by(meta, config, d) is not None
 
 
 FILES_CAP = 200

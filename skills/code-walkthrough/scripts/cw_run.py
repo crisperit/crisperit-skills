@@ -33,6 +33,7 @@ import links  # noqa: E402
 import notes  # noqa: E402
 import regen  # noqa: E402
 import state  # noqa: E402
+import symdelta as symdelta_mod  # noqa: E402
 import visuals  # noqa: E402
 from symdelta import add_worktree, remove_worktree  # noqa: E402
 from validate_analysis import EMPTY_NOTE_FLOOR, HUNK_PREFIX, parse_hunks, validate  # noqa: E402
@@ -835,7 +836,7 @@ def _run_prose(d, meta, config, on_event, batch_count):
     return "route", other_lines
 
 
-def _visuals_submit_tool():
+def _visuals_submit_tool(need_calls=False):
     kind = {"type": "string", "enum": ["same", "new", "changed", "guard", "removed"]}
     refs = {"type": "array", "maxItems": 3, "items": {"type": "string"}}
     group = {"type": ["integer", "null"]}
@@ -854,16 +855,37 @@ def _visuals_submit_tool():
             "text": {"type": "string", "maxLength": 48}, "group": group, "refs": refs},
             "required": ["kind", "text"]}}},
         "required": ["title", "nodes", "edges"]}
+    props = {"overview": overview,
+             "groups": {"type": "array", "items": {"type": "object", "properties": {
+                 "index": {"type": "integer"}, "html": {"type": "string"}}}}}
+    if need_calls:
+        end = {"type": "string", "description": "path:symbol"}
+        props["calls"] = {"type": "array", "maxItems": visuals.MAX_CALLS, "items": {
+            "type": "object", "properties": {"from": end, "to": end,
+                                             "state": {"type": "string", "enum": ["new", "gone"]}},
+            "required": ["from", "to", "state"]}}
     return {"type": "function", "function": {
         "name": "submit_visuals",
         "description": "Submit the overview graph and one picture per group (HTML/SVG fragments).",
-        "parameters": {"type": "object", "properties": {
-            "overview": overview,
-            "groups": {"type": "array", "items": {"type": "object", "properties": {
-                "index": {"type": "integer"}, "html": {"type": "string"}}}}}}}}
+        "parameters": {"type": "object", "properties": props}}}
 
 
-def _visuals_user_text(d, meta, analysis, symdelta):
+def _need_calls(symdelta):
+    return (isinstance(symdelta, dict) and symdelta.get("language") is None
+            and not visuals.symbol_digest(symdelta))
+
+
+def _write_model_symdelta(d, meta, symdelta, calls):
+    new = [(*c["from"].split(":", 1), *c["to"].split(":", 1)) for c in calls if c["state"] == "new"]
+    gone = [(*c["from"].split(":", 1), *c["to"].split(":", 1)) for c in calls if c["state"] == "gone"]
+    nodes, edges, presets, counts = symdelta_mod.build_graph(new, gone)
+    (d / "symdelta.model.json").write_text(json.dumps({
+        "target": meta["target"], "language": "model", "resolver": "model",
+        "reason": symdelta.get("reason"), "nodes": nodes, "edges": edges, "moved": [],
+        "presets": presets, "counts": counts}, indent=2))
+
+
+def _visuals_user_text(d, meta, analysis, symdelta, need_calls=False):
     raw_diff = (d / "raw.diff").read_text(errors="replace")
     numstat = (d / "numstat.tsv").read_text(errors="replace") if (d / "numstat.tsv").exists() else ""
     complexity = cw_store.read_json(d / "complexity.json", default=None)
@@ -878,6 +900,9 @@ def _visuals_user_text(d, meta, analysis, symdelta):
     digest = visuals.symbol_digest(symdelta, complexity)
     if digest:
         parts.append(digest)
+    if need_calls:
+        parts.append("No code index is available: also submit `calls`, the call edges this diff adds "
+                     "or removes (path:symbol to path:symbol), read from the diff.")
     if raw_diff.count("\n") <= 2000:
         parts.append("```diff\n" + raw_diff + "\n```")
     else:
@@ -899,7 +924,8 @@ def _run_visuals(d, meta, config, on_event, force=False):
         analysis = cw_store.read_json(d / "analysis.json", default=None) or {}
         symdelta = cw_store.read_json(d / "symdelta.json", default=None)
         n_groups = len(analysis.get("groups") or [])
-        if not analysis or (not n_groups and not visuals.symbol_digest(symdelta)):
+        need_calls = _need_calls(symdelta)
+        if not analysis or (not n_groups and not visuals.symbol_digest(symdelta) and not need_calls):
             _emit_step(d, on_event, "visuals", "skipped")
             return False
         role = "visuals" if cw_store.role_profile(config, "visuals") else "prose"
@@ -911,7 +937,7 @@ def _run_visuals(d, meta, config, on_event, force=False):
         system_prompt = (SKILL_DIR / "prompts" / "visuals.md").read_text() + DELIVERY_SUFFIX.format(
             tool="submit_visuals")
         messages = [{"role": "system", "content": system_prompt},
-                    {"role": "user", "content": _visuals_user_text(d, meta, analysis, symdelta)}]
+                    {"role": "user", "content": _visuals_user_text(d, meta, analysis, symdelta, need_calls)}]
         tools, handlers = read_tools(d)
         state: dict = {"attempt": 0}
         ctx = visuals.diff_ctx((d / "raw.diff").read_text(errors="replace"), symdelta)
@@ -919,21 +945,29 @@ def _run_visuals(d, meta, config, on_event, force=False):
         def handler(args):
             state["attempt"] += 1
             clean, problems = visuals.check_visuals(args, n_groups, ctx)
+            calls = []
+            if need_calls:
+                calls, call_problems = visuals.check_calls(args.get("calls") if isinstance(args, dict) else None, ctx)
+                problems = problems + call_problems
             if problems and state["attempt"] < 3:
                 return "gate: " + "\n".join(problems) + "\nfix and call submit_visuals again"
-            state["clean"], state["problems"] = clean, problems
+            state["clean"], state["problems"], state["calls"] = clean, problems, calls
             return cw_llm.Done({"ok": True})
 
         local_handlers = dict(handlers)
         local_handlers["submit_visuals"] = handler
         try:
             cw_llm.run_tools(
-                profile, messages, tools + [_visuals_submit_tool()], local_handlers, max_rounds=8,
+                profile, messages, tools + [_visuals_submit_tool(need_calls)], local_handlers, max_rounds=8,
                 max_tokens=config["max_conversation_tokens"], timeout=config["timeout_s"],
                 on_usage=_make_on_usage(d, role, on_event, config), cwd=d / "head")
         finally:
             _write_transcript(d, "visuals", profile, messages, result="clean" in state)
         clean = state["clean"]
+        if state["calls"]:
+            _write_model_symdelta(d, meta, symdelta, state["calls"])
+        else:
+            (d / "symdelta.model.json").unlink(missing_ok=True)
         if not clean["overview"] and not clean["pr"] and not clean["groups"]:
             raise RuntimeError("no usable pictures; dropped: " + "; ".join(state["problems"])[:500])
         out.write_text(json.dumps({
@@ -1541,7 +1575,7 @@ def _ensure_split(d, meta, config):
 def _full_clean(d, old_meta, toplevel):
     for name in ("batches", "partial"):
         _rm(d / name)
-    for name in ("prose.json", "analysis.json", "analysis.partial.json", "symdelta.json", "visuals.json",
+    for name in ("prose.json", "analysis.json", "analysis.partial.json", "symdelta.json", "symdelta.model.json", "visuals.json",
                  "complexity.json", "links.json", "pipeline.json",
                  "raw.diff", "numstat.tsv", "partial.html"):
         _rm(d / name)

@@ -278,6 +278,35 @@ def load_config():
     return _deep_merge(DEFAULTS, data)
 
 
+_CONFIG_LOCK = threading.Lock()
+
+
+def update_config(fn):
+    """Mutate the raw config.json (not DEFAULTS-merged) under a lock and write it back atomically.
+    ponytail: in-process lock only, a concurrent hand edit can be lost."""
+    path = config_path()
+    with _CONFIG_LOCK:
+        if path.exists():
+            raw = read_json(path, default=None)
+            if not isinstance(raw, dict):
+                raise CWError(f"invalid config: {path}", remedy=f"fix {path}")
+        else:
+            raw = {}
+        trust = raw.get("trust")
+        bad = trust is not None and (
+            not isinstance(trust, dict)
+            or any(
+                not isinstance(trust.get(n, []), list) or not all(isinstance(x, str) for x in trust.get(n, []))
+                for n in ("repos", "orgs")
+            )
+        )
+        if bad:
+            raise CWError("invalid config: trust must be {repos: [str], orgs: [str]}",
+                          remedy="fix trust in config.json")
+        fn(raw)
+        write_json(path, raw, mode=0o600)
+
+
 def role_profile(config, role):
     roles = config.get("roles", {})
     name = roles.get(role)

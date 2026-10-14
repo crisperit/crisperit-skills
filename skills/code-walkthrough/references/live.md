@@ -102,6 +102,23 @@ picture per group into `visuals.json`, and never fails the run: on error the ste
 `python3 scripts/cw_run.py visuals --dir <dir> --force` re-runs it, then `pipeline.py render`
 rebuilds the page. What a picture may contain: `references/graphs.md`.
 
+When the code index returns no language, the same step also asks the model for the call edges of
+the diff and writes them to `symdelta.model.json`; see `references/graphs.md`.
+
+## Page details
+
+While a walkthrough builds, the page shows placeholders where the Overview, System change and the
+per-hunk notes will land, and the Threads dock stays hidden until there is a thread to show. A
+reload after the rebuild replaces the placeholders. The Walkthrough heading no longer has an
+explanations toggle: notes are always on.
+
+A changed file that can be previewed (`.md`/`.markdown` and images) has a Preview button in its
+header. It swaps the diff for the rendered file and back. Images open in preview, since there is no
+text diff to show; markdown opens as the diff. Previews are built from the repo at build time and
+need `--repo`, `--base` and `--head`, which the daemon passes. Limits: 1 MB per image, 256 KB per
+markdown file and 8 MB of previews per page; anything over shows "too large to preview". A git
+failure skips the preview quietly.
+
 ## Repos without a local clone
 
 `walkthrough_start`'s `repo` is an absolute path or `owner/name`. The daemon resolves `owner/name`
@@ -122,14 +139,31 @@ when `pr` is set or `base` starts with `origin/`.
 
 A thread normally runs in Review: read-only tools, the PR's own files, no edits. Full runs your own
 Claude Code in a shared worktree, so the agent can edit files and run what your own settings allow.
-Use the Review | Full switch under a thread's composer to choose per message.
-
 Full is off by default and only offered when the walkthrough's repo is in `trust.repos`, its owner in
 `trust.orgs` (for a non-PR local target the repo is read from `origin`), or the PR is the signed-in
 user's own (cached when the build syncs the PR). It is never offered on sibling pages, and needs a
 claude-code `thread` profile. `POST .../comment` with `mode: "full"` answers 400 without such a
 profile or on a bad mode, 409 on a sibling page, 403 when the repo is not trusted, 400 when bubblewrap
 is missing.
+
+The Threads panel always has an access line saying whether Full is on and, when it is off, why. The
+daemon checks in this order and reports the first that fails, with a remedy: no claude-code `thread`
+profile, an updated (sibling) walkthrough, bubblewrap missing, repo not trusted. Trust comes last, so
+the trust buttons only show when trusting would actually turn Full on. They are Trust repo and Trust
+all of org, each behind a confirm that says a fork PR into a trusted repo also gets Full and that
+org trust covers every repo the org owns. When Full is on because of `trust.repos` or `trust.orgs`,
+the line offers Stop trusting (no confirm). Your own PR needs no trust and has no button. The page
+writes `trust` in `config.json` for you, so there is no need to edit it by hand.
+
+`POST /api/walkthrough/<key>/<wid>/trust` takes `{"scope": "repo"|"org", "action": "add"|"remove"}`
+and answers 200 `{agent}`. The repo or org comes from the walkthrough, never from the body. It
+answers 400 on a bad body or unreadable config, 403 on a failed auth check, and 409 on a sibling
+page or a repo that is not on github.com. Every change emits an `agent` SSE event carrying the same
+`agent` object.
+
+The `agent` object in the live payload, next to `agent.stale`, adds `full_off` (null when Full is
+on, else `{reason, remedy, fixable, repo, org}` where `fixable` is `"trust"` when trusting would fix
+it) and `trusted` (null, or `{by: "own_pr"|"repo"|"org", value}`).
 
 What loads: `--setting-sources user`, so your own settings (including `permissions.allow`), skills,
 user-level MCP servers and `CLAUDE.md`. The PR branch's `.claude/settings`, hooks, `.mcp.json` and
@@ -151,7 +185,7 @@ commits the worktree after the turn. `WebFetch` and `WebSearch` are disallowed f
 Not confined: reads (home stays readable), and network, which follows your own Claude settings and
 sandbox, so a broad allow rule still applies to everything except writes outside the worktree.
 Push and `gh` rules remain best effort. Refreshing the Claude login token inside the sandbox is
-untested. The agent can read the daemon token and your gh token files, so treat Full like running
+untested. The agent can read your gh token files (the daemon token, `server.json` and `config.json` are masked), so treat Full like running
 Claude Code yourself on that repo.
 
 What is blocked, best effort: git transports are disabled in the agent's environment
@@ -165,6 +199,9 @@ The agent runs with your `permissions.allow`, so a broad `Bash` or `Write` allow
 applies in full, and `gh` and network access (`gh api`, `curl`) follow your own settings. The PR
 text it reads can try to steer it. Keep broad allow rules out of your user settings if you use Full
 on code you do not trust.
+
+The `/trust` route needs the daemon token, which the Full sandbox hides, so the agent cannot widen
+trust. Review agents have no shell and cannot reach the route.
 
 Trust is by repo, org or your own PR only. A fork PR into a trusted repo also gets Full, so list
 only repos you accept that for. The PR author's `.claude` settings, hooks, `.mcp.json` and
@@ -242,6 +279,8 @@ Selecting text on a live page and clicking Ask starts a thread on the `thread` r
 falling back to `roles.ask`; see the remedy table if neither is set). The prompt
 built from the selection, its surrounding hunk lines, the file's notes and the last few prior
 answers is capped at 16000 characters; the selected quote itself is never truncated to make room.
+Only the extras after the quote (surrounding hunk lines, notes, prior answers) are cut to that cap.
+The selection alone may be up to `SELECTION_CAP` (200,000 characters) before the page refuses it.
 Every question and answer is appended to that walkthrough's `qa.jsonl`, which is what repopulates
 the page's Q&A list on reload and what the last-few-answers window above reads back from.
 
@@ -254,9 +293,24 @@ to the pending resolves exactly like the Resolve button, and Submit review still
 previews and posts it. Dismiss tells the agent not to propose it again.
 
 When a comment asks to change what the page shows, the agent may also add or replace a prose, list
-or mermaid block next to the commented block. The edit applies at once, is local only (it never
-reaches the PR), and is persisted in `qa.jsonl`. Undo reverts it and Redo reapplies it; the agent is
-told about either on the next turn. Page edits are not offered on diff-line comments.
+or graph block next to the commented block. A graph block is a node and edge list (up to 12 nodes
+with `id`, `label`, `kind` and `refs`, up to 16 edges, optional notes) drawn by the same renderer as
+System change, so it looks like the page's own diagram; new edits cannot use mermaid, though old
+mermaid edits still render. The graph has to pass `check_overview`, which measures it in UTF-8 bytes against
+`OVERVIEW_MAX` (6 KB); `refs` are shape-checked only, not verified against the diff. The edit applies at once, is local only (it never reaches the PR), and is
+persisted in `qa.jsonl`. Undo reverts it and Redo reapplies it; the agent is told about either on
+the next turn. Page edits are not offered on diff-line comments.
+
+In `walkthrough_get` threads each outcome carries `summary`: a string for task, github_draft, resolve and
+draft_comments, and an object for a page edit: `{op, target, target_is_oid, type, text}` for prose and
+list blocks, with `title` (the graph's title) in place of `text` for a graph block. `target_is_oid` is
+true when the edit replaces an earlier edit rather than a page block.
+
+The agent can target a block it was shown or one of its own earlier edits. Each applied edit gets an
+oid (`o-...`) that the agent sees in later turns, and replacing by that oid hides the earlier edit
+until Undo. A turn makes at most one edit per target, though several targets are fine. The daemon
+refuses to revert an edit that conflicts with the page while another applied edit still targets its
+oid; revert the later one first.
 
 The agent may also draft a GitHub comment (`propose_github_draft`): a new review comment on the
 commented diff line, or a reply in a review thread on those lines. A comment can be anchored to a
@@ -346,7 +400,9 @@ Every error the daemon or client can raise carries a one-line remedy; this is th
 | A Full turn is running, Discard refused (409) | try again when it ends |
 | The PR changed since these edits were made (Show/Reload) | ask the agent again, or discard the edits |
 | The PR changed since the agent edited it and the changes conflict | discard the agent edits and ask again |
-| Ask selection too large | select a smaller range |
+| Revert of an agent edit refused | another applied edit targets it; revert that one first |
+| Agent graph edit rejected | too big (6 KB), over 12 nodes or 16 edges, or a node has no `refs`; the agent retries |
+| Ask selection too large (over 200,000 characters) | select a smaller range |
 | No thread role | set `roles.thread` or `roles.ask` in `config.json` |
 | The outcome server did not start | see `server.log`; check `python3` is on PATH and `cw_mcp.py` runs |
 | Thread has 20 turns | start a new thread |

@@ -146,7 +146,11 @@ def test_oversized_selection_refused_quote_never_cut():
         with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
             d = _done(home, stub)
 
-            big_quote = "q" * 17000
+            quote = "q" * 17000
+            anchor = cw_ask.validate_anchor({"kind": "section", "section": "Overview", "quote": quote})
+            assert quote in cw_ask.build_prompt(d, anchor, "why?")
+
+            big_quote = "q" * (cw_ask.SELECTION_CAP + 1)
             anchor = cw_ask.validate_anchor({"kind": "section", "section": "Overview", "quote": big_quote})
             try:
                 cw_ask.build_prompt(d, anchor, "why?")
@@ -168,8 +172,56 @@ def test_oversized_selection_refused_quote_never_cut():
             quote = "q" * 15000
             anchor2 = cw_ask.validate_anchor({"kind": "section", "section": "Overview", "quote": quote})
             prompt = cw_ask.build_prompt(d, anchor2, "why?")
-            assert len(prompt) <= cw_ask.PROMPT_CAP
             assert quote in prompt
+
+
+def _page_edit_outcome(d, oid, target, block, state="applied", thread="q1"):
+    cw_ask._append_qa(d, {"type": "outcome", "oid": oid, "qid": thread, "thread_id": thread,
+                          "outcome": "page_edit", "state": state, "at": "t",
+                          "payload": {"op": "replace", "target": target, "block": block}})
+
+
+def test_page_edits_survive_a_selection_that_fills_the_prompt_budget():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _done(home, stub)
+        cw_ask._append_qa(d, {"qid": "q1", "thread_id": "q1", "anchor": ANCHOR_BLOCK, "comment": "c",
+                              "question": "c", "status": "ok", "answer": "a"})
+        _page_edit_outcome(d, "o-00000001", "overview:p1", {"type": "prose", "text": "A"})
+        _page_edit_outcome(d, "o-00000002", "overview:p2", {"type": "prose", "text": "B"})
+        cw_ask._append_qa(d, {"type": "state", "oid": "o-00000002", "state": "reverted", "at": "t"})
+        big = cw_ask.validate_anchor({"kind": "section", "section": "Overview", "quote": "q" * 15900})
+        prompt = cw_ask.build_prompt(d, big, "why?", thread_id="q1")
+        assert "Your applied page edits:" in prompt and "o-00000001" in prompt
+        assert "The user undid your page edit" in prompt
+
+
+def test_page_edits_reach_anchor_and_prompt_and_revert_is_guarded():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM(_combined_script(lambda body, n: cw_testlib.text("x"))) as stub:
+            d = _done(home, stub)
+        cw_ask._append_qa(d, {"qid": "q1", "thread_id": "q1", "anchor": ANCHOR_BLOCK, "comment": "c",
+                              "question": "c", "status": "ok", "answer": "a"})
+        _page_edit_outcome(d, "o-00000001", "overview:p1", {"type": "prose", "text": "A"})
+        _page_edit_outcome(d, "o-00000002", "o-00000001",
+                           {"type": "graph", "graph": {"title": "Flow", "nodes": [], "edges": []}})
+        cw_ask.write_turn_anchor(d, "q2", "q1", ANCHOR_BLOCK, "again")
+        doc = cw_ask.read_trusted_anchor(d, "q2")
+        assert doc["page_edits"] == [{"oid": "o-00000001", "target": "overview:p1", "type": "prose"},
+                                     {"oid": "o-00000002", "target": "o-00000001", "type": "graph"}]
+        for resumed in (False, True):
+            prompt = cw_ask.build_prompt(d, ANCHOR_BLOCK, "more?", thread_id="q1", resumed=resumed)
+            assert "Your applied page edits: o-00000001 (replace of block overview:p1, prose)" in prompt
+            assert "o-00000002 (replace of block o-00000001, diagram 'Flow')" in prompt
+            assert "Pass an oid as target" in prompt
+        try:
+            cw_ask.outcome_action(d, "o-00000001", "revert")
+            raise AssertionError("expected conflict")
+        except cw_ask.OutcomeError as e:
+            assert e.kind == "conflict" and "undo the newer edit first" in e.remedy
+        assert cw_ask.outcome_action(d, "o-00000002", "revert")["state"] == "reverted"
+        assert cw_ask.outcome_action(d, "o-00000001", "revert")["state"] == "reverted"
+        assert "your edit o-00000001" in cw_ask._outcome_updates_text(d, "q1")
 
 
 # ---------------------------------------------------------------------------

@@ -163,6 +163,12 @@ the gate line count and the remedy.
 
 Setup, config keys, cost, data egress and the full remedy table: `references/live.md`.
 
+### Catching up
+
+When the user comes back after working on the page, call `walkthrough_get(id, parts: ["threads"])`
+first (`walkthrough_list(repo)` finds the id). It returns the open and resolved threads, all their
+turns, the page edits the agent made and the user's local drafts.
+
 ### Handing a task to your own session
 
 A proposed code task on the page has a Hand to my session button. It moves the task to `handed` and

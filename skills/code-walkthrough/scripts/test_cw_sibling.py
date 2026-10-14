@@ -29,6 +29,8 @@ def _reply(body, _n):
     names = cw_testlib.tool_names(body)
     if "submit_prose" in names:
         return cw_testlib.tool_call("submit_prose", {"overview": "PARENT OVERVIEW", "verdict": "PARENT VERDICT"})
+    if "submit_visuals" in names:
+        return cw_testlib.small_route_reply(body)
     seed = cw_testlib.first_json_block(cw_testlib.last_user_text(body))
     files = [{"path": f["path"], "role": f["role"] or f"role of {f['path']}",
               "hunks": [{"header": h["header"], "note": h["note"] or "changes A2 B2 TASK4 b2 b4 a2"}
@@ -59,7 +61,8 @@ def _stub():
 
 
 def _count(stub, model):
-    return sum(1 for r in stub.requests if r.get("model") == model)
+    return sum(1 for r in stub.requests
+               if r.get("model") == model and "submit_visuals" not in cw_testlib.tool_names(r))
 
 
 def _sibling_params(repo, base, task_sha, parent_d):

@@ -993,6 +993,11 @@ def sse_read_until(sock, needle, timeout=5):
 
 def small_route_reply(body):
     """StubLLM reply for the small-route analysis call: one note per hunk of the seed."""
+    if "submit_visuals" in tool_names(body):
+        return tool_call("submit_visuals", {"overview": {"title": "T", "nodes": [
+            {"id": "a", "label": "Caller", "kind": "same", "refs": ["foo.py"]},
+            {"id": "b", "label": "Foo", "kind": "changed", "refs": ["foo.py:X"]}],
+            "edges": [{"from": "a", "to": "b", "kind": "changed"}]}, "groups": []})
     seed = first_json_block(last_user_text(body))
     analysis = {
         "files": [{"path": f["path"], "role": "does a thing",
