@@ -1,4 +1,4 @@
-# crisperit-skills
+# crisperity-skills
 
 Agent skills I use on real work, packaged so you can install them. One so far,
 code-walkthrough.
