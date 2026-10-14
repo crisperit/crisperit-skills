@@ -60,6 +60,8 @@ def test_handshake_does_not_start_the_daemon():
             reply = json.loads(proc.stdout.readline())
             names = [t["name"] for t in reply["result"]["tools"]]
             assert names == ["walkthrough_start", "walkthrough_get", "walkthrough_list", "walkthrough_reply"]
+            start = reply["result"]["tools"][0]["inputSchema"]["properties"]
+            assert start["fresh"]["type"] == "boolean"
 
             request = {"jsonrpc": "2.0", "id": 3, "method": "nope"}
             proc.stdin.write(json.dumps(request) + "\n")

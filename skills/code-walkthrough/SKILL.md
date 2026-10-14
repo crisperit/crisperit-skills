@@ -130,7 +130,9 @@ over the static pipeline, including for a GitHub PR target. Call `walkthrough_st
 the toplevel, `base`/`head` as resolved above (the snapshot commit for the working tree,
 `$EMPTY_BASE` in explain mode), `target`, `slug`, `explain`, `paths`, `title`, and `pr` whenever
 the target is a PR. A re-call on a PR walkthrough that already finished `done` refreshes its
-comments and resolved threads instead of redoing any batch or prose work.
+comments and resolved threads instead of redoing any batch or prose work. Pass `fresh: true`
+only when the user explicitly reruns or regenerates: it rebuilds analysis, pictures and prose from
+scratch and keeps their threads, notes, Q&A, state and edited agent worktree.
 
 A PR URL with no local clone still goes live: `gh pr view <url> --json number,baseRefName,headRefOid,title`
 works outside a repo, then call `walkthrough_start` with `repo: "owner/name"`, `pr`,

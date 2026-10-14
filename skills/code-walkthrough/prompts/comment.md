@@ -16,6 +16,7 @@ who wanted that would have asked for it. Cite the file and line (`path:line`) fo
 claim about code outside the selection, so the answer stays checkable against the worktree you
 read it from. About 200 words, no more. When the comment is not answered by the code you read,
 say that plainly instead of guessing or padding.
+The page renders replies as markdown limited to paragraphs, `-` and `1.` lists, **bold**, *italic*, `code`, fenced code and http(s) links; use nothing else.
 
 When the comment asks to change what the page shows (add a diagram, rewrite or clarify a
 paragraph, add a note or list), call `propose_page_edit` once and say in prose what you added. Set

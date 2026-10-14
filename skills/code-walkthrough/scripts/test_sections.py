@@ -2,6 +2,7 @@
 """Self-check for sections.py. Assert-based."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -882,7 +883,7 @@ STRUCTURE = {
          "members": [{"name": "Call", "state": "changed"}, {"name": "Old", "state": "unchanged"}],
          "group": 1, "column": 1},
         {"id": "c/z.go:Baz", "name": "Baz", "kind": "struct", "file": "c/z.go", "state": "removed",
-         "members": [{"name": "Gone", "state": "removed"}], "group": None, "column": 1},
+         "members": [{"name": "Gone", "state": "removed"}], "group": 0, "column": 1},
     ],
     "edges": [
         {"from": "a/x.go:Foo", "to": "b/y.go:Bar"},
@@ -936,7 +937,8 @@ def test_structure_explain_mode_drops_badges_members_removed_boxes_and_gone_edge
     assert "vds-members" not in out
     assert "Baz" not in out  # removed component dropped outright, not just unstyled
     assert "&quot;state&quot;: &quot;gone&quot;" not in out
-    assert '<h2 class="h2-row"><span>How it fits together</span>' in out
+    assert "<h2>How it fits together</h2>" in out
+    assert "System change" not in out
     assert "2 components in 2 columns." in out
 
 
@@ -946,22 +948,116 @@ def test_structure_group_colouring_matches_group_color():
     assert f"--c:{_group_color(1)}" in out
 
 
-def test_structure_filter_chips_one_per_group():
-    out = render_structure(STRUCTURE)
-    assert 'data-g="all"' in out
-    assert 'data-g="0"' in out
-    assert 'data-g="1"' in out
-    # Baz carries group None and must not earn a stop of its own.
-    assert out.count('class="vds-chip"') == 3
+LANE_STRUCTURE = {
+    "language": "go",
+    "components": [
+        {"id": "a.go:A1", "name": "A1", "kind": "function", "file": "a.go", "state": "new",
+         "members": [], "group": 0, "column": 0},
+        {"id": "a.go:A2", "name": "A2", "kind": "function", "file": "a.go", "state": "changed",
+         "members": [], "group": 0, "column": 1},
+        {"id": "b.go:B1", "name": "B1", "kind": "function", "file": "b.go", "state": "new",
+         "members": [], "group": 1, "column": 0},
+        {"id": "b.go:B2", "name": "B2", "kind": "function", "file": "b.go", "state": "new",
+         "members": [], "group": 1, "column": 1},
+    ],
+    "edges": [
+        {"from": "a.go:A1", "to": "a.go:A2"},
+        {"from": "b.go:B1", "to": "b.go:B2"},
+        {"from": "a.go:A1", "to": "b.go:B1"},
+        {"from": "a.go:A2", "to": "b.go:B2"},
+    ],
+    "implements": [], "dropped": 2,
+    "groups": [
+        {"index": 0, "title": "The `core` <b>", "files": 1, "adds": 10, "dels": 2, "new": 1,
+         "changed": 1, "symbols": 2, "dropped": ["Gone1", "<i>"]},
+        {"index": 1, "title": "Edge", "files": 3, "adds": 4, "dels": 0, "new": 2, "changed": 0,
+         "symbols": 2, "dropped": []},
+    ],
+}
 
 
-def test_structure_no_group_data_renders_no_chips():
+def _lanes(out):
+    return out.split('<section class="vds-lane"')[1:]
+
+
+def test_structure_implements_edge_across_groups_is_not_drawn():
+    assert "implements" not in render_structure(STRUCTURE)
+
+
+def test_structure_one_collapsed_details_with_one_lane_and_diagram_per_group():
+    out = render_structure(LANE_STRUCTURE)
+
+    assert out.count('<details class="vds-lanes">') == 1
+    assert "<details open" not in out
+    lanes = _lanes(out)
+    assert len(lanes) == 2
+    assert all(lane.count('class="vds-sys"') == 1 for lane in lanes)
+    assert out.count('class="vds-sys"') == 2
+    assert f"--c:{_group_color(0)}" in lanes[0] and f"--c:{_group_color(1)}" in lanes[1]
+
+
+def test_structure_lane_holds_only_its_groups_boxes_and_intra_group_edges():
+    lanes = _lanes(render_structure(LANE_STRUCTURE))
+
+    assert 'data-cid="a.go:A1"' in lanes[0] and 'data-cid="b.go:B1"' not in lanes[0]
+    assert 'data-cid="b.go:B1"' in lanes[1] and 'data-cid="a.go:A1"' not in lanes[1]
+    edges_0 = re.search(r'data-edges="([^"]*)"', lanes[0]).group(1)
+    assert edges_0 == (
+        '[{&quot;from&quot;: &quot;a.go:A1&quot;, &quot;kind&quot;: &quot;call&quot;, '
+        '&quot;to&quot;: &quot;a.go:A2&quot;}]'
+    )
+    assert "b.go" not in edges_0
+
+
+def test_structure_lane_header_carries_stats_and_cross_group_chip():
+    lane = _lanes(render_structure(LANE_STRUCTURE))[0]
+    head = lane.split("</div>")[0]
+
+    for text in ("G1", "1 file<", "+10/-2", "1 new", "1 changed", "2 symbols",
+                 "\u2192 G2 \u00b7 2 calls"):
+        assert text in head
+    assert 'class="vds-lane-stat"' in head and 'class="vds-lane-x"' in head
+    assert "\u2192" not in _lanes(render_structure(LANE_STRUCTURE))[1]
+    assert "<code>core</code>" in head
+
+
+def test_structure_lane_lists_dropped_names_escaped():
+    lanes = _lanes(render_structure(LANE_STRUCTURE))
+
+    assert '<p class="vds-lane-more">+2 more: Gone1, &lt;i&gt;</p>' in lanes[0]
+    assert "vds-lane-more" not in lanes[1]
+    assert "&lt;b&gt;" in lanes[0].split("</div>")[0]
+
+
+def test_structure_ungrouped_components_get_their_own_lane():
+    data = {**LANE_STRUCTURE, "components": LANE_STRUCTURE["components"] + [
+        {"id": "c.go:C", "name": "C", "kind": "function", "file": "c.go", "state": "new",
+         "members": [], "group": None, "column": 0},
+    ]}
+
+    lanes = _lanes(render_structure(data))
+
+    assert len(lanes) == 3
+    assert "Ungrouped" in lanes[2] and 'data-cid="c.go:C"' in lanes[2]
+
+
+def test_structure_no_group_data_renders_a_single_lane_without_chips():
     data = {"language": "go", "components": [
         {"id": "x:F", "name": "F", "kind": "function", "file": "x.go", "state": "new",
          "members": [], "group": None, "column": 0},
     ], "edges": [], "implements": [], "dropped": 0}
     out = render_structure(data)
-    assert "vds-chips" not in out
+
+    assert len(_lanes(out)) == 1
+    assert "All components" in out
+    assert "vds-chip" not in out
+
+
+def test_structure_explain_mode_lane_drops_diff_stats():
+    head = _lanes(render_structure(LANE_STRUCTURE, explain=True))[0].split("</div>")[0]
+
+    assert "2 symbols" in head and "1 file<" in head
+    assert "+10/-2" not in head and "new" not in head
 
 
 @pytest.mark.parametrize("explain, count", [(False, 2), (True, 3)])
@@ -972,15 +1068,19 @@ def test_structure_dropped_count(explain, count):
     assert "dropped" not in render_structure(STRUCTURE, explain=explain)
 
 
+def _same_group(data):
+    return {**data, "components": [{**c, "group": 0} for c in data["components"]]}
+
+
 def test_structure_implements_edge_resolves_target_by_name():
-    out = render_structure(STRUCTURE)
+    out = render_structure(_same_group(STRUCTURE))
     assert "implements" in out  # the legend line for the implements edge from Bar to Foo
 
 
 def test_structure_implements_edge_with_no_matching_name_is_dropped():
     data = {**STRUCTURE, "implements": [{"from": "b/y.go:Bar", "to": "NoSuchType",
                                          "kind": "implements"}]}
-    out = render_structure(data)
+    out = render_structure(_same_group(data))
     assert "implements" not in out
 
 
@@ -1051,23 +1151,6 @@ def test_structure_all_unchanged_members_render_only_the_summary_chip():
     assert out == '<span class="vds-members"><i class="o" title="One, Two">+2 unchanged</i></span>'
 
 
-@pytest.mark.parametrize("extra, expected", [
-    ({"groups": [{"index": 0, "title": "Tools"}, {"index": 1, "title": "Contracts"}]},
-     [">1 Tools</button>", ">2 Contracts</button>"]),
-    # group 1 has no entry
-    ({"groups": [{"index": 0, "title": "Tools"}]}, [">1 Tools</button>", ">2</button>"]),
-    ({"groups": [{"index": 0, "title": "The `run_workflow` tool"}]},
-     [">1 The <code>run_workflow</code> tool</button>"]),
-    # the fixture carries no top-level "groups" at all
-    ({}, [">1</button>", ">2</button>"]),
-], ids=["group-titles", "one-title-missing", "backticked-title-becomes-code", "no-groups-key"])
-def test_structure_chip_labels(extra, expected):
-    out = render_structure({**STRUCTURE, **extra})
-
-    for text in expected:
-        assert text in out
-
-
 def test_structure_also_touched_note_is_rendered_and_escaped():
     data = {**STRUCTURE, "also_touched": ["helper", "<script>"]}
     out = render_structure(data)
@@ -1097,5 +1180,4 @@ def test_structure_chrome():
     assert "vds-also" not in out
     assert ('<div class="vds-sys" tabindex="0" role="button" '
             'aria-label="Expand diagram to full size"') in out
-    assert 'class="vd-max-btn" aria-label="Expand diagram to full size"' in out
-    assert out.index("h2-row") < out.index("vd-max-btn") < out.index('class="vds-sys"')
+    assert "vd-max-btn" not in out

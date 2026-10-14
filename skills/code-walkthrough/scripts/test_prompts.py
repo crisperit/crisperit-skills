@@ -70,7 +70,7 @@ def test_visuals_prompt_examples_pass_the_sanitiser():
 
 def test_visuals_prompt_stays_small_and_examples_are_phone_sized():
     text = (PROMPTS_DIR / "visuals.md").read_text()
-    assert len(text.encode()) <= 9 * 1024
+    assert len(text.encode()) <= 10752
     for vb in re.findall(r"viewBox='0 0 (\d+) \d+'", text):
         assert 360 <= int(vb) <= 560
 

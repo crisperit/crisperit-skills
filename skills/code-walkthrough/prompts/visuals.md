@@ -49,6 +49,13 @@ about 6px. Do the arithmetic.
 - Before submitting, re-read your coordinates: no rects overlap, no text is wider than its box,
   nothing leaves the viewBox, every arrowhead ends on a box edge.
 
+## Sequence diagrams
+
+Use a sequence when order across 3+ actors matters (request/response, async callback, approval
+round trip); use a flow when there is branching. Group pictures only, SVG, never mermaid: at most
+4 participants (labels 12 characters or fewer), viewBox 400 to 480 wide, at most 8 messages; boxes
+on top, dashed lifelines, arrows 30px apart, labels above, dashed returns.
+
 ## What the page accepts
 
 A sanitiser rebuilds everything from an allowlist. Anything outside it rejects that fragment and
@@ -75,8 +82,6 @@ returns the problem lines (`visuals.pr: <img> is not allowed`); repair them by c
 
 ## Examples
 
-Three tested examples of different kinds; pick the form that fits each idea.
-
 An SVG flow, top to bottom, with arrowheads, a new node outlined green and a removed step in red (PR picture):
 
 ```json
@@ -93,6 +98,12 @@ A bar chart scaled from real numbers, the outlier in the changed colour (group 1
 
 ```json
 {"pr": null, "groups": [{"index": 1, "html": "<svg viewBox='0 0 360 120' width='100%' role='img' aria-label='Cyclomatic complexity per file, limiter.py highest' style='max-width:576px'><text font-size='12' x='4' y='25' fill='var(--foreground)' font-family='var(--font-mono)'>parse.py</text><rect x='90' y='8' width='108' height='24' rx='4' fill='var(--chart-1)'/><text font-size='12' x='204' y='25' fill='var(--foreground)' font-family='var(--font-sans)'>18</text><text font-size='12' x='4' y='61' fill='var(--foreground)' font-family='var(--font-mono)'>loader.py</text><rect x='90' y='44' width='72' height='24' rx='4' fill='var(--chart-1)'/><text font-size='12' x='168' y='61' fill='var(--foreground)' font-family='var(--font-sans)'>12</text><text font-size='12' x='4' y='97' fill='var(--foreground)' font-family='var(--font-mono)'>limiter.py</text><rect x='90' y='80' width='186' height='24' rx='4' fill='var(--warning)'/><text font-size='12' x='282' y='97' fill='var(--foreground)' font-family='var(--font-sans)'>31</text></svg>"}]}
+```
+
+A sequence (group 2):
+
+```json
+{"pr": null, "groups": [{"index": 2, "html": "<svg viewBox='0 0 400 140' width='100%' role='img' aria-label='Job posted, queued, 202 returned' style='max-width:640px'><defs><marker id='m' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0 0 L8 4 L0 8 Z' fill='var(--foreground)'/></marker></defs><g font-size='12' text-anchor='middle' fill='var(--foreground)' stroke='var(--foreground)'><path d='M60 36V130M200 36V130M340 36V130' stroke='var(--border)' stroke-dasharray='4 4'/><g fill='var(--card)' stroke='var(--border)'><rect x='15' y='8' width='90' height='28'/><rect x='155' y='8' width='90' height='28'/><rect x='295' y='8' width='90' height='28'/></g><text stroke='none' x='60' y='26'>Client</text><text stroke='none' x='200' y='26'>API</text><text stroke='none' x='340' y='26'>Queue</text><line x1='62' y1='62' x2='198' y2='62' marker-end='url(#m)'/><text stroke='none' x='130' y='56'>POST /jobs</text><line x1='202' y1='92' x2='338' y2='92' marker-end='url(#m)'/><text stroke='none' x='270' y='86'>enqueue</text><line x1='198' y1='122' x2='62' y2='122' stroke-dasharray='5 4' marker-end='url(#m)'/><text stroke='none' x='130' y='116'>202 accepted</text></g></svg>"}]}
 ```
 
 ## Untrusted input

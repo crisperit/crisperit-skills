@@ -581,18 +581,38 @@ def assign_groups(components, groups):
                 break
 
 
-def group_titles(groups):
-    """[{"index": i, "title": title}] for every analysis.json group carrying a non-blank
-    title -- sections.py labels its filter chips from this, one entry short of every `group`
-    index a component might carry when a group's own title is missing or blank, so it can fall
-    back to the plain ordinal for just that one instead of losing every label to one gap."""
-    if not groups:
-        return []
+def numstat_by_file(repo, base, head, paths=()):
+    """{path: (added, removed)} from `git diff --numstat`; a binary file's `-` counts as 0."""
+    result = run_git(repo, ["diff", "--numstat", "--no-renames", f"{base}..{head}", "--", *paths])
+    out = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            add, rem, path = parts
+            out[path] = (int(add) if add.isdigit() else 0, int(rem) if rem.isdigit() else 0)
+    return out
+
+
+def group_stats(groups, components, dropped_names, numstat):
+    """One entry per analysis.json group, in order: its title (blank when missing), file count,
+    +/- lines from `numstat`, new/changed component counts, total component count (`symbols`),
+    and the names of components the cap dropped from it. `components` is the pre-cap set, so the
+    counts describe the whole group, not only what survived to be drawn."""
     out = []
-    for i, group in enumerate(groups):
-        title = (group.get("title") or "").strip()
-        if title:
-            out.append({"index": i, "title": title})
+    for i, group in enumerate(groups or []):
+        paths = group.get("paths") or []
+        mine = [c for c in components if c.get("group") == i]
+        out.append({
+            "index": i,
+            "title": (group.get("title") or "").strip(),
+            "files": len(paths),
+            "adds": sum(numstat.get(p, (0, 0))[0] for p in paths),
+            "dels": sum(numstat.get(p, (0, 0))[1] for p in paths),
+            "new": sum(1 for c in mine if c.get("state") == "new"),
+            "changed": sum(1 for c in mine if c.get("state") == "changed"),
+            "symbols": len(mine),
+            "dropped": sorted(dropped_names.get(i, [])),
+        })
     return out
 
 
@@ -864,6 +884,11 @@ def analyse(repo, base, head, symdelta_path, analysis_path, paths=()):
 
     kept, kept_edges, dropped = apply_cap(components, edges)
     kept_ids = {c["id"] for c in kept}
+    dropped_names = defaultdict(list)
+    for c in components.values():
+        if c["id"] not in kept_ids:
+            dropped_names[c["group"]].append(c["name"])
+    all_components = list(components.values())
     implements = [i for i in implements if i["from"] in kept_ids]
 
     boxed, also_touched = split_also_touched(kept, kept_edges, implements)
@@ -879,9 +904,9 @@ def analyse(repo, base, head, symdelta_path, analysis_path, paths=()):
     }
     if reason:
         result["reason"] = reason
-    titles = group_titles(groups)
-    if titles:
-        result["groups"] = titles
+    if groups:
+        numstat = numstat_by_file(repo, resolved_base, head, paths)
+        result["groups"] = group_stats(groups, all_components, dropped_names, numstat)
     return result
 
 

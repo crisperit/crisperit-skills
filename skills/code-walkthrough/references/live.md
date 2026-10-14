@@ -184,7 +184,9 @@ discarding them, and marks them stale (`agent.stale` in the live payload). The n
 merges the new head into the agent branch; if that conflicts the turn fails and asks you to discard
 the agent edits and ask again. Until then Show and Reload refuse with "The PR changed since these
 edits were made". A refresh, or any walkthrough_start that rebuilds, answers an error while a Full
-turn is running on that walkthrough; re-opening an unchanged one still works.
+turn is running on that walkthrough; re-opening an unchanged one still works. `fresh: true` (an
+explicit rerun only) skips the reuse and refresh and rebuilds, keeping threads, notes, Q&A, state
+and an edited agent worktree; a running run is still returned as is.
 
 Two tools exist only for the thread agent. `post_draft_comments` puts up to 30 review comments on
 diff lines of the page as local drafts (an invalid comment rejects the whole call; nothing reaches

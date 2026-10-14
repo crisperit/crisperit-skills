@@ -1573,6 +1573,7 @@ def prepare_walkthrough(params, is_running=None, edit_guard=None):
     title = params.get("title")
     diff_file = params.get("diff_file")
     sibling_of = params.get("sibling_of")
+    fresh = bool(params.get("fresh", False))
     if sibling_of is not None:
         need = ("key", "id", "oid", "task_id", "parent_head")
         if (not isinstance(sibling_of, dict) or not all(isinstance(sibling_of.get(k), str) for k in need)
@@ -1626,13 +1627,13 @@ def prepare_walkthrough(params, is_running=None, edit_guard=None):
     diff_hash = hashlib.sha256(Path(diff_file).read_bytes()).hexdigest() if diff_file else None
     sig = hashlib.sha256(json.dumps([base_sha, head_sha, explain, paths, diff_hash, pr]).encode()).hexdigest()
 
-    if old_meta and old_meta.get("sig") == sig and old_meta.get("status") == "done":
+    if not fresh and old_meta and old_meta.get("sig") == sig and old_meta.get("status") == "done":
         if pr is not None:
             meta = cw_store.update_meta(d, lambda m: m.update({"refresh": True, "status": "building"}))
             return d, meta, True
         return d, old_meta, True
 
-    retry = old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted")
+    retry = not fresh and old_meta and old_meta.get("sig") == sig and old_meta.get("status") in ("failed", "interrupted")
     with contextlib.nullcontext() if retry else edit_guard(d):
         if retry:
             for name in ("prose.json", "analysis.json", "visuals.json", "pipeline.json"):
