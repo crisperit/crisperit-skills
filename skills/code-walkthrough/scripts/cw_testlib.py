@@ -926,23 +926,6 @@ def require_ts_language_server():
         skip(problem)
 
 
-def require_tree_sitter(lang):
-    """lang is "go", "typescript" or "python"; Go needs the structure helper built, TypeScript a grammar."""
-    _import_product("")
-    import structure
-    if lang == "go":
-        if not structure._go_structure_available():
-            skip("go structure helper not buildable")
-    elif lang == "typescript":
-        if structure._get_ts_parser() is None:
-            skip("no tree-sitter TypeScript grammar (pip tree_sitter + tree_sitter_typescript, or graphify's venv)")
-    elif lang == "python":
-        if structure._get_ts_parser("tree_sitter_python", "language") is None:
-            skip("no tree-sitter Python grammar (pip tree_sitter + tree_sitter_python, or graphify's venv)")
-    else:
-        raise ValueError(f"unknown language {lang!r}")
-
-
 @contextmanager
 def running_daemon(idle_s=None):
     import cw_server

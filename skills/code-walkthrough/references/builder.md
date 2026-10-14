@@ -56,21 +56,20 @@ self-contained either way; only following a link needs the network.
 
 ## What the page contains
 
-Order runs orientation, then concepts, then structure, then detail. Every row is either
+Order runs orientation, then concepts, then detail. Every row is either
 arithmetic, a string from `analysis.json`, or a section file pasted byte for byte.
 
 | Section | Markup | Source |
 |---|---|---|
 | Facts strip | `.facts` with up to three `.fact` blocks | file count and net delta from `raw.diff`, the target, `verdict` |
 | OVERVIEW | `h2` + one `p` per paragraph | `overview`, omitted when blank; same heading in both modes |
-| The PR in one picture | `h2` + the model-drawn picture | `visuals.json`, omitted when absent |
-| STRUCTURE ("System change") | between the picture and WALKTHROUGH | `structure.py` + `sections.py --kind structure`, omitted when the section file is empty |
+| System change (explain mode: How it works) | `h2` + the title as a subtitle + an inline SVG diagram, legend and note chips, all drawn by `render.py` | the `overview` graph in `visuals.json`; replaces the model-drawn PR picture, which still renders when only a legacy `pr` exists; omitted when neither does |
 | WALKTHROUGH | `h2` + `section-walkthrough.html` | `walkthrough.py`; each group opens with its own picture from `visuals.json`, matched by group index |
 | All symbols | collapsed `details` | the symbol graph, drawn on first open |
 | Footer | `.foot` | target, timestamp, PR link from `links.json` |
 
-`render.py`'s `--structure` flag lands the row above; passing an empty section file, or omitting
-the flag, inserts nothing, not even the heading.
+The page has no deterministic "System change" section any more; the picture above is its one
+overview graphic.
 
 Notes on the rows that look arbitrary:
 
@@ -86,7 +85,7 @@ Notes on the rows that look arbitrary:
   escaping again renders `&amp;lt;` on the page, and retyping a diagram is how a legend drifts
   from its arrows. `validate_analysis.py --sections` checks each one's marker survived.
 - **The zoom modal needs no markup help.** `wire()` sets `tabindex` and `role` on every
-  diagram box it finds (`.vd-symbols .mermaid` and `.vds-sys`); the copies in the
+  diagram box it finds (`.vd-symbols .mermaid`); the copies in the
   generated markup only matter before the JS has run.
 - **The vendored mermaid script is spliced in conditionally.** `splice_assets.py` fills the
   page's one JS placeholder only when the output contains a `class="mermaid"` block; a page with

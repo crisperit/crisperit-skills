@@ -151,7 +151,7 @@ def depth(counts):
 
 def _need_grammar(path):
     """complexity resolves its own parser (language pack, tree_sitter_<lang>, graphify's venv),
-    so skip on exactly that resolution rather than on structure.py's."""
+    so skip on exactly that resolution."""
     if complexity.generic_parser_for(path) is None:
         cw_testlib.skip(f"no tree-sitter grammar for {path}")
 

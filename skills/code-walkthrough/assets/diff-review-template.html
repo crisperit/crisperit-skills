@@ -330,11 +330,6 @@
   #mermaid-zoom-body{width:100%;height:100%;overflow:hidden;position:relative;
     padding:20px;box-sizing:border-box}
   #mermaid-zoom-body svg{max-width:none;margin:0 auto;display:block}
-  /* The structure clone's own transform-origin lives inline (set in JS, alongside the transform
-     itself), but it needs position:absolute at a fixed top-left so translate(0,0) scale(1)
-     starts flush with the body's own padding box instead of wherever static flow would place a
-     block child. */
-  #mermaid-zoom-body .vds-sys{position:absolute;top:0;left:0;min-width:0;cursor:grab}
   #mermaid-zoom-close{position:absolute;top:10px;right:10px;z-index:3;
     background:var(--panel2);border:1px solid var(--border);color:var(--text);
     border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:14px;
@@ -432,92 +427,6 @@
   /* The graph's plain-text moved list, under its note */
   .vd-moved{margin:10px 0 0;padding-left:20px;font-size:var(--fs-sm);color:var(--muted)}
   .vd-moved li{margin:4px 0}
-
-  /* System structure view (scripts/sections.py render_structure): real components in call-depth
-     columns, coloured by story group, with call/implements edges drawn
-     over the boxes' own screen geometry by a small script below rather than mermaid -- dagre has
-     no notion of "column by caller depth", the one layout this view exists to draw. */
-  .vd-structure{margin:0 0 20px}
-  .vds-lanes>summary{cursor:pointer;font-weight:600;margin:0 0 10px}
-  .vds-lane{background:var(--panel);border:1px solid var(--border);
-    border-left:4px solid var(--c,var(--border));border-radius:12px;padding:10px 12px;margin:0 0 14px}
-  .vds-lane-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0 0 8px}
-  .vds-lane-n{font-family:var(--mono);color:var(--c,var(--accent))}
-  .vds-lane-stat,.vds-lane-x{font-family:var(--mono);font-size:11px;border:1px solid var(--border);
-    border-radius:999px;padding:0 8px;color:var(--muted);background:var(--panel2)}
-  .vds-lane-x{color:var(--yellow);border-color:var(--yellow);margin-left:auto}
-  .vds-lane-more{font-size:var(--fs-xs);color:var(--muted);margin:8px 0 0}
-  .vds-scroll{overflow-x:auto;background:var(--panel);border:1px solid var(--border);
-    border-radius:8px;-webkit-overflow-scrolling:touch}
-  .vds-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  /* The diagram container itself is the full-size control, same idiom .vd-symbols
-     .mermaid uses above: zoom-in cursor at rest, its own focus-visible ring, click/Enter/Space
-     opens #mermaid-zoom (see wire()/openZoom() in the template script). A box's own
-     cursor:pointer below wins over this on hover, same as a mermaid node's cursor wins over
-     its ancestor box there. */
-  .vds-sys{position:relative;min-width:640px;padding:16px 48px 20px 26px;cursor:zoom-in}
-  .vds-sys:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .vds-sys svg.vds-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
-    overflow:visible}
-  /* --vds-outpad is drawEdges()'s own reserved headroom for edges routed over a shelf above the
-     columns (a skip-column or backward call); the transition is suspended for the write that
-     sets it (see drawEdges) so a measurement never lands mid-animation. */
-  .vds-cols{display:flex;gap:0 60px;align-items:flex-start;
-    margin-top:var(--vds-outpad,0px);transition:margin-top .15s}
-  .vds-col{flex:1 1 200px;min-width:180px}
-  .vds-hint{font-size:var(--fs-xs);color:var(--muted);margin:0 0 8px;font-style:italic}
-  .vds-comp{position:relative;z-index:1;display:block;background:var(--panel2);
-    border:1px solid var(--border);border-left:4px solid var(--c,var(--border));
-    border-radius:8px;padding:7px 9px;margin:0 0 16px;font-size:var(--fs-xs);
-    transition:opacity .2s,border-color .2s;cursor:pointer}
-  .vds-comp:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .vds-comp b{display:block;font-family:var(--mono);font-size:var(--fs-xs);color:var(--text);
-    word-break:break-word}
-  .vds-comp .vds-file{display:block;color:var(--muted);font-family:var(--mono);font-size:11px;
-    margin-top:2px;word-break:break-word}
-  .vds-comp .vds-members{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-  .vds-comp .vds-members i{font-style:normal;font-family:var(--mono);font-size:11px;
-    background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 5px;
-    color:var(--muted)}
-  .vds-comp .vds-members i.n{border-color:var(--green);color:var(--green)}
-  .vds-comp .vds-members i.c{border-color:var(--yellow);color:var(--yellow)}
-  .vds-comp .vds-members i.r{border-color:var(--red);color:var(--red);text-decoration:line-through}
-  .vds-badge{display:inline-block;font-size:10.5px;font-weight:700;border-radius:4px;padding:0 5px;
-    margin:0 0 3px}
-  .vds-comp.new .vds-badge{color:var(--green);border:1px solid var(--green)}
-  .vds-comp.chg .vds-badge{color:var(--yellow);border:1px solid var(--yellow)}
-  .vds-comp.mov .vds-badge{color:var(--cyan);border:1px solid var(--cyan)}
-  .vds-comp.gone .vds-badge{color:var(--red);border:1px solid var(--red)}
-  .vds-comp.unc .vds-badge{color:var(--muted);border:1px solid var(--border)}
-  /* Same dashed-and-dimmed convention as .sw-gone / .hunk-cx.gone: a removed component is a
-     structural fact, not a warning, and the strikethrough is a second, non-colour signal. */
-  .vds-comp.gone{border-style:dashed;opacity:.85}
-  .vds-comp.gone b{text-decoration:line-through;text-decoration-color:var(--red)}
-  .vds-comp.vds-dim{opacity:.22}
-
-  /* Hairline by default, full strength only for the box you're on (see the structure script's
-     hover/focus/sticky-focus refresh()). Dots share the class .vds-e so they dim/light in
-     lockstep with their path -- only fill/stroke differ, via the higher-specificity .vds-dot
-     rules below. */
-  .vds-e{fill:none;stroke-width:1.3;opacity:.14;transition:opacity .18s,stroke-width .18s}
-  .vds-sys.vds-active .vds-e{opacity:.05}
-  .vds-sys.vds-active .vds-e.vds-lit{opacity:1;stroke-width:2.2}
-  .vds-e-call{stroke:var(--green)}
-  .vds-e-gone{stroke:var(--red);stroke-dasharray:5 4}
-  .vds-e-impl{stroke:var(--muted);stroke-dasharray:1.5 4;stroke-linecap:round}
-  /* Endpoint dots where an edge meets a box, in the edge's own colour. */
-  .vds-dot.vds-e{stroke:none}
-  .vds-dot.vds-e-call{fill:var(--green)}
-  .vds-dot.vds-e-gone{fill:var(--red)}
-  .vds-dot.vds-e-impl{fill:var(--muted)}
-  .vds-legend{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0 0;font-size:var(--fs-xs);
-    color:var(--muted)}
-  .vds-legend span{display:inline-flex;align-items:center;gap:6px}
-  .vds-legend svg{width:28px;height:8px}
-  .vds-swipe{font-size:var(--fs-xs);color:var(--muted);margin:6px 0 0}
-  @media(min-width:900px){.vds-swipe{display:none}}
-  .vds-also{font-size:var(--fs-xs);color:var(--muted);margin:10px 0 0;line-height:1.7}
-  .vds-also code{background:none;border:none;padding:0;color:var(--text)}
 
   .fb-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
     padding:8px 10px;font-size:var(--fs-xs)}
@@ -1133,6 +1042,48 @@
   .cw-vis img{max-width:100%}
   .cw-vis-group{margin:8px 0 14px}
 
+  /* System change diagram (render.py overview_svg). Kind colour is one custom property per kind
+     so node, chip, legend swatch and edge all read the same theme variable. */
+  .cw-ov-sub{margin:-4px 0 8px;color:var(--muted);font-size:var(--fs-sm)}
+  .cw-ov-n-new{--ovk:var(--green)} .cw-ov-n-changed{--ovk:var(--yellow)}
+  .cw-ov-n-guard{--ovk:var(--purple)} .cw-ov-n-removed{--ovk:var(--red)}
+  .cw-ov-n-same{--ovk:var(--muted)} .cw-ov-n-config{--ovk:var(--cyan)} .cw-ov-n-moved{--ovk:var(--accent)}
+  .cw-vis svg.cw-ov{max-width:none;width:100%;margin:0}
+  .cw-ov text{font-family:var(--font-sans);fill:var(--text)}
+  .cw-ov-box{fill:color-mix(in srgb,var(--ovk) 12%,var(--panel));stroke:var(--ovk);stroke-width:1.5}
+  .cw-ov-n-removed .cw-ov-box{stroke-dasharray:5 3}
+  .cw-ov-n-removed .cw-ov-name{text-decoration:line-through}
+  .cw-ov-name{font-size:12px;font-weight:700}
+  .cw-ov-note{font-size:10px;fill:var(--muted)}
+  .cw-ov-kind{font-size:9px;fill:var(--ovk);text-transform:uppercase;letter-spacing:.04em}
+  .cw-ov-pill{fill:var(--red)}
+  .cw-ov-pilltxt{font-size:8px;font-weight:700;fill:var(--bg)}
+  .cw-ov-watch .cw-ov-box{stroke-width:2.5}
+  .cw-ov-g1{fill:var(--g1)} .cw-ov-g2{fill:var(--g2)} .cw-ov-g3{fill:var(--g3)}
+  .cw-ov-g4{fill:var(--g4)} .cw-ov-g5{fill:var(--g5)} .cw-ov-g6{fill:var(--g6)}
+  .cw-ov-e{fill:none;stroke-width:1.8}
+  .cw-ov-e-new{stroke:var(--green)} .cw-ov-e-changed{stroke:var(--yellow)}
+  .cw-ov-e-guard{stroke:var(--purple)} .cw-ov-e-removed{stroke:var(--red)}
+  .cw-ov-e-same{stroke:var(--muted)}
+  .cw-ov-e-same{stroke-width:1}
+  .cw-ov-e-removed{stroke-dasharray:6 4}
+  .cw-ov-m-new{fill:var(--green)} .cw-ov-m-changed{fill:var(--yellow)} .cw-ov-m-guard{fill:var(--purple)}
+  .cw-ov-m-removed{fill:var(--red)} .cw-ov-m-same{fill:var(--muted)}
+  .cw-ov-lbl rect{fill:var(--panel);stroke:var(--border)}
+  .cw-ov-lbl text{font-size:10px;fill:var(--muted)}
+  .cw-ov-node{cursor:pointer}
+  .cw-ov-node:focus{outline:none}
+  .cw-ov-node:focus-visible .cw-ov-box{stroke:var(--accent);stroke-width:3}
+  svg.cw-ov :is(.cw-ov-node,[data-from]){transition:opacity .2s ease}
+  svg.cw-ov.cw-ov-focusing :is(.cw-ov-node,[data-from]):not(.cw-ov-reach){opacity:.2}
+  .cw-ov-meta{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
+  .cw-ov-legend,.cw-ov-chips{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:var(--fs-xs);color:var(--muted)}
+  .cw-ov-key i{display:inline-block;width:10px;height:10px;margin-right:5px;border-radius:3px;
+    background:var(--ovk);vertical-align:-1px}
+  .cw-ov-chip{padding:3px 10px;border:1px solid var(--ovk);border-radius:999px;cursor:pointer;
+    background:color-mix(in srgb,var(--ovk) 12%,var(--panel));color:var(--text)}
+  .cw-ov-chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
   /* 44px minimum tap target on touch, kept last in the sheet on purpose: #mermaid-zoom-close
      carries an unconditional rule elsewhere (width/height) at this same ID specificity, and a
      tied specificity is decided by source order, not by which rule sits inside the media query.
@@ -1624,6 +1575,7 @@
     target.classList.add('vd-flash');
     setTimeout(()=>target.classList.remove('vd-flash'),1400);
   }
+  window.__cwGoToFile=navGoToFile; // the System change diagram's click target, see its script at the end
   // A symbol node's wired diff span, or null when its range carries nothing wired (no range
   // data at all, or the file isn't in this diff). window.__vdSymbolSpan is exported by the
   // comments script below, since spanByLineKey lives in its closure.
@@ -1639,12 +1591,9 @@
     span.classList.add('vd-flash-line');
     setTimeout(()=>span.classList.remove('vd-flash-line'),1400);
   }
-  // Shared menu builder+positioner: any box-like control (a package/symbol node here, a
-  // structure component box in the later structure script) that wants a small "path label +
-  // action buttons" popup calls this instead of hand-rolling its own. `items` is
-  // [{action, icon, label, run}]; the popup closes itself and calls the matched item's `run()`
-  // on click. Exported (see window.__vdOpenMenu below) so the structure script -- a separate
-  // IIFE, loaded later in the page -- can reuse it instead of a second menu implementation.
+  // Shared menu builder+positioner for box-like controls (a package/symbol node) that want a
+  // small "path label + action buttons" popup. `items` is [{action, icon, label, run}]; the
+  // popup closes itself and calls the matched item's `run()` on click.
   function openMenu(container,opener,path,items,x,y){
     closeNavMenu();
     navMenuFor=opener;
@@ -1888,41 +1837,7 @@
     return box.matches('.mermaid')?box.querySelector('svg')
       :box.querySelector('.mermaid:not([hidden]) svg');
   }
-  // System structure view (a later, separate script -- see "System structure view" below):
-  // it is HTML boxes plus an svg overlay, not one <svg>, so it clones and wires itself rather
-  // than going through visibleSvg/panZoom below. This only clones+opens the dialog; the actual
-  // pan/zoom wiring is window.__vdsWireClone, exported by that script the same way this
-  // function itself is exported as window.__vdZoomOpen below.
-  function openStructureZoom(sys){
-    closeNavMenu();
-    const clone=sys.cloneNode(true);
-    // No box-wired flag to strip here: the structure script's own wireInstance() tracks wired
-    // boxes in a WeakSet keyed by element identity, not a DOM attribute, so these freshly
-    // cloned box elements read as unwired on their own.
-    // Strip the container's own zoom-opening semantics from the clone: it sits inside the
-    // already-open dialog, so "expand to full size" on it would do nothing useful, same reason
-    // this function otherwise only ever clones the innermost <svg>, never the wired box
-    // around it.
-    clone.removeAttribute('tabindex'); clone.removeAttribute('role');
-    clone.removeAttribute('aria-label'); delete clone.dataset.zoomWired;
-    // Strip layout leftovers drawEdges() baked into the ORIGINAL sys's inline style (columnGap,
-    // left/right padding, --vds-outpad) -- sized for that element's own width, which the clone
-    // (position:absolute, shrink-to-fit, no min-width) does not share.
-    clone.style.removeProperty('padding-left'); clone.style.removeProperty('padding-right');
-    clone.style.removeProperty('--vds-outpad');
-    const cloneCols=clone.querySelector('.vds-cols');
-    if(cloneCols) cloneCols.style.removeProperty('column-gap');
-    zbody.replaceChildren(clone);
-    if(!dlg.open) dlg.showModal();
-    zctl.hidden=true;
-    // Torn down on close, not left to the next open to replace: these listeners are bound to
-    // the shared #mermaid-zoom-body, not this clone, so they'd otherwise keep intercepting
-    // wheel/drag on whatever the dialog shows next.
-    const cleanup=window.__vdsWireClone(clone,zbody);
-    dlg.addEventListener('close',()=>cleanup.disconnect(),{once:true});
-  }
   function openZoom(box){
-    if(box.classList.contains('vds-sys')) return openStructureZoom(box);
     closeNavMenu(); // otherwise the inline menu is left open, hidden behind the dialog
     const svg=visibleSvg(box);
     if(!svg) return;
@@ -1935,19 +1850,6 @@
     zctl.hidden=!api;
   }
   function wire(box){
-    // The structure view's own container: click on empty space or Enter/Space opens the
-    // dialog, exactly like the zoom-control setup below, but with no inner <svg> to find --
-    // box clicks below this stopPropagation() before a click ever reaches here.
-    if(box.classList.contains('vds-sys')){
-      if(!box.dataset.zoomWired){
-        box.dataset.zoomWired='1';
-        box.addEventListener('click',()=>openZoom(box));
-        box.addEventListener('keydown',e=>{
-          if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openZoom(box); }
-        });
-      }
-      return;
-    }
     const svg=visibleSvg(box);
     if(!svg) return;
     tagNavNodes(box,svg);
@@ -1967,7 +1869,7 @@
     if(pzWired.has(svg)) return;
     panZoom(svg,'inline');
   }
-  const DIAGRAM_SEL='.vd-symbols .mermaid, .vds-sys';
+  const DIAGRAM_SEL='.vd-symbols .mermaid';
   function wireAll(){
     document.querySelectorAll(DIAGRAM_SEL).forEach(wire);
   }
@@ -1987,11 +1889,11 @@
     return candidates.find(el=>!el.closest('[hidden]'))||null;
   }
   // Where a maximise button's own diagram lives: the nearest wrapping container when there is
-  // one (.vd-symbols, .vd-structure), or -- a heading that does not wrap its diagram -- the next
+  // one (.vd-symbols), or -- a heading that does not wrap its diagram -- the next
   // element after that heading which actually holds one, stopping at the next heading so a gap between sections can't leak the
   // wrong one in.
   function diagramContainerFor(btn){
-    const wrap=btn.closest('.vd-symbols, .vd-structure');
+    const wrap=btn.closest('.vd-symbols');
     if(wrap) return wrap;
     const heading=btn.closest('h2, h3');
     for(let el=heading&&heading.nextElementSibling;el;el=el.nextElementSibling){
@@ -2007,9 +1909,6 @@
     });
   });
   window.__vdZoomOpen=openZoom; // lets the level script's group-graph button, and its in-dialog level toggle, reuse this instead of a second render path
-  window.__vdOpenMenu=openMenu; // lets the structure script's own box menu reuse this instead of a second menu implementation
-  window.__vdGoToFile=navGoToFile; // ditto, for its "Go to walkthrough" item
-  window.__vdGoToLine=navGoToLine;
 })();
 </script>
 <script>
@@ -6296,459 +6195,6 @@ document.querySelectorAll('summary a').forEach(a => {
 })();
 </script>
 <script>
-// System structure view (scripts/sections.py render_structure): draws the edges between
-// .vds-comp boxes as an svg overlay, from each box's real screen geometry -- there is no dagre
-// layout to read positions off here, unlike the mermaid graphs above, so this reads the DOM
-// instead. Routing, the box menu and the dialog pan/zoom are ported from the approved mockup
-// (gen_mockup_structure_v4.py / mockup-structure-v4.html), minus its ?autotest/?focusdemo/
-// ?zoomdemo/?geomcheck hooks. The box menu and "Go to walkthrough" reuse window.__vdOpenMenu/
-// __vdGoToFile, exported by the nav script above, instead of a second menu implementation; the
-// container's own click/Enter/Space-opens-#mermaid-zoom behaviour is wired by that same
-// script's wire()/wireAll()/openZoom(), not here -- this script only draws, and exports
-// window.__vdsWireClone for openZoom's .vds-sys branch to wire the dialog clone.
-(function(){
-  const ns = 'http://www.w3.org/2000/svg';
-
-  function edgesOf(sys){
-    try { return JSON.parse(sys.dataset.edges || '[]'); } catch (e) { return []; }
-  }
-  function instances(){
-    return [...document.querySelectorAll('.vds-sys')];
-  }
-  function relRect(el, originRect){
-    const r = el.getBoundingClientRect();
-    return {
-      left: r.left - originRect.left, right: r.right - originRect.left,
-      top: r.top - originRect.top, bottom: r.bottom - originRect.top,
-      width: r.width, height: r.height,
-    };
-  }
-
-  // Rounds a polyline (only horizontal/vertical segments) into an SVG path -- deterministic,
-  // no layout engine, just geometry: shorten each side of a corner by up to `r` and replace it
-  // with a quadratic curve.
-  function roundedPath(pts, r){
-    if (pts.length < 2) return '';
-    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-    let d = `M${pts[0][0]},${pts[0][1]}`;
-    for (let i = 1; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
-      const d1 = Math.min(r, dist(p0, p1) / 2), d2 = Math.min(r, dist(p1, p2) / 2);
-      const l1 = dist(p0, p1) || 1, l2 = dist(p1, p2) || 1;
-      const ax = p1[0] - (p1[0] - p0[0]) / l1 * d1, ay = p1[1] - (p1[1] - p0[1]) / l1 * d1;
-      const bx = p1[0] + (p2[0] - p1[0]) / l2 * d2, by = p1[1] + (p2[1] - p1[1]) / l2 * d2;
-      d += ` L${ax},${ay} Q${p1[0]},${p1[1]} ${bx},${by}`;
-    }
-    const last = pts[pts.length - 1];
-    d += ` L${last[0]},${last[1]}`;
-    return d;
-  }
-
-  // Every anchor's y must land strictly inside its OWN box, never on its border or past it.
-  // Default: spread across the box's middle 64% (0.18-0.82 of its height); fall back to a
-  // tighter, evenly-compressed spread bounded to [top+MARGIN, bottom-MARGIN] only if the
-  // default would pack anchors closer than MIN_SPACE apart.
-  function spreadYs(top, height, n){
-    const MARGIN = 10, MIN_SPACE = 8;
-    const lo = top + MARGIN, hi = Math.max(lo, top + height - MARGIN);
-    let ys;
-    if (n <= 1) {
-      ys = [(lo + hi) / 2];
-    } else {
-      const defLo = top + height * 0.18, defHi = top + height * 0.82;
-      const defSpacing = (defHi - defLo) / (n - 1);
-      if (defSpacing >= MIN_SPACE) {
-        ys = Array.from({ length: n }, (_, i) => defLo + (defHi - defLo) * i / (n - 1));
-      } else {
-        const span = Math.min(MIN_SPACE * (n - 1), hi - lo);
-        const mid = (lo + hi) / 2, start = mid - span / 2;
-        ys = Array.from({ length: n }, (_, i) => start + span * i / (n - 1));
-      }
-    }
-    return ys.map(y => Math.min(hi, Math.max(lo, y)));
-  }
-
-  function drawEdges(sys){
-    const svg = sys.querySelector('svg.vds-edges');
-    if (!svg || !sys.offsetWidth) return;
-    const edges = edgesOf(sys);
-    svg.innerHTML = '';
-    if (!edges.length) return;
-
-    const boxes = [...sys.querySelectorAll('.vds-comp')];
-    // Component id lives in data-cid, not a plain `id`: the dialog clones this whole diagram
-    // wholesale for the full-size view, and two elements sharing one `id` while it's open is
-    // invalid markup a data attribute avoids.
-    const boxOrder = new Map(boxes.map((b, i) => [b.dataset.cid, i]));
-    const dcolOf = new Map(boxes.map(b => [b.dataset.cid, Number(b.dataset.dcol)]));
-    const cols = [...sys.querySelectorAll('.vds-cols > .vds-col')];
-
-    // Classify first (dcol is static, no measuring needed yet), so the top shelf and the
-    // near-lane gutters can be sized before any box position is measured -- reserving space
-    // after measuring would invalidate every rect just taken.
-    const adjacent = [], outside = [];
-    edges.forEach((e, idx) => {
-      if (!boxOrder.has(e.from) || !boxOrder.has(e.to)) return;
-      const rec = { ...e, idx, sd: dcolOf.get(e.from), td: dcolOf.get(e.to) };
-      (rec.td === rec.sd + 1 ? adjacent : outside).push(rec);
-    });
-    const outPad = outside.length ? 18 + (outside.length - 1) * 8 : 0;
-    // .vds-cols transitions margin-top for a nice grow when outPad changes (e.g. a resize
-    // recomputing it) -- but a measurement taken right after setting --vds-outpad can land
-    // mid-animation. Suspend the transition for exactly this write, restore it once boxRel is
-    // captured below, so the change and the measurement land at the SAME (final) layout.
-    const colsEl = sys.querySelector('.vds-cols');
-    const prevColsTransition = colsEl.style.transition;
-    colsEl.style.transition = 'none';
-    sys.style.setProperty('--vds-outpad', outPad + 'px');
-
-    // Tally how many edges will need a near-lane in each (gutter, side) pool -- purely from
-    // column indices, no measuring required -- so a crowded gutter can widen itself before
-    // anything downstream is measured.
-    const CLEAR = 11, SPACE = 8;
-    const poolCounts = new Map();
-    function tally(g, side){
-      const k = g + '|' + side;
-      poolCounts.set(k, (poolCounts.get(k) || 0) + 1);
-    }
-    adjacent.forEach(e => { tally(e.sd, 'from'); tally(e.sd, 'to'); });
-    outside.forEach(e => {
-      tally(e.sd <= cols.length - 2 ? e.sd : 'R', 'from');
-      tally(e.td >= 1 ? e.td - 1 : 'L', 'to');
-    });
-    function spreadFor(k){
-      const n = poolCounts.get(k) || 1;
-      return CLEAR + Math.max(0, n - 1) * SPACE + 4; // +4: buffer past the last lane
-    }
-    let maxGutterHalf = 0;
-    for (let g = 0; g < cols.length - 1; g++) {
-      maxGutterHalf = Math.max(maxGutterHalf, spreadFor(g + '|from'), spreadFor(g + '|to'));
-    }
-    const curGap = parseFloat(getComputedStyle(colsEl).columnGap) || 0;
-    const neededGap = maxGutterHalf * 2;
-    if (neededGap > curGap) colsEl.style.columnGap = neededGap + 'px';
-    const curPadL = parseFloat(getComputedStyle(sys).paddingLeft) || 0;
-    const curPadR = parseFloat(getComputedStyle(sys).paddingRight) || 0;
-    const neededPadL = spreadFor('L|to'), neededPadR = spreadFor('R|from');
-    if (neededPadL > curPadL) sys.style.paddingLeft = neededPadL + 'px';
-    if (neededPadR > curPadR) sys.style.paddingRight = neededPadR + 'px';
-
-    // Now measure, after every reservation above has been applied.
-    const sysRect = sys.getBoundingClientRect();
-    const colRel = cols.map(c => relRect(c, sysRect));
-    const boxRel = new Map(boxes.map(b => [b.dataset.cid, relRect(b, sysRect)]));
-    colsEl.style.transition = prevColsTransition;
-    const colsTopY = Math.min(...colRel.map(c => c.top));
-    const shelfBase = colsTopY - 12; // clears the tallest box top by >=12px
-
-    // "Near lanes": a pool per (gutter, side). 'from' hugs the gutter's LEFT boundary (the
-    // column whose boxes exit rightward into it), 'to' the RIGHT boundary the same way. 'L'/'R'
-    // are virtual gutters living in the side padding, for a source/target with no column on
-    // that side. The widening above guarantees every pool fits within its half of the gutter
-    // (or its padding strip), so no extra clamp is needed here.
-    const nearPools = new Map();
-    function reserveNear(g, side, sortKey, setX){
-      const k = g + '|' + side;
-      if (!nearPools.has(k)) nearPools.set(k, []);
-      nearPools.get(k).push({ sortKey, setX });
-    }
-    function gutterEdge(g, side){
-      if (g === 'L') return side === 'from' ? 0 : colRel[0].left;
-      if (g === 'R') return side === 'from' ? colRel[cols.length - 1].right : sysRect.width;
-      return side === 'from' ? colRel[g].right : colRel[g + 1].left;
-    }
-    function resolveNear(){
-      nearPools.forEach((items, key) => {
-        const [gRaw, side] = key.split('|');
-        const g = (gRaw === 'L' || gRaw === 'R') ? gRaw : Number(gRaw);
-        const base = gutterEdge(g, side);
-        items.sort((a, b) => a.sortKey - b.sortKey);
-        items.forEach((it, i) => it.setX(side === 'from' ? base + CLEAR + i * SPACE : base - CLEAR - i * SPACE));
-      });
-    }
-
-    // Anchor spread: every edge leaving/entering a given box side gets its own point along
-    // that side instead of the vertical middle. Left/right only -- no edge attaches to a top
-    // or bottom border.
-    const sideAnchors = new Map(); // "boxId|side" -> [{sortKey, setter}]
-    function reserveAnchor(boxId, side, sortKey, setter){
-      const k = boxId + '|' + side;
-      if (!sideAnchors.has(k)) sideAnchors.set(k, []);
-      sideAnchors.get(k).push({ sortKey, setter });
-    }
-    function resolveAnchors(){
-      sideAnchors.forEach((items, key) => {
-        const [boxId, side] = key.split('|');
-        const rect = boxRel.get(boxId);
-        items.sort((a, b) => a.sortKey - b.sortKey);
-        const ys = spreadYs(rect.top, rect.height, items.length);
-        items.forEach((it, i) => { it.setter(side === 'left' ? rect.left : rect.right, ys[i]); });
-      });
-    }
-
-    const built = []; // { e, points() } resolved after lanes+anchors settle
-    adjacent.forEach(e => {
-      const a = {};
-      reserveAnchor(e.from, 'right', boxOrder.get(e.to), (x, y) => { a.x1 = x; a.y1 = y; });
-      reserveAnchor(e.to, 'left', boxOrder.get(e.from), (x, y) => { a.x2 = x; a.y2 = y; });
-      // Both stubs sit in the same gutter (e.sd): a right-side stub into a lane hugging the
-      // source's column, a short jog at the mid-height between the two anchors, then a
-      // left-side stub out of a lane hugging the target's column.
-      const near = {};
-      reserveNear(e.sd, 'from', boxOrder.get(e.from), x => { near.x1 = x; });
-      reserveNear(e.sd, 'to', boxOrder.get(e.to), x => { near.x2 = x; });
-      built.push({
-        e, points: () => {
-          const jogY = (a.y1 + a.y2) / 2;
-          return [[a.x1, a.y1], [near.x1, a.y1], [near.x1, jogY], [near.x2, jogY], [near.x2, a.y2], [a.x2, a.y2]];
-        },
-      });
-    });
-    // Outside routing (skip-column, same-column, or backward): right-side stub into a lane
-    // beside the source's own column, straight up that lane (never through a column's box
-    // stack), across a shared shelf above every column, straight down a lane beside the
-    // target's own column, then a left-side stub in.
-    outside.forEach((e, i) => {
-      const a = {};
-      reserveAnchor(e.from, 'right', e.idx, (x, y) => { a.x1 = x; a.y1 = y; });
-      reserveAnchor(e.to, 'left', e.idx, (x, y) => { a.x2 = x; a.y2 = y; });
-      const srcGutter = e.sd <= cols.length - 2 ? e.sd : 'R';
-      const dstGutter = e.td >= 1 ? e.td - 1 : 'L';
-      const near = {};
-      reserveNear(srcGutter, 'from', e.idx, x => { near.x1 = x; });
-      reserveNear(dstGutter, 'to', e.idx, x => { near.x2 = x; });
-      const shelfY = shelfBase - i * 8;
-      built.push({
-        e, points: () => [
-          [a.x1, a.y1], [near.x1, a.y1], [near.x1, shelfY],
-          [near.x2, shelfY], [near.x2, a.y2], [a.x2, a.y2],
-        ],
-      });
-    });
-
-    resolveNear();
-    resolveAnchors();
-
-    const defs = document.createElementNS(ns, 'defs');
-    for (const [k, color] of [['call', 'var(--green)'], ['gone', 'var(--red)'], ['impl', 'var(--muted)']]) {
-      defs.innerHTML += `<marker id="vds-m-${k}-${sys.dataset.iid}" viewBox="0 0 8 8" refX="8" refY="4" `
-        + `markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="${color}"/></marker>`;
-    }
-    svg.appendChild(defs);
-    built.forEach(({ e, points }) => {
-      const kind = e.state === 'gone' ? 'gone' : (e.kind === 'call' ? 'call' : 'impl');
-      const pts = points();
-      const p = document.createElementNS(ns, 'path');
-      p.setAttribute('d', roundedPath(pts, 7));
-      p.setAttribute('class', 'vds-e vds-e-' + kind);
-      p.dataset.from = e.from; p.dataset.to = e.to;
-      p.setAttribute('marker-end', `url(#vds-m-${kind}-${sys.dataset.iid})`);
-      svg.appendChild(p);
-      // Endpoint dots: where the edge actually meets the box border.
-      [pts[0], pts[pts.length - 1]].forEach(pt => {
-        const c = document.createElementNS(ns, 'circle');
-        c.setAttribute('cx', pt[0]); c.setAttribute('cy', pt[1]); c.setAttribute('r', 2.75);
-        c.setAttribute('class', 'vds-e vds-dot vds-e-' + kind);
-        c.dataset.from = e.from; c.dataset.to = e.to;
-        svg.appendChild(c);
-      });
-    });
-  }
-
-  let hoverId = null, stickyId = null;
-
-  function refresh(){
-    const activeId = stickyId || hoverId;
-    instances().forEach(sys => {
-      sys.classList.toggle('vds-active', !!activeId);
-      const edges = edgesOf(sys);
-      const paths = [...sys.querySelectorAll('.vds-e')];
-      if (activeId) {
-        const related = new Set([activeId]);
-        edges.forEach(e => { if (e.from === activeId || e.to === activeId) { related.add(e.from); related.add(e.to); } });
-        sys.querySelectorAll('.vds-comp').forEach(b => b.classList.toggle('vds-dim', !related.has(b.dataset.cid)));
-        paths.forEach(p => p.classList.toggle('vds-lit', p.dataset.from === activeId || p.dataset.to === activeId));
-      } else {
-        paths.forEach(p => p.classList.remove('vds-lit'));
-        sys.querySelectorAll('.vds-comp.vds-dim').forEach(b => b.classList.remove('vds-dim'));
-      }
-    });
-  }
-  // ---------- box click menu, reusing the nav script's shared openMenu/navGoToFile ----------
-  function menuHostFor(sys){
-    // Inside the dialog the menu must position against #mermaid-zoom-body (unscaled), never
-    // the zoomed .vds-sys clone itself -- appending into a CSS-scaled ancestor would scale the
-    // menu along with it.
-    return sys.closest('#mermaid-zoom-body') || sys;
-  }
-  function openBoxMenu(sys, box, x, y){
-    const id = box.dataset.cid, path = box.dataset.path;
-    const items = [
-      { action: 'walkthrough', icon: '&#8594;', label: 'Go to walkthrough', run: () => window.__vdGoToFile(path) },
-    ];
-    if (stickyId === id) {
-      items.push({ action: 'clear', icon: '&#215;', label: 'Clear focus', run: () => { stickyId = null; refresh(); } });
-    } else {
-      items.push({ action: 'focus', icon: '&#9678;', label: 'Focus', run: () => { stickyId = id; hoverId = null; refresh(); } });
-      if (stickyId) items.push({ action: 'clear', icon: '&#215;', label: 'Clear focus', run: () => { stickyId = null; refresh(); } });
-    }
-    window.__vdOpenMenu(menuHostFor(sys), box, path, items, x, y);
-  }
-  // Tracks which .vds-comp elements already have their listeners attached. A WeakSet keyed by
-  // element identity, not a data-wired DOM attribute: cloneNode(true) (see openStructureZoom in
-  // the nav script) copies attributes but never listeners, so a DOM-attribute guard would have
-  // told wireInstance the clone's boxes were already wired -- when in fact they carry no
-  // listeners of their own at all -- and left the whole dialog's box menu dead. A WeakSet has no
-  // such copy to go stale: the clone's box elements are new objects the set has never seen.
-  const wiredBoxes = new WeakSet();
-  function wireInstance(sys){
-    sys.querySelectorAll('.vds-comp').forEach(box => {
-      if (wiredBoxes.has(box)) return;
-      wiredBoxes.add(box);
-      box.addEventListener('click', e => {
-        e.stopPropagation();
-        openBoxMenu(sys, box, e.clientX, e.clientY);
-      });
-      box.addEventListener('keydown', e => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        e.stopPropagation(); // else it also bubbles to the container's own Enter/Space-opens-dialog handler
-        const r = box.getBoundingClientRect();
-        openBoxMenu(sys, box, r.right, r.top);
-      });
-      box.addEventListener('mouseenter', () => { if (!stickyId) { hoverId = box.dataset.cid; refresh(); } });
-      box.addEventListener('mouseleave', () => { if (!stickyId) { hoverId = null; refresh(); } });
-      box.addEventListener('focusin', () => { if (!stickyId) { hoverId = box.dataset.cid; refresh(); } });
-      box.addEventListener('focusout', () => { if (!stickyId) { hoverId = null; refresh(); } });
-    });
-  }
-
-  // ---------- CSS pan+zoom for the dialog clone ----------
-  // The structure diagram is HTML boxes plus an svg overlay, not one <svg>, so there is no
-  // shared viewBox to rewrite the way the template's own panZoom() does for a mermaid graph.
-  // Instead the whole cloned .vds-sys gets one CSS transform (translate + scale, origin
-  // top-left): wheel zooms around the cursor, pointer drag pans, and a small-drag threshold
-  // suppresses the trailing click so a drag that starts on a box doesn't also pop its menu --
-  // same split as the template's own moved/suppressClick tracking.
-  function wireModalPanZoom(clone, body){
-    let x = 0, y = 0, k = 1;
-    const MIN_K = 0.25, MAX_K = 6;
-    clone.style.transformOrigin = '0 0';
-    const apply = () => { clone.style.transform = `translate(${x}px,${y}px) scale(${k})`; };
-    apply();
-
-    // body is the shared #mermaid-zoom-body, reused across opens, so these listeners must not
-    // outlive this one; the controller aborts them all at once on dialog close.
-    const controller = new AbortController();
-    const { signal } = controller;
-
-    body.addEventListener('wheel', e => {
-      e.preventDefault();
-      const r = body.getBoundingClientRect();
-      const cx = e.clientX - r.left, cy = e.clientY - r.top;
-      const factor = e.deltaY > 0 ? 1 / 1.15 : 1.15;
-      const newK = Math.min(MAX_K, Math.max(MIN_K, k * factor));
-      if (newK === k) return;
-      // Keep the point under the cursor fixed: its position in the clone's own (unscaled)
-      // coordinate space is (cx-x)/k before the change, so solve for the new x that puts it
-      // back under the cursor at the new scale.
-      x = cx - (cx - x) * (newK / k);
-      y = cy - (cy - y) * (newK / k);
-      k = newK;
-      apply();
-    }, { passive: false, signal });
-
-    let drag = null, moved = false, suppressClick = false, capturedId = null;
-    body.addEventListener('pointerdown', e => {
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      drag = { x: e.clientX, y: e.clientY, ox: x, oy: y };
-      moved = false;
-    }, { signal });
-    body.addEventListener('pointermove', e => {
-      if (!drag) return;
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (!moved && Math.hypot(dx, dy) > 4) {
-        moved = true;
-        // Deferred to a real drag: capturing on pointerdown retargets the eventual click to
-        // body in Chrome, so a plain box click never reaches its own listener (wireInstance).
-        try { body.setPointerCapture(e.pointerId); capturedId = e.pointerId; } catch (_) {}
-      }
-      x = drag.ox + dx; y = drag.oy + dy;
-      apply();
-    }, { signal });
-    const endDrag = () => {
-      if (capturedId != null) {
-        try { body.releasePointerCapture(capturedId); } catch (_) {}
-        capturedId = null;
-      }
-      if (moved) suppressClick = true;
-      drag = null; moved = false;
-    };
-    body.addEventListener('pointerup', endDrag, { signal });
-    body.addEventListener('pointercancel', endDrag, { signal });
-    // Capture phase: fires before the box's own bubble-phase click listener (which opens its
-    // menu), so a drag that ended over a box never also opens that box's menu.
-    body.addEventListener('click', e => {
-      if (suppressClick) { e.stopPropagation(); suppressClick = false; }
-    }, { capture: true, signal });
-
-    return {
-      controller,
-      // Never measure box/gutter positions while a CSS scale is applied -- getBoundingClientRect
-      // would return already-scaled pixels, and drawEdges (which measures screen pixels, then
-      // relies on the ancestor transform to scale its own output) would double-scale
-      // everything. Drop to identity, redraw at natural size, restore whatever pan/zoom was
-      // live before the call.
-      redraw(){
-        const sx = x, sy = y, sk = k;
-        x = 0; y = 0; k = 1; apply();
-        drawEdges(clone);
-        x = sx; y = sy; k = sk; apply();
-      },
-    };
-  }
-
-  // ---------- boot: wire+draw every inline diagram already on the page ----------
-  let iidSeq = 0;
-  document.querySelectorAll('.vds-sys').forEach(sys => {
-    sys.dataset.iid = 'i' + (iidSeq++);
-    wireInstance(sys);
-    drawEdges(sys);
-    new ResizeObserver(() => drawEdges(sys)).observe(sys);
-  });
-  document.querySelectorAll('details.vds-lanes').forEach(d => {
-    const redraw = () => { if (d.open) d.querySelectorAll('.vds-sys').forEach(drawEdges); };
-    d.addEventListener('toggle', redraw);
-    window.addEventListener('resize', redraw);
-  });
-  refresh();
-
-  // Exported for openZoom()'s .vds-sys branch (see the nav script above): wires the fullscreen
-  // clone's box menu and pan/zoom, redraws its edges once the dialog's own layout has
-  // committed, and keeps them attached across a dialog resize. Mirrors window.__vdZoomOpen's
-  // own one-function-does-the-rest shape.
-  window.__vdsWireClone = function(clone, body){
-    clone.dataset.iid = 'z' + (iidSeq++); // distinct from the inline original's own marker ids
-    wireInstance(clone);
-    const pz = wireModalPanZoom(clone, body);
-    // showModal() opening a `display:none` subtree has shown a real, reproducible race: a
-    // forced synchronous reflow (getBoundingClientRect, which drawEdges calls) can still see a
-    // narrower pre-settle layout in the same tick. rAF guarantees the dialog's own layout has
-    // actually been produced first.
-    requestAnimationFrame(() => { pz.redraw(); refresh(); });
-    // Keep edges attached if the dialog itself is resized (e.g. the OS window changes size
-    // while it's open) -- redraw() already resets to identity before measuring and restores
-    // the live pan/zoom afterwards, so a resize never has to know or care what scale/offset
-    // was active.
-    const ro = new ResizeObserver(() => pz.redraw());
-    ro.observe(body);
-    // Bundled so openStructureZoom's single dialog 'close' handler tears down both: the
-    // ResizeObserver and the pan/zoom listeners wireModalPanZoom bound to the shared body.
-    return { disconnect(){ ro.disconnect(); pz.controller.abort(); } };
-  };
-})();
-</script>
-<script>
 (function(){
   if(window.CW_LIVE){
     const LIVE=window.CW_LIVE;
@@ -6869,6 +6315,37 @@ document.querySelectorAll('summary a').forEach(a => {
       if(window.__cwOnPosted) window.__cwOnPosted(JSON.parse(e.data));
     });
   }
+})();
+</script>
+<script>
+(function(){
+  const NODE='.cw-ov-node',JUMP='.cw-ov-node,.cw-ov-chip';
+  function clear(svg){
+    svg.classList.remove('cw-ov-focusing');
+    svg.querySelectorAll('.cw-ov-reach').forEach(e=>e.classList.remove('cw-ov-reach'));
+  }
+  function focus(node){
+    const svg=node.ownerSVGElement,i=node.dataset.ov;
+    clear(svg);
+    svg.classList.add('cw-ov-focusing');
+    node.classList.add('cw-ov-reach');
+    svg.querySelectorAll('[data-from]').forEach(e=>{
+      if(e.dataset.from!==i&&e.dataset.to!==i) return;
+      e.classList.add('cw-ov-reach');
+      svg.querySelectorAll(NODE).forEach(n=>{ if(n.dataset.ov===e.dataset.from||n.dataset.ov===e.dataset.to) n.classList.add('cw-ov-reach'); });
+    });
+  }
+  const nodeOf=e=>e.target.closest?e.target.closest(NODE):null;
+  ['mouseover','focusin'].forEach(t=>document.addEventListener(t,e=>{ const n=nodeOf(e); if(n) focus(n); }));
+  ['mouseout','focusout'].forEach(t=>document.addEventListener(t,e=>{ const n=nodeOf(e); if(n) clear(n.ownerSVGElement); }));
+  function jump(e){
+    const t=e.target.closest?e.target.closest(JUMP):null;
+    if(!t||!t.dataset.path||!window.__cwGoToFile) return false;
+    window.__cwGoToFile(t.dataset.path);
+    return true;
+  }
+  document.addEventListener('click',jump);
+  document.addEventListener('keydown',e=>{ if((e.key==='Enter'||e.key===' ')&&jump(e)) e.preventDefault(); });
 })();
 </script>
 </body>

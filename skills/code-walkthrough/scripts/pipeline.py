@@ -150,25 +150,7 @@ def cmd_prepare(args):
 
     symdelta_path = d / "symdelta.json"
     if symdelta_path.exists():
-        structure_json = d / "structure.json"
-        structure_cmd = ["--repo", args.repo, "--base", args.base, "--head", args.head,
-                          "--symdelta", str(symdelta_path), "--analysis", str(analysis_path),
-                          "--out", str(structure_json)]
-        if args.paths:
-            structure_cmd += ["--paths", *args.paths]
-        if not _run_ok("structure.py", structure_cmd):
-            return 1
-
-        structure_sections = ["--kind", "structure", "--data", str(structure_json),
-                               "--format", "html"]
-        if args.explain:
-            structure_sections.append("--explain")
-        if not _run_to_file("sections.py", structure_sections, d / "section-structure.html"):
-            return 1
-
-        structure_lang = json.loads(structure_json.read_text()).get("language")
         symdelta_lang = json.loads(symdelta_path.read_text()).get("language")
-        print(f"structure: {structure_lang or 'null'}")
         print(f"symbols: {symdelta_lang or 'null'}")
     else:
         print("sections: skipped, no symdelta.json")
@@ -248,9 +230,6 @@ def cmd_render(args):
         render_cmd.append("--explain")
     if pipeline.get("links_ok"):
         render_cmd += ["--links", str(d / "links.json")]
-    structure_html = d / "section-structure.html"
-    if structure_html.exists():
-        render_cmd += ["--structure", str(structure_html)]
     render_cmd += _optional_data_flags(d)
     if args.title:
         render_cmd += ["--title", args.title]
@@ -321,29 +300,6 @@ def cmd_partial(args):
                          partial_dir / "section-walkthrough.html"):
         return 1
 
-    structure_html = None
-    if symdelta_path.exists():
-        try:
-            json.loads(symdelta_path.read_text())
-        except json.JSONDecodeError:
-            pass
-        else:
-            structure_json = partial_dir / "structure.json"
-            structure_cmd = ["--repo", args.repo, "--base", args.base, "--head", args.head,
-                              "--symdelta", str(symdelta_path),
-                              "--analysis", str(analysis_partial_path),
-                              "--out", str(structure_json)]
-            if args.paths:
-                structure_cmd += ["--paths", *args.paths]
-            section_structure = partial_dir / "section-structure.html"
-            structure_sections = ["--kind", "structure", "--data", str(structure_json),
-                                   "--format", "html"]
-            if args.explain:
-                structure_sections.append("--explain")
-            if (_run_ok("structure.py", structure_cmd)
-                    and _run_to_file("sections.py", structure_sections, section_structure)):
-                structure_html = section_structure
-
     state_path = partial_dir / "state.json"
     state_cmd = ["--analysis", str(analysis_partial_path), "--diff", str(raw_diff),
                  "--out", str(state_path)]
@@ -361,8 +317,6 @@ def cmd_partial(args):
                   "--template", str(SKILL_DIR / "assets" / "diff-review-template.html"),
                   "--walkthrough", str(partial_dir / "section-walkthrough.html"),
                   "--state", str(state_path)]
-    if structure_html:
-        render_cmd += ["--structure", str(structure_html)]
     render_cmd += _optional_data_flags(d)
     if args.explain:
         render_cmd.append("--explain")

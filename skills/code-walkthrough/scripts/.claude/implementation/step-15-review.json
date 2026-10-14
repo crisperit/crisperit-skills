@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-10-05T04:36:05+02:00",
+  "fileManifest": [
+    {
+      "file": "skills/code-walkthrough/scripts/cw_server.py",
+      "linesChanged": 7,
+      "depth": "CHANGED_ONLY",
+      "reason": "Caller-scoped fix review: _route_post_preview lines 618-653, focused on the stale-state re-read added at 644-650",
+      "checks": {
+        "security": { "status": "pass", "fullFileAnalysisNotes": "fast-mode", "findings": [] },
+        "correctness": { "status": "pass", "fullFileAnalysisNotes": "fast-mode", "findings": [] },
+        "errorHandling": { "status": "pass", "fullFileAnalysisNotes": "fast-mode", "findings": [] },
+        "performance": { "status": "pass", "fullFileAnalysisNotes": "fast-mode", "findings": [] },
+        "tests": { "status": "pass", "fullFileAnalysisNotes": "fast-mode", "findings": [] },
+        "simplicity": { "status": "pass", "fullFileAnalysisNotes": "fast-mode", "findings": [] }
+      },
+      "conventions": []
+    }
+  ],
+  "skippedFiles": [],
+  "crossFileAnalysis": { "checked": false, "findings": [] },
+  "reviewerConcerns": [],
+  "issues": {
+    "blockers": [],
+    "majors": [],
+    "minors": []
+  },
+  "summary": {
+    "description": "The fix re-reads state.json right after sync_pr runs and swaps it into `st` only when the read succeeds and returns a dict, so a dedupe write from sync_pr (draft -> posted, e.g. a timed-out client post the fake/real gh still recorded) is visible to _post_items instead of a stale pre-sync snapshot. Verified against cw_store.read_json (returns None on OSError/ValueError, matching the isinstance guard), notes.sync_comments/_dedupe_drafts (confirms sync_pr can flip draft->posted and that do_sync round-trips the full state object, so meta and other keys survive), and cw_run.sync_pr (confirmed it never raises, so the guard's fallback-on-None path also covers a sync_pr failure cleanly, since an unchanged file re-reads identically). The existing test test_cw_post.py::test_retry_after_timeout_does_not_double_post exercises exactly this path end to end (preview, timeout, second preview, second post, then a direct notes.py deliver) and the implementer confirmed it was not modified by this fix. No blocker, major, or minor issues found in the reviewed lines.",
+    "totalIssues": { "blockers": 0, "majors": 0, "minors": 0 },
+    "filesReviewed": 1,
+    "filesSkipped": 0,
+    "linesChanged": 7,
+    "qualityGateStats": { "totalFindings": 0, "duplicatesMerged": 0 }
+  },
+  "evaluation": {
+    "status": "APPROVAL",
+    "message": "Root cause correctly identified and fixed with a minimal, defensively-guarded re-read; existing test already covers the scenario end to end. No changes requested."
+  },
+  "metadata": {
+    "diffScope": "working",
+    "baseBranch": "main",
+    "targetBranch": "feat/cw-live-phase5-post",
+    "minSeverity": "minor",
+    "contextGatheringErrors": []
+  }
+}

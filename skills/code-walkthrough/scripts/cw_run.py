@@ -836,12 +836,29 @@ def _run_prose(d, meta, config, on_event, batch_count):
 
 
 def _visuals_submit_tool():
+    kind = {"type": "string", "enum": ["same", "new", "changed", "guard", "removed"]}
+    refs = {"type": "array", "maxItems": 3, "items": {"type": "string"}}
+    group = {"type": ["integer", "null"]}
+    overview = {"type": ["object", "null"], "properties": {
+        "title": {"type": "string", "maxLength": 80},
+        "nodes": {"type": "array", "minItems": 2, "maxItems": 12, "items": {"type": "object", "properties": {
+            "id": {"type": "string", "pattern": "^[a-z0-9_]{1,12}$"},
+            "label": {"type": "string", "maxLength": 22}, "note": {"type": "string", "maxLength": 30},
+            "kind": kind, "group": group, "refs": refs, "watch": {"type": "boolean"}},
+            "required": ["id", "label", "kind"]}},
+        "edges": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "properties": {
+            "from": {"type": "string"}, "to": {"type": "string"},
+            "label": {"type": "string", "maxLength": 14}, "kind": kind}, "required": ["from", "to"]}},
+        "notes": {"type": "array", "maxItems": 4, "items": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["new", "changed", "removed", "guard", "config", "moved"]},
+            "text": {"type": "string", "maxLength": 48}, "group": group, "refs": refs},
+            "required": ["kind", "text"]}}},
+        "required": ["title", "nodes", "edges"]}
     return {"type": "function", "function": {
         "name": "submit_visuals",
-        "description": "Submit the PR picture and one picture per group (HTML/SVG fragments).",
+        "description": "Submit the overview graph and one picture per group (HTML/SVG fragments).",
         "parameters": {"type": "object", "properties": {
-            "pr": {"type": ["object", "null"], "properties": {
-                "title": {"type": "string"}, "html": {"type": "string"}}},
+            "overview": overview,
             "groups": {"type": "array", "items": {"type": "object", "properties": {
                 "index": {"type": "integer"}, "html": {"type": "string"}}}}}}}}
 
@@ -872,7 +889,7 @@ def _visuals_user_text(d, meta, analysis, symdelta):
 
 
 def _run_visuals(d, meta, config, on_event, force=False):
-    """Authors the PR picture and one picture per group into visuals.json. Never raises and never
+    """Authors the overview graph and one picture per group into visuals.json. Never raises and never
     fails the run: a failure only marks the `visuals` step failed and the page has no pictures."""
     out = d / "visuals.json"
     if out.exists() and not force:
@@ -897,10 +914,11 @@ def _run_visuals(d, meta, config, on_event, force=False):
                     {"role": "user", "content": _visuals_user_text(d, meta, analysis, symdelta)}]
         tools, handlers = read_tools(d)
         state: dict = {"attempt": 0}
+        ctx = visuals.diff_ctx((d / "raw.diff").read_text(errors="replace"), symdelta)
 
         def handler(args):
             state["attempt"] += 1
-            clean, problems = visuals.check_visuals(args, n_groups)
+            clean, problems = visuals.check_visuals(args, n_groups, ctx)
             if problems and state["attempt"] < 3:
                 return "gate: " + "\n".join(problems) + "\nfix and call submit_visuals again"
             state["clean"], state["problems"] = clean, problems
@@ -916,9 +934,10 @@ def _run_visuals(d, meta, config, on_event, force=False):
         finally:
             _write_transcript(d, "visuals", profile, messages, result="clean" in state)
         clean = state["clean"]
-        if not clean["pr"] and not clean["groups"]:
+        if not clean["overview"] and not clean["pr"] and not clean["groups"]:
             raise RuntimeError("no usable pictures; dropped: " + "; ".join(state["problems"])[:500])
         out.write_text(json.dumps({
+            "overview": clean["overview"],
             "pr": clean["pr"],
             "groups": [{"index": i, "html": h} for i, h in sorted(clean["groups"].items())]}, indent=2))
         _emit_step(d, on_event, "visuals", "ok")
@@ -1523,7 +1542,7 @@ def _full_clean(d, old_meta, toplevel):
     for name in ("batches", "partial"):
         _rm(d / name)
     for name in ("prose.json", "analysis.json", "analysis.partial.json", "symdelta.json", "visuals.json",
-                 "complexity.json", "structure.json", "links.json", "pipeline.json",
+                 "complexity.json", "links.json", "pipeline.json",
                  "raw.diff", "numstat.tsv", "partial.html"):
         _rm(d / name)
     for path in d.glob("section-*.html"):

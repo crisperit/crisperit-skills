@@ -296,6 +296,36 @@ def test_visuals_pass_repairs_then_writes_visuals_json():
             assert cw_store.read_meta(d)["steps"]["visuals"]["status"] == "ok"
 
 
+def _overview(ref="foo.py:X"):
+    return {"title": "Foo changes", "nodes": [
+        {"id": "a", "label": "Caller", "kind": "same", "group": 0},
+        {"id": "b", "label": "Foo", "kind": "changed", "watch": True, "refs": [ref]}],
+        "edges": [{"from": "a", "to": "b", "kind": "changed"}]}
+
+
+def test_visuals_submit_tool_schema_has_overview_and_no_pr():
+    props = cw_run._visuals_submit_tool()["function"]["parameters"]["properties"]
+    assert "pr" not in props and set(props) == {"overview", "groups"}
+    node = props["overview"]["properties"]["nodes"]["items"]["properties"]
+    assert node["kind"]["enum"] == ["same", "new", "changed", "guard", "removed"]
+    assert node["label"]["maxLength"] == 22 and props["overview"]["properties"]["nodes"]["maxItems"] == 12
+
+
+def test_visuals_pass_returns_overview_problems_and_writes_overview():
+    with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
+        with cw_testlib.StubLLM({}) as stub:
+            d, meta = _visuals_dir(home, tmp, stub)
+            bad = {"overview": _overview("foo.py:not_there"), "groups": []}
+            good = {"overview": _overview("foo.py:X"), "groups": []}
+            stub.script = {"prose-m": [_submit(bad), _submit(good)]}
+            assert cw_run._run_visuals(d, meta, cw_store.load_config(), None)
+            gate = [m["content"] for m in stub.requests[1]["messages"] if m.get("role") == "tool"][-1]
+            assert gate.startswith("gate:") and "overview.nodes[1].refs[0]: foo.py:not_there not in diff" in gate
+            saved = json.loads((d / "visuals.json").read_text())
+            assert saved["overview"]["title"] == "Foo changes" and len(saved["overview"]["nodes"]) == 2
+            assert saved["groups"] == [] and saved["pr"] is None
+
+
 def test_visuals_pass_prefers_the_visuals_role_over_prose():
     with cw_testlib.temp_home() as home, tempfile.TemporaryDirectory() as tmp:
         with cw_testlib.StubLLM({}) as stub:
@@ -611,7 +641,7 @@ def test_fresh_rebuilds_a_done_run_and_keeps_user_state():
         params = {"repo": str(repo), "base": base, "head": head, "target": "t", "slug": "t"}
         d, _meta, _reused = cw_run.prepare_walkthrough(params)
         cw_store.update_meta(d, lambda m: m.update({"status": "done"}))
-        gone = ("analysis.json", "visuals.json", "structure.json")
+        gone = ("analysis.json", "visuals.json")
         kept = ("qa.jsonl", "page-notes.json", "threads.json", "state.json")
         for name in gone + kept:
             (d / name).write_text("{}")
