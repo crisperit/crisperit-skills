@@ -1,4 +1,4 @@
-# crisperit-skills
+# crisperity-skills
 
 Agent skills I use on real work, packaged so you can install them. One so far,
 code-walkthrough.
@@ -8,9 +8,9 @@ code-walkthrough.
 Turns a diff, a PR, or a part of the codebase you want explained into a page
 you read top down, from the big picture to the exact lines.
 
-[![Scrolling through a walkthrough of lazygit PR #5702](docs/demo/walkthrough.gif)](https://crisperit.github.io/crisperit-skills/demo/lazygit-5702.html)
+[![Scrolling through a walkthrough of lazygit PR #5702](docs/demo/walkthrough.gif)](https://crisperity.github.io/crisperity-skills/demo/lazygit-5702.html)
 
-**[Open the live example](https://crisperit.github.io/crisperit-skills/demo/lazygit-5702.html)**,
+**[Open the live example](https://crisperity.github.io/crisperity-skills/demo/lazygit-5702.html)**,
 lazygit PR [#5702](https://github.com/jesseduffield/lazygit/pull/5702), "Make the
 side panels configurable": 30 files, +1008 -179, one `/code-walkthrough` run.
 Click any diff line to leave a comment.
@@ -43,18 +43,14 @@ already know where it sits.
 2. **The PR in one picture, then one per theme.** The files grouped into three
    to five themes. A model draws one picture of the change and one per theme,
    from real names and numbers in the diff; a docs-only change may get none.
-3. **System change: what does it touch.** The types and functions the diff
-   touched, callers on the left and callees on the right, Parsed from the
-   code at both refs; no model is involved. Go and
-   TypeScript for now.
-4. **Call graph: how far does it reach.** The call graph, under "All symbols", resolved
+3. **Call graph: how far does it reach.** The call graph, under "All symbols", resolved
    by the compiler or a language server, at package and symbol level. That
    shows the blast radius: which new function is called from everywhere and
    which is a leaf.
-5. **Code: the lines, with the reason beside them.** Each file gets a one line
+4. **Code: the lines, with the reason beside them.** Each file gets a one line
    role and each hunk a note on what the code does. Inside a theme, callers
    come before callees.
-6. **Respond: send it back.** Comment on any line. In live mode, Add to
+5. **Respond: send it back.** Comment on any line. In live mode, Add to
    thread sends a comment to the agent; Copy gh command prints the calls to
    post them as PR review comments. The page has no server, so nothing leaves
    it unless you copy it. The page is a local file and only gets hosted if
@@ -112,8 +108,8 @@ graph sections are skipped and the page says so, nothing else changes.
 <summary><strong>Claude Code</strong></summary>
 
 ```
-/plugin marketplace add crisperit/crisperit-skills
-/plugin install crisperit-skills
+/plugin marketplace add crisperity/crisperity-skills
+/plugin install crisperity-skills@crisperity
 ```
 
 </details>
@@ -125,8 +121,8 @@ A skill is a directory with a `SKILL.md` in it, so anything that reads that
 format picks it up.
 
 ```bash
-git clone https://github.com/crisperit/crisperit-skills.git
-cd crisperit-skills
+git clone https://github.com/crisperity/crisperity-skills.git
+cd crisperity-skills
 ./install.sh                            # ~/.claude/skills
 ./install.sh ~/.config/some-harness/skills
 ```

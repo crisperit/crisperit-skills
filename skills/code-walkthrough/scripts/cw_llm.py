@@ -355,7 +355,7 @@ FULL_DISALLOWED = ",".join((
     "Bash(git push:*)", "Bash(rtk git push:*)", "Bash(git -c:*)", "Bash(git --no-pager push:*)",
     "Bash(env:*)", "Bash(*GIT_CONFIG*)", "Bash(gh pr create:*)", "Bash(gh pr review:*)",
     "Bash(gh pr merge:*)", "Bash(gh pr comment:*)", "Bash(gh issue:*)", "Bash(gh api:*)",
-    "mcp__code-walkthrough", "mcp__plugin_crisperit-skills_code-walkthrough",
+    "mcp__code-walkthrough", "mcp__plugin_crisperity-skills_code-walkthrough",
     "WebFetch", "WebSearch",
 ))
 
