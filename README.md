@@ -8,12 +8,13 @@ code-walkthrough.
 Turns a diff, a PR, or a part of the codebase you want explained into a page
 you read top down, from the big picture to the exact lines.
 
-[![Scrolling through a walkthrough of lazygit PR #5702](docs/demo/walkthrough.gif)](https://crisperity.github.io/crisperity-skills/demo/lazygit-5702.html)
+![Scrolling through a walkthrough of lazygit PR #5702](docs/demo/walkthrough.gif)
 
-**[Open the live example](https://crisperity.github.io/crisperity-skills/demo/lazygit-5702.html)**,
-lazygit PR [#5702](https://github.com/jesseduffield/lazygit/pull/5702), "Make the
-side panels configurable": 30 files, +1008 -179, one `/code-walkthrough` run.
-Click any diff line to leave a comment.
+The page above is one `/code-walkthrough` run on lazygit PR
+[#5702](https://github.com/jesseduffield/lazygit/pull/5702), "Make the side
+panels configurable": 30 files, +1008 -179. Select text on it and click Ask to
+question the agent in place; ask it to draw any diagram and it adds one to the
+page.
 
 ```
 /code-walkthrough                          # working tree plus staged changes
@@ -50,27 +51,37 @@ already know where it sits.
 4. **Code: the lines, with the reason beside them.** Each file gets a one line
    role and each hunk a note on what the code does. Inside a theme, callers
    come before callees.
-5. **Respond: send it back.** Comment on any line. In live mode, Add to
-   thread sends a comment to the agent; Copy gh command prints the calls to
-   post them as PR review comments. The page has no server, so nothing leaves
-   it unless you copy it. The page is a local file and only gets hosted if
-   you ask.
+5. **Respond: send it back.** Select any text and click Ask to question the
+   agent in place. It answers in a thread, and can add or replace a block on
+   the page, such as a sequence diagram; the edit is local and Undo removes it.
+   Threads are read-only by default. A proposed task has Hand to my session,
+   which passes it to your own Claude Code. Copy gh command prints the calls
+   to post your comments as PR review comments. Nothing is posted to the PR
+   unless you do it from the page, and the page is a local file that only gets
+   hosted if you ask.
 
-If you work something out in your head on every review that could live on this
-page, open an issue.
+Changed `.md` files and images have a Preview button that swaps the diff for
+the rendered file. If you work something out in your head on every review that
+could live on this page, [open an issue](https://github.com/crisperity/crisperity-skills/issues).
 
 ### What a run costs
 
-The example PR took about 7 minutes and roughly 490k tokens, all on Sonnet
-subagents, in one measured run. The per-hunk reading fans out to parallel
-subagents; the main session only orchestrates, and neither the diff nor the
-page ever enters its context. The graphs come from parsers and take seconds.
+Live mode is the default. On the example PR a build took about 2 minutes and
+149k tokens, and each question you ask adds a few tens of thousands more.
+Without live mode the skill falls back to parallel Sonnet subagents; the same
+PR took about 7 minutes and 490k tokens there. The graphs come from parsers
+and take seconds either way.
 
-Live mode, below, runs the same work through a daemon instead of subagents.
-By default, after running `setup`, that's your own Claude Code: whatever
-account it uses, subscription, API key, or a gateway, and it counts against
-that same account. Point it at any OpenAI-compatible backend instead and it
-bills per token against that backend's own API key.
+Live mode runs through a daemon. By default, after running `setup`, that's
+your own Claude Code: whatever account it uses, subscription, API key, or a
+gateway, and it counts against that same account. Point it at any
+OpenAI-compatible backend instead and it bills per token against that
+backend's own API key.
+
+Live mode sends diff hunks, the files the agent reads and your questions to
+that backend. Only a model on your own machine (Ollama, vLLM) keeps them
+local. Threads can't edit files unless you trust the repo, from the Threads
+panel or `trust.repos` in the config; see `skills/code-walkthrough/references/live.md`.
 
 ### Prerequisites
 
@@ -79,14 +90,9 @@ bills per token against that backend's own API key.
 - `gh`, only to target a PR or post comments
 - optional, for the graphs: `tree-sitter-language-pack`, `go`, or a language
   server, depending on the language. See below.
-- optional, for live mode: installing the plugin registers the MCP server
-  automatically, but still needs one `cw_mcp.py setup` run to write
-  `config.json`; a manual clone needs that same command to register the
-  server too. With `claude` on PATH it writes a working config pointed at
-  your own Claude Code; otherwise it writes a template to point at an
-  OpenAI-compatible backend instead (see
-  `skills/code-walkthrough/references/live.md`). `/code-walkthrough`
-  runs this setup for you when live mode is missing.
+- optional, for live mode: one `python3 skills/code-walkthrough/scripts/cw_mcp.py setup`
+  run after installing. `/code-walkthrough` does it for you when live mode is
+  missing. Details in `skills/code-walkthrough/references/setup.md`.
 
 ### Language support
 
@@ -94,13 +100,16 @@ Everything built from the diff itself works in any language: the grouping and
 reading order, the annotated walkthrough, per-line comments and the
 pictures.
 
-The graphs have to parse the code. Python, Go, JavaScript and TypeScript need
-nothing installed. `pip install tree-sitter-language-pack` adds the symbol graph
-for Rust, Java, Ruby, Kotlin, Swift, Scala, C, C++, C#, PHP, Lua, Elixir and
-Julia. The interactive symbol level graph on the page needs more: `go` on
-PATH for Go, or `pyright-langserver`, `typescript-language-server` or
-`rust-analyzer` for Python, TypeScript and Rust. Where a parser is missing the
-graph sections are skipped and the page says so, nothing else changes.
+The graphs have to parse the code:
+
+| Language | What you need |
+|---|---|
+| Python, Go, JavaScript, TypeScript | nothing |
+| Rust, Java, Ruby, Kotlin, Swift, Scala, C, C++, C#, PHP, Lua, Elixir, Julia | `pip install tree-sitter-language-pack` |
+| Interactive symbol graph | `go` for Go; `pyright-langserver`, `typescript-language-server` or `rust-analyzer` for Python, TypeScript, Rust |
+
+Where a parser is missing the graph sections are skipped and the page says so,
+nothing else changes.
 
 ## Install
 
