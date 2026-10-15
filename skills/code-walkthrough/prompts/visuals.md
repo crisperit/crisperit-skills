@@ -90,9 +90,8 @@ The page scales the SVG to the screen: a 720-wide viewBox on a phone shrinks 12p
 ## Sequence diagrams
 
 Use a sequence when order across 3+ actors matters (request/response, async callback, approval
-round trip); use a flow when there is branching. Group pictures only, SVG, never mermaid: at most
-4 participants (labels 12 characters or fewer), viewBox 400 to 480 wide, at most 8 messages; boxes
-on top, dashed lifelines, arrows 30px apart, labels above, dashed returns.
+round trip); use a flow when there is branching. SVG, never mermaid: boxes on top, dashed lifelines, arrows 30px apart, labels above, dashed
+returns. A picture wider than 480 sets `style='min-width:<viewBox width>px'` to scroll sideways on a phone.
 
 ## What the page accepts
 

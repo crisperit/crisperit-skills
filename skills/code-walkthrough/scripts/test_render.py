@@ -684,6 +684,7 @@ const cases = [
   ['prose', 'added prose after this block', 'replaced this block with prose'],
   ['list', 'added a list after this block', 'replaced this block with a list'],
   ['mermaid', 'added a diagram after this block', 'replaced this block with a diagram'],
+  ['picture', 'added a diagram after this block', 'replaced this block with a diagram'],
   ['other', 'added a block after this block', 'replaced this block with a block'],
 ];
 for (const [type, ins, rep] of cases) {
@@ -721,7 +722,9 @@ const blockEl = mk('p', '', 'block'); root.append(blockEl);
 const blockIndex = () => ({byKey: new Map([['k1', blockEl]]), list: []});
 const threads = new Map([['t1', {turns: [{anchors: [{kind: 'block', quote: 'zzz'}]}]}]]);
 let bad = false;
-global.DOMParser = class { parseFromString(s) { return {querySelector: () => bad ? {} : null, documentElement: mk('svg', 'cw-ov', s)}; } };
+global.DOMParser = class { parseFromString(s, type) {
+  if (type === 'text/html') return {body: {childNodes: [mk('svg', 'cw-pic', s)]}};
+  return {querySelector: () => bad ? {} : null, documentElement: mk('svg', 'cw-ov', s)}; } };
 global.document = {importNode: n => n, createElement: t => mk(t)};
 const eq = (a, b, m) => { if (a !== b) throw new Error(m + ': ' + JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
 """
@@ -742,6 +745,16 @@ eq(!!wrap.find(k => k.tag === 'svg'), true, 'svg');
 bad = true;
 const broken = pageEditContent({type: 'graph', graph: {title: 't'}, svg: 'oops'});
 eq(!!broken.find(k => k.cls.has('cw-pageedit-err')) && !broken.find(k => k.tag === 'svg'), true, 'guard');
+""")
+
+
+def test_page_edit_picture_block_renders_its_title_and_parsed_html_in_a_cw_vis_wrapper():
+    _node(_page_edit_script() + """
+const box = pageEditContent({type: 'picture', title: 'Shape <i>', html: '<svg/>'});
+const wrap = box.find(k => k.cls.has('cw-vis'));
+eq(!!wrap, true, 'wrap');
+eq(wrap.find(k => k.cls.has('cw-ov-sub')).textContent, 'Shape <i>', 'title');
+eq(!!wrap.find(k => k.tag === 'svg'), true, 'svg');
 """)
 
 

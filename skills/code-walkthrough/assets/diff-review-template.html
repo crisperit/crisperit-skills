@@ -4251,6 +4251,14 @@
           box.append(w);
         }
       }
+      else if(b&&b.type==='picture'){
+        const w=mk('div','cw-vis');
+        const title=String(b.title||'');
+        if(title) w.append(mk('p','cw-ov-sub',title));
+        const doc=new DOMParser().parseFromString(String(b.html||''),'text/html');
+        for(const n of [...doc.body.childNodes]) w.append(document.importNode(n,true));
+        box.append(w);
+      }
       else if(b&&b.type==='list') box.append(mdEl(text.split('\n').map(l=>/^\s*([-*]|\d+\.)\s/.test(l)?l:'- '+l.trim()).join('\n')));
       else box.append(mdEl(text));
       return box;
@@ -4349,7 +4357,7 @@
     }
 
     function pageEditWhat(p){
-      const noun={prose:'prose',list:'a list',mermaid:'a diagram',graph:'a diagram'}[(p.block||{}).type]||'a block';
+      const noun={prose:'prose',list:'a list',mermaid:'a diagram',graph:'a diagram',picture:'a diagram'}[(p.block||{}).type]||'a block';
       return p.op==='replace'?'replaced this block with '+noun:'added '+noun+' after this block';
     }
 
