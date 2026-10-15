@@ -510,7 +510,7 @@ def test_reply_is_not_an_allowed_tool_of_a_turn():
                             add_dir="/d", session_id="u")
     assert not any("walkthrough_reply" in a and not a.startswith("--disallowedTools=") for a in full)
     disallowed = next(a for a in full if a.startswith("--disallowedTools=")).split("=", 1)[1].split(",")
-    assert "mcp__code-walkthrough" in disallowed and "mcp__plugin_crisperit-skills_code-walkthrough" in disallowed
+    assert "mcp__code-walkthrough" in disallowed and "mcp__plugin_crisperity-skills_code-walkthrough" in disallowed
 
 
 def test_full_argv_is_pinned():

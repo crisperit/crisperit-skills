@@ -64,8 +64,8 @@ ANALYSIS = {
 }
 
 LINKS = {
-    "repo_url": "https://github.com/crisperit/crisperit-skills",
-    "pr_url": "https://github.com/crisperit/crisperit-skills/pull/482",
+    "repo_url": "https://github.com/crisperity/crisperity-skills",
+    "pr_url": "https://github.com/crisperity/crisperity-skills/pull/482",
     "head_sha": "4b7a0f1",
     "head_pushed": True,
 }
