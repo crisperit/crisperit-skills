@@ -23,7 +23,7 @@ OVERVIEW_BLOB_MAX_CHARS: a short one needs no structure, so this gates the wall-
 case, not sentence count or the presence of bullets.
 With --rendered, also checks the produced recap mentions every file path.
 
-Schema (see code-walkthrough/SKILL.md step 2):
+Schema (see code-walkthrough/references/static.md step 2):
 
   {
     "target": "master...HEAD",

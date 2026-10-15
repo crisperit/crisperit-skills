@@ -736,3 +736,12 @@ def test_real_symdelta_never_asks_for_calls_or_writes_model_file():
     assert "calls" not in stub.requests[0]["tools"][-1]["function"]["parameters"]["properties"]
     assert "also submit `calls`" not in cw_testlib.last_user_text(stub.requests[0])
     assert model is None
+
+
+def test_full_clean_keeps_context_json():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "context.json").write_text("{}")
+        (d / "analysis.json").write_text("{}")
+        cw_run._full_clean(d, {}, d)
+        assert (d / "context.json").exists() and not (d / "analysis.json").exists()

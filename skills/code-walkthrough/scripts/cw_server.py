@@ -32,6 +32,7 @@ import cw_agent  # noqa: E402
 import cw_ask  # noqa: E402
 import cw_llm  # noqa: E402
 import cw_repo  # noqa: E402
+import render  # noqa: E402
 import cw_run  # noqa: E402  direct, not the runner seam: /post's gh-facing calls (notes.py
 import cw_store  # noqa: E402
 import cw_task  # noqa: E402
@@ -414,8 +415,64 @@ def _threads_part(d, meta):
 REPLY_CAP = 4000
 
 
+def render_page(daemon, d, meta, key, wid):
+    """Re-render the final page and bump rev. (meta2, None) on success; (None, stderr tail)
+    after marking the walkthrough failed when the render gate rejects."""
+    render_args = ["render", "--dir", str(d), "--slug", meta["slug"]]
+    if meta.get("title"):
+        render_args += ["--title", meta["title"]]
+    render_result = subprocess.run(
+        [sys.executable, str(cw_run.SCRIPTS_DIR / "pipeline.py"), *render_args],
+        capture_output=True, text=True)
+    if render_result.returncode != 0:
+        gate_lines = [line for line in render_result.stderr.splitlines() if line.strip()]
+        cw_store.update_meta(d, lambda m: m.update({"status": "failed", "gate": gate_lines}))
+        daemon.hub.emit(key, wid, "step", {"name": "render", "status": "failed", "error": gate_lines})
+        return None, render_result.stderr.strip()[-500:]
+    return cw_store.update_meta(d, lambda m: m.update(
+        {"page": "final", "rev": m.get("rev", 0) + 1})), None
+
+
+CONTEXT_CAP = 16 * 1024
+
+
+def _clean_context_arg(context):
+    try:
+        too_big = not isinstance(context, dict) or len(json.dumps(context)) > CONTEXT_CAP
+    except (ValueError, RecursionError):
+        too_big = True
+    if too_big:
+        raise cw_store.CWError(f"context must be an object of at most {CONTEXT_CAP} characters")
+    clean, problems = render.clean_context(context)
+    if clean is None:
+        raise cw_store.CWError("context has nothing usable: " + "; ".join(problems[:5]),
+                               remedy="see prompts/context.md for the shape")
+    return clean
+
+
+def _write_context(daemon, key, wid, d, clean):
+    with cw_store.dir_lock(d):
+        cw_store.write_json(d / "context.json", clean)
+        meta = cw_store.read_meta(d) or {}
+        if meta.get("status") != "done" or meta.get("page") != "final":
+            return
+        meta2, error = render_page(daemon, d, meta, key, wid)
+    if error:
+        raise cw_store.CWError("context saved but the page did not re-render: " + error)
+    daemon.hub.emit(key, wid, "rebuilt", {"rev": meta2["rev"], "page": "final", "fragments": []})
+
+
 def _tool_walkthrough_reply(daemon, args):
-    key, wid, d, _meta = _open_walkthrough(args)
+    key, wid, d, meta = _open_walkthrough(args)
+    context = args.get("context")
+    clean = None if context is None else _clean_context_arg(context)
+    if clean is not None and meta.get("explain"):
+        raise cw_store.CWError("ticket context is off in explain mode")
+    if clean is not None and meta.get("sibling_of"):
+        raise cw_store.CWError(SIBLING_NO_PUBLISH["error"], remedy=SIBLING_NO_PUBLISH["remedy"])
+    if clean is not None and args.get("text") is None and args.get("thread_id") is None:
+        _write_context(daemon, key, wid, d, clean)
+        return {"ok": True}
     text = args.get("text")
     if not isinstance(text, str) or not text.strip() or len(text) > REPLY_CAP:
         raise cw_store.CWError(f"text must be 1 to {REPLY_CAP} characters")
@@ -435,6 +492,10 @@ def _tool_walkthrough_reply(daemon, args):
               "started_at": now, "finished_at": now,
               "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": None}}
     result = {"ok": True, "qid": record["qid"]}
+    if clean is not None and oid is not None:
+        cw_ask.check_handed(d, oid, tid)
+    if clean is not None:
+        _write_context(daemon, key, wid, d, clean)
     if oid is None:
         cw_ask._append_qa(d, record)
         emit("thread", {"kind": "turn", "record": record})
@@ -490,6 +551,7 @@ _QA_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/qa$")
 _POST_PREVIEW_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post/preview$")
 _POST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/post$")
 _TRIAGE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/triage$")
+_TICKET_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/ticket$")
 _TRUST_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/trust$")
 _PUBLISH_ONE_RE = re.compile(r"^/api/walkthrough/([^/]+)/([^/]+)/publish-one$")
 _OID_RE = re.compile(r"^o-[0-9a-f]{8}$")
@@ -674,6 +736,9 @@ class _Handler(BaseHTTPRequestHandler):
         m = _TRIAGE_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_triage(m.group(1), m.group(2)))
+        m = _TICKET_RE.match(path)
+        if m:
+            return self._tracked(lambda: self._route_ticket(m.group(1), m.group(2)))
         m = _TRUST_RE.match(path)
         if m:
             return self._tracked(lambda: self._route_trust(m.group(1), m.group(2)))
@@ -1048,6 +1113,43 @@ class _Handler(BaseHTTPRequestHandler):
         agent = _agent_payload(meta, d)
         self.server.cw_daemon.hub.emit(key, wid, "agent", agent)
         self._send_json(200, {"agent": agent})
+
+    def _route_ticket(self, key, wid):
+        if not self._check_host() or not self._check_token_header() or not self._check_origin():
+            return
+        raw, too_big = self._read_body()
+        if too_big:
+            return
+        d = self._resolve_dir(key, wid, json_errors=True)
+        if d is None:
+            return
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            self._send_json(400, {"error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "body must be an object"})
+            return
+        value = payload.get("value")
+        value = value.strip() if isinstance(value, str) else ""
+        if not cw_ask.TICKET_VALUE_RE.fullmatch(value):
+            self._send_json(400, {"error": "value must be a ticket URL or key",
+                                  "remedy": "paste an http(s) URL, or a key like AO-82, #123 or owner/repo#123"})
+            return
+        if self._sibling_refusal(d):
+            return
+        daemon = self.server.cw_daemon
+        if daemon.is_running(d):
+            self._send_json(409, {"error": STILL_BUILDING_MSG})
+            return
+        with cw_store.dir_lock(d):
+            if (cw_store.read_meta(d) or {}).get("explain"):
+                self._send_json(409, {"error": "ticket context is off in explain mode"})
+                return
+            emit = lambda ev, data: daemon.hub.emit(key, wid, ev, data)  # noqa: E731
+            result = cw_ask.hand_ticket(d, value, emit)
+        self._send_json(200, result)
 
     def _route_triage(self, key, wid):
         if not self._check_host() or not self._check_token_header() or not self._check_origin():
@@ -1765,22 +1867,7 @@ class _Handler(BaseHTTPRequestHandler):
         return {"id": note["id"], "gh_url": info.get("gh_url")}
 
     def _render_page(self, d, meta, key, wid):
-        """Re-render the final page and bump rev. (meta2, None) on success; (None, stderr tail)
-        after marking the walkthrough failed when the render gate rejects."""
-        render_args = ["render", "--dir", str(d), "--slug", meta["slug"]]
-        if meta.get("title"):
-            render_args += ["--title", meta["title"]]
-        render_result = subprocess.run(
-            [sys.executable, str(cw_run.SCRIPTS_DIR / "pipeline.py"), *render_args],
-            capture_output=True, text=True)
-        if render_result.returncode != 0:
-            gate_lines = [line for line in render_result.stderr.splitlines() if line.strip()]
-            cw_store.update_meta(d, lambda m: m.update({"status": "failed", "gate": gate_lines}))
-            self.server.cw_daemon.hub.emit(key, wid, "step",
-                                           {"name": "render", "status": "failed", "error": gate_lines})
-            return None, render_result.stderr.strip()[-500:]
-        return cw_store.update_meta(d, lambda m: m.update(
-            {"page": "final", "rev": m.get("rev", 0) + 1})), None
+        return render_page(self.server.cw_daemon, d, meta, key, wid)
 
     @staticmethod
     def _drop_from_page_notes(d, delivered_ids):

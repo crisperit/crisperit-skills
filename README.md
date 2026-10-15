@@ -60,7 +60,7 @@ already know where it sits.
    unless you do it from the page, and the page is a local file that only gets
    hosted if you ask.
 
-Changed `.md` files and images have a Preview button that swaps the diff for
+Changed `.md` files and images have a Diff | Preview switch that swaps the diff for
 the rendered file. If you work something out in your head on every review that
 could live on this page, [open an issue](https://github.com/crisperity/crisperity-skills/issues).
 

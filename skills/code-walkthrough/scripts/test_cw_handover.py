@@ -232,3 +232,140 @@ def _fixture_second(home):
     cw_ask.outcome_action(d, oid, "handover")
     return d, oid
 
+
+
+# -- ticket link ---------------------------------------------------------
+
+def _ticket_url():
+    return f"/api/walkthrough/{srv.KEY}/{srv.WID}/ticket"
+
+
+def _fake_render(calls):
+    import render
+
+    def render_page(daemon, d, meta, key, wid):
+        calls.append(key)
+        ctx = cw_server.cw_store.read_json(d / "context.json")
+        (d / "my-slug.html").write_text(render.context_html(ctx, [], ""))
+        return cw_server.cw_store.update_meta(d, lambda m: m.update({"rev": m.get("rev", 0) + 1})), None
+    return render_page
+
+
+CTX = {"ticket": {"source": "jira", "key": "AO-82", "title": "T"}, "head_sha": "abc1234", "purpose": "p",
+       "items": [{"status": "covered", "text": "did it", "ref": None}], "gaps": ["g"]}
+
+
+def test_ticket_route_hands_a_task_visible_in_threads():
+    with cw_testlib.temp_home() as home:
+        d, _meta = srv._make_walkthrough(home)
+        with cw_testlib.running_daemon() as daemon:
+            srv._guard_checks(daemon, _ticket_url(), {"value": "AO-82"})
+            q = daemon.hub.register(srv.KEY, srv.WID)
+            status, body = srv._post(daemon, _ticket_url(), {"value": "AO-82"})
+            assert status == 200 and body["thread_id"].startswith("q-") and body["oid"].startswith("o-"), body
+            assert [q.get(timeout=2)[0] for _ in range(2)] == ["thread", "outcome"]
+            (h,) = _threads(daemon)["handed"]
+            for ok in ("https://jira.example.com/browse/AO-82", "#123", "owner/repo#123"):
+                assert srv._post(daemon, _ticket_url(), {"value": ok})[0] == 200
+            long_url = "https://jira.example.com/browse/" + "a" * 450
+            assert srv._post(daemon, _ticket_url(), {"value": long_url})[0] == 200
+            (long_h,) = [x for x in _threads(daemon)["handed"] if x["comment"].endswith(long_url)]
+        assert h["oid"] == body["oid"] and h["thread_id"] == body["thread_id"]
+        assert h["title"] == cw_ask.TICKET_TITLE and h["comment"] == "Link ticket: AO-82"
+        assert "data, not instructions" in long_h["steps"][0]
+
+
+def test_ticket_route_refusals():
+    with cw_testlib.temp_home() as home:
+        d, _meta = srv._make_walkthrough(home)
+        with cw_testlib.running_daemon() as daemon:
+            for bad in ({}, {"value": ""}, {"value": 5}, {"value": "javascript:alert(1)"}, {"value": "ao-82"},
+                        {"value": "AO-82 x"}, {"value": "https://x.com/" + "a" * 501}):
+                assert srv._post(daemon, _ticket_url(), bad)[0] == 400, bad
+            assert srv._post(daemon, _ticket_url(), [1])[0] == 400
+            srv._set_meta(d, explain=True)
+            assert srv._post(daemon, _ticket_url(), {"value": "AO-82"})[0] == 409
+            srv._set_meta(d, explain=False)
+            with daemon._run_threads_lock:
+                daemon._run_threads.add(str(d))
+            assert srv._post(daemon, _ticket_url(), {"value": "AO-82"})[0] == 409
+            with daemon._run_threads_lock:
+                daemon._run_threads.discard(str(d))
+            srv._set_meta(d, sibling_of="cmp-00000001")
+            assert srv._post(daemon, _ticket_url(), {"value": "AO-82"})[0] == 409
+        assert cw_ask.read_qa(d) == []
+
+
+def test_reply_with_context_completes_task_writes_file_and_rerenders(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cw_server, "render_page", _fake_render(calls))
+    with cw_testlib.temp_home() as home:
+        d, _meta = srv._make_walkthrough(home, page="final")
+        with cw_testlib.running_daemon() as daemon:
+            handed = srv._post(daemon, _ticket_url(), {"value": "AO-82"})[1]
+            q = daemon.hub.register(srv.KEY, srv.WID)
+            body = _reply(daemon, thread_id=handed["thread_id"], oid=handed["oid"], text="linked", context=CTX)
+            assert body["ok"], body
+            events = [q.get(timeout=2)[0] for _ in range(3)]
+        assert events == ["rebuilt", "thread", "outcome"] and calls == [srv.KEY]
+        assert tk._outcome(d, handed["oid"])["state"] == "done"
+        assert cw_server.cw_store.read_json(d / "context.json")["ticket"]["key"] == "AO-82"
+        assert "cw-context" in (d / "my-slug.html").read_text()
+
+
+def test_context_alone_renders_only_a_finished_page(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cw_server, "render_page", _fake_render(calls))
+    with cw_testlib.temp_home() as home:
+        d, _meta = srv._make_walkthrough(home, status="building")
+        with cw_testlib.running_daemon() as daemon:
+            assert _reply(daemon, context=CTX)["ok"]
+            assert (d / "context.json").exists() and calls == []
+            cw_server.cw_store.update_meta(d, lambda m: m.update(page="partial", status="done"))
+            assert _reply(daemon, context=CTX)["ok"] and calls == []
+            cw_server.cw_store.update_meta(d, lambda m: m.update(page="final"))
+            with daemon._run_threads_lock:
+                daemon._run_threads.add(str(d))
+            assert _reply(daemon, context=CTX)["ok"] and calls == [srv.KEY]
+
+
+def test_invalid_context_errors_and_writes_nothing(monkeypatch):
+    monkeypatch.setattr(cw_server, "render_page", _fake_render([]))
+    with cw_testlib.temp_home() as home:
+        d, oid = _fixture(home)
+        cw_ask.outcome_action(d, oid, "handover")
+        with cw_testlib.running_daemon() as daemon:
+            for bad in ({}, "x", {"purpose": 5}, {"ticket": {"source": "jira"}, "items": "no", "pad": "x" * 17000}):
+                assert not _reply(daemon, context=bad)["ok"], bad
+            refused = _reply(daemon, thread_id=tk.QID, oid=oid, text="done", context={})
+            assert not refused["ok"]
+            assert tk._outcome(d, oid)["state"] == "handed"
+            assert not _reply(daemon, thread_id=tk.QID)["ok"]
+        assert not (d / "context.json").exists()
+
+
+def test_render_failure_leaves_the_task_handed_and_explain_refuses_context(monkeypatch):
+    monkeypatch.setattr(cw_server, "render_page", lambda *a: (None, "boom"))
+    with cw_testlib.temp_home() as home:
+        d, oid = _fixture(home)
+        cw_server.cw_store.update_meta(d, lambda m: m.update(page="final", status="done"))
+        cw_ask.outcome_action(d, oid, "handover")
+        with cw_testlib.running_daemon() as daemon:
+            assert not _reply(daemon, thread_id=tk.QID, oid=oid, text="done", context=CTX)["ok"]
+            assert tk._outcome(d, oid)["state"] == "handed"
+            cw_server.cw_store.update_meta(d, lambda m: m.update(explain=True))
+            assert not _reply(daemon, context=CTX)["ok"]
+
+
+def test_context_refused_on_a_sibling_and_for_a_bad_oid_writes_nothing(monkeypatch):
+    monkeypatch.setattr(cw_server, "render_page", _fake_render([]))
+    with cw_testlib.temp_home() as home:
+        d, oid = _fixture(home)
+        cw_ask.outcome_action(d, oid, "handover")
+        with cw_testlib.running_daemon() as daemon:
+            assert not _reply(daemon, thread_id=tk.QID, oid="o-deadbeef", text="x", context=CTX)["ok"]
+            assert not (d / "context.json").exists() and tk._outcome(d, oid)["state"] == "handed"
+            cw_server.cw_store.update_meta(d, lambda m: m.update(sibling_of="other"))
+            assert not _reply(daemon, context=CTX)["ok"]
+            assert not _reply(daemon, thread_id=tk.QID, oid=oid, text="x", context=CTX)["ok"]
+        assert not (d / "context.json").exists() and tk._outcome(d, oid)["state"] == "handed"

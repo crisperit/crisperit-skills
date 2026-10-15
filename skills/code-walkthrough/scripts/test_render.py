@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cw_server  # noqa: E402
 from cw_testlib import require_node, skip  # noqa: E402
 from render import (  # noqa: E402
-    render_html, load_visuals, counts_from, overview_layout, overview_svg,
+    render_html, load_visuals, clean_context, context_html, counts_from, overview_layout, overview_svg,
     visuals_mod,
     CONTENT_PLACEHOLDER, TITLE_PLACEHOLDER,
 )
@@ -1325,7 +1325,7 @@ def test_template_has_a_delegated_overview_handler_and_no_html_sink_in_it():
     template = _real_template()
     script = template.split("</script>")[-2]
 
-    assert "'.cw-ov-node,.cw-ov-chip'" in script and "document.addEventListener('click',jump)" in script
+    assert "'.cw-ov-node,.cw-ov-chip,.cw-ctx-ref'" in script and "document.addEventListener('click',jump)" in script
     assert "window.__cwGoToFile(t.dataset.path)" in script and "window.__cwGoToFile=navGoToFile" in template
     for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "onclick="):
         assert banned not in script, banned
@@ -1354,31 +1354,103 @@ def test_overview_svg_is_namespaced_svg_for_domparser():
 
 
 def test_file_preview_button_toggles_the_diff_and_renders_markdown_once():
-    fn = _between(_real_template(), "function wireFilePreview(btn){", "\ndocument.querySelectorAll('details.hunk .hunk-preview')")
+    fn = _between(_real_template(), "function wireFilePreview(sw){", "\ndocument.querySelectorAll('details.hunk .hunk-mode')")
     script = f"""
-const cls=new Set(), attrs={{}}; let handler, rendered=0, last, kids=[];
+const cls=new Set(); let handler, rendered=0, kids=[], stopped=0;
 const pbody={{get firstChild(){{return kids[0]||null}}, append(x){{kids.push(x)}}}};
 const tpl={{content:{{textContent:'# Hi'}}}};
 const det={{classList:{{contains:c=>cls.has(c), toggle:(c,on)=>on?cls.add(c):cls.delete(c)}},
   querySelector:s=>s==='.cw-preview-body'?pbody:s==='template.cw-md-src'?tpl:null}};
-const btn={{closest:()=>det, setAttribute:(k,v)=>{{attrs[k]=v}}, addEventListener:(_,h)=>{{handler=h}}}};
+const mk=m=>{{const b={{dataset:{{mode:m}}, pressed:null, setAttribute:(k,v)=>{{b.pressed=v}}}}; b.closest=()=>b; return b}};
+const bd=mk('diff'), bp=mk('preview');
+const sw={{closest:()=>det, querySelectorAll:()=>[bd,bp], addEventListener:(_,h)=>{{handler=h}}}};
 const window={{__cwMdEl:t=>{{rendered++; return t}}}};
-function wireFilePreview(btn){{{fn}
-wireFilePreview(btn);
-const click=()=>handler({{preventDefault(){{}},stopPropagation(){{}}}});
-click();
-if(!cls.has('cw-previewing')||attrs['aria-pressed']!=='true'||kids[0]!=='# Hi') throw new Error('on');
-click();
-if(cls.has('cw-previewing')||attrs['aria-pressed']!=='false') throw new Error('off');
-click();
+function wireFilePreview(sw){{{fn}
+wireFilePreview(sw);
+const click=b=>handler({{target:b, preventDefault(){{}}, stopPropagation(){{stopped++}}}});
+click(bp);
+if(!cls.has('cw-previewing')||bp.pressed!=='true'||bd.pressed!=='false'||kids[0]!=='# Hi') throw new Error('on');
+click(bd);
+if(cls.has('cw-previewing')||bp.pressed!=='false'||bd.pressed!=='true') throw new Error('off');
+click(bp);
 if(rendered!==1) throw new Error('rendered '+rendered);
+if(stopped!==3) throw new Error('stopPropagation '+stopped);
 """
     _node(script)
 
 
+def _ctx_link_fn():
+    return _between(_real_template(), "function wireCtxLink(form){", "\ndocument.querySelectorAll('form.cw-ctx-link')")
+
+
+def _ctx_link_script(live, clipboard=True):
+    return f"""
+const mkEl=()=>({{value:'', textContent:'', disabled:false, classList:{{toggle(){{}}}}, select(){{}}}});
+const input=mkEl(), btn=mkEl(), msg=mkEl(); let submit; const posts=[], copied=[], opened=[];
+const form={{querySelector:s=>s==='.cw-ctx-input'?input:s==='.cw-ctx-submit'?btn:msg, addEventListener:(_,h)=>{{submit=h}}}};
+const fact={{querySelector:s=>s==='b'?{{textContent:'Target'}}:{{textContent:'feat/x vs main'}}}};
+const range=[]; const document={{querySelectorAll:()=>[fact], createRange:()=>({{selectNodeContents:n=>range.push(n)}})}};
+const navigator={{clipboard:{'{writeText:t=>{copied.push(t);return Promise.resolve()}}' if clipboard else 'null'}}};
+const fetch=(u,o)=>{{posts.push([u,o]);return Promise.resolve({{ok:true,json:()=>Promise.resolve({{thread_id:'t1'}})}})}};
+const window={{{'CW_LIVE:{api:"/api",token:"tok"},' if live else ''}__cwOpenThread:t=>opened.push(t), getSelection:()=>({{removeAllRanges(){{}}, addRange(){{}}}})}};
+function wireCtxLink(form){{{_ctx_link_fn()}
+wireCtxLink(form);
+const go=async v=>{{input.value=v; submit({{preventDefault(){{}}}}); await new Promise(r=>setTimeout(r,0));}};
+"""
+
+
+def test_ctx_link_live_posts_the_value_and_opens_the_thread():
+    _node(_ctx_link_script(True) + """
+(async()=>{
+await go('  AO-82 ');
+if(posts.length!==1||posts[0][0]!=='/api/ticket'||posts[0][1].headers['X-CW-Token']!=='tok') throw new Error('post');
+if(JSON.parse(posts[0][1].body).value!=='AO-82') throw new Error('value');
+if(opened[0]!=='t1'||!msg.textContent.startsWith('Handed to your Claude Code session')) throw new Error('open');
+if(input.value!==''||!btn.disabled) throw new Error('input not cleared or button re-enabled');
+
+})().catch(e=>{console.error(e);process.exit(1)});
+""")
+
+
+def test_ctx_link_static_copies_a_prompt_and_never_posts():
+    _node(_ctx_link_script(False) + """
+(async()=>{
+if(btn.textContent!=='Copy prompt') throw new Error('label');
+await go('AO-82');
+if(posts.length||copied.length!==1) throw new Error('static');
+if(!copied[0].includes('Link ticket AO-82')||!copied[0].includes('feat/x vs main')) throw new Error(copied[0]);
+})().catch(e=>{console.error(e);process.exit(1)});
+""")
+
+
+def test_ctx_link_live_empty_value_is_not_posted():
+    _node(_ctx_link_script(True) + """
+(async()=>{
+await go('   ');
+if(posts.length) throw new Error('empty value posted');
+})().catch(e=>{console.error(e);process.exit(1)});
+""")
+
+
+def test_ctx_link_static_copy_failure_shows_the_prompt_and_keeps_the_input():
+    _node(_ctx_link_script(False, clipboard=False) + """
+(async()=>{
+await go('AO-82');
+if(input.value!=='AO-82') throw new Error('input overwritten');
+if(!msg.textContent.includes('Link ticket AO-82')||range[0]!==msg) throw new Error(msg.textContent);
+})().catch(e=>{console.error(e);process.exit(1)});
+""")
+
+
+def test_ctx_link_never_uses_html_injection():
+    fn = _ctx_link_fn()
+    for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML"):
+        assert banned not in fn
+
+
 def test_file_preview_uses_the_safe_renderer_and_never_html_injection():
     template = _real_template()
-    wire = _between(template, "function wireFilePreview(btn){", "\ndocument.querySelectorAll('details.hunk .hunk-preview')")
+    wire = _between(template, "function wireFilePreview(sw){", "\ndocument.querySelectorAll('details.hunk .hunk-mode')")
 
     assert "window.__cwMdEl=mdEl;" in template
     for banned in ("innerHTML", "insertAdjacentHTML", "outerHTML"):
@@ -1453,3 +1525,90 @@ eq(pAccess.hidden, true, 'missing agent hidden');
     tpl = _real_template()
     assert "postJson('/trust'" in tpl and "confirm(" in tpl and "window.__cwOnAgent=paintAccess" in tpl
     assert "['delta','progress','outcome','agent']" in tpl
+
+
+CTX_EVIL = "<script>alert(1)</script>"
+
+
+def _ctx(**over):
+    raw = {"ticket": {"source": "jira", "key": "AO-82", "title": "T", "status": "In Review",
+                      "found_in": "branch", "url": "https://x.atlassian.net/browse/AO-82"},
+           "head_sha": "abcdef1234", "purpose": "P",
+           "items": [{"status": "covered", "text": "a", "ref": "src/auth.py:41", "note": "n"},
+                     {"status": "missing", "text": "b", "ref": None}], "gaps": ["g"]}
+    raw.update(over)
+    return raw
+
+
+def test_context_escapes_every_field_and_refuses_a_non_http_url():
+    raw = _ctx()
+    raw["ticket"].update(key=CTX_EVIL, title=CTX_EVIL, status=CTX_EVIL, url="javascript:alert(1)")
+    raw["purpose"] = CTX_EVIL
+    raw["items"] = [{"status": "covered", "text": CTX_EVIL, "ref": "src/auth.py:41", "note": CTX_EVIL}]
+    raw["gaps"] = [CTX_EVIL]
+    clean, problems = clean_context(raw)
+    page = html(context=clean)
+
+    assert "<script>" not in page and page.count("&lt;script&gt;") == 7
+    assert "href" not in page.split('id="cw-context"')[1].split("</section>")[0]
+    assert any("ticket.url" in p for p in problems)
+
+
+def test_context_ref_links_only_into_the_diff_and_the_key_opens_in_a_new_tab():
+    clean, _ = clean_context(_ctx(items=[{"status": "covered", "text": "a", "ref": "src/auth.py:41"},
+                                         {"status": "partial", "text": "b", "ref": "gone.py:3"}]))
+    sec = html(context=clean)
+
+    assert 'data-path="src/auth.py" data-line="41"' in sec and 'data-path="gone.py"' not in sec
+    assert "not in diff" in sec
+    assert 'target="_blank" rel="noopener noreferrer">AO-82</a>' in sec
+
+
+def test_context_sits_between_facts_and_overview_and_explain_mode_omits_it():
+    clean, _ = clean_context(_ctx())
+    page = html(context=clean)
+
+    assert page.index('class="facts"') < page.index('id="cw-context"') < page.index("<h2>Overview</h2>")
+    assert "cw-context" not in html(context=clean, explain=True)
+
+
+def test_context_empty_state_is_a_form_with_a_labelled_input_and_a_live_message():
+    page = html()
+
+    assert '<form class="cw-ctx-link">' in page and 'aria-label="Ticket link or key"' in page
+    assert 'class="cw-ctx-submit">Link ticket</button>' in page and 'aria-live="polite"' in page
+
+
+def test_context_clean_drops_bad_items_and_caps_without_losing_the_rest():
+    raw = _ctx(items=[{"status": "bogus", "text": "x"}, {"status": "covered", "text": "y" * 500, "ref": "nocolon"}]
+               + [{"status": "extra", "text": "z"}] * 25, gaps=["g"] * 12)
+    raw["ticket"]["key"] = "K" * 90
+    clean, problems = clean_context(raw)
+
+    assert len(clean["items"]) == 19 and clean["items"][0]["text"] == "y" * 200 and clean["items"][0]["ref"] is None
+    assert len(clean["gaps"]) == 8 and clean["ticket"]["key"] == "K" * 40
+    assert any("items[0]" in p for p in problems)
+    assert clean_context(_ctx(ticket={"source": "bogus", "key": "A-1"}))[0]["ticket"] is None
+    assert clean_context({"items": [{"status": "bogus", "text": "x"}]})[0] is None
+    assert clean_context("nope")[0] is None
+
+
+def test_context_clean_drops_non_string_values_instead_of_raising():
+    clean, problems = clean_context(_ctx(
+        ticket={"source": ["jira"], "key": 5, "found_in": {}},
+        items=[{"status": ["covered"], "text": "a"}, {"status": "covered", "text": 7},
+               {"status": "covered", "text": "ok", "ref": 3}, {"status": "extra", "text": "u", "ref": ["a:1"]}],
+        gaps=[1, None, "g"]))
+    assert clean["ticket"] is None and [i["text"] for i in clean["items"]] == ["ok", "u"]
+    assert all(i["ref"] is None for i in clean["items"]) and clean["gaps"] == ["g"]
+    t, _ = clean_context(_ctx(ticket={"source": "jira", "key": "A-1", "found_in": {}, "url": ["x"]}))
+    assert t["ticket"]["found_in"] is None and t["ticket"]["url"] is None
+
+
+def test_context_stale_line_appears_only_when_the_head_moved():
+    clean, _ = clean_context(_ctx())
+    _order, files = parsed()
+
+    assert "Compared against abcdef1, head is now 9999999" in context_html(clean, files, "9999999aaaa")
+    assert "cw-ctx-stale" not in context_html(clean, files, "abcdef1234567")
+    assert "cw-ctx-stale" not in context_html(clean, files, "")

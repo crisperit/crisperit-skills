@@ -1,13 +1,22 @@
 # Explain mode: the empty baseline, its scope bands, and `<explain>`
 
-Read this at step 1 whenever the target resolved to the empty-baseline row, before `static.md`
+Read this at step 1 whenever the target is explain mode ("explain X", "how does X work"), before `static.md`
 step 2 writes `raw.diff`. SKILL.md carries the decision; the mechanics are here.
+
+## Turning prose into a file list
+
+Nothing downstream reads prose, so "the auth flow" has to become paths before `references/static.md`'s step 2 can start.
+Keep it cheap: grep and glob the repo for the terms the ask names, skim the hits enough to tell
+signal from noise, and propose the file list back to the user in one line, for example "That looks
+like `src/auth/*.go` and `middleware/session.go`, 6 files. Use those?", before spending any
+subagent budget on it. Do not write a new script for this: it is a grep-and-confirm pass, not a
+search feature.
 
 ## The empty baseline
 
 Diff against an empty tree and every line in the named path comes back as an addition, so the
 walkthrough machinery below runs unchanged, one code path, not two. Deciding to use it is also
-deciding the page's mode: every renderer in step 3 takes `<explain>`, and in this mode it is
+deciding the page's mode: every renderer in `references/static.md`'s step 3 takes `<explain>`, and in this mode it is
 `--explain`. The empty tree
 `4b825dc642cb6eb9a060e54bf8d69288fbee4904` cannot be used directly as a diff base: `git merge-base`
 and three-dot both reject it with "is a tree, not a commit". Wrap it in an orphan commit first,

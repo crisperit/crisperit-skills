@@ -50,9 +50,9 @@ def run(name, *args, capture=False):
     )
 
 
-def _run_to_file(name, args, out_path, echo="visuals:"):
+def _run_to_file(name, args, out_path, echo=("visuals:", "context:")):
     """Run a script whose real output is on stdout, saving it to out_path on success. Its
-    stderr lines that start with `echo` (render.py's visuals report) are passed on to stdout."""
+    stderr lines that start with `echo` (render.py's visuals and context reports) are passed on to stdout."""
     result = run(name, *args, capture=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
@@ -216,10 +216,10 @@ def _symdelta_file(d):
 
 
 def _optional_data_flags(d):
-    """render.py's --symdelta/--complexity/--visuals for whichever of the files exist. Passing
+    """render.py's --symdelta/--complexity/--visuals/--context for whichever of the files exist. Passing
     --complexity also turns on the Complexity fact in the facts strip."""
     return [arg for flag, path in (("--symdelta", _symdelta_file(d)), ("--complexity", d / "complexity.json"),
-                                   ("--visuals", d / "visuals.json"))
+                                   ("--visuals", d / "visuals.json"), ("--context", d / "context.json"))
             if path.exists() for arg in (flag, str(path))]
 
 

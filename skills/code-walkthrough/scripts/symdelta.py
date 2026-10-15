@@ -18,7 +18,7 @@ merge-base commit, matching what `base...head` itself diffs; head at its tip) an
 them up, even on failure.
 
 Stdlib only except for shelling out to `git`, the vendored `go` extractor, and (for the LSP tier)
-the relevant language server over raw stdio JSON-RPC. See code-walkthrough/SKILL.md for how this fits
+the relevant language server over raw stdio JSON-RPC. See code-walkthrough/SKILL.md and references/ for how this fits
 the recap flow.
 """
 
@@ -349,7 +349,7 @@ def link_node_modules(repo, worktree_path):
     only valid when package.json/package-lock.json didn't change between base and head, which
     dependency_files_changed() enforces before this is ever called.
 
-    Resolves `repo`: os.symlink embeds `src` verbatim, so a relative repo (e.g. the "." SKILL.md's
+    Resolves `repo`: os.symlink embeds `src` verbatim, so a relative repo (e.g. the "." references/static.md's
     own recap flow passes) would point the worktree's node_modules at itself, not the real one."""
     src = Path(repo).resolve() / "node_modules"
     dst = Path(worktree_path) / "node_modules"
@@ -1072,7 +1072,7 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def is_empty_base(repo, base):
-    """Whether `base` is the empty baseline explain mode diffs against (see SKILL.md). Matched on
+    """Whether `base` is the empty baseline explain mode diffs against (see references/explain-mode.md). Matched on
     the tree, not the commit: the baseline is an orphan commit wrapping the empty tree, so its own
     sha differs per session while the tree is a constant."""
     out = run_git(repo, ["rev-parse", f"{base}^{{tree}}"])
