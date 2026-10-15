@@ -809,6 +809,13 @@ def test_outcome_edit_ok_and_bad_edit_gives_validator_text():
             assert body["outcome"]["state"] == "proposed"
 
 
+def test_outcome_summary_page_edit_titles():
+    def summary(block):
+        return cw_server._outcome_summary({"outcome": "page_edit", "payload": {"op": "replace", "target": "b:p1", "block": block}})
+    assert summary({"type": "picture", "title": "Sketch", "html": "<svg></svg>"})["title"] == "Sketch"
+    assert summary({"type": "graph", "graph": {"title": "Flow"}})["title"] == "Flow"
+
+
 def test_page_edit_revert_reapply_routes():
     with cw_testlib.temp_home() as home:
         d = _outcome_fixture(home)

@@ -292,8 +292,8 @@ On a PR the agent may suggest resolving the GitHub review thread on the commente
 to the pending resolves exactly like the Resolve button, and Submit review still
 previews and posts it. Dismiss tells the agent not to propose it again.
 
-When a comment asks to change what the page shows, the agent may also add or replace a prose, list
-or graph block next to the commented block. A graph block is a node and edge list (up to 12 nodes
+When a comment asks to change what the page shows, the agent may also add or replace a prose, list,
+picture or graph block next to the commented block. A picture block is `{title, html}`, an SVG/HTML fragment rebuilt by `visuals.sanitize_fragment` (24 KB, same allowlist as group pictures), and is the default for any requested diagram. A graph block is a node and edge list (up to 12 nodes
 with `id`, `label`, `kind` and `refs`, up to 16 edges, optional notes) drawn by the same renderer as
 System change, so it looks like the page's own diagram; new edits cannot use mermaid, though old
 mermaid edits still render. The graph has to pass `check_overview`, which measures it in UTF-8 bytes against
@@ -303,7 +303,7 @@ the next turn. Page edits are not offered on diff-line comments.
 
 In `walkthrough_get` threads each outcome carries `summary`: a string for task, github_draft, resolve and
 draft_comments, and an object for a page edit: `{op, target, target_is_oid, type, text}` for prose and
-list blocks, with `title` (the graph's title) in place of `text` for a graph block. `target_is_oid` is
+list blocks, with `title` (the graph's or picture's title) in place of `text` for a graph or picture block. `target_is_oid` is
 true when the edit replaces an earlier edit rather than a page block.
 
 The agent can target a block it was shown or one of its own earlier edits. Each applied edit gets an

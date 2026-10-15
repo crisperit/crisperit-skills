@@ -363,6 +363,8 @@ def _outcome_summary(o):
                "type": _cap(block.get("type"), 40)}
         if block.get("type") == "graph":
             out["title"] = _cap(graph.get("title"), 200)
+        elif block.get("type") == "picture":
+            out["title"] = _cap(block.get("title"), 200)
         else:
             out["text"] = _cap(block.get("text"), 2000)
         return out

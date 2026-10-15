@@ -205,22 +205,26 @@ def test_page_edits_reach_anchor_and_prompt_and_revert_is_guarded():
         _page_edit_outcome(d, "o-00000001", "overview:p1", {"type": "prose", "text": "A"})
         _page_edit_outcome(d, "o-00000002", "o-00000001",
                            {"type": "graph", "graph": {"title": "Flow", "nodes": [], "edges": []}})
+        _page_edit_outcome(d, "o-00000003", "o-00000002",
+                           {"type": "picture", "title": "Sketch", "html": "<svg></svg>"})
         cw_ask.write_turn_anchor(d, "q2", "q1", ANCHOR_BLOCK, "again")
         doc = cw_ask.read_trusted_anchor(d, "q2")
         assert doc["page_edits"] == [{"oid": "o-00000001", "target": "overview:p1", "type": "prose"},
-                                     {"oid": "o-00000002", "target": "o-00000001", "type": "graph"}]
+                                     {"oid": "o-00000002", "target": "o-00000001", "type": "graph"},
+                                     {"oid": "o-00000003", "target": "o-00000002", "type": "picture"}]
         for resumed in (False, True):
             prompt = cw_ask.build_prompt(d, ANCHOR_BLOCK, "more?", thread_id="q1", resumed=resumed)
             assert "Your applied page edits: o-00000001 (replace of block overview:p1, prose)" in prompt
             assert "o-00000002 (replace of block o-00000001, diagram 'Flow')" in prompt
+            assert "o-00000003 (replace of block o-00000002, diagram 'Sketch')" in prompt
             assert "Pass an oid as target" in prompt
         try:
             cw_ask.outcome_action(d, "o-00000001", "revert")
             raise AssertionError("expected conflict")
         except cw_ask.OutcomeError as e:
             assert e.kind == "conflict" and "undo the newer edit first" in e.remedy
-        assert cw_ask.outcome_action(d, "o-00000002", "revert")["state"] == "reverted"
-        assert cw_ask.outcome_action(d, "o-00000001", "revert")["state"] == "reverted"
+        for oid in ("o-00000003", "o-00000002", "o-00000001"):
+            assert cw_ask.outcome_action(d, oid, "revert")["state"] == "reverted"
         assert "your edit o-00000001" in cw_ask._outcome_updates_text(d, "q1")
 
 

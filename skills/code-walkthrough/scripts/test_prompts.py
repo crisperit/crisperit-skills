@@ -29,7 +29,10 @@ def test_comment_prompt_has_outcome_rules():
     text = " ".join((PROMPTS_DIR / "comment.md").read_text().split())
     assert "A suggestion is not an action: the user decides." in text
     assert "`propose_page_edit` once" in text and "at most one edit per target per turn" in text.lower()
-    assert "`graph`" in text and "oid" in text and "mermaid" not in text
+    assert "`graph`" in text and "oid" in text and "mermaid" not in text.lower()
+    assert "`picture`" in text and "sequence" in text
+    for tag in visuals._SVG_KIDS:
+        assert f"<{tag}>" in text, tag
     assert "`propose_github_draft` only when" in text and "`verbatim` true only when the user explicitly says" in text
     assert "A draft is only a proposal" in text
 

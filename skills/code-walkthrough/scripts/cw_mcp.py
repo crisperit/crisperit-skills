@@ -208,13 +208,15 @@ OUTCOME_TOOLS = [
 
 
 PAGE_EDIT_OPS = ("insert_after", "replace")
-PAGE_EDIT_CAPS = {"prose": 4000, "list": 4000, "graph": visuals.OVERVIEW_MAX}
+PAGE_EDIT_CAPS = {"prose": 4000, "list": 4000, "graph": visuals.OVERVIEW_MAX, "picture": visuals.PR_MAX}
 
 OUTCOME_TOOLS.append({
     "name": "propose_page_edit",
     "description": ("Change what the page shows next to the commented block: insert a new block after it or "
                     "replace it. The edit applies at once and the user can undo it. Prose and list blocks are "
-                    "markdown-ish text; a graph block is a diagram in the System change shape; never HTML. "
+                    "markdown-ish text; a graph block is a diagram in the System change shape; a picture block is a "
+                    "sanitised HTML/SVG fragment for any other diagram (sequence, state, ER, class, timeline, "
+                    "flow, table, before/after), never ASCII art. "
                     "One edit per target per turn; a target is a Block key from the message or the oid of "
                     "one of your own earlier edits, which replace swaps out."),
     "inputSchema": {
@@ -226,6 +228,8 @@ OUTCOME_TOOLS.append({
                 "type": "object", "required": ["type"],
                 "properties": {
                     "type": {"enum": list(PAGE_EDIT_CAPS)}, "text": {"type": "string"},
+                    "title": {"type": "string", "maxLength": visuals.TITLE_MAX, "description": "type picture only"},
+                    "html": {"type": "string", "description": "type picture only: the HTML/SVG fragment"},
                     "graph": {
                         "type": "object", "required": ["title", "nodes", "edges"],
                         "description": ("type graph only: {title, nodes: [{id, label, kind, refs}] up to 12, "
@@ -377,16 +381,24 @@ def _check_page_edit(anchor_doc, args, already):
         return "op must be insert_after or replace"
     block = args.get("block")
     if not isinstance(block, dict):
-        return "block must be an object with type and text or graph"
+        return "block must be an object with type and text, graph or picture html"
     cap = PAGE_EDIT_CAPS.get(block.get("type"))
     if cap is None:
-        return "block.type must be prose, list or graph"
+        return "block.type must be prose, list, graph or picture"
     if block["type"] == "graph":
         graph = block.get("graph")
         clean, problems = visuals.check_overview(graph, 0, None)
         if clean is None:
             return "block.graph invalid: " + "; ".join(problems[:3])
         block["graph"] = clean
+    elif block["type"] == "picture":
+        title = " ".join(str(block.get("title") or "").split())
+        if not 1 <= len(title) <= visuals.TITLE_MAX:
+            return f"block.title must be 1 to {visuals.TITLE_MAX} characters"
+        _, problems = visuals.sanitize_fragment(block.get("html"), "pe-", cap)
+        if problems:
+            return "block.html invalid: " + "; ".join(problems)
+        block["title"] = title
     else:
         text = block.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -545,6 +557,13 @@ def _page_edit_payload(args, anchor_doc=None):
         return {"op": args["op"], "target": args["target"],
                 "block": {"type": "graph", "graph": clean,
                           "svg": render.overview_svg(clean, path, mid=uuid.uuid4().hex[:6])}}
+    if block["type"] == "picture":
+        cap = PAGE_EDIT_CAPS["picture"]
+        html, problems = visuals.sanitize_fragment(block["html"], f"pe{uuid.uuid4().hex[:6]}-", cap)
+        if html is None or problems or len(html.encode("utf-8")) > cap:
+            raise ValueError("block.html invalid: " + "; ".join(problems or ["sanitised fragment over the size cap"]))
+        return {"op": args["op"], "target": args["target"],
+                "block": {"type": "picture", "title": block["title"], "html": html}}
     return {"op": args["op"], "target": args["target"],
             "block": {"type": block["type"], "text": block["text"].strip()}}
 

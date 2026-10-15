@@ -353,8 +353,12 @@ def _page_edits_text(d, thread_id):
             continue
         p = o["payload"] or {}
         block = p.get("block") or {}
-        what = (f"diagram '{(block.get('graph') or {}).get('title')}'" if block.get("type") == "graph"
-                else block.get("type"))
+        if block.get("type") == "graph":
+            what = f"diagram '{(block.get('graph') or {}).get('title')}'"
+        elif block.get("type") == "picture":
+            what = f"diagram '{block.get('title')}'"
+        else:
+            what = block.get("type")
         where = "after block" if p.get("op") == "insert_after" else "of block"
         rows.append(f"{o['oid']} ({p.get('op')} {where} {p.get('target')}, {what})")
     if not rows:

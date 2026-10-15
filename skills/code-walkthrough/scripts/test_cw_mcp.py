@@ -183,6 +183,34 @@ def _gedit(graph=GRAPH, **over):
     return _edit(block={"type": "graph", "graph": graph}, **over)
 
 
+SEQ_SVG = (
+    '<svg viewBox="0 0 300 140" role="img" aria-label="Login sequence"><defs><marker id="x" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">'
+    '<path d="M0,0 L6,3 L0,6 z" fill="currentColor"/></marker></defs>'
+    '<text x="10" y="14">Client</text><text x="120" y="14">API</text><text x="230" y="14">DB</text>'
+    '<line x1="20" y1="20" x2="20" y2="130" stroke="currentColor"/>'
+    '<line x1="130" y1="20" x2="130" y2="130" stroke="currentColor"/>'
+    '<line x1="240" y1="20" x2="240" y2="130" stroke="currentColor"/>'
+    '<line x1="20" y1="50" x2="130" y2="50" stroke="currentColor" marker-end="url(#x)"/>'
+    '<line x1="130" y1="90" x2="240" y2="90" stroke="currentColor" marker-end="url(#x)"/></svg>')
+
+
+def _pedit(html=SEQ_SVG, title="Login", **over):
+    return _edit(block={"type": "picture", "title": title, "html": html}, **over)
+
+
+def test_check_page_edit_picture_cases():
+    doc = _page_doc()
+    check = lambda args: cw_mcp.check_outcome(doc, "propose_page_edit", args)
+    assert check(_pedit()) is None
+    for bad in ("<script>alert(1)</script>", '<svg onclick="x()"><rect/></svg>',
+                '<a href="https://x.test">x</a>', "<svg><rect fill='#f00'/></svg>",
+                '<svg><rect style="fill:url(http://x.test/a)"/></svg>', SEQ_SVG + "<!--" + "x" * 24600 + "-->"):
+        assert check(_pedit(bad)).startswith("block.html invalid:"), bad[:40]
+    assert "block.title must be 1 to 80" in check(_pedit(title="  "))
+    assert "block.title must be 1 to 80" in check(_pedit(title="t" * 81))
+    assert "block.html invalid:" in check(_edit(block={"type": "picture", "title": "t"}))
+
+
 def test_check_page_edit_cases():
     doc = _page_doc()
     check = lambda args, d=doc, **kw: cw_mcp.check_outcome(d, "propose_page_edit", args, **kw)
@@ -589,3 +617,38 @@ def test_page_edit_graph_payload_has_prefixed_markers_and_targets_differ_per_tur
         assert recs[0]["arguments"]["block"]["svg"] != recs[1]["arguments"]["block"]["svg"]
         import xml.etree.ElementTree as ET
         assert ET.fromstring(block["svg"]).tag == "{http://www.w3.org/2000/svg}svg"
+
+
+def test_page_edit_picture_payload_prefixes_markers_per_edit():
+    with cw_testlib.temp_home(), tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "turns").mkdir()
+        doc = {**_page_doc(), "anchors": [_page_doc()["anchor"], {"kind": "block", "block": "overview:p2"}]}
+        (d / "turns" / "q1.anchor.json").write_text(json.dumps(doc))
+        assert cw_mcp.accept_outcome(d, "q1", "propose_page_edit", _pedit(title=" Log  in "))[0]
+        assert cw_mcp.accept_outcome(d, "q1", "propose_page_edit", _pedit(target="overview:p2"))[0]
+        recs = [json.loads(x) for x in (d / "turns" / "q1.outcomes.jsonl").read_text().splitlines()]
+        blocks = [r["arguments"]["block"] for r in recs]
+        assert blocks[0]["type"] == "picture" and blocks[0]["title"] == "Log in"
+        prefixes = []
+        for b in blocks:
+            m = re.search(r'<marker id="(pe[0-9a-f]{6}-x)"', b["html"])
+            assert m and f'marker-end="url(#{m.group(1)})"' in b["html"]
+            prefixes.append(m.group(1))
+        assert prefixes[0] != prefixes[1]
+
+
+def test_page_edit_picture_payload_stores_sanitised_html_and_raises_on_invalid():
+    html = "<!-- note -->" + SEQ_SVG
+    args = _pedit(html=html)
+    payload = cw_mcp._page_edit_payload(args)
+    stored = payload["block"]["html"]
+    prefix = re.search(r'<marker id="(pe[0-9a-f]{6}-)x"', stored).group(1)
+    assert stored == cw_mcp.visuals.sanitize_fragment(html, prefix, cw_mcp.PAGE_EDIT_CAPS["picture"])[0]
+    assert "note" not in stored
+    try:
+        cw_mcp._page_edit_payload(_pedit(html="<script>alert(1)</script>"))
+    except ValueError as e:
+        assert "block.html invalid" in str(e)
+    else:
+        raise AssertionError("expected ValueError")
