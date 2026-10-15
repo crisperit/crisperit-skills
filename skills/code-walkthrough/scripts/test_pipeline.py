@@ -221,6 +221,20 @@ def test_render_passes_visuals_only_when_present():
     assert full[full.index("--visuals") + 1] == str(d / "visuals.json")
 
 
+def test_render_passes_context_only_when_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, head = _repo(tmp)
+        d = _scratch(tmp, repo, base, head)
+        assert pipeline.main(["prepare", "--dir", str(d), "--repo", str(repo), "--base", base,
+                              "--head", head]) == 0
+        _, bare = _render_and_capture_argv(d, "test")
+        (d / "context.json").write_text("{}")
+        _, full = _render_and_capture_argv(d, "test")
+
+    assert "--context" not in bare
+    assert full[full.index("--context") + 1] == str(d / "context.json")
+
+
 def test_render_reports_kept_and_dropped_pictures_and_places_them(capsys):
     with tempfile.TemporaryDirectory() as tmp:
         repo, base, head = _repo(tmp)

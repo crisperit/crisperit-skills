@@ -253,9 +253,136 @@ def overview_html(ov, explain, target_of=lambda item: ""):
             f'<div class="cw-ov-chips">{chips}</div></div></section>')
 
 
+_CTX_SOURCES = ("jira", "github", "linear", "other")
+_CTX_FOUND_IN = {"branch": "branch name", "pr_body": "PR description", "commit": "a commit message", "link": "a pasted link"}
+_CTX_STATUS = {"covered": ("ok", "\u2713"), "partial": ("pt", "\u25d0"), "missing": ("no", "\u2717"), "extra": ("ex", "+")}
+CTX_URL = re.compile(r"https?://\S{1,500}")
+_CTX_SHA = re.compile(r"[0-9a-fA-F]{7,40}")
+_CTX_REF = re.compile(r"(.+):(\d+)")
+
+
+def _ctx_text(value, limit):
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def clean_context(raw):
+    """(clean | None, problems) for context.json. Everything the context card shows passes through
+    here: enums are enforced, text is capped, a bad item is dropped without losing the rest."""
+    if not isinstance(raw, dict):
+        return None, ["context: not an object"]
+    problems = []
+    clean = {"ticket": None, "head_sha": "", "purpose": _ctx_text(raw.get("purpose"), 400), "items": [], "gaps": []}
+    t = raw.get("ticket")
+    if isinstance(t, dict):
+        key, source = _ctx_text(t.get("key"), 40), t.get("source")
+        if not key or not isinstance(source, str) or source not in _CTX_SOURCES:
+            problems.append("context.ticket: needs a key and a source of jira, github, linear or other")
+        else:
+            url = t.get("url")
+            if url is not None and not (isinstance(url, str) and CTX_URL.fullmatch(url)):
+                problems.append("context.ticket.url: not an http(s) URL, dropped")
+                url = None
+            found = t.get("found_in")
+            clean["ticket"] = {"source": source, "key": key, "title": _ctx_text(t.get("title"), 200),
+                               "status": _ctx_text(t.get("status"), 40), "url": url,
+                               "found_in": found if isinstance(found, str) and found in _CTX_FOUND_IN else None}
+    sha = raw.get("head_sha")
+    if isinstance(sha, str) and _CTX_SHA.fullmatch(sha):
+        clean["head_sha"] = sha
+    items = raw.get("items") if isinstance(raw.get("items"), list) else []
+    if len(items) > 20:
+        problems.append(f"context.items: {len(items) - 20} beyond the first 20 dropped")
+    for i, item in enumerate(items[:20]):
+        text = _ctx_text(item.get("text"), 200) if isinstance(item, dict) else ""
+        if not text or not isinstance(item.get("status"), str) or item["status"] not in _CTX_STATUS:
+            problems.append(f"context.items[{i}]: needs text and a status of covered, partial, missing or extra")
+            continue
+        ref = item.get("ref")
+        if ref is not None and not (isinstance(ref, str) and _CTX_REF.fullmatch(ref)):
+            problems.append(f"context.items[{i}].ref: not path:line, dropped")
+            ref = None
+        clean["items"].append({"status": item["status"], "text": text, "ref": ref,
+                               "note": _ctx_text(item.get("note"), 200)})
+    gaps = raw.get("gaps") if isinstance(raw.get("gaps"), list) else []
+    clean["gaps"] = [g for g in (_ctx_text(g, 200) for g in gaps[:8]) if g]
+    if not (clean["ticket"] or clean["purpose"] or clean["items"] or clean["gaps"]):
+        return None, problems + ["context: nothing usable, ignored"]
+    return clean, problems
+
+
+def load_context(path):
+    """(clean, lines) for context.json; `lines` are the `context:` report lines pipeline.py echoes."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError, RecursionError) as exc:
+        return None, [f"context: unreadable ({exc.__class__.__name__})"]
+    clean, problems = clean_context(raw)
+    return clean, [p if p.startswith("context:") else f"context: {p}" for p in problems]
+
+
+def _ctx_ref(ref, files):
+    path, _, line = ref.rpartition(":") if ref else ("", "", "")
+    if path in files:
+        return (f'<span class="cw-ctx-ev cw-ctx-ref" role="link" tabindex="0" data-path="{escape(path)}"'
+                f' data-line="{escape(line)}">{escape(ref)}</span>')
+    return '<span class="cw-ctx-ev cw-ctx-none">not in diff</span>'
+
+
+def context_html(ctx, files, current_head=""):
+    """The Context card, or the empty-state form when there is no ticket context. `files` is the
+    parsed diff (a ref links only when its path is in it); `current_head` is the page's head sha,
+    compared with the one the comparison was made against."""
+    if not ctx:
+        return ('<section class="cw-context" id="cw-context" aria-labelledby="cw-context-h">'
+                '<h2 id="cw-context-h">Context</h2><form class="cw-ctx-link">'
+                '<span class="cw-ctx-empty">No linked ticket found.</span>'
+                '<input type="text" name="ticket" class="cw-ctx-input" autocomplete="off" maxlength="500"'
+                ' placeholder="Paste a Jira / GitHub / Linear link or key" aria-label="Ticket link or key">'
+                '<button type="submit" class="cw-ctx-submit">Link ticket</button>'
+                '<p class="cw-ctx-msg" aria-live="polite"></p></form></section>')
+    t = ctx.get("ticket")
+    head = ""
+    if t:
+        key = escape(t["key"])
+        url = t.get("url")
+        key_html = (f'<a class="cw-ctx-key" href="{escape(url)}" target="_blank" rel="noopener noreferrer">{key}</a>'
+                    if url else f'<span class="cw-ctx-key">{key}</span>')
+        found = _CTX_FOUND_IN.get(t.get("found_in"))
+        head = (f'<div class="cw-ctx-head"><span class="cw-ctx-src"><span class="cw-ctx-glyph" aria-hidden="true">'
+                f'&#9670;</span>{escape(t["source"].capitalize())}</span>{key_html}'
+                + (f'<span class="cw-ctx-title">{_html_prose(t["title"])}</span>' if t["title"] else "")
+                + (f'<span class="cw-ctx-pill">{escape(t["status"])}</span>' if t["status"] else "")
+                + (f'<span class="cw-ctx-found">found in {found}</span>' if found else "")
+                + "</div>")
+    secs = []
+    if ctx.get("purpose"):
+        secs.append(f'<div class="cw-ctx-sec"><div class="cw-ctx-label">What it\'s for</div>'
+                    f'<p class="cw-ctx-purpose">{_html_prose(ctx["purpose"])}</p></div>')
+    items = ctx.get("items") or []
+    if items:
+        counts = {k: sum(i["status"] == k for i in items) for k in ("covered", "partial", "missing")}
+        bar = "".join(f'<i class="{_CTX_STATUS[k][0]}" style="flex:{n}"></i>' for k, n in counts.items() if n)
+        rows = "".join(
+            f'<li><span class="cw-ctx-mark {_CTX_STATUS[i["status"]][0]}" role="img" aria-label="{i["status"]}">'
+            f'{_CTX_STATUS[i["status"]][1]}</span><span>{_html_prose(i["text"])}'
+            + (f'<span class="cw-ctx-sub">{_html_prose(i["note"])}</span>' if i.get("note") else "")
+            + f'</span>{_ctx_ref(i.get("ref"), files)}</li>' for i in items)
+        secs.append('<div class="cw-ctx-sec"><div class="cw-ctx-label"><span>Asked for vs. this diff</span>'
+                    f'<span class="cw-ctx-bar" aria-hidden="true">{bar}</span></div><ul class="cw-ctx-items">{rows}</ul></div>')
+    if ctx.get("gaps"):
+        secs.append('<div class="cw-ctx-sec"><div class="cw-ctx-label">Gaps and questions</div>'
+                    + "".join(f'<p class="cw-ctx-gap">{_html_prose(g)}</p>' for g in ctx["gaps"]) + "</div>")
+    seen, now = ctx.get("head_sha") or "", current_head or ""
+    stale = ""
+    if seen and now and not (seen.startswith(now) or now.startswith(seen)):
+        stale = (f'<p class="cw-ctx-stale">Compared against {escape(seen[:7])}, head is now {escape(now[:7])}.</p>')
+    return ('<section class="cw-context" id="cw-context" aria-labelledby="cw-context-h"><h2 id="cw-context-h">Context</h2>'
+            f'<div class="cw-ctx-card">{head}{"".join(secs)}</div>{stale}</section>')
+
+
 def render_html(analysis, files, template, walkthrough="", links=None, title=None,
                 now=None, complexity=None, state=None, explain=False, order=None,
-                symdelta=None, visuals=None):
+                symdelta=None, visuals=None, context=None):
     target = analysis.get("target") or ""
     count, added, removed, net = counts_from(files)
     sign = "+" if net >= 0 else ""
@@ -284,6 +411,9 @@ def render_html(analysis, files, template, walkthrough="", links=None, title=Non
         label = "Summary" if explain else "Verdict"
         body.append(f'  <div class="fact"><b>{label}</b><span>{_html_prose(verdict)}</span></div>')
     body.append("</div>")
+
+    if not explain:
+        body.append(context_html(context, files, (links or {}).get("head_sha", "")))
 
     overview = _paragraphs(analysis.get("overview"))
     if overview:
@@ -383,6 +513,7 @@ def main():
     parser.add_argument("--complexity", help="complexity.json, for the complexity fact")
     parser.add_argument("--symdelta", help="symdelta.json, for the All symbols graph")
     parser.add_argument("--visuals", help="visuals.json, re-checked here before anything is inlined")
+    parser.add_argument("--context", help="context.json, re-checked here before anything is inlined")
     parser.add_argument("--template", required=True, help="the page template")
     parser.add_argument("--state", help="state.json, inlined behind HR_STATE")
     parser.add_argument("--title")
@@ -406,11 +537,17 @@ def main():
         clean, lines = load_visuals(args.visuals, len(analysis.get("groups") or []), placed, ctx)
         print("\n".join(lines), file=sys.stderr)
 
+    context = None
+    if args.context:
+        context, lines = load_context(args.context)
+        if lines:
+            print("\n".join(lines), file=sys.stderr)
+
     sys.stdout.write(render_html(
         analysis, files, _read(args.template),
         _read(args.walkthrough), links, args.title,
         complexity=complexity, state=state, explain=args.explain, order=order,
-        symdelta=symdelta, visuals=clean,
+        symdelta=symdelta, visuals=clean, context=context,
     ))
     return 0
 

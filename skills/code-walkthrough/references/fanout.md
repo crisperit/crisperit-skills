@@ -66,6 +66,9 @@ enough to explain the machinery.
 The main thread no longer writes `groups` into `analysis.json` by hand: this subagent writes them
 directly into `prose.json`, and `fanout.py merge` carries them through.
 
+When `<scratchpad>/ticket.md` exists, it also follows `prompts/context.md` and writes `context.json`
+(`static.md` step 2c).
+
 The pictures are not this subagent's job: a separate subagent writes them, `static.md` step 2b4.
 
 Ordering: this subagent waits for every batch fragment and for `symdelta.json`, the same

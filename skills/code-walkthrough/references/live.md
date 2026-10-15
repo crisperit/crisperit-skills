@@ -112,7 +112,7 @@ per-hunk notes will land, and the Threads dock stays hidden until there is a thr
 reload after the rebuild replaces the placeholders. The Walkthrough heading no longer has an
 explanations toggle: notes are always on.
 
-A changed file that can be previewed (`.md`/`.markdown` and images) has a Preview button in its
+A changed file that can be previewed (`.md`/`.markdown` and images) has a Diff | Preview switch in its
 header. It swaps the diff for the rendered file and back. Images open in preview, since there is no
 text diff to show; markdown opens as the diff. Previews are built from the repo at build time and
 need `--repo`, `--base` and `--head`, which the daemon passes. Limits: 1 MB per image, 256 KB per
@@ -120,6 +120,8 @@ markdown file and 8 MB of previews per page; anything over shows "too large to p
 failure skips the preview quietly.
 
 ## Repos without a local clone
+
+A PR URL with no local clone still goes live: `gh pr view <url> --json number,baseRefName,headRefOid,title` works outside a repo, then call `walkthrough_start` with `repo: "owner/name"`, `pr`, `base: "origin/<baseRefName>"` and `head: <headRefOid>`.
 
 `walkthrough_start`'s `repo` is an absolute path or `owner/name`. The daemon resolves `owner/name`
 in this order: the `repos` map in `config.json` (a value that is not an existing absolute directory
@@ -300,6 +302,14 @@ mermaid edits still render. The graph has to pass `check_overview`, which measur
 `OVERVIEW_MAX` (6 KB); `refs` are shape-checked only, not verified against the diff. The edit applies at once, is local only (it never reaches the PR), and is
 persisted in `qa.jsonl`. Undo reverts it and Redo reapplies it; the agent is told about either on
 the next turn. Page edits are not offered on diff-line comments.
+
+The Context section's empty state has a field for a ticket URL or key (`AO-82`, `#123`, `owner/repo#123`).
+Submitting it posts to `/api/walkthrough/<key>/<id>/ticket`, which the daemon never fetches itself: it only
+adds a handed task ("Link ticket and fill the Context section") to the Threads dock, refused on a sibling
+view, while building and in explain mode. Your own session fetches the ticket, compares it with the diff
+per `prompts/context.md` and calls `walkthrough_reply(id, thread_id, oid, text, context)`. `context` may
+also come alone, without `thread_id` and `text`. It is capped at 16 KB, cleaned by `render.clean_context`,
+written to `context.json` and re-rendered, unless a build is running, which renders it instead.
 
 In `walkthrough_get` threads each outcome carries `summary`: a string for task, github_draft, resolve and
 draft_comments, and an object for a page edit: `{op, target, target_is_oid, type, text}` for prose and

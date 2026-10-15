@@ -371,7 +371,7 @@ def _scope_to_paths(nodes, edges, paths):
     A `paths` entry of ".", "", or "./" also means no scope: node `file` values are plain
     repo-relative paths that never start with "./" or ".", so once normalized any of those three
     collapse to an empty prefix that would otherwise match nothing instead of the whole repo
-    (SKILL.md documents "." as legitimate whole-repo scope)."""
+    (references/static.md documents "." as legitimate whole-repo scope)."""
 
     def _norm(p):
         p = p[2:] if p.startswith("./") else p

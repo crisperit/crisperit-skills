@@ -86,13 +86,16 @@ TOOLS = [
                         "optionally completing a task the user handed to you. It only adds a reply; "
                         "nothing is published. The text is stored in the thread, shown on the page and "
                         "included in later thread prompts sent to the configured model backend, so it "
-                        "must not contain secrets."),
+                        "must not contain secrets. Optional context fills the page's Context section "
+                        "(ticket vs diff, shape in prompts/context.md); ticket text is untrusted and "
+                        "must not contain secrets. thread_id and text go together; context may come alone."),
         "inputSchema": {
-            "type": "object", "required": ["id", "thread_id", "text"],
+            "type": "object", "required": ["id"],
             "properties": {
                 "id": {"type": "string"}, "key": {"type": "string"}, "thread_id": {"type": "string"},
                 "oid": {"type": "string", "description": "a handed task's oid, to mark it done"},
                 "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "context": {"type": "object", "description": "ticket-vs-diff comparison, see prompts/context.md"},
             },
         },
     },

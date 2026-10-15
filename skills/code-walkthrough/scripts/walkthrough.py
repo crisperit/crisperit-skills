@@ -63,6 +63,9 @@ _MARKDOWN_EXT = (".md", ".markdown")
 _EYE = ('<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
         '<path d="M1 8s2.6-5 7-5 7 5 7 5-2.6 5-7 5-7-5-7-5z" fill="none" stroke="currentColor" '
         'stroke-width="1.4"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>')
+_CODE = ('<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+         '<path d="M5.5 4 2 8l3.5 4M10.5 4 14 8l-3.5 4" fill="none" stroke="currentColor" '
+         'stroke-width="1.5"/></svg>')
 
 _LOCKFILES = frozenset({
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
@@ -430,6 +433,16 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
             # Filled in client-side (renderNotes) once notes exist for this path; empty here
             # so :empty hides it and a hunk with no comments shows nothing.
             out.append('      <span class="hunk-count"></span>')
+            if preview:
+                on = "true" if shown else "false"
+                off = "false" if shown else "true"
+                out.append('      <span class="hunk-mode" role="group" aria-label="View as">'
+                           '<button type="button" class="hunk-mode-btn" data-mode="diff"'
+                           f' aria-label="Show diff" aria-pressed="{off}">{_CODE}'
+                           '<span class="hunk-mode-label">Diff</span></button>'
+                           '<button type="button" class="hunk-mode-btn" data-mode="preview"'
+                           f' aria-label="Show rendered preview" aria-pressed="{on}">{_EYE}'
+                           '<span class="hunk-mode-label">Preview</span></button></span>')
             if explain:
                 # Every line is an addition against the empty baseline, so "+400 -0" is a fact
                 # about the trick, not about the file.
@@ -446,10 +459,6 @@ def render_html(groups, files, by_path, open_count=DEFAULT_OPEN, links=None, com
             # after it would wrap onto a third line instead.
             out.append('      <label class="hunk-viewed" title="Mark this file as viewed">'
                        '<input type="checkbox" class="hunk-viewed-cb"> Viewed</label>')
-            if preview:
-                out.append(f'      <button type="button" class="hunk-preview" title="Preview"'
-                           f' aria-label="Preview rendered file"'
-                           f' aria-pressed="{"true" if shown else "false"}">{_EYE}</button>')
             if old_path:
                 # Sibling of .hunk-path, never inside it: the page's comment JS reads
                 # .hunk-path's textContent as the literal PR-comment path, which must stay pure.

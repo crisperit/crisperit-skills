@@ -838,7 +838,9 @@ def test_modified_png_previews_before_and_after_by_default_with_a_toggle_button(
     assert out.count("data:image/png;base64,") == 2
     assert "Before" in out and "After" in out
     assert '<details class="hunk cw-previewing"' in out
-    assert 'class="hunk-preview"' in out and 'aria-pressed="true"' in out
+    assert out.index("hunk-count") < out.index('class="hunk-mode"') < out.index("hunk-stat")
+    assert 'data-mode="diff" aria-label="Show diff" aria-pressed="false"' in out
+    assert 'data-mode="preview" aria-label="Show rendered preview" aria-pressed="true"' in out
     assert "No textual diff" not in out
 
 
@@ -868,7 +870,9 @@ def test_markdown_source_goes_into_an_escaped_template_and_the_diff_stays(tmp_pa
     assert '<template class="cw-md-src"># Title' in out
     assert "&lt;script&gt;x&lt;/script&gt;" in out and "<script>" not in out
     assert '<div class="cw-preview-body"></div>' in out
-    assert '<details class="hunk"' in out and 'aria-pressed="false"' in out
+    assert '<details class="hunk"' in out
+    assert 'data-mode="diff" aria-label="Show diff" aria-pressed="true"' in out
+    assert 'data-mode="preview" aria-label="Show rendered preview" aria-pressed="false"' in out
     assert '<pre class="diff">' in out
 
 
@@ -892,14 +896,14 @@ def test_git_failure_skips_the_preview_silently(tmp_path):
     order, files = parse_hunks(diff)
     out = render_html(flat(order, files), files, {}, repo=str(tmp_path / "nope"), base="a", head="b")
 
-    assert "hunk-preview" not in out and "No textual diff" in out
+    assert "hunk-mode" not in out and "No textual diff" in out
 
 
 def test_without_repo_the_output_has_no_preview_markup():
     diff = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
     order, files = parse_hunks(diff)
 
-    assert "hunk-preview" not in render_html(flat(order, files), files, {})
+    assert "hunk-mode" not in render_html(flat(order, files), files, {})
 
 
 def test_cli_accepts_repo_base_head(tmp_path):
